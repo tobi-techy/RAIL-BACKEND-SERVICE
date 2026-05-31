@@ -22,12 +22,14 @@ type SNSPushConfig struct {
 }
 
 // SNSPushService sends push notifications via AWS SNS.
+// Expo push tokens are routed through an optional ExpoPushService fallback.
 // Implements the PushSender interface (SendToUser).
 type SNSPushService struct {
 	client       *sns.Client
 	tokenRepo    *repositories.DeviceTokenRepository
 	config       SNSPushConfig
 	logger       *zap.Logger
+	expoFallback *ExpoPushService // handles ExponentPushToken / ExpoPushToken tokens
 }
 
 // NewSNSPushService creates a new SNS push service.
@@ -44,7 +46,11 @@ func NewSNSPushService(ctx context.Context, cfg SNSPushConfig, tokenRepo *reposi
 	}, nil
 }
 
+// SetExpoFallback wires an Expo push service for tokens that SNS cannot handle.
+func (s *SNSPushService) SetExpoFallback(expo *ExpoPushService) { s.expoFallback = expo }
+
 // SendToUser sends a push notification to all of a user's devices via SNS.
+// Expo push tokens are forwarded to the Expo push service if one is configured.
 func (s *SNSPushService) SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error {
 	tokens, err := s.tokenRepo.GetUserTokens(ctx, userID)
 	if err != nil {
@@ -69,6 +75,23 @@ func (s *SNSPushService) SendToUser(ctx context.Context, userID uuid.UUID, title
 
 	var successCount, failCount int
 	for _, dt := range tokens {
+		// Route Expo tokens through the Expo push service.
+		if strings.HasPrefix(dt.Token, "ExponentPushToken[") || strings.HasPrefix(dt.Token, "ExpoPushToken[") {
+			if s.expoFallback != nil {
+				if err := s.expoFallback.SendToUser(ctx, userID, title, body, data); err != nil {
+					s.logger.Warn("Expo push fallback failed", zap.Error(err), zap.String("user_id", userID.String()))
+					failCount++
+				} else {
+					successCount++
+				}
+			} else {
+				s.logger.Warn("Expo push token received but no Expo fallback configured — skipping",
+					zap.String("user_id", userID.String()))
+				failCount++
+			}
+			continue
+		}
+
 		// Ensure we have an SNS endpoint ARN for this token
 		endpointARN := dt.EndpointARN
 		if endpointARN == nil || *endpointARN == "" {
@@ -105,11 +128,6 @@ func (s *SNSPushService) SendToUser(ctx context.Context, userID uuid.UUID, title
 
 // ensureEndpoint creates an SNS platform endpoint for a device token and stores the ARN.
 func (s *SNSPushService) ensureEndpoint(ctx context.Context, dt *repositories.DeviceToken) (string, error) {
-	// Skip Expo push tokens — they use Expo's own push service, not APNs/FCM directly
-	if strings.HasPrefix(dt.Token, "ExponentPushToken[") || strings.HasPrefix(dt.Token, "ExpoPushToken[") {
-		return "", fmt.Errorf("expo push token not compatible with SNS (use Expo push service)")
-	}
-
 	platformARN := s.platformARNForDevice(dt.Platform)
 	if platformARN == "" {
 		return "", fmt.Errorf("no platform ARN configured for platform: %s", dt.Platform)

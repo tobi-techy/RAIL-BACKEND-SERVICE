@@ -1077,8 +1077,11 @@ func overrideFromEnv() {
 	if circleEntitySecretCiphertext := os.Getenv("CIRCLE_ENTITY_SECRET_CIPHERTEXT"); circleEntitySecretCiphertext != "" {
 		viper.Set("circle.entity_secret_ciphertext", circleEntitySecretCiphertext)
 	}
-	// Load legacy Circle public key PEM from environment for entity secret encryption
-	if circlePublicKeyPEM := os.Getenv("EXPO_PUBLIC_CIRCLE_PUBLIC_KEY_PEM"); circlePublicKeyPEM != "" {
+	// Load Circle public key PEM from environment for entity secret encryption.
+	// Also accept the legacy EXPO_PUBLIC_ prefixed name for backwards compatibility.
+	if circlePublicKeyPEM := os.Getenv("CIRCLE_PUBLIC_KEY_PEM"); circlePublicKeyPEM != "" {
+		viper.Set("circle.public_key_pem", circlePublicKeyPEM)
+	} else if circlePublicKeyPEM := os.Getenv("EXPO_PUBLIC_CIRCLE_PUBLIC_KEY_PEM"); circlePublicKeyPEM != "" {
 		viper.Set("circle.public_key_pem", circlePublicKeyPEM)
 	}
 	if circleWalletSetID := os.Getenv("CIRCLE_DEFAULT_WALLET_SET_ID"); circleWalletSetID != "" {

@@ -2361,6 +2361,10 @@ func (c *Container) initializeDomainServices() error {
 			c.NotificationService.SetPushSender(expoPushService)
 		} else {
 			c.SNSPushService = snsPushSvc
+			// Wire Expo fallback so SNS can route Expo tokens correctly.
+			expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+			c.ExpoPushService = expoPushService
+			snsPushSvc.SetExpoFallback(expoPushService)
 			c.NotificationService.SetPushSender(snsPushSvc)
 			c.Logger.Info("SNS push service initialized",
 				zap.Bool("ios", c.Config.SNSPush.IOSPlatformARN != ""),

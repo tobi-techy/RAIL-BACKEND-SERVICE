@@ -297,6 +297,30 @@
         {
           "name": "SUPERMEMORY_API_KEY",
           "valueFrom": "/rail/prod/SUPERMEMORY_API_KEY"
+        },
+        {
+          "name": "CIRCLE_API_KEY",
+          "valueFrom": "/rail/prod/CIRCLE_API_KEY"
+        },
+        {
+          "name": "CIRCLE_ENTITY_SECRET",
+          "valueFrom": "/rail/prod/CIRCLE_ENTITY_SECRET"
+        },
+        {
+          "name": "CIRCLE_ENVIRONMENT",
+          "valueFrom": "/rail/prod/CIRCLE_ENVIRONMENT"
+        },
+        {
+          "name": "CIRCLE_SUPPORTED_CHAINS",
+          "valueFrom": "/rail/prod/CIRCLE_SUPPORTED_CHAINS"
+        },
+        {
+          "name": "CIRCLE_WEBHOOK_SECRET",
+          "valueFrom": "/rail/prod/CIRCLE_WEBHOOK_SECRET"
+        },
+        {
+          "name": "CIRCLE_PUBLIC_KEY_PEM",
+          "valueFrom": "/rail/prod/CIRCLE_PUBLIC_KEY_PEM"
         }
       ],
       "logConfiguration": {

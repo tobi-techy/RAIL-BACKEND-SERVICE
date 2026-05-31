@@ -1059,6 +1059,12 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
+	// NGN withdrawals are handled exclusively by the Paj Cash endpoint.
+	// Returning a clear error here prevents silent failures for NGN users.
+	if req.Currency == entities.WithdrawalCurrencyNGN {
+		return nil, fmt.Errorf("NGN withdrawals must use the /v1/funding/paj/offramp endpoint")
+	}
+
 	clientProvidedIdempotency := strings.TrimSpace(req.IdempotencyKey) != ""
 	_ = clientProvidedIdempotency
 	idempotencyKey := scopedWithdrawalIdempotencyKey(req.UserID, "fiat", req.IdempotencyKey)
