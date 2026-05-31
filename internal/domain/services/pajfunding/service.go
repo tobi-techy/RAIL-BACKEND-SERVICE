@@ -148,7 +148,7 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 	source, ok := evmToChainRails[blockchain]
 	if !ok {
 		s.logger.Error("unsupported EVM chain for ChainRails Paj bridge", zap.String("blockchain", blockchain))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "unsupported_chain")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "unsupported_chain")
 		return
 	}
 
@@ -179,7 +179,7 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 	if err != nil {
 		s.logger.Error("ChainRails intent for Paj bridge failed — reversing hold",
 			zap.Error(err), zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "chainrails_intent_failed")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "chainrails_intent_failed")
 		return
 	}
 
@@ -201,7 +201,7 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 			zap.String("hold_amount", totalHold.String()),
 			zap.String("transfer_amount", circleAmountDecimal.String()),
 			zap.String("rail_fee", railFee.String()))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "transfer_exceeds_hold")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "transfer_exceeds_hold")
 		return
 	}
 
@@ -209,11 +209,11 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 	if txErr != nil {
 		s.logger.Error("Circle transfer to ChainRails intent for Paj failed — reversing hold",
 			zap.Error(txErr), zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "circle_cr_transfer_failed")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "circle_cr_transfer_failed")
 		return
 	}
 	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
-		s.reverseHold(ctx, userID, order.ID, totalHold, "circle_cr_"+string(tx.State))
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "circle_cr_"+string(tx.State))
 		return
 	}
 
@@ -698,13 +698,13 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	if s.circleTransfer == nil {
 		s.logger.Error("Circle transfer adapter not configured for Paj offramp — reversing hold",
 			zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_transfer_config")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "no_transfer_config")
 		return nil, fmt.Errorf("withdrawal infrastructure not available")
 	}
 	if order.Address == "" {
 		s.logger.Error("Paj order missing deposit address — reversing hold",
 			zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_deposit_address")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "no_deposit_address")
 		return nil, fmt.Errorf("withdrawal service returned invalid response")
 	}
 
@@ -740,14 +740,14 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 	if calcErr != nil {
 		s.logger.Error("Paj offramp transfer amount invalid — reversing hold",
 			zap.Error(calcErr), zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "invalid_transfer_amount")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "invalid_transfer_amount")
 		return
 	}
 
 	if s.circleTransfer == nil {
 		s.logger.Error("Circle transfer adapter not configured — reversing hold",
 			zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_circle_adapter")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "no_circle_adapter")
 		return
 	}
 
@@ -756,7 +756,7 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 		s.logger.Error("async: no Circle wallet with USDC for Paj offramp — reversing hold",
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("paj_order_id", order.ID))
-		s.reverseHold(ctx, userID, order.ID, totalHold, "no_usdc_wallet")
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "no_usdc_wallet")
 		return
 	}
 
@@ -768,11 +768,11 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 		if txErr != nil {
 			s.logger.Error("async: Circle SOL transfer to Paj failed — reversing hold",
 				zap.Error(txErr), zap.String("paj_order_id", order.ID))
-			s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_failed")
+			s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "circle_transfer_failed")
 			return
 		}
 		if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
-			s.reverseHold(ctx, userID, order.ID, totalHold, "circle_transfer_"+string(tx.State))
+			s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "circle_transfer_"+string(tx.State))
 			return
 		}
 		s.logger.Info("Circle SOL transfer to Paj initiated",
@@ -798,7 +798,7 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 
 	s.logger.Error("USDC on EVM but no ChainRails — cannot bridge to Solana for Paj",
 		zap.String("blockchain", blockchain), zap.String("user_id", userID.String()))
-	s.reverseHold(ctx, userID, order.ID, totalHold, "no_chainrails_evm")
+	s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "no_chainrails_evm")
 }
 
 func calculateOfframpTransferAmounts(orderAmount float64, totalHold, railFee decimal.Decimal) (decimal.Decimal, decimal.Decimal, error) {
@@ -1195,7 +1195,8 @@ func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, 
 
 // reverseHold reverses the full ledger hold for a failed offramp and marks the order
 // as failed with deposit_id set (prevents double-reversal by worker or webhook).
-func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID string, amount decimal.Decimal, reason string) {
+// railFee must be the USDC-denominated fee (not NGN) that was included in the original hold.
+func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID string, amount, railFee decimal.Decimal, reason string) {
 	// Mark order as failed and claim it (same idempotency as worker/webhook).
 	s.db.ExecContext(ctx, `
 		UPDATE paj_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
@@ -1207,7 +1208,7 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 	err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		"paj_offramp_"+reason+"_"+pajOrderID, amount, map[string]interface{}{
 			"provider": "paj", "type": "offramp_" + reason + "_reversal", "paj_order_id": pajOrderID,
-			"rail_fee": decimal.NewFromFloat(RailNGNWithdrawalFeeNGN).String(), "fee_revenue_posted": true,
+			"rail_fee": railFee.String(), "fee_revenue_posted": true,
 		})
 	if err != nil {
 		s.logger.Error("CRITICAL: failed to reverse offramp hold",
