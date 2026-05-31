@@ -938,6 +938,24 @@ func (h *VoiceHandler) persistVoiceTranscripts(userID uuid.UUID, convID uuid.UUI
 			title := "🎙 " + generateVoiceTitle(firstUserMsg)
 			_ = h.convService.UpdateTitle(ctx, convID, title)
 		}
+
+		// Ingest voice session into Supermemory for long-term memory
+		var pairs [][2]string
+		var userBuf2 strings.Builder
+		for _, e := range entries {
+			if e.role == "user" {
+				if userBuf2.Len() > 0 {
+					userBuf2.WriteString(" ")
+				}
+				userBuf2.WriteString(e.text)
+			} else if e.role == "assistant" {
+				pairs = append(pairs, [2]string{strings.TrimSpace(userBuf2.String()), e.text})
+				userBuf2.Reset()
+			}
+		}
+		if h.orchestrator != nil {
+			h.orchestrator.IngestVoiceTranscripts(userID, pairs)
+		}
 	}()
 }
 

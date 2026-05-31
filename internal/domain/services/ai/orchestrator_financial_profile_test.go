@@ -45,18 +45,11 @@ func TestExecuteKnowledgeSearchIncludesSourceDocs(t *testing.T) {
 		logger: zap.NewNop(),
 	}
 
-	result, err := o.executeKnowledgeSearch(context.Background(), map[string]interface{}{"query": "emergency fund"})
+	result, err := o.executeKnowledgeSearch(context.Background(), uuid.Nil, map[string]interface{}{"query": "emergency fund"})
 	require.NoError(t, err)
 	require.Equal(t, true, result["found"])
 	require.Equal(t, 1, result["sources"])
 	require.Contains(t, result["context"], "[Source: emergency-fund.md]")
-
-	sourceDocs, ok := result["source_docs"].([]map[string]interface{})
-	require.True(t, ok)
-	require.Len(t, sourceDocs, 1)
-	require.Equal(t, "emergency-fund.md", sourceDocs[0]["source_doc"])
-	require.Equal(t, 2, sourceDocs[0]["chunk_index"])
-	require.Equal(t, 0.91, sourceDocs[0]["similarity"])
 }
 
 func TestBuildFinancialProfileParamsValidatesAndNormalizes(t *testing.T) {

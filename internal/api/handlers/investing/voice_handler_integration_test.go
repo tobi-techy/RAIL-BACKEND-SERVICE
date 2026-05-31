@@ -727,7 +727,7 @@ func TestVoiceIntegration_MockELServerEventExchange(t *testing.T) {
 
 func TestVoiceIntegration_ELEventConstructors(t *testing.T) {
 	t.Run("NewELConversationInit", func(t *testing.T) {
-		init := infraai.NewELConversationInit(map[string]interface{}{"user_name": "test"})
+		init := infraai.NewELConversationInit(map[string]interface{}{"user_name": "test"}, nil)
 		assert.Equal(t, "conversation_initiation_client_data", init.Type)
 		assert.Equal(t, "test", init.DynamicVariables["user_name"])
 	})
