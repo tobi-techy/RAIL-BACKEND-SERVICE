@@ -83,6 +83,46 @@ func (r *LedgerRepository) GetAccountByUserAndTypeForUpdate(ctx context.Context,
 	return &account, nil
 }
 
+// HasTx reports whether the context already carries an active ledger transaction.
+// Callers use this to decide whether to open a new transaction or reuse the
+// existing one (preventing accidental nested/second connections).
+func HasTx(ctx context.Context) bool {
+	return txFromContext(ctx) != nil
+}
+
+// IsSerializationFailure reports whether err is a Postgres serialization
+// failure (40001) or deadlock (40P01). Both are safe to retry: the whole
+// transaction was rolled back by the server, so re-running the unit of work
+// from scratch is correct and will not double-apply balances.
+func IsSerializationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		// 40001 = serialization_failure, 40P01 = deadlock_detected
+		return pqErr.Code == "40001" || pqErr.Code == "40P01"
+	}
+	return false
+}
+
+// IsUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (23505), optionally scoped to a specific constraint name.
+// Pass an empty constraint to match any unique violation.
+func IsUniqueViolation(err error, constraint string) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		if pqErr.Code != "23505" {
+			return false
+		}
+		return constraint == "" || pqErr.Constraint == constraint
+	}
+	return false
+}
+
 // txFromContext extracts a sqlx transaction from context when present.
 func txFromContext(ctx context.Context) *sqlx.Tx {
 	if ctx == nil {
@@ -307,6 +347,40 @@ func (r *LedgerRepository) UpdateAccountBalance(ctx context.Context, accountID u
 
 	if rowsAffected == 0 {
 		return fmt.Errorf("account not found")
+	}
+
+	return nil
+}
+
+// UpdateAccountBalanceGuarded updates an account balance using an optimistic
+// compare-and-set on the expected (previously read) balance. It is a
+// defense-in-depth complement to the pessimistic SELECT ... FOR UPDATE path:
+// the row lock already serializes writers, but this CAS guarantees that the
+// balance has not changed between the locked read and the write even if a
+// future code path forgets to take the lock. A zero-row update means the
+// balance was modified concurrently and the caller should abort/retry.
+func (r *LedgerRepository) UpdateAccountBalanceGuarded(ctx context.Context, accountID uuid.UUID, expectedBalance, newBalance decimal.Decimal) error {
+	query := `
+		UPDATE ledger_accounts
+		SET balance = $1, updated_at = $2
+		WHERE id = $3 AND balance = $4
+	`
+
+	result, err := r.execContext(ctx, query, newBalance, time.Now(), accountID, expectedBalance)
+	if err != nil {
+		return fmt.Errorf("update account balance (guarded): %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		// Either the account vanished or the balance changed under us. Under
+		// FOR UPDATE this should be impossible; treat it as a concurrency
+		// violation so the caller aborts rather than silently losing a write.
+		return fmt.Errorf("concurrent balance modification detected for account %s (expected balance %s)", accountID, expectedBalance.String())
 	}
 
 	return nil

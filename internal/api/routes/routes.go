@@ -1622,6 +1622,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if circleWebhookHandler := container.GetCircleWebhookHandler(); circleWebhookHandler != nil {
 				circleWebhooks := webhooks.Group("/circle")
 				circleWebhooks.Use(middleware.RateLimit(100))
+				circleWebhooks.Use(middleware.CircleIPAllowlist(container.Config.Environment, container.ZapLog))
 				circleWebhooks.POST("", circleWebhookHandler.HandleWebhook)
 			}
 		}
