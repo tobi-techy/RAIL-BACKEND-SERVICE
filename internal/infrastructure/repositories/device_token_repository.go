@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,14 +94,18 @@ func (r *DeviceTokenRepository) GetUserTokens(ctx context.Context, userID uuid.U
 }
 
 // GetUserDeviceTokens returns just the token strings for push notifications
+// GetUserDeviceTokens returns Expo push token strings for a user.
+// Native FCM/APNs tokens are excluded — they are handled by SNSPushService via GetUserTokens.
 func (r *DeviceTokenRepository) GetUserDeviceTokens(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	tokens, err := r.GetUserTokens(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]string, len(tokens))
-	for i, t := range tokens {
-		result[i] = t.Token
+	var result []string
+	for _, t := range tokens {
+		if strings.HasPrefix(t.Token, "ExponentPushToken[") || strings.HasPrefix(t.Token, "ExpoPushToken[") {
+			result = append(result, t.Token)
+		}
 	}
 	return result, nil
 }
