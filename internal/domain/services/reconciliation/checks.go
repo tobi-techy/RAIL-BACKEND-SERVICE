@@ -294,6 +294,73 @@ func (s *Service) CheckConversionJobs(ctx context.Context, reportID uuid.UUID) (
 	return result, nil
 }
 
+// CheckStuckDeposits detects deposits that are stuck in pending_allocation or
+// compensation_failed states for more than 30 minutes. These represent partial
+// state inconsistencies from the distributed deposit pipeline and require
+// automated recovery or manual intervention.
+func (s *Service) CheckStuckDeposits(ctx context.Context, reportID uuid.UUID) (*entities.ReconciliationCheckResult, error) {
+	ctx, span := otel.Tracer(tracerName).Start(ctx, "CheckStuckDeposits")
+	defer span.End()
+
+	startTime := time.Now()
+	result := &entities.ReconciliationCheckResult{
+		CheckType:  entities.ReconciliationCheckStuckDeposits,
+		Exceptions: []entities.ReconciliationException{},
+		Metadata:   make(map[string]interface{}),
+	}
+
+	const stuckThreshold = 30 * time.Minute
+
+	stuckDeposits, err := s.depositRepo.GetStuckDeposits(ctx, stuckThreshold)
+	if err != nil {
+		result.ErrorMessage = fmt.Sprintf("failed to query stuck deposits: %v", err)
+		result.ExecutionTime = time.Since(startTime)
+		span.RecordError(err)
+		return result, err
+	}
+
+	result.ExpectedValue = decimal.Zero
+	result.ActualValue = decimal.NewFromInt(int64(len(stuckDeposits)))
+	result.Difference = result.ActualValue
+	result.Metadata["stuck_threshold_minutes"] = stuckThreshold.Minutes()
+	result.Metadata["stuck_count"] = len(stuckDeposits)
+
+	for _, deposit := range stuckDeposits {
+		severity := entities.ExceptionSeverityHigh
+		if deposit.Status == "compensation_failed" {
+			severity = entities.ExceptionSeverityCritical
+		}
+		exception := entities.NewReconciliationException(
+			reportID,
+			uuid.New(),
+			entities.ReconciliationCheckStuckDeposits,
+			severity,
+			fmt.Sprintf("Deposit %s stuck in status '%s' since %s", deposit.ID, deposit.Status, deposit.CreatedAt.Format(time.RFC3339)),
+			decimal.Zero,
+			deposit.Amount,
+			"USDC",
+		)
+		exception.AffectedEntity = deposit.ID.String()
+		if deposit.UserID != uuid.Nil {
+			exception.AffectedUserID = &deposit.UserID
+		}
+		exception.Metadata["deposit_status"] = deposit.Status
+		exception.Metadata["deposit_created_at"] = deposit.CreatedAt
+		exception.Metadata["tx_hash"] = deposit.TxHash
+		result.Exceptions = append(result.Exceptions, *exception)
+	}
+
+	result.Passed = len(result.Exceptions) == 0
+	result.ExecutionTime = time.Since(startTime)
+
+	span.SetAttributes(
+		attribute.Bool("passed", result.Passed),
+		attribute.Int("stuck_count", len(stuckDeposits)),
+	)
+
+	return result, nil
+}
+
 // CheckWithdrawals verifies withdrawal amounts match ledger entries
 func (s *Service) CheckWithdrawals(ctx context.Context, reportID uuid.UUID) (*entities.ReconciliationCheckResult, error) {
 	ctx, span := otel.Tracer(tracerName).Start(ctx, "CheckWithdrawals")

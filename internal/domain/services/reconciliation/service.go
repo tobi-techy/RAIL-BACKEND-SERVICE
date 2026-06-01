@@ -205,6 +205,7 @@ func (s *Service) runAllChecks(ctx context.Context, reportID uuid.UUID) []*entit
 		s.CheckDeposits,
 		s.CheckConversionJobs,
 		s.CheckWithdrawals,
+		s.CheckStuckDeposits,
 	}
 
 	results := make([]*entities.ReconciliationCheckResult, 0, len(checks))
