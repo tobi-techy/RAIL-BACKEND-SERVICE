@@ -45,7 +45,7 @@ COPY --from=builder /etc/group /etc/group
 COPY --from=builder /app/main /main
 
 # Create writable tmp directory for pdfcpu and other libs
-COPY --from=builder /tmp /tmp
+COPY --from=builder --chown=builduser:builduser /tmp /tmp
 
 # Copy config files
 COPY --from=builder /app/configs /configs

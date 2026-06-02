@@ -18,9 +18,18 @@ import (
 func init() {
 	// pdfcpu requires a writable HOME to create its config directory.
 	// In scratch/distroless containers, /home may not exist or be read-only.
+	// Try HOME first, then /tmp, then current directory.
 	home := os.Getenv("HOME")
-	if home == "" || !isWritable(home) {
-		os.Setenv("HOME", os.TempDir())
+	if home != "" && isWritable(home) {
+		return
+	}
+	if isWritable("/tmp") {
+		os.Setenv("HOME", "/tmp")
+		return
+	}
+	// Last resort: use current working directory
+	if wd, err := os.Getwd(); err == nil && isWritable(wd) {
+		os.Setenv("HOME", wd)
 	}
 }
 
