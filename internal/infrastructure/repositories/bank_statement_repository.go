@@ -19,7 +19,9 @@ func NewBankStatementRepository(db *sqlx.DB) *BankStatementRepository {
 }
 
 func (r *BankStatementRepository) Create(ctx context.Context, upload *entities.BankStatementUpload) error {
-	upload.ID = uuid.New()
+	if upload.ID == uuid.Nil {
+		upload.ID = uuid.New()
+	}
 	upload.CreatedAt = time.Now().UTC()
 	upload.UpdatedAt = upload.CreatedAt
 	if upload.Status == "" {

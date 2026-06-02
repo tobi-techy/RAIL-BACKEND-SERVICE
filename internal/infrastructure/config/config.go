@@ -45,6 +45,18 @@ type Config struct {
 	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
 	TelegramAlerts TelegramConfig       `mapstructure:"telegram_alerts"`
 	Umbra          UmbraConfig          `mapstructure:"umbra"`
+	Statement      StatementConfig      `mapstructure:"statement"`
+}
+
+// StatementConfig holds configuration for the bank statement processing pipeline.
+type StatementConfig struct {
+	S3Bucket       string `mapstructure:"s3_bucket"`        // S3 bucket for statement files (empty = store in DB)
+	S3Prefix       string `mapstructure:"s3_prefix"`        // S3 key prefix (default: "statements/")
+	S3Region       string `mapstructure:"s3_region"`        // AWS region for S3 bucket
+	TextractRegion string `mapstructure:"textract_region"`  // AWS region for Textract (empty = disabled)
+	EnableOCR      bool   `mapstructure:"enable_ocr"`       // Enable OCR fallback for scanned docs
+	EnableVision   bool   `mapstructure:"enable_vision"`    // Enable vision LLM for images
+	MaxFileSizeMB  int    `mapstructure:"max_file_size_mb"` // Max upload size (default: 20)
 }
 
 // TelegramConfig contains Telegram bot alerting configuration

@@ -1240,6 +1240,7 @@ type Container struct {
 	SMSService         *adapters.SMSService
 	AuditService       *adapters.AuditService
 	RedisClient        cache.RedisClient
+	SupermemoryClient  *supermemoryclient.Client
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
@@ -3561,7 +3562,8 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Wire Supermemory for long-term personal memory
 	if smKey := strings.TrimSpace(c.Config.AI.Supermemory.APIKey); smKey != "" {
-		c.AIOrchestrator.SetSupermemory(&supermemoryAdapter{client: supermemoryclient.New(smKey)})
+		c.SupermemoryClient = supermemoryclient.New(smKey)
+		c.AIOrchestrator.SetSupermemory(&supermemoryAdapter{client: c.SupermemoryClient})
 	}
 
 	// Wire embedder to memory service now that EmbeddingsClient is initialized

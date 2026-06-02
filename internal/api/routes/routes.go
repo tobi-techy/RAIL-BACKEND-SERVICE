@@ -30,6 +30,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
+	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
@@ -1396,6 +1397,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)
 						aiGroup.GET("/statements", middleware.AuthRateLimit(20), stmtHandler.List)
 						aiGroup.DELETE("/statement/:id", middleware.AuthRateLimit(10), stmtHandler.Delete)
+
+						// V2 statement pipeline: supports images, OCR, real-time progress
+						var progressReporter *statement.RedisProgressReporter
+						if container.RedisClient != nil {
+							progressReporter = statement.NewRedisProgressReporter(container.RedisClient.Client(), container.ZapLog)
+						}
+						stmtHandlerV2 := handlers.NewStatementUploadHandlerV2(container.BankStatementRepo, container.JobQueueInstance, nil, progressReporter, container.ZapLog)
+						aiGroup.POST("/v2/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandlerV2.Upload)
+						aiGroup.GET("/v2/statement/:id/progress", middleware.AuthRateLimit(60), stmtHandlerV2.StreamProgress)
+						// V2 reuses V1 status/list/delete/transactions endpoints (same DB)
+						aiGroup.GET("/statement/:id/transactions", middleware.AuthRateLimit(20), stmtHandler.GetTransactions)
 					}
 
 					// Voice session ticket issuance (protected by standard auth).

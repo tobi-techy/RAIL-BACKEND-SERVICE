@@ -33,6 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
@@ -531,24 +532,118 @@ func (app *Application) initializeWorkers() error {
 	}
 
 
-	// Statement processor worker: processes uploaded bank statement PDFs via Kimi
+	// Statement processor worker: processes uploaded bank statement PDFs via multi-strategy pipeline
 	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
 		kimiKey := app.container.Config.AI.Kimi.APIKey
 		kimiBase := app.container.Config.AI.Kimi.BaseURL
 		kimiModel := app.container.Config.AI.Kimi.Model
 		if kimiKey != "" {
 			parser := statement.NewTransactionParserWithConfig(kimiKey, kimiBase, kimiModel, app.log.Zap())
-			stmtWorker := statement_processor.NewWorker(
+
+			// Build V2 pipeline with multi-strategy extraction and LLM failover
+			var textractClient statement.TextractClient
+			if app.container.Config.Statement.EnableOCR && app.container.Config.Statement.TextractRegion != "" {
+				tc, err := statement.NewTextractExtractor(context.Background(), statement.TextractConfig{
+					Region: app.container.Config.Statement.TextractRegion,
+				}, app.log.Zap())
+				if err == nil {
+					textractClient = tc
+					app.log.Info("Textract OCR enabled for statement processing")
+				} else {
+					app.log.Warn("Textract init failed, OCR disabled", "error", err)
+				}
+			}
+
+			var visionClient statement.VisionClient
+			if app.container.Config.Statement.EnableVision && app.container.Config.AI.OpenAI.APIKey != "" {
+				visionClient = statement.NewOpenAIVisionClient(app.container.Config.AI.OpenAI.APIKey, app.log.Zap())
+			}
+
+			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
+
+			// Fallback parser uses OpenAI if available
+			var fallbackParser *statement.TransactionParser
+			if app.container.Config.AI.OpenAI.APIKey != "" {
+				fallbackParser = statement.NewTransactionParserWithConfig(
+					app.container.Config.AI.OpenAI.APIKey, "https://api.openai.com/v1", "gpt-4o-mini", app.log.Zap(),
+				)
+			}
+
+			// File store: S3 if configured, nil falls back to DB BLOB
+			var fileStore statement.FileStore
+			if app.container.Config.Statement.S3Bucket != "" {
+				fs, err := statement.NewS3FileStore(context.Background(), statement.S3Config{
+					Region: app.container.Config.Statement.S3Region,
+					Bucket: app.container.Config.Statement.S3Bucket,
+					Prefix: app.container.Config.Statement.S3Prefix,
+				}, app.log.Zap())
+				if err == nil {
+					fileStore = fs
+					app.log.Info("S3 file store enabled for statements", "bucket", app.container.Config.Statement.S3Bucket)
+				}
+			}
+
+			// Progress reporter via Redis
+			var reporter statement.ProgressReporter
+			if app.container.RedisClient != nil {
+				rr := statement.NewRedisProgressReporter(app.container.RedisClient.Client(), app.log.Zap())
+				if rr != nil {
+					reporter = rr
+				}
+			}
+			if reporter == nil {
+				reporter = &statement.NoOpReporter{}
+			}
+
+			pipeline := statement.NewPipeline(statement.PipelineConfig{
+				Extractor:      extractor,
+				PrimaryParser:  parser,
+				FallbackParser: fallbackParser,
+				FileStore:      fileStore,
+				Reporter:       reporter,
+				Logger:         app.log.Zap(),
+			})
+
+			// Build Supermemory writer adapter for statement worker
+			var smWriter statement_processor.SupermemoryWriter
+			if app.container.SupermemoryClient != nil {
+				smWriter = &statementSupermemoryAdapter{client: app.container.SupermemoryClient}
+			}
+
+			stmtWorkerV2 := statement_processor.NewWorkerV2(
+				app.container.BankStatementRepo,
+				pipeline,
+				fileStore,
+				app.container.MiriamMemoryRepo,
+				smWriter,
+				app.container.NotificationService,
+				reporter,
+				app.log.Zap(),
+			)
+
+			// Also keep V1 worker for backward compat with existing queued jobs
+			stmtWorkerV1 := statement_processor.NewWorker(
 				app.container.BankStatementRepo,
 				app.container.MiriamMemoryRepo,
 				app.container.NotificationService,
 				parser,
 				app.log.Zap(),
 			)
+
+			// Cache handler functions to avoid re-creating closures on every job
+			v2Handler := stmtWorkerV2.HandlerV2()
+			v1Handler := stmtWorkerV1.Handler()
+
 			jqWorker := jobqueue.NewWorker(app.container.JobQueueInstance, app.log.Zap(), 5)
-			jqWorker.RegisterHandler(statement_processor.JobType, stmtWorker.Handler())
+			// Register a unified handler that routes based on payload version
+			jqWorker.RegisterHandler(statement_processor.JobType, func(ctx context.Context, job *jobqueue.Job) error {
+				if v, _ := job.Payload["version"].(string); v == "v2" {
+					return v2Handler(ctx, job)
+				}
+				return v1Handler(ctx, job)
+			})
 			go jqWorker.Start(context.Background())
-			app.log.Info("Statement processor worker started (Kimi k2.6)")
+			app.log.Info("Statement processor started (V2 pipeline: Kimi + OpenAI fallback + OCR)")
 
 			// Reconcile orphaned pending uploads (stuck from a prior crash)
 			go app.reconcileOrphanedStatements(context.Background())
@@ -1241,6 +1336,23 @@ func (a *opportunityUserListerAdapter) GetAllActiveUserIDs(ctx context.Context) 
 }
 
 // reconcileOrphanedStatements re-enqueues bank statement uploads that got stuck in "pending"
+// statementSupermemoryAdapter bridges the statement_processor.SupermemoryWriter interface
+// with the infrastructure Supermemory client.
+type statementSupermemoryAdapter struct {
+	client *supermemoryclient.Client
+}
+
+func (a *statementSupermemoryAdapter) IngestConversation(ctx context.Context, userID string, messages []statement_processor.SupermemoryMsg) error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	msgs := make([]supermemoryclient.Message, len(messages))
+	for i, m := range messages {
+		msgs[i] = supermemoryclient.Message{Role: m.Role, Content: m.Content}
+	}
+	return a.client.IngestConversation(ctx, userID, msgs)
+}
+
 // or "processing" status (e.g. after a server crash). Runs once at startup and exits.
 func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 	const minAge = 20 * time.Minute

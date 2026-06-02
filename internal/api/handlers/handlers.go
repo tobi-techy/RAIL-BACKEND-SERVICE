@@ -145,6 +145,7 @@ var (
 	NewMoneyGuardHandler              = investing.NewMoneyGuardHandler
 	NewMiriamIntelligenceHandler      = investing.NewMiriamIntelligenceHandler
 	NewStatementUploadHandler         = investing.NewStatementUploadHandler
+	NewStatementUploadHandlerV2       = investing.NewStatementUploadHandlerV2
 )
 
 // Trading constructors
