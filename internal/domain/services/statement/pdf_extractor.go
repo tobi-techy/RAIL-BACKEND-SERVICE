@@ -15,6 +15,25 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
+func init() {
+	// pdfcpu requires a writable HOME to create its config directory.
+	// In scratch/distroless containers, /home may not exist or be read-only.
+	home := os.Getenv("HOME")
+	if home == "" || !isWritable(home) {
+		os.Setenv("HOME", os.TempDir())
+	}
+}
+
+func isWritable(path string) bool {
+	f, err := os.CreateTemp(path, ".rail-test-*")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return true
+}
+
 const (
 	MaxFileSize      = 20 * 1024 * 1024 // 20MB
 	MaxPageCount     = 100
