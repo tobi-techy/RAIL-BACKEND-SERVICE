@@ -561,17 +561,17 @@ func (app *Application) initializeWorkers() error {
 
 			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
 
-			// Primary parser: OpenAI (faster, better JSON output for dense statements)
-			// Fallback: Kimi (cheaper but slower/less reliable for large docs)
+			// Primary parser: Groq (fastest, reliable for structured JSON)
+			// Fallback: Kimi (handles very long contexts but slow)
 			var fallbackParser *statement.TransactionParser
 			var primaryParser *statement.TransactionParser
-			if app.container.Config.AI.OpenAI.APIKey != "" {
+			if app.container.Config.AI.Groq.APIKey != "" {
 				primaryParser = statement.NewTransactionParserWithConfig(
-					app.container.Config.AI.OpenAI.APIKey, "https://api.openai.com/v1", "gpt-4o-mini", app.log.Zap(),
+					app.container.Config.AI.Groq.APIKey, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", app.log.Zap(),
 				)
 				fallbackParser = parser // Kimi as fallback
 			} else {
-				primaryParser = parser // Kimi only if no OpenAI key
+				primaryParser = parser // Kimi only if no Groq key
 			}
 
 			// File store: S3 if configured, nil falls back to DB BLOB
