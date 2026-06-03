@@ -60,7 +60,7 @@ func NewWorkerV2(
 // HandlerV2 returns a jobqueue.JobHandler for "process_statement" jobs with version=v2.
 func (w *WorkerV2) HandlerV2() jobqueue.JobHandler {
 	return func(ctx context.Context, job *jobqueue.Job) error {
-		processCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		processCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 		defer cancel()
 
 		uploadIDStr, _ := job.Payload["upload_id"].(string)

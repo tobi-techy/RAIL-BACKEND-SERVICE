@@ -258,7 +258,8 @@ func (h *StatementUploadHandlerV2) checkRateLimits(c *gin.Context, userID uuid.U
 	existing, _ := h.repo.GetByUserID(c.Request.Context(), userID, 10, 0)
 	pending := 0
 	for _, u := range existing {
-		if u.Status == entities.StatementStatusPending || u.Status == entities.StatementStatusProcessing {
+		if (u.Status == entities.StatementStatusPending || u.Status == entities.StatementStatusProcessing) &&
+			time.Since(u.CreatedAt) < 20*time.Minute {
 			pending++
 		}
 	}

@@ -133,6 +133,16 @@ func (p *Pipeline) parseWithFallback(ctx context.Context, result *ExtractionResu
 			if err == nil && len(parsed.Transactions) > 0 {
 				return parsed, "fallback", nil
 			}
+			// Last resort: try full text (truncated to ~50 pages) with fallback parser
+			p.logger.Info("chunked parsing failed on both parsers, trying full text with fallback")
+			truncated := result.Text
+			if len(truncated) > 200000 {
+				truncated = truncated[:200000]
+			}
+			parsed, err = p.fallback.Parse(ctx, truncated, bankHint)
+			if err == nil && len(parsed.Transactions) > 0 {
+				return parsed, "fallback-fulltext", nil
+			}
 		}
 		if err != nil {
 			return nil, "", err
