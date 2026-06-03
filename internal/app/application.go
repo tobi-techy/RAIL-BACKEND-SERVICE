@@ -561,12 +561,17 @@ func (app *Application) initializeWorkers() error {
 
 			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
 
-			// Fallback parser uses OpenAI if available
+			// Primary parser: OpenAI (faster, better JSON output for dense statements)
+			// Fallback: Kimi (cheaper but slower/less reliable for large docs)
 			var fallbackParser *statement.TransactionParser
+			var primaryParser *statement.TransactionParser
 			if app.container.Config.AI.OpenAI.APIKey != "" {
-				fallbackParser = statement.NewTransactionParserWithConfig(
+				primaryParser = statement.NewTransactionParserWithConfig(
 					app.container.Config.AI.OpenAI.APIKey, "https://api.openai.com/v1", "gpt-4o-mini", app.log.Zap(),
 				)
+				fallbackParser = parser // Kimi as fallback
+			} else {
+				primaryParser = parser // Kimi only if no OpenAI key
 			}
 
 			// File store: S3 if configured, nil falls back to DB BLOB
@@ -597,7 +602,7 @@ func (app *Application) initializeWorkers() error {
 
 			pipeline := statement.NewPipeline(statement.PipelineConfig{
 				Extractor:      extractor,
-				PrimaryParser:  parser,
+				PrimaryParser:  primaryParser,
 				FallbackParser: fallbackParser,
 				FileStore:      fileStore,
 				Reporter:       reporter,
