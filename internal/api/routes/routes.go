@@ -154,6 +154,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 	}
 
+	// Internal statement management
+	internal.DELETE("/statement/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		_, err := container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_uploads WHERE id = $1", id)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		// Also clean up transactions
+		container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id)
+		c.JSON(200, gin.H{"deleted": true})
+	})
+
 	if container.GrowthEngineService != nil {
 		growthHandlers := handlers.NewGrowthEngineHandlers(container.GrowthEngineService, container.ZapLog)
 		internal.POST("/growth/events", growthHandlers.TrackEvent)
