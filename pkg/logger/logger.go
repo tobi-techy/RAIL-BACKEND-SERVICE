@@ -39,8 +39,8 @@ func New(level, environment string) *Logger {
 		config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	}
 
-	// Build logger
-	logger, err := config.Build()
+	// Build logger — only emit stack traces at Error level (not Warn)
+	logger, err := config.Build(zap.AddStacktrace(zap.ErrorLevel))
 	if err != nil {
 		// Fallback to a basic logger if configuration fails
 		baseLogger := zap.NewNop()

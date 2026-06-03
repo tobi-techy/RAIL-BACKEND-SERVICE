@@ -115,7 +115,7 @@ func runWalletMigration(dbURL string) error {
 	}
 	defer db.Close()
 
-	logger, err := zap.NewProduction()
+	logger, err := zap.NewProduction(zap.AddStacktrace(zap.ErrorLevel))
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
