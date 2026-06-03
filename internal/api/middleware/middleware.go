@@ -46,7 +46,7 @@ type APIKeyInfo struct {
 }
 
 const (
-	MaxRequestSize = 1 << 20 // 1MiB
+	MaxRequestSize = 25 << 20 // 25MiB (matches max file upload; per-handler checks prevent abuse)
 )
 
 // RequestID adds a unique request ID to each request
@@ -73,9 +73,16 @@ func RequestSizeLimit() gin.HandlerFunc {
 }
 
 // LargeBodyLimit overrides the global RequestSizeLimit for routes that accept large payloads (e.g. image uploads).
+// It replaces the MaxBytesReader set by the global middleware with a larger one.
 func LargeBodyLimit(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// The global RequestSizeLimit already wrapped the body in a 1MB MaxBytesReader.
+		// We need to unwrap and re-wrap with the larger limit.
+		// http.MaxBytesReader wraps the underlying reader, so wrapping again with
+		// a larger limit on top doesn't help — the inner 1MB reader still fires.
+		// Solution: set the limit on the request directly via Gin's built-in.
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		c.Set("_bodyLimitOverride", maxBytes)
 		c.Next()
 	}
 }

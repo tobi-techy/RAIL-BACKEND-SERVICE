@@ -71,12 +71,14 @@ func (h *StatementUploadHandlerV2) Upload(c *gin.Context) {
 		return // response already sent
 	}
 
-	file, _, err := c.Request.FormFile("file")
+	file, fileHeader, err := c.Request.FormFile("file")
 	if err != nil {
+		h.logger.Error("FormFile failed", zap.Error(err), zap.String("content_type", c.ContentType()))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File is required. Supported formats: PDF, JPEG, PNG"})
 		return
 	}
 	defer file.Close()
+	_ = fileHeader
 
 	// Read file data
 	data, err := io.ReadAll(io.LimitReader(file, 20*1024*1024+1))
