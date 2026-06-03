@@ -167,15 +167,15 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	if bankHint != "" {
 		userPrompt = fmt.Sprintf("Bank: %s\n\n%s", bankHint, text)
 	}
-	// Truncate to ~100k chars to stay within context window
-	if len(userPrompt) > 100000 {
-		userPrompt = userPrompt[:100000]
+	// Truncate to ~30k chars to stay within Groq free tier TPM limits (~12K tokens)
+	if len(userPrompt) > 30000 {
+		userPrompt = userPrompt[:30000]
 	}
 
 	body := map[string]interface{}{
 		"model":       p.model,
 		"temperature": 1.0,
-		"max_tokens":  32000,
+		"max_tokens":  4000,
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": parserSystemPrompt},
 			{"role": "user", "content": userPrompt},

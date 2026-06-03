@@ -172,13 +172,21 @@ func (p *Pipeline) parseWithFallback(ctx context.Context, result *ExtractionResu
 }
 
 func (p *Pipeline) parseChunkedWithParser(ctx context.Context, pages []string, bankHint string, parser *TransactionParser) (*ParseResult, error) {
-	const chunkSize = 5
-	const maxChunks = 18
+	const chunkSize = 2
+	const maxChunks = 45
 	merged := &ParseResult{Currency: "NGN"}
 	seen := make(map[string]bool)
 	chunks := 0
 
 	for i := 0; i < len(pages) && chunks < maxChunks; i += chunkSize {
+		// Rate limit: pause between chunks to stay within TPM/RPM limits
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				break
+			case <-time.After(3 * time.Second):
+			}
+		}
 		end := i + chunkSize
 		if end > len(pages) {
 			end = len(pages)
