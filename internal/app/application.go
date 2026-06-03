@@ -1356,16 +1356,18 @@ func (a *statementSupermemoryAdapter) IngestConversation(ctx context.Context, us
 // or "processing" status (e.g. after a server crash). Runs once at startup and exits.
 func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 	const minAge = 20 * time.Minute
-	orphans, err := app.container.BankStatementRepo.GetPendingOlderThan(ctx, minAge)
-	if err != nil {
-		app.log.Warnw("failed to reconcile orphaned statements", "error", err)
-		return
-	}
-	if len(orphans) == 0 {
-		return
-	}
-	app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
-	for _, u := range orphans {
+	// Run periodically, not just once at startup
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	// Run immediately on first call, then every 10 minutes
+	for {
+		orphans, err := app.container.BankStatementRepo.GetPendingOlderThan(ctx, minAge)
+		if err != nil {
+			app.log.Warnw("failed to reconcile orphaned statements", "error", err)
+		} else if len(orphans) > 0 {
+			app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
+			for _, u := range orphans {
 		// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
 		// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
 		// claimed or completed the upload between the fetch and this update.
@@ -1398,6 +1400,14 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 				"upload_id", u.ID.String(),
 				"error", err,
 			)
+		}
+	}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }

@@ -187,7 +187,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", strings.TrimRight(p.baseURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
