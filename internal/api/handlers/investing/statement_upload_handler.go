@@ -362,7 +362,7 @@ func (h *StatementUploadHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "upload not found"})
 		return
 	}
-	if upload.Status == entities.StatementStatusProcessing {
+	if upload.Status == entities.StatementStatusProcessing && time.Since(upload.CreatedAt) < 20*time.Minute {
 		c.JSON(http.StatusConflict, gin.H{"error": "Cannot delete a statement that is currently being processed. Please wait and try again."})
 		return
 	}
