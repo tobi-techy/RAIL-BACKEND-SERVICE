@@ -1,6 +1,7 @@
 package statement
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -176,6 +177,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		"model":       p.model,
 		"temperature": 1.0,
 		"max_tokens":  4000,
+		"stream":      true,
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": parserSystemPrompt},
 			{"role": "user", "content": userPrompt},
@@ -222,29 +224,36 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		defer resp.Body.Close()
 	}
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("api error %d: %s", resp.StatusCode, string(respBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("api error %d: %s", resp.StatusCode, string(errBody))
 	}
 
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
+	// Read SSE stream — collect delta content tokens
+	var contentBuilder strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) == nil && len(chunk.Choices) > 0 {
+			contentBuilder.WriteString(chunk.Choices[0].Delta.Content)
+		}
 	}
 
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
+	content := strings.TrimSpace(contentBuilder.String())
 	// Strip markdown fences
 	if strings.HasPrefix(content, "```") {
 		if idx := strings.Index(content, "\n"); idx != -1 {

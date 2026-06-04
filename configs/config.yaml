@@ -289,7 +289,7 @@ ai:
   kimi:
     api_key: ""
     # base_url: "https://api.moonshot.cn/v1"  # Uncomment for China-registered keys; default is https://api.moonshot.ai/v1
-    model: "kimi-k2.6"
+    model: "moonshot-v1-32k"
     max_tokens: 2048
     temperature: 0.15
     top_p: 0.9

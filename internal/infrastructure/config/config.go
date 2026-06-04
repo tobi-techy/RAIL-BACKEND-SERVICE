@@ -867,7 +867,7 @@ func setDefaults() {
 	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
-	viper.SetDefault("ai.kimi.model", "kimi-k2.6")
+	viper.SetDefault("ai.kimi.model", "moonshot-v1-32k")
 
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.SetDefault("ai.elevenlabs.stability", 0.5)
