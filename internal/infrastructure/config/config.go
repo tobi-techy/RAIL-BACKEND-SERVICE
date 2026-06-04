@@ -896,7 +896,7 @@ func setDefaults() {
 	viper.BindEnv("ai.bedrock.model_id", "BEDROCK_MODEL_ID")
 	viper.BindEnv("ai.bedrock.guardrail_id", "BEDROCK_GUARDRAIL_ID")
 	viper.BindEnv("ai.bedrock.guardrail_version", "BEDROCK_GUARDRAIL_VERSION")
-	viper.SetDefault("ai.bedrock.model_id", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	viper.SetDefault("ai.bedrock.model_id", "")
 	viper.SetDefault("ai.bedrock.max_tokens", 4096)
 	viper.SetDefault("ai.bedrock.temperature", 0.7)
 	viper.SetDefault("ai.bedrock.top_p", 0.9)
