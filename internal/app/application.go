@@ -561,17 +561,15 @@ func (app *Application) initializeWorkers() error {
 
 			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
 
-			// Primary parser: Groq (fastest, reliable for structured JSON)
-			// Fallback: Kimi (handles very long contexts but slow)
+			// Primary parser: Kimi (has credit, handles long contexts)
+			// Fallback: Groq (fast but limited free tier TPM)
 			var fallbackParser *statement.TransactionParser
 			var primaryParser *statement.TransactionParser
+			primaryParser = parser // Kimi primary
 			if app.container.Config.AI.Groq.APIKey != "" {
-				primaryParser = statement.NewTransactionParserWithConfig(
+				fallbackParser = statement.NewTransactionParserWithConfig(
 					app.container.Config.AI.Groq.APIKey, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", app.log.Zap(),
 				)
-				fallbackParser = parser // Kimi as fallback
-			} else {
-				primaryParser = parser // Kimi only if no Groq key
 			}
 
 			// File store: S3 if configured, nil falls back to DB BLOB
