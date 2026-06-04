@@ -185,7 +185,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	body := map[string]interface{}{
 		"model":       p.model,
 		"temperature": 1.0,
-		"max_tokens":  4000,
+		"max_tokens":  16000,
 		"stream":      true,
 		"messages": []map[string]interface{}{
 			{"role": "system", "content": parserSystemPrompt},
