@@ -172,8 +172,8 @@ func (p *Pipeline) parseWithFallback(ctx context.Context, result *ExtractionResu
 }
 
 func (p *Pipeline) parseChunkedWithParser(ctx context.Context, pages []string, bankHint string, parser *TransactionParser) (*ParseResult, error) {
-	const chunkSize = 2
-	const maxChunks = 45
+	const chunkSize = 5
+	const maxChunks = 18
 	merged := &ParseResult{Currency: "NGN"}
 	seen := make(map[string]bool)
 	chunks := 0

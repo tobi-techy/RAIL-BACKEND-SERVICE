@@ -167,9 +167,9 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	if bankHint != "" {
 		userPrompt = fmt.Sprintf("Bank: %s\n\n%s", bankHint, text)
 	}
-	// Truncate to ~10k chars (~3K tokens) to keep Kimi response time under 30s
-	if len(userPrompt) > 10000 {
-		userPrompt = userPrompt[:10000]
+	// Kimi handles 256K tokens — 30K chars is well within limits
+	if len(userPrompt) > 30000 {
+		userPrompt = userPrompt[:30000]
 	}
 
 	body := map[string]interface{}{
@@ -187,7 +187,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", strings.TrimRight(p.baseURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
