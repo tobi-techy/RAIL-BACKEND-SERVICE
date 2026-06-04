@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/shopspring/decimal"
 )
 
@@ -75,6 +76,7 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 	nameCh := make(chan string, 1)
 	locCh := make(chan *time.Location, 1)
 	insightCh := make(chan string, 1)
+	phaseCh := make(chan miriam.Phase, 1)
 
 	go func() { nameCh <- o.realtimeFirstName(ctx, userID) }()
 	go func() {
@@ -86,44 +88,38 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 		}
 	}()
 	go func() { insightCh <- o.realtimeProactiveInsight(ctx, userID) }()
+	go func() {
+		if o.miriamIntelligence != nil {
+			if state, err := o.miriamIntelligence.GetMoneyState(ctx, userID); err == nil && state != nil {
+				phaseCh <- miriam.ResolvePhase(state)
+				return
+			}
+		}
+		phaseCh <- miriam.PhaseObserver
+	}()
 
 	name := <-nameCh
 	loc := <-locCh
+	phase := <-phaseCh
 	hour := time.Now().In(loc).Hour()
+	timeOfDay := timeOfDayLabel(hour)
 
-	var greeting string
-	switch {
-	case hour >= 5 && hour < 12:
-		if name != "" {
-			greeting = "Morning " + name + ". Miriam."
-		} else {
-			greeting = "Morning. Miriam."
-		}
-	case hour >= 12 && hour < 17:
-		if name != "" {
-			greeting = "Hey " + name + ". Miriam here."
-		} else {
-			greeting = "Hey. Miriam here."
-		}
-	case hour >= 17 && hour < 21:
-		if name != "" {
-			greeting = name + ". Miriam."
-		} else {
-			greeting = "Miriam."
-		}
-	default:
-		if name != "" {
-			greeting = "Late one, " + name + ". Miriam."
-		} else {
-			greeting = "Late one. Miriam."
-		}
-	}
+	greeting := miriam.GreetingForPhase(phase, name, timeOfDay)
 
 	insight := <-insightCh
 	if insight != "" {
 		return greeting + " " + insight
 	}
-	return greeting + " What money move are we making?"
+
+	// Phase-appropriate default closer
+	switch phase {
+	case miriam.PhaseObserver:
+		return greeting + " What's on your mind?"
+	case miriam.PhaseConfidant:
+		return greeting + " What money move are we making?"
+	default:
+		return greeting + " What money move are we making?"
+	}
 }
 
 // realtimeProactiveInsight builds a short, actionable opener based on real account state.
@@ -260,16 +256,17 @@ func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uui
 // BuildRealtimeInstructions returns Miriam's voice prompt with the same personal context
 // used by text chat. It is best-effort: missing context is skipped.
 func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
-	ch := make(chan string, 5)
+	ch := make(chan string, 6)
 
 	go func() { ch <- o.buildBalanceContext(ctx, userID) }()
 	go func() { ch <- o.buildStashLockContext(ctx, userID) }()
 	go func() { ch <- o.buildYearFinancialContext(ctx, userID) }()
 	go func() { ch <- o.buildUserTimeContext(ctx, userID) }()
 	go func() { ch <- o.buildUserProfileContext(ctx, userID) }()
+	go func() { ch <- o.buildVoicePhaseContext(ctx, userID) }()
 
 	parts := []string{SystemPrompt}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 6; i++ {
 		if s := <-ch; s != "" {
 			parts = append(parts, s)
 		}
@@ -618,6 +615,7 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 		"user_language":        "english",
 		"user_tone":            "neutral",
 		"locale_style":         "global",
+		"voice_phase":          "observer",
 		"date":                 time.Now().UTC().Format("Monday, 2 January 2006"),
 		"time_of_day":          timeOfDayLabel(time.Now().UTC().Hour()),
 		"timezone":             "UTC",
@@ -829,6 +827,13 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 		vars["conversation_context"] = convContext
 	}
 
+	// Resolve Miriam voice phase
+	if o.miriamIntelligence != nil {
+		if state, err := o.miriamIntelligence.GetMoneyState(fetchCtx, userID); err == nil && state != nil {
+			vars["voice_phase"] = miriam.ResolvePhase(state).String()
+		}
+	}
+
 	return vars
 }
 
@@ -843,4 +848,20 @@ func timeOfDayLabel(hour int) string {
 	default:
 		return "night"
 	}
+}
+
+// buildVoicePhaseContext fetches money state and returns the phase-appropriate
+// voice instruction block for Miriam's personality arc.
+func (o *Orchestrator) buildVoicePhaseContext(ctx context.Context, userID uuid.UUID) string {
+	if o.miriamIntelligence == nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	state, err := o.miriamIntelligence.GetMoneyState(fetchCtx, userID)
+	if err != nil || state == nil {
+		return ""
+	}
+	return miriam.PhaseContext(state)
 }

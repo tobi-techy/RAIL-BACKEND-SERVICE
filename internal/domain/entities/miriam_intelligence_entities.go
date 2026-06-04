@@ -67,6 +67,7 @@ type MiriamMoneyState struct {
 	SpendBalance      decimal.Decimal `json:"spend_balance" db:"spend_balance"`
 	StashBalance      decimal.Decimal `json:"stash_balance" db:"stash_balance"`
 	CalibrationScore  decimal.Decimal `json:"calibration_score" db:"calibration_score"`
+	ActiveMonths      int             `json:"active_months" db:"active_months"`
 }
 
 // MiriamAutopilotMandate is a user-approved bounded permission for Miriam to
