@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,12 +32,20 @@ type WorkerV2 struct {
 // SupermemoryWriter ingests structured conversations into Supermemory for long-term recall.
 type SupermemoryWriter interface {
 	IngestConversation(ctx context.Context, userID string, messages []SupermemoryMsg) error
+	CreateMemories(ctx context.Context, containerTag string, memories []SupermemoryMemory) error
 }
 
 // SupermemoryMsg is a single conversation turn for Supermemory ingestion.
 type SupermemoryMsg struct {
 	Role    string
 	Content string
+}
+
+// SupermemoryMemory is a single fact to store directly.
+type SupermemoryMemory struct {
+	Content   string
+	Metadata  map[string]string
+	EventDate string // YYYY-MM-DD
 }
 
 func NewWorkerV2(
@@ -396,104 +403,107 @@ func buildSummaryJSON(txns []*entities.BankStatementTransaction, bankName string
 	return string(b)
 }
 
-// ingestToSupermemory sends structured financial data as a conversation to Supermemory
-// so Miriam can recall specific transactions, patterns, and financial behavior.
+// ingestToSupermemory sends granular per-transaction memories so Miriam can answer
+// specific questions like "how much did I spend on airtime in March?"
 func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, txns []*entities.BankStatementTransaction, bankName string, periodStart, periodEnd *time.Time) {
 	if w.supermemory == nil || len(txns) == 0 {
 		return
 	}
 
-	// Build a rich structured summary that Supermemory can extract facts from
-	var totalCredits, totalDebits decimal.Decimal
-	catSpend := make(map[string]decimal.Decimal)
-	var topExpenses []string // largest individual transactions
+	currency := txns[0].Currency
+	containerTag := userID.String()
 
-	type bigTxn struct {
-		desc   string
-		amount decimal.Decimal
-		date   string
-		cat    string
+	// 1. Build per-transaction memories
+	var memories []SupermemoryMemory
+	for _, t := range txns {
+		dir := "Received"
+		if t.Type == entities.StatementTxnTypeDebit {
+			dir = "Spent"
+		}
+		content := fmt.Sprintf("%s %s %s on %s — %s [%s]",
+			dir, currency, t.Amount.StringFixed(0),
+			t.TransactionDate.Format("2006-01-02"),
+			t.Description, t.Category)
+		memories = append(memories, SupermemoryMemory{
+			Content:   content,
+			EventDate: t.TransactionDate.Format("2006-01-02"),
+			Metadata:  map[string]string{"type": "transaction", "category": t.Category, "bank": bankName},
+		})
 	}
-	var bigDebits []bigTxn
 
+	// 2. Build monthly summaries
+	type monthData struct {
+		income  decimal.Decimal
+		spend   decimal.Decimal
+		catMap  map[string]decimal.Decimal
+		count   int
+	}
+	byMonth := make(map[string]*monthData)
+	for _, t := range txns {
+		key := t.TransactionDate.Format("2006-01")
+		md, ok := byMonth[key]
+		if !ok {
+			md = &monthData{catMap: make(map[string]decimal.Decimal)}
+			byMonth[key] = md
+		}
+		md.count++
+		if t.Type == entities.StatementTxnTypeDebit {
+			md.spend = md.spend.Add(t.Amount)
+			md.catMap[t.Category] = md.catMap[t.Category].Add(t.Amount)
+		} else {
+			md.income = md.income.Add(t.Amount)
+		}
+	}
+
+	for month, md := range byMonth {
+		// Monthly overview
+		content := fmt.Sprintf("Monthly summary %s: income %s %s, spending %s %s, %d transactions.",
+			month, currency, md.income.StringFixed(0), currency, md.spend.StringFixed(0), md.count)
+		memories = append(memories, SupermemoryMemory{
+			Content:   content,
+			EventDate: month + "-01",
+			Metadata:  map[string]string{"type": "monthly_summary", "bank": bankName},
+		})
+
+		// Per-category monthly
+		for cat, total := range md.catMap {
+			catContent := fmt.Sprintf("Spent %s %s on %s in %s.", currency, total.StringFixed(0), cat, month)
+			memories = append(memories, SupermemoryMemory{
+				Content:   catContent,
+				EventDate: month + "-01",
+				Metadata:  map[string]string{"type": "category_monthly", "category": cat, "bank": bankName},
+			})
+		}
+	}
+
+	// 3. Overall statement summary
+	var totalCredits, totalDebits decimal.Decimal
 	for _, t := range txns {
 		if t.Type == entities.StatementTxnTypeDebit {
 			totalDebits = totalDebits.Add(t.Amount)
-			catSpend[t.Category] = catSpend[t.Category].Add(t.Amount)
-			bigDebits = append(bigDebits, bigTxn{t.Description, t.Amount, t.TransactionDate.Format("2006-01-02"), t.Category})
 		} else {
 			totalCredits = totalCredits.Add(t.Amount)
 		}
 	}
-
-	// Sort biggest debits and take top 10
-	sort.Slice(bigDebits, func(i, j int) bool { return bigDebits[i].amount.GreaterThan(bigDebits[j].amount) })
-	limit := 10
-	if len(bigDebits) < limit {
-		limit = len(bigDebits)
-	}
-	for _, d := range bigDebits[:limit] {
-		topExpenses = append(topExpenses, fmt.Sprintf("- %s: %s %s on %s (%s)", d.desc, txns[0].Currency, d.amount.StringFixed(0), d.date, d.cat))
-	}
-
-	months := computeMonths(txns)
-	currency := txns[0].Currency
-
-	// Build spending breakdown
-	type ce struct {
-		cat   string
-		total decimal.Decimal
-	}
-	sortedCats := make([]ce, 0, len(catSpend))
-	for cat, total := range catSpend {
-		sortedCats = append(sortedCats, ce{cat, total})
-	}
-	sort.Slice(sortedCats, func(i, j int) bool { return sortedCats[i].total.GreaterThan(sortedCats[j].total) })
-
-	var catBreakdown string
-	for _, c := range sortedCats {
-		monthly := c.total.Div(decimal.NewFromInt(int64(months)))
-		catBreakdown += fmt.Sprintf("- %s: %s %s total (%s/month)\n", c.cat, currency, c.total.StringFixed(0), monthly.StringFixed(0))
-	}
-
 	periodStr := ""
 	if periodStart != nil && periodEnd != nil {
 		periodStr = fmt.Sprintf("%s to %s", periodStart.Format("Jan 2006"), periodEnd.Format("Jan 2006"))
 	}
+	memories = append(memories, SupermemoryMemory{
+		Content:  fmt.Sprintf("Bank statement from %s (%s): %d transactions, total income %s %s, total spending %s %s.", bankName, periodStr, len(txns), currency, totalCredits.StringFixed(0), currency, totalDebits.StringFixed(0)),
+		Metadata: map[string]string{"type": "statement_overview", "bank": bankName},
+	})
 
-	// Construct as a conversation so Supermemory extracts rich memories
-	userMsg := fmt.Sprintf("Here is my %s bank statement for %s. It covers %d months with %d transactions. Total income: %s %s. Total spending: %s %s.",
-		bankName, periodStr, months, len(txns), currency, totalCredits.StringFixed(0), currency, totalDebits.StringFixed(0))
-
-	assistantMsg := fmt.Sprintf(`I've analyzed your %s statement (%s). Here's what I found:
-
-**Income:** %s %s/month average
-**Spending:** %s %s/month average
-
-**Spending by category:**
-%s
-**Largest expenses:**
-%s
-I've saved all %d transactions to your financial memory. You can ask me about specific spending patterns, compare months, or get insights anytime.`,
-		bankName, periodStr,
-		currency, totalCredits.Div(decimal.NewFromInt(int64(months))).StringFixed(0),
-		currency, totalDebits.Div(decimal.NewFromInt(int64(months))).StringFixed(0),
-		catBreakdown,
-		strings.Join(topExpenses, "\n"),
-		len(txns),
-	)
-
-	messages := []SupermemoryMsg{
-		{Role: "user", Content: userMsg},
-		{Role: "assistant", Content: assistantMsg},
-	}
-
-	smCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// 4. Send in batches (API limit: 100 per call)
+	smCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	if err := w.supermemory.IngestConversation(smCtx, userID.String(), messages); err != nil {
+	if err := w.supermemory.CreateMemories(smCtx, containerTag, memories); err != nil {
 		w.logger.Warn("supermemory ingestion failed", zap.Error(err), zap.String("user_id", userID.String()))
 	} else {
-		w.logger.Info("statement data ingested to supermemory", zap.String("user_id", userID.String()), zap.Int("transactions", len(txns)))
+		w.logger.Info("statement data ingested to supermemory",
+			zap.String("user_id", userID.String()),
+			zap.Int("transactions", len(txns)),
+			zap.Int("memories_created", len(memories)))
 	}
 }

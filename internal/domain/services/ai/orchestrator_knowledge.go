@@ -29,13 +29,13 @@ func (o *Orchestrator) SetKnowledge(k KnowledgeSearcher) {
 func KnowledgeTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolSearchKnowledge,
-		Description: "Search the financial knowledge base for information about investing, saving, budgeting, financial concepts, and money management. Use this when the user asks about financial topics, concepts, or strategies.",
+		Description: "Search the user's financial memory and knowledge base. This includes personal bank statement transactions (spending, income, transfers, airtime, bills — any external bank data the user uploaded), financial concepts, and money management information. ALWAYS use this tool when the user asks about their bank statement spending, transaction history, categories, or any financial question that requires personal data beyond the Rail ledger.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"query": map[string]interface{}{
 					"type":        "string",
-					"description": "The search query for the knowledge base",
+					"description": "The search query — be specific with amounts, categories, dates, or merchant names for best results",
 				},
 			},
 			"required": []string{"query"},
@@ -89,7 +89,7 @@ func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, userID uuid.U
 	var memoryContext string
 	if o.supermemory != nil && userID != uuid.Nil {
 		smCtx, smCancel := context.WithTimeout(ctx, 5*time.Second)
-		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), query, 5)
+		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), query, 15)
 		smCancel()
 		if smErr == nil && len(memories) > 0 {
 			var sb strings.Builder

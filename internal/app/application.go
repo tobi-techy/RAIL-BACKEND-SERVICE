@@ -1361,6 +1361,25 @@ func (a *statementSupermemoryAdapter) IngestConversation(ctx context.Context, us
 	return a.client.IngestConversation(ctx, userID, msgs)
 }
 
+func (a *statementSupermemoryAdapter) CreateMemories(ctx context.Context, containerTag string, memories []statement_processor.SupermemoryMemory) error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	mems := make([]supermemoryclient.Memory, len(memories))
+	for i, m := range memories {
+		mems[i] = supermemoryclient.Memory{
+			Content:  m.Content,
+			Metadata: m.Metadata,
+		}
+		if m.EventDate != "" {
+			mems[i].TemporalContext = &supermemoryclient.TemporalContext{
+				EventDate: []string{m.EventDate},
+			}
+		}
+	}
+	return a.client.CreateMemories(ctx, containerTag, mems)
+}
+
 // or "processing" status (e.g. after a server crash). Runs once at startup and exits.
 func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 	const minAge = 20 * time.Minute

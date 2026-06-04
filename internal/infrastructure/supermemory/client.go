@@ -24,7 +24,7 @@ type Client struct {
 func New(apiKey string) *Client {
 	return &Client{
 		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -55,6 +55,50 @@ func (c *Client) IngestConversation(ctx context.Context, userID string, messages
 		ContainerTag:   userID,
 		Messages:       msgs,
 	}, nil)
+}
+
+// Memory is a single memory entry to create directly.
+type Memory struct {
+	Content         string            `json:"content"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	TemporalContext *TemporalContext  `json:"temporalContext,omitempty"`
+}
+
+// TemporalContext provides date context for a memory.
+type TemporalContext struct {
+	DocumentDate string   `json:"documentDate,omitempty"`
+	EventDate    []string `json:"eventDate,omitempty"`
+}
+
+// CreateMemories writes memories directly (up to 100 per call) without going through
+// the conversation ingestion workflow. Memories are immediately searchable.
+func (c *Client) CreateMemories(ctx context.Context, containerTag string, memories []Memory) error {
+	type payload struct {
+		Memories     []Memory `json:"memories"`
+		ContainerTag string   `json:"containerTag"`
+	}
+	// API limit is 100 per call — batch if needed
+	for i := 0; i < len(memories); i += 100 {
+		end := i + 100
+		if end > len(memories) {
+			end = len(memories)
+		}
+		if err := c.postWithRetry(ctx, "/v4/memories", payload{
+			Memories:     memories[i:end],
+			ContainerTag: containerTag,
+		}, nil); err != nil {
+			return fmt.Errorf("batch %d-%d: %w", i, end, err)
+		}
+		// Brief pause between batches to avoid rate limits
+		if end < len(memories) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}
+	return nil
 }
 
 // SearchResult is a single memory result.
