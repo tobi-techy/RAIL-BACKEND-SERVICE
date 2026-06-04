@@ -18,6 +18,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// streamingHTTPClient is configured for long-running SSE connections (no idle timeout killing streams).
+var streamingHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+	},
+	// No Timeout set — controlled by context.WithTimeout per request
+}
+
 // TransactionParser uses an LLM to extract structured transactions from bank statement text.
 type TransactionParser struct {
 	apiKey      string
@@ -199,7 +208,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamingHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("api call: %w", err)
 	}
@@ -217,7 +226,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		req2, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(p.baseURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
 		req2.Header.Set("Content-Type", "application/json")
 		req2.Header.Set("Authorization", "Bearer "+p.apiKey)
-		resp, err = http.DefaultClient.Do(req2)
+		resp, err = streamingHTTPClient.Do(req2)
 		if err != nil {
 			return nil, fmt.Errorf("api retry call: %w", err)
 		}
