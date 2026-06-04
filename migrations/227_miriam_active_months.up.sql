@@ -1,1 +1,1 @@
-ALTER TABLE miriam_money_state ADD COLUMN IF NOT EXISTS active_months INT NOT NULL DEFAULT 0;
+ALTER TABLE miriam_money_states ADD COLUMN IF NOT EXISTS active_months INT NOT NULL DEFAULT 0;
