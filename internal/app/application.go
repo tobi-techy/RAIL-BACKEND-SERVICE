@@ -555,8 +555,13 @@ func (app *Application) initializeWorkers() error {
 			}
 
 			var visionClient statement.VisionClient
-			if app.container.Config.Statement.EnableVision && app.container.Config.AI.OpenAI.APIKey != "" {
-				visionClient = statement.NewOpenAIVisionClient(app.container.Config.AI.OpenAI.APIKey, app.log.Zap())
+			if app.container.Config.AI.Kimi.APIKey != "" {
+				visionClient = statement.NewOpenAIVisionClientWithConfig(
+					app.container.Config.AI.Kimi.APIKey,
+					"https://api.moonshot.ai/v1",
+					"moonshot-v1-32k-vision-preview",
+					app.log.Zap(),
+				)
 			}
 
 			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())

@@ -168,16 +168,30 @@ func (e *DocumentExtractor) extractImage(ctx context.Context, data []byte, conte
 // --- OpenAI Vision Implementation ---
 
 type OpenAIVisionClient struct {
-	apiKey string
-	model  string
-	logger *zap.Logger
+	apiKey  string
+	baseURL string
+	model   string
+	logger  *zap.Logger
 }
 
 func NewOpenAIVisionClient(apiKey string, logger *zap.Logger) *OpenAIVisionClient {
 	if apiKey == "" {
 		return nil
 	}
-	return &OpenAIVisionClient{apiKey: apiKey, model: "gpt-4o-mini", logger: logger}
+	return &OpenAIVisionClient{apiKey: apiKey, baseURL: "https://api.openai.com/v1", model: "gpt-4o-mini", logger: logger}
+}
+
+func NewOpenAIVisionClientWithConfig(apiKey, baseURL, model string, logger *zap.Logger) *OpenAIVisionClient {
+	if apiKey == "" {
+		return nil
+	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
+	return &OpenAIVisionClient{apiKey: apiKey, baseURL: baseURL, model: model, logger: logger}
 }
 
 func (c *OpenAIVisionClient) ExtractTextFromImage(ctx context.Context, data []byte, contentType string) (string, error) {
@@ -205,7 +219,7 @@ func (c *OpenAIVisionClient) ExtractTextFromImage(ctx context.Context, data []by
 	reqCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, "POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(reqCtx, "POST", strings.TrimRight(c.baseURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", err
 	}
