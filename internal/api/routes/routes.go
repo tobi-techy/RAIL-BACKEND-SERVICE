@@ -1345,7 +1345,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
 							container.Config.AI.Kimi.APIKey,
 							kimiBase,
-							container.Config.AI.Kimi.Model,
+							"moonshot-v1-32k-vision-preview",
 							container.GetAIOrchestrator(),
 							container.ReceiptRepo,
 							container.ZapLog,
