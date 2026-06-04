@@ -67,39 +67,15 @@ func NewTransactionParserWithConfig(apiKey, baseURL, model string, logger *zap.L
 	return &TransactionParser{apiKey: apiKey, baseURL: baseURL, model: model, logger: logger, minInterval: 3 * time.Second, cbThreshold: 5, cbCooldown: 2 * time.Minute}
 }
 
-const parserSystemPrompt = `You are a bank statement parser. Extract ALL transactions from the provided bank statement text.
-
-You MUST respond with ONLY valid JSON (no markdown, no explanation) in this exact structure:
-{
-  "bank_name": "detected bank name",
-  "currency": "NGN",
-  "period_start": "2025-01-01",
-  "period_end": "2025-06-30",
-  "transactions": [
-    {
-      "date": "2025-01-15",
-      "description": "POS Purchase at Shoprite",
-      "amount": 15000.00,
-      "type": "debit",
-      "category": "groceries",
-      "balance_after": 85000.00
-    }
-  ]
-}
-
+const parserSystemPrompt = `Bank statement parser. Extract ALL transactions. Respond with ONLY compact valid JSON, no markdown.
+Format: {"bank_name":"X","currency":"NGN","period_start":"2025-01-01","period_end":"2025-06-30","transactions":[{"date":"2025-01-15","description":"POS Shoprite","amount":15000,"type":"debit","category":"groceries"}]}
 Rules:
-- date: YYYY-MM-DD format
-- amount: positive number (no currency symbols)
-- type: "credit" for money in, "debit" for money out
-- category: one of: food, groceries, transport, utilities, entertainment, shopping, health, education, rent, transfer_in, transfer_out, salary, airtime, betting, subscription, savings, loan, other
-- balance_after: closing balance after transaction if shown, null otherwise
-- Extract EVERY transaction visible in the text
-- For Nigerian banks (Sterling, OPay, PalmPay, Kuda, GTBank, Access, UBA, Zenith, First Bank): amounts are in NGN unless stated otherwise
-- Parse dates correctly even if format varies (DD/MM/YYYY, DD-Mon-YYYY, etc.)
-- If you cannot determine period_start/period_end from the statement header, infer from first/last transaction dates
-- IMPORTANT: Some transactions have multi-line descriptions (e.g. the narration continues on the next line). Merge these into a single description field. A new transaction always starts with a date — if a line has no date, it is a continuation of the previous transaction's description.
-- Ignore header rows, footer rows, page numbers, and summary lines (e.g. "Total Debit", "Opening Balance", "Closing Balance")
-- If a transaction shows both debit and credit columns, use whichever is non-zero`
+- date: YYYY-MM-DD. amount: positive number. type: credit|debit
+- category: food|groceries|transport|utilities|entertainment|shopping|health|education|rent|transfer_in|transfer_out|salary|airtime|betting|subscription|savings|loan|other
+- Extract EVERY transaction. Skip headers/footers/summaries.
+- Multi-line descriptions: merge (new txn starts with date)
+- Output compact JSON: no whitespace, no balance_after field
+- Nigerian banks: NGN unless stated otherwise`
 
 // ParseResult holds the LLM's structured output.
 type ParseResult struct {
