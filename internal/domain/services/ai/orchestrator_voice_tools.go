@@ -249,7 +249,7 @@ func (o *Orchestrator) voiceLookupUnavailable(tool string) string {
 			return "weekly news is unavailable"
 		}
 	case ToolSearchKnowledge:
-		if o.knowledge == nil {
+		if o.knowledge == nil && o.supermemory == nil {
 			return "knowledge base is unavailable"
 		}
 	case ToolGetSpendingSummary, ToolGetSpendingChart, ToolGetRecentTransactions, ToolGetMoneyFlow:
