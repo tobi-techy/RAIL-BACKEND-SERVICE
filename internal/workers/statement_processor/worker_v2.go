@@ -207,14 +207,14 @@ func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data
 
 	// Report: Enriching (Miriam memory facts + Supermemory)
 	w.report(ctx, uploadID, statement.StageEnrich, 0.0, "Learning your financial patterns...")
-	w.generateFacts(saveCtx, userID, txns, bankName, validation.Confidence)
-	w.ingestToSupermemory(saveCtx, userID, txns, bankName, periodStart, periodEnd)
-	w.detectTrends(saveCtx, userID, uploadID, txns, periodStart, periodEnd)
-	budgetSuggestions := w.generateBudgetSuggestions(saveCtx, userID, txns)
+	w.generateFacts(ctx, userID, txns, bankName, validation.Confidence)
+	w.ingestToSupermemory(ctx, userID, txns, bankName, periodStart, periodEnd)
+	w.detectTrends(ctx, userID, uploadID, txns, periodStart, periodEnd)
+	budgetSuggestions := w.generateBudgetSuggestions(ctx, userID, txns)
 	w.report(ctx, uploadID, statement.StageEnrich, 1.0, "Financial insights updated")
 
 	// Post instant insights to user's Miriam chat
-	w.postInstantInsightsWithBudgets(saveCtx, userID, txns, bankName, periodStart, periodEnd, budgetSuggestions)
+	w.postInstantInsightsWithBudgets(ctx, userID, txns, bankName, periodStart, periodEnd, budgetSuggestions)
 
 	// Done
 	w.report(ctx, uploadID, statement.StageComplete, 1.0, fmt.Sprintf(

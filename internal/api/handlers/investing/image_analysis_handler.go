@@ -253,8 +253,8 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 	if saved && h.bankStmtRepo != nil && scan.ReceiptDate != nil {
 		tolerance := 3 * 24 * time.Hour
 		if txn, err := h.bankStmtRepo.FindMatchingTransaction(c.Request.Context(), userID, scan.Amount, *scan.ReceiptDate, tolerance); err == nil && txn != nil {
-			msg := fmt.Sprintf("This receipt matches a transaction in your %s statement: %s %s to %s on %s",
-				"Moniepoint", txn.Currency, txn.Amount.StringFixed(0), txn.Description, txn.TransactionDate.Format("Jan 2, 2006"))
+			msg := fmt.Sprintf("This receipt matches a transaction in your bank statement: %s %s to %s on %s",
+				txn.Currency, txn.Amount.StringFixed(0), txn.Description, txn.TransactionDate.Format("Jan 2, 2006"))
 			statementMatch = &msg
 			// Store match as Supermemory memory
 			if h.memoryStore != nil {

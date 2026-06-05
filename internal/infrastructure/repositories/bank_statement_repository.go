@@ -250,7 +250,7 @@ func (r *BankStatementRepository) GetPreviousUploadSummary(ctx context.Context, 
 	err := r.db.GetContext(ctx, &prevUploadID, `
 		SELECT id FROM bank_statement_uploads
 		WHERE user_id = $1 AND status = 'completed' AND created_at < $2
-		ORDER BY created_at DESC LIMIT 1`, userID, beforeDate)
+		ORDER BY created_at DESC LIMIT 1 OFFSET 1`, userID, beforeDate)
 	if err != nil {
 		return nil, err // sql.ErrNoRows if no previous upload
 	}
