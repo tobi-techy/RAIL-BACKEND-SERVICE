@@ -234,7 +234,7 @@ func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data
 		zap.Duration("duration", time.Since(start)),
 	)
 
-	w.sendNotification(saveCtx, userID, txns, bankName, periodStart, periodEnd)
+	w.sendNotification(ctx, userID, txns, bankName, periodStart, periodEnd)
 	return nil
 }
 

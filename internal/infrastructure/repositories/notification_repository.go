@@ -14,6 +14,7 @@ import (
 type Notification struct {
 	ID        uuid.UUID              `db:"id" json:"id"`
 	UserID    uuid.UUID              `db:"user_id" json:"user_id"`
+	Channel   string                 `db:"channel" json:"channel"`
 	Type      string                 `db:"type" json:"type"`
 	Title     string                 `db:"title" json:"title"`
 	Body      string                 `db:"body" json:"body"`
@@ -40,6 +41,9 @@ func (r *NotificationRepository) Create(ctx context.Context, n *Notification) er
 	if n.ID == uuid.Nil {
 		n.ID = uuid.New()
 	}
+	if n.Channel == "" {
+		n.Channel = "push"
+	}
 	n.CreatedAt = time.Now()
 
 	dataJSON, _ := json.Marshal(n.Data)
@@ -48,10 +52,10 @@ func (r *NotificationRepository) Create(ctx context.Context, n *Notification) er
 	}
 
 	query := `
-		INSERT INTO notifications (id, user_id, type, title, body, data, image_url, action_url, read, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, $9)`
+		INSERT INTO notifications (id, user_id, channel, type, title, body, data, image_url, action_url, read, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, $10)`
 
-	_, err := r.db.ExecContext(ctx, query, n.ID, n.UserID, n.Type, n.Title, n.Body, dataJSON, n.ImageURL, n.ActionURL, n.CreatedAt)
+	_, err := r.db.ExecContext(ctx, query, n.ID, n.UserID, n.Channel, n.Type, n.Title, n.Body, dataJSON, n.ImageURL, n.ActionURL, n.CreatedAt)
 	return err
 }
 
