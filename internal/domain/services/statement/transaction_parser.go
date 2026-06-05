@@ -95,6 +95,56 @@ type ParsedTxn struct {
 	BalanceAfter *float64 `json:"balance_after"`
 }
 
+// detectBank examines the first ~2 pages of text for bank identifiers.
+func detectBank(text string) string {
+	sample := text
+	if len(sample) > 4000 {
+		sample = sample[:4000]
+	}
+	upper := strings.ToUpper(sample)
+
+	checks := []struct {
+		bank     string
+		keywords []string
+	}{
+		{"moniepoint", []string{"MONIEPOINT", "TEAMAPT", "MONIEPOINT.COM"}},
+		{"opay", []string{"OPAY", "OPERA", "OPAY.COM"}},
+		{"sterling", []string{"STERLING BANK", "STERLING", "ONEBANK.STERLING"}},
+		{"kuda", []string{"KUDA", "KUDA.COM", "KUDA MICROFINANCE"}},
+		{"gtbank", []string{"GUARANTY TRUST", "GTBANK", "GTBANK.COM", "GTB"}},
+		{"access", []string{"ACCESS BANK", "DIAMOND BANK", "ACCESS.BANK"}},
+	}
+
+	for _, c := range checks {
+		for _, kw := range c.keywords {
+			if strings.Contains(upper, kw) {
+				return c.bank
+			}
+		}
+	}
+	return "unknown"
+}
+
+// bankParsingHints returns bank-specific format context for the LLM prompt.
+func bankParsingHints(bank string) string {
+	switch bank {
+	case "sterling":
+		return "Sterling Bank statements show Date | Description | Debit | Credit | Balance in columns. Narration field contains transfer details. Watch for 'SMS Alert Charge' and 'VAT' entries."
+	case "opay":
+		return "OPay statements show transactions as Date | Details | Amount | Balance. Credits show as positive, debits as negative or in a separate column. Look for 'Cashback' entries."
+	case "kuda":
+		return "Kuda statements list Date | Narration | Debit | Credit | Balance. Transfers show recipient name in narration."
+	case "gtbank":
+		return "GTBank statements show Post Date | Value Date | Description | Debit | Credit | Balance. Look for 'NIP/' prefix for transfers."
+	case "access":
+		return "Access Bank statements show Trans Date | Value Date | Reference | Debits | Credits | Balance | Remarks. The Remarks field contains transfer details."
+	case "moniepoint":
+		return "Moniepoint statements show Date | Description | Amount | Balance. Transfers include recipient name and bank in description."
+	default:
+		return ""
+	}
+}
+
 // Parse sends extracted text to the LLM and returns structured transactions.
 func (p *TransactionParser) Parse(ctx context.Context, text string, bankHint string) (*ParseResult, error) {
 	p.mu.Lock()
@@ -158,13 +208,19 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		userPrompt = userPrompt[:30000]
 	}
 
+	// Build system prompt with bank-specific hints
+	sysPrompt := parserSystemPrompt
+	if hints := bankParsingHints(bankHint); hints != "" {
+		sysPrompt = hints + "\n\n" + sysPrompt
+	}
+
 	body := map[string]interface{}{
 		"model":       p.model,
 		"temperature": 1.0,
 		"max_tokens":  16000,
 		"stream":      true,
 		"messages": []map[string]interface{}{
-			{"role": "system", "content": parserSystemPrompt},
+			{"role": "system", "content": sysPrompt},
 			{"role": "user", "content": userPrompt},
 		},
 	}

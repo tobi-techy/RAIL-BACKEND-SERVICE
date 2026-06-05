@@ -17,16 +17,23 @@ import (
 	"go.uber.org/zap"
 )
 
+// ConversationWriter persists messages into the user's Miriam conversation.
+type ConversationWriter interface {
+	GetOrCreateConversation(ctx context.Context, userID uuid.UUID) (uuid.UUID, error)
+	CreateMessage(ctx context.Context, msg *entities.AIMessage) error
+}
+
 // WorkerV2 uses the improved multi-strategy pipeline with S3 storage and LLM failover.
 type WorkerV2 struct {
-	repo        *repositories.BankStatementRepository
-	pipeline    *statement.Pipeline
-	fileStore   statement.FileStore
-	memory      MemoryWriter
-	supermemory SupermemoryWriter
-	notifier    Notifier
-	reporter    statement.ProgressReporter
-	logger      *zap.Logger
+	repo         *repositories.BankStatementRepository
+	pipeline     *statement.Pipeline
+	fileStore    statement.FileStore
+	memory       MemoryWriter
+	supermemory  SupermemoryWriter
+	notifier     Notifier
+	conversations ConversationWriter
+	reporter     statement.ProgressReporter
+	logger       *zap.Logger
 }
 
 // SupermemoryWriter ingests structured conversations into Supermemory for long-term recall.
@@ -55,12 +62,14 @@ func NewWorkerV2(
 	memory MemoryWriter,
 	supermemory SupermemoryWriter,
 	notifier Notifier,
+	conversations ConversationWriter,
 	reporter statement.ProgressReporter,
 	logger *zap.Logger,
 ) *WorkerV2 {
 	return &WorkerV2{
 		repo: repo, pipeline: pipeline, fileStore: fileStore,
-		memory: memory, supermemory: supermemory, notifier: notifier, reporter: reporter, logger: logger,
+		memory: memory, supermemory: supermemory, notifier: notifier,
+		conversations: conversations, reporter: reporter, logger: logger,
 	}
 }
 
@@ -200,7 +209,12 @@ func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data
 	w.report(ctx, uploadID, statement.StageEnrich, 0.0, "Learning your financial patterns...")
 	w.generateFacts(saveCtx, userID, txns, bankName, validation.Confidence)
 	w.ingestToSupermemory(saveCtx, userID, txns, bankName, periodStart, periodEnd)
+	w.detectTrends(saveCtx, userID, uploadID, txns, periodStart, periodEnd)
+	budgetSuggestions := w.generateBudgetSuggestions(saveCtx, userID, txns)
 	w.report(ctx, uploadID, statement.StageEnrich, 1.0, "Financial insights updated")
+
+	// Post instant insights to user's Miriam chat
+	w.postInstantInsightsWithBudgets(saveCtx, userID, txns, bankName, periodStart, periodEnd, budgetSuggestions)
 
 	// Done
 	w.report(ctx, uploadID, statement.StageComplete, 1.0, fmt.Sprintf(
@@ -403,6 +417,273 @@ func buildSummaryJSON(txns []*entities.BankStatementTransaction, bankName string
 	return string(b)
 }
 
+// StatementChartData is the chart payload the frontend renders for statement summaries.
+type StatementChartData struct {
+	Type     string   `json:"type"`
+	Labels   []string `json:"labels"`
+	Values   []string `json:"values"`
+	Currency string   `json:"currency"`
+}
+
+func (w *WorkerV2) postInstantInsights(ctx context.Context, userID uuid.UUID, txns []*entities.BankStatementTransaction, bankName string, periodStart, periodEnd *time.Time) {
+	if w.conversations == nil || len(txns) == 0 {
+		return
+	}
+
+	currency := txns[0].Currency
+	var totalIncome, totalSpend decimal.Decimal
+	catSpend := make(map[string]decimal.Decimal)
+	for _, t := range txns {
+		if t.Type == entities.StatementTxnTypeDebit {
+			totalSpend = totalSpend.Add(t.Amount)
+			catSpend[t.Category] = catSpend[t.Category].Add(t.Amount)
+		} else {
+			totalIncome = totalIncome.Add(t.Amount)
+		}
+	}
+
+	// Sort categories by spend descending
+	type catEntry struct {
+		name  string
+		total decimal.Decimal
+	}
+	sorted := make([]catEntry, 0, len(catSpend))
+	for cat, total := range catSpend {
+		sorted = append(sorted, catEntry{cat, total})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].total.GreaterThan(sorted[j].total) })
+
+	// Build text summary
+	periodStr := ""
+	if periodStart != nil && periodEnd != nil {
+		periodStr = fmt.Sprintf("%s – %s", periodStart.Format("Jan 2"), periodEnd.Format("Jan 2, 2006"))
+	}
+
+	summary := fmt.Sprintf("📊 **%s Statement Analyzed**\n\n", bankName)
+	if periodStr != "" {
+		summary += fmt.Sprintf("Period: %s\n", periodStr)
+	}
+	summary += fmt.Sprintf("Transactions: %d\n", len(txns))
+	summary += fmt.Sprintf("Total Income: %s %s\n", currency, totalIncome.StringFixed(0))
+	summary += fmt.Sprintf("Total Spending: %s %s\n\n", currency, totalSpend.StringFixed(0))
+
+	top := 5
+	if len(sorted) < top {
+		top = len(sorted)
+	}
+	if top > 0 {
+		summary += "**Top categories:**\n"
+		for _, e := range sorted[:top] {
+			summary += fmt.Sprintf("• %s: %s %s\n", e.name, currency, e.total.StringFixed(0))
+		}
+	}
+
+	// Build chart data (top 8 categories)
+	chartLimit := 8
+	if len(sorted) < chartLimit {
+		chartLimit = len(sorted)
+	}
+	labels := make([]string, chartLimit)
+	values := make([]string, chartLimit)
+	for i, e := range sorted[:chartLimit] {
+		labels[i] = e.name
+		values[i] = e.total.StringFixed(0)
+	}
+
+	chartData := StatementChartData{
+		Type:     "bar",
+		Labels:   labels,
+		Values:   values,
+		Currency: currency,
+	}
+
+	card := entities.InsightCard{
+		Type:     "statement_summary",
+		Title:    fmt.Sprintf("%s Statement Summary", bankName),
+		Subtitle: periodStr,
+		Data:     chartData,
+	}
+
+	// Persist as assistant message in user's conversation
+	convID, err := w.conversations.GetOrCreateConversation(ctx, userID)
+	if err != nil {
+		w.logger.Warn("failed to get/create conversation for instant insights", zap.Error(err), zap.String("user_id", userID.String()))
+		return
+	}
+
+	metadata := map[string]interface{}{
+		"cards": []entities.InsightCard{card},
+	}
+
+	if err := w.conversations.CreateMessage(ctx, &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "assistant",
+		Content:        summary,
+		Model:          "system",
+		Metadata:       metadata,
+	}); err != nil {
+		w.logger.Warn("failed to persist instant insights message", zap.Error(err), zap.String("user_id", userID.String()))
+	}
+}
+
+// generateBudgetSuggestions computes suggested budgets per category from the current
+// statement's transactions and stores them as Supermemory memories.
+// Returns formatted suggestion lines for inclusion in instant insights.
+func (w *WorkerV2) generateBudgetSuggestions(ctx context.Context, userID uuid.UUID, txns []*entities.BankStatementTransaction) []string {
+	if w.supermemory == nil || len(txns) == 0 {
+		return nil
+	}
+
+	currency := txns[0].Currency
+	months := computeMonths(txns)
+	monthsDec := decimal.NewFromInt(int64(months))
+	threshold := decimal.NewFromInt(5000) // NGN 5,000/month minimum
+
+	// Aggregate spending per category
+	catSpend := make(map[string]decimal.Decimal)
+	for _, t := range txns {
+		if t.Type == entities.StatementTxnTypeDebit {
+			catSpend[t.Category] = catSpend[t.Category].Add(t.Amount)
+		}
+	}
+
+	var suggestions []string
+	var memories []SupermemoryMemory
+	buffer := decimal.NewFromFloat(1.10) // 10% buffer
+
+	for cat, total := range catSpend {
+		monthly := total.Div(monthsDec)
+		if monthly.LessThan(threshold) {
+			continue
+		}
+		ceiling := monthly.Mul(buffer).Round(0)
+		content := fmt.Sprintf("Budget suggestion: %s spending averages %s %s/month. Suggested ceiling: %s %s/month.",
+			cat, currency, monthly.Round(0).StringFixed(0), currency, ceiling.StringFixed(0))
+		suggestions = append(suggestions, content)
+		memories = append(memories, SupermemoryMemory{
+			Content:   content,
+			EventDate: time.Now().Format("2006-01-02"),
+			Metadata:  map[string]string{"type": "budget_suggestion", "category": cat},
+		})
+	}
+
+	if len(memories) > 0 {
+		if err := w.supermemory.CreateMemories(ctx, userID.String(), memories); err != nil {
+			w.logger.Warn("failed to store budget suggestions", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+	}
+
+	return suggestions
+}
+
+// postInstantInsightsWithBudgets posts the statement analysis insights plus budget suggestions.
+func (w *WorkerV2) postInstantInsightsWithBudgets(ctx context.Context, userID uuid.UUID, txns []*entities.BankStatementTransaction, bankName string, periodStart, periodEnd *time.Time, budgetSuggestions []string) {
+	if w.conversations == nil || len(txns) == 0 {
+		return
+	}
+
+	currency := txns[0].Currency
+	var totalIncome, totalSpend decimal.Decimal
+	catSpend := make(map[string]decimal.Decimal)
+	for _, t := range txns {
+		if t.Type == entities.StatementTxnTypeDebit {
+			totalSpend = totalSpend.Add(t.Amount)
+			catSpend[t.Category] = catSpend[t.Category].Add(t.Amount)
+		} else {
+			totalIncome = totalIncome.Add(t.Amount)
+		}
+	}
+
+	type catEntry struct {
+		name  string
+		total decimal.Decimal
+	}
+	sorted := make([]catEntry, 0, len(catSpend))
+	for cat, total := range catSpend {
+		sorted = append(sorted, catEntry{cat, total})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].total.GreaterThan(sorted[j].total) })
+
+	periodStr := ""
+	if periodStart != nil && periodEnd != nil {
+		periodStr = fmt.Sprintf("%s – %s", periodStart.Format("Jan 2"), periodEnd.Format("Jan 2, 2006"))
+	}
+
+	summary := fmt.Sprintf("📊 **%s Statement Analyzed**\n\n", bankName)
+	if periodStr != "" {
+		summary += fmt.Sprintf("Period: %s\n", periodStr)
+	}
+	summary += fmt.Sprintf("Transactions: %d\n", len(txns))
+	summary += fmt.Sprintf("Total Income: %s %s\n", currency, totalIncome.StringFixed(0))
+	summary += fmt.Sprintf("Total Spending: %s %s\n\n", currency, totalSpend.StringFixed(0))
+
+	top := 5
+	if len(sorted) < top {
+		top = len(sorted)
+	}
+	if top > 0 {
+		summary += "**Top categories:**\n"
+		for _, e := range sorted[:top] {
+			summary += fmt.Sprintf("• %s: %s %s\n", e.name, currency, e.total.StringFixed(0))
+		}
+	}
+
+	// Append budget suggestions
+	if len(budgetSuggestions) > 0 {
+		summary += "\n💡 **Suggested budgets based on your spending:**\n"
+		for _, s := range budgetSuggestions {
+			summary += fmt.Sprintf("• %s\n", s)
+		}
+		summary += "\nWant me to set any of these budgets for you?"
+	}
+
+	// Build chart data
+	chartLimit := 8
+	if len(sorted) < chartLimit {
+		chartLimit = len(sorted)
+	}
+	labels := make([]string, chartLimit)
+	values := make([]string, chartLimit)
+	for i, e := range sorted[:chartLimit] {
+		labels[i] = e.name
+		values[i] = e.total.StringFixed(0)
+	}
+
+	chartData := StatementChartData{
+		Type:     "bar",
+		Labels:   labels,
+		Values:   values,
+		Currency: currency,
+	}
+
+	card := entities.InsightCard{
+		Type:     "statement_summary",
+		Title:    fmt.Sprintf("%s Statement Summary", bankName),
+		Subtitle: periodStr,
+		Data:     chartData,
+	}
+
+	convID, err := w.conversations.GetOrCreateConversation(ctx, userID)
+	if err != nil {
+		w.logger.Warn("failed to get/create conversation for instant insights", zap.Error(err), zap.String("user_id", userID.String()))
+		return
+	}
+
+	metadata := map[string]interface{}{
+		"cards": []entities.InsightCard{card},
+	}
+
+	if err := w.conversations.CreateMessage(ctx, &entities.AIMessage{
+		ConversationID: convID,
+		Role:           "assistant",
+		Content:        summary,
+		Model:          "system",
+		Metadata:       metadata,
+	}); err != nil {
+		w.logger.Warn("failed to persist instant insights message", zap.Error(err), zap.String("user_id", userID.String()))
+	}
+}
+
 // ingestToSupermemory sends granular per-transaction memories so Miriam can answer
 // specific questions like "how much did I spend on airtime in March?"
 func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, txns []*entities.BankStatementTransaction, bankName string, periodStart, periodEnd *time.Time) {
@@ -494,7 +775,220 @@ func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, tx
 		Metadata: map[string]string{"type": "statement_overview", "bank": bankName},
 	})
 
-	// 4. Send in batches (API limit: 100 per call)
+	// 4. Top recipients (debit transactions grouped by description)
+	type recipientData struct {
+		total       decimal.Decimal
+		count       int
+		firstMonth  time.Time
+		lastMonth   time.Time
+	}
+	recipients := make(map[string]*recipientData)
+	for _, t := range txns {
+		if t.Type != entities.StatementTxnTypeDebit {
+			continue
+		}
+		rd, ok := recipients[t.Description]
+		if !ok {
+			rd = &recipientData{firstMonth: t.TransactionDate, lastMonth: t.TransactionDate}
+			recipients[t.Description] = rd
+		}
+		rd.total = rd.total.Add(t.Amount)
+		rd.count++
+		if t.TransactionDate.Before(rd.firstMonth) {
+			rd.firstMonth = t.TransactionDate
+		}
+		if t.TransactionDate.After(rd.lastMonth) {
+			rd.lastMonth = t.TransactionDate
+		}
+	}
+	type recipientEntry struct {
+		name string
+		data *recipientData
+	}
+	recipientList := make([]recipientEntry, 0, len(recipients))
+	for name, data := range recipients {
+		recipientList = append(recipientList, recipientEntry{name, data})
+	}
+	sort.Slice(recipientList, func(i, j int) bool {
+		return recipientList[i].data.total.GreaterThan(recipientList[j].data.total)
+	})
+	topN := 10
+	if len(recipientList) < topN {
+		topN = len(recipientList)
+	}
+	for _, r := range recipientList[:topN] {
+		dateRange := r.data.firstMonth.Format("Jan 2006")
+		if r.data.firstMonth.Format("2006-01") != r.data.lastMonth.Format("2006-01") {
+			dateRange = fmt.Sprintf("%s-%s", r.data.firstMonth.Format("Jan"), r.data.lastMonth.Format("Jan 2006"))
+		}
+		content := fmt.Sprintf("Top recipient: %s — sent %s %s across %d transactions (%s)",
+			r.name, currency, r.data.total.StringFixed(0), r.data.count, dateRange)
+		memories = append(memories, SupermemoryMemory{
+			Content:  content,
+			Metadata: map[string]string{"type": "top_recipient", "bank": bankName},
+		})
+	}
+
+	// 5. Large transactions (over 5000 in local currency)
+	largeThreshold := decimal.NewFromInt(5000)
+	for _, t := range txns {
+		if t.Type == entities.StatementTxnTypeDebit && t.Amount.GreaterThan(largeThreshold) {
+			content := fmt.Sprintf("Large expense: %s %s to %s on %s [%s]",
+				currency, t.Amount.StringFixed(0), t.Description, t.TransactionDate.Format("2006-01-02"), t.Category)
+			memories = append(memories, SupermemoryMemory{
+				Content:   content,
+				EventDate: t.TransactionDate.Format("2006-01-02"),
+				Metadata:  map[string]string{"type": "large_transaction", "category": t.Category, "bank": bankName},
+			})
+		}
+	}
+
+	// 6. Month-over-month comparisons
+	sortedMonths := make([]string, 0, len(byMonth))
+	for m := range byMonth {
+		sortedMonths = append(sortedMonths, m)
+	}
+	sort.Strings(sortedMonths)
+	for i := 1; i < len(sortedMonths); i++ {
+		prev := byMonth[sortedMonths[i-1]]
+		curr := byMonth[sortedMonths[i]]
+		if prev.spend.IsZero() {
+			continue
+		}
+		diff := curr.spend.Sub(prev.spend)
+		pct := diff.Div(prev.spend).Mul(decimal.NewFromInt(100))
+		direction := "increased"
+		if diff.IsNegative() {
+			direction = "decreased"
+			diff = diff.Abs()
+			pct = pct.Abs()
+		}
+		prevT, _ := time.Parse("2006-01", sortedMonths[i-1])
+		currT, _ := time.Parse("2006-01", sortedMonths[i])
+		// Category changes
+		var catChanges []string
+		for cat, currTotal := range curr.catMap {
+			if prevTotal, ok := prev.catMap[cat]; ok && !prevTotal.IsZero() {
+				catPct := currTotal.Sub(prevTotal).Div(prevTotal).Mul(decimal.NewFromInt(100))
+				if catPct.Abs().GreaterThan(decimal.NewFromInt(10)) {
+					dir := "up"
+					if catPct.IsNegative() {
+						dir = "down"
+					}
+					catChanges = append(catChanges, fmt.Sprintf("%s %s %s%%", cat, dir, catPct.Abs().StringFixed(0)))
+				}
+			}
+		}
+		content := fmt.Sprintf("%s vs %s: spending %s by %s %s (%s%%).",
+			currT.Format("January 2006"), prevT.Format("January 2006"), direction, currency, diff.StringFixed(0), pct.StringFixed(0))
+		if len(catChanges) > 0 {
+			limit := 3
+			if len(catChanges) < limit {
+				limit = len(catChanges)
+			}
+			content += " " + fmt.Sprintf("Notable: %s.", joinStrings(catChanges[:limit]))
+		}
+		memories = append(memories, SupermemoryMemory{
+			Content:   content,
+			EventDate: sortedMonths[i] + "-01",
+			Metadata:  map[string]string{"type": "month_comparison", "bank": bankName},
+		})
+	}
+
+	// 7. Income sources (credit transactions grouped by description)
+	type incomeSourceData struct {
+		total      decimal.Decimal
+		count      int
+		days       []int
+		months     []string
+	}
+	incomeSources := make(map[string]*incomeSourceData)
+	for _, t := range txns {
+		if t.Type != entities.StatementTxnTypeCredit {
+			continue
+		}
+		isd, ok := incomeSources[t.Description]
+		if !ok {
+			isd = &incomeSourceData{}
+			incomeSources[t.Description] = isd
+		}
+		isd.total = isd.total.Add(t.Amount)
+		isd.count++
+		isd.days = append(isd.days, t.TransactionDate.Day())
+		isd.months = append(isd.months, t.TransactionDate.Format("2006-01"))
+	}
+	for name, isd := range incomeSources {
+		uniqueMonths := make(map[string]bool)
+		for _, m := range isd.months {
+			uniqueMonths[m] = true
+		}
+		monthCount := len(uniqueMonths)
+		avgPerMonth := isd.total.Div(decimal.NewFromInt(int64(monthCount)))
+		content := fmt.Sprintf("Income source: %s — %s %s/month, received %d times",
+			name, currency, avgPerMonth.StringFixed(0), isd.count)
+		if isd.count >= 2 && monthCount >= 2 {
+			// Detect recurring pattern by checking if day-of-month is consistent
+			avgDay := 0
+			for _, d := range isd.days {
+				avgDay += d
+			}
+			avgDay /= len(isd.days)
+			content += fmt.Sprintf(", typically around the %s", ordinal(avgDay))
+		}
+		memories = append(memories, SupermemoryMemory{
+			Content:  content,
+			Metadata: map[string]string{"type": "income_source", "bank": bankName},
+		})
+	}
+
+	// 8. Spending frequency patterns (debit transactions grouped by category)
+	type freqData struct {
+		total    decimal.Decimal
+		count    int
+		weekdays int
+		weekends int
+	}
+	catFreq := make(map[string]*freqData)
+	for _, t := range txns {
+		if t.Type != entities.StatementTxnTypeDebit {
+			continue
+		}
+		fd, ok := catFreq[t.Category]
+		if !ok {
+			fd = &freqData{}
+			catFreq[t.Category] = fd
+		}
+		fd.total = fd.total.Add(t.Amount)
+		fd.count++
+		if t.TransactionDate.Weekday() == time.Saturday || t.TransactionDate.Weekday() == time.Sunday {
+			fd.weekends++
+		} else {
+			fd.weekdays++
+		}
+	}
+	for cat, fd := range catFreq {
+		if fd.count < 3 {
+			continue
+		}
+		avg := fd.total.Div(decimal.NewFromInt(int64(fd.count)))
+		timing := "evenly spread"
+		if fd.weekdays > 0 && fd.weekends > 0 {
+			wdPct := float64(fd.weekdays) / float64(fd.count)
+			if wdPct > 0.75 {
+				timing = "mostly on weekdays"
+			} else if wdPct < 0.35 {
+				timing = "mostly on weekends"
+			}
+		}
+		content := fmt.Sprintf("%s: %d transactions averaging %s %s each, %s",
+			cat, fd.count, currency, avg.StringFixed(0), timing)
+		memories = append(memories, SupermemoryMemory{
+			Content:  content,
+			Metadata: map[string]string{"type": "spending_frequency", "category": cat, "bank": bankName},
+		})
+	}
+
+	// 9. Send in batches (API limit: 100 per call)
 	smCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
@@ -506,4 +1000,130 @@ func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, tx
 			zap.Int("transactions", len(txns)),
 			zap.Int("memories_created", len(memories)))
 	}
+}
+
+// detectTrends compares current upload spending against the previous upload and
+// stores trend insights as Supermemory memories.
+func (w *WorkerV2) detectTrends(ctx context.Context, userID, uploadID uuid.UUID, txns []*entities.BankStatementTransaction, periodStart, periodEnd *time.Time) {
+	if w.supermemory == nil || len(txns) == 0 {
+		return
+	}
+
+	// Get spending-by-category from the previous completed upload
+	prevSpend, err := w.repo.GetPreviousUploadSummary(ctx, userID, time.Now().UTC())
+	if err != nil || len(prevSpend) == 0 {
+		return // No previous data to compare against
+	}
+
+	// Build current spending-by-category
+	currSpend := make(map[string]decimal.Decimal)
+	var currTotal decimal.Decimal
+	for _, t := range txns {
+		if t.Type == entities.StatementTxnTypeDebit {
+			currSpend[t.Category] = currSpend[t.Category].Add(t.Amount)
+			currTotal = currTotal.Add(t.Amount)
+		}
+	}
+
+	var prevTotal decimal.Decimal
+	for _, v := range prevSpend {
+		prevTotal = prevTotal.Add(v)
+	}
+
+	currency := txns[0].Currency
+	currPeriod := formatPeriodLabel(periodStart, periodEnd)
+
+	containerTag := userID.String()
+	var memories []SupermemoryMemory
+
+	// Detect per-category changes
+	for cat, curr := range currSpend {
+		prev, existed := prevSpend[cat]
+		if !existed {
+			// New category
+			memories = append(memories, SupermemoryMemory{
+				Content:  fmt.Sprintf("New spending category detected: %s (%s %s) first appeared in %s", cat, currency, curr.StringFixed(0), currPeriod),
+				Metadata: map[string]string{"type": "trend", "category": cat},
+			})
+			continue
+		}
+		if prev.IsZero() {
+			continue
+		}
+		change := curr.Sub(prev).Div(prev).Mul(decimal.NewFromInt(100))
+		absChange := change.Abs()
+		if absChange.LessThan(decimal.NewFromInt(10)) {
+			continue // Skip insignificant changes
+		}
+		dir := "increased"
+		if change.IsNegative() {
+			dir = "decreased"
+		}
+		memories = append(memories, SupermemoryMemory{
+			Content: fmt.Sprintf("Spending trend: %s %s %s%% from %s %s to %s %s in %s",
+				cat, dir, absChange.StringFixed(0), currency, prev.StringFixed(0), currency, curr.StringFixed(0), currPeriod),
+			Metadata: map[string]string{"type": "trend", "category": cat},
+		})
+	}
+
+	// Total spending change
+	if prevTotal.IsPositive() {
+		totalChange := currTotal.Sub(prevTotal).Div(prevTotal).Mul(decimal.NewFromInt(100))
+		dir := "increased"
+		if totalChange.IsNegative() {
+			dir = "decreased"
+		}
+		memories = append(memories, SupermemoryMemory{
+			Content: fmt.Sprintf("Overall spending %s %s%% from %s %s to %s %s in %s",
+				dir, totalChange.Abs().StringFixed(0), currency, prevTotal.StringFixed(0), currency, currTotal.StringFixed(0), currPeriod),
+			Metadata: map[string]string{"type": "trend", "category": "total"},
+		})
+	}
+
+	if len(memories) == 0 {
+		return
+	}
+
+	if err := w.supermemory.CreateMemories(ctx, containerTag, memories); err != nil {
+		w.logger.Warn("trend memory ingestion failed", zap.Error(err), zap.String("user_id", userID.String()))
+	} else {
+		w.logger.Info("trend insights stored", zap.String("user_id", userID.String()), zap.Int("trends", len(memories)))
+	}
+}
+
+func formatPeriodLabel(start, end *time.Time) string {
+	if start != nil && end != nil {
+		return fmt.Sprintf("%s–%s", start.Format("Jan 2006"), end.Format("Jan 2006"))
+	}
+	return time.Now().Format("Jan 2006")
+}
+
+func joinStrings(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	result := ss[0]
+	for i := 1; i < len(ss); i++ {
+		if i == len(ss)-1 {
+			result += " and " + ss[i]
+		} else {
+			result += ", " + ss[i]
+		}
+	}
+	return result
+}
+
+func ordinal(n int) string {
+	suffix := "th"
+	switch {
+	case n%100 == 11 || n%100 == 12 || n%100 == 13:
+		// keep "th"
+	case n%10 == 1:
+		suffix = "st"
+	case n%10 == 2:
+		suffix = "nd"
+	case n%10 == 3:
+		suffix = "rd"
+	}
+	return fmt.Sprintf("%d%s", n, suffix)
 }

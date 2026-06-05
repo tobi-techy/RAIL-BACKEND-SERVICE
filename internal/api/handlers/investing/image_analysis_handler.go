@@ -27,6 +27,11 @@ import (
 	"golang.org/x/image/draw"
 )
 
+// ReceiptMemoryStore stores receipt-related memories for long-term recall.
+type ReceiptMemoryStore interface {
+	StoreMemory(ctx context.Context, userID string, content string) error
+}
+
 // ImageAnalysisHandler handles receipt/image analysis via vision-capable LLM.
 type ImageAnalysisHandler struct {
 	apiKey        string
@@ -37,6 +42,8 @@ type ImageAnalysisHandler struct {
 	receiptRepo   *repositories.ReceiptRepository
 	budgetRepo    *repositories.BudgetRepository
 	spendingRepo  *repositories.LedgerSpendingRepository
+	bankStmtRepo  *repositories.BankStatementRepository
+	memoryStore   ReceiptMemoryStore
 	convPersister ConversationPersister
 	logger        *zap.Logger
 }
@@ -95,6 +102,16 @@ func (h *ImageAnalysisHandler) SetConversationPersister(cp ConversationPersister
 // SetSpendingRepo sets the spending repository for category spending lookups.
 func (h *ImageAnalysisHandler) SetSpendingRepo(s *repositories.LedgerSpendingRepository) {
 	h.spendingRepo = s
+}
+
+// SetBankStatementRepo sets the bank statement repository for receipt-transaction matching.
+func (h *ImageAnalysisHandler) SetBankStatementRepo(r *repositories.BankStatementRepository) {
+	h.bankStmtRepo = r
+}
+
+// SetMemoryStore sets the memory store for persisting receipt match memories.
+func (h *ImageAnalysisHandler) SetMemoryStore(m ReceiptMemoryStore) {
+	h.memoryStore = m
 }
 
 type imageRequest struct {
@@ -231,6 +248,27 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 
 	saved := scan.Amount.IsPositive()
 
+	// Receipt ↔ Statement Transaction Matching
+	var statementMatch *string
+	if saved && h.bankStmtRepo != nil && scan.ReceiptDate != nil {
+		tolerance := 3 * 24 * time.Hour
+		if txn, err := h.bankStmtRepo.FindMatchingTransaction(c.Request.Context(), userID, scan.Amount, *scan.ReceiptDate, tolerance); err == nil && txn != nil {
+			msg := fmt.Sprintf("This receipt matches a transaction in your %s statement: %s %s to %s on %s",
+				"Moniepoint", txn.Currency, txn.Amount.StringFixed(0), txn.Description, txn.TransactionDate.Format("Jan 2, 2006"))
+			statementMatch = &msg
+			// Store match as Supermemory memory
+			if h.memoryStore != nil {
+				memoryContent := fmt.Sprintf("Receipt from %s for %s %s on %s matched to bank statement transaction: %s",
+					parsed.Merchant, scan.Currency, scan.Amount.StringFixed(0), scan.ReceiptDate.Format("Jan 2, 2006"), txn.Description)
+				go func(uid uuid.UUID, content string) {
+					smCtx, smCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer smCancel()
+					_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content)
+				}(userID, memoryContent)
+			}
+		}
+	}
+
 	// Budget impact lookup
 	var budgetImpact map[string]interface{}
 	if saved && h.budgetRepo != nil && h.spendingRepo != nil {
@@ -292,6 +330,9 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		resp["receipt_id"] = scan.ID.String()
 	} else {
 		resp["warning"] = "Could not extract a valid amount from this receipt"
+	}
+	if statementMatch != nil {
+		resp["statement_match"] = *statementMatch
 	}
 	// Include thumbnail so frontend can display the image in chat history
 	if scan.Thumbnail != nil {

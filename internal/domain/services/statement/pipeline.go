@@ -103,6 +103,14 @@ func (p *Pipeline) Process(ctx context.Context, uploadID uuid.UUID, data []byte,
 	// Stage: Parse transactions via LLM
 	p.report(ctx, uploadID, StageParse, 0.0, "Analyzing transactions with AI...")
 
+	// Auto-detect bank from extracted text if no hint provided
+	if bankHint == "" {
+		bankHint = detectBank(extractResult.Text)
+		if bankHint != "unknown" {
+			p.logger.Info("auto-detected bank", zap.String("bank", bankHint))
+		}
+	}
+
 	parsed, parserUsed, err := p.parseWithFallback(ctx, extractResult, bankHint)
 	if err != nil {
 		p.report(ctx, uploadID, StageFailed, 0.0, fmt.Sprintf("Parse failed: %v", err))

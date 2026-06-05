@@ -103,6 +103,23 @@ func (o *Orchestrator) buildStarterContext(ctx context.Context, userID uuid.UUID
 		}
 	}
 
+	// Statement-based proactive nudges
+	if o.bankStatementCtx != nil && o.bankStatementCtx.provider != nil {
+		if currentSpend, dailyAvg, err := o.bankStatementCtx.provider.GetDailySpendingPace(ctx, userID); err == nil && dailyAvg > 0 {
+			daysElapsed := float64(now.Day())
+			if daysElapsed < 1 {
+				daysElapsed = 1
+			}
+			currentDailyPace := currentSpend / daysElapsed
+			if currentDailyPace > dailyAvg*1.2 {
+				parts = append(parts, fmt.Sprintf("⚠️ Spending pace alert: %.0f/day vs usual %.0f/day", currentDailyPace, dailyAvg))
+			}
+		}
+		if names, _, err := o.bankStatementCtx.provider.GetTopRecurringRecipients(ctx, userID, 3); err == nil && len(names) > 0 {
+			parts = append(parts, fmt.Sprintf("Recurring payments to: %s", strings.Join(names, ", ")))
+		}
+	}
+
 	parts = append(parts, fmt.Sprintf("Day: %s, time: %s", now.Format("Monday"), now.Format("3pm")))
 
 	return strings.Join(parts, "\n")

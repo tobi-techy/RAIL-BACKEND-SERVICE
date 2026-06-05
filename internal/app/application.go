@@ -625,6 +625,7 @@ func (app *Application) initializeWorkers() error {
 				app.container.MiriamMemoryRepo,
 				smWriter,
 				app.container.NotificationService,
+				&statementConversationAdapter{repo: app.container.ConversationRepo},
 				reporter,
 				app.log.Zap(),
 			)
@@ -1378,6 +1379,34 @@ func (a *statementSupermemoryAdapter) CreateMemories(ctx context.Context, contai
 		}
 	}
 	return a.client.CreateMemories(ctx, containerTag, mems)
+}
+
+// statementConversationAdapter bridges the statement_processor.ConversationWriter interface
+// with the conversation repository.
+type statementConversationAdapter struct {
+	repo *repositories.ConversationRepository
+}
+
+func (a *statementConversationAdapter) GetOrCreateConversation(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	convs, err := a.repo.ListByUserID(ctx, userID, 1, 0)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if len(convs) > 0 {
+		return convs[0].ID, nil
+	}
+	conv := &entities.AIConversation{
+		UserID: userID,
+		Title:  "Miriam",
+	}
+	if err := a.repo.CreateConversation(ctx, conv); err != nil {
+		return uuid.Nil, err
+	}
+	return conv.ID, nil
+}
+
+func (a *statementConversationAdapter) CreateMessage(ctx context.Context, msg *entities.AIMessage) error {
+	return a.repo.CreateMessage(ctx, msg)
 }
 
 // or "processing" status (e.g. after a server crash). Runs once at startup and exits.

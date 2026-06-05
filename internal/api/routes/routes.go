@@ -37,6 +37,7 @@ import (
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -78,6 +79,17 @@ func (a *SessionValidatorAdapter) ValidateSession(ctx context.Context, token str
 		ID:     sess.ID,
 		UserID: sess.UserID,
 	}, nil
+}
+
+// receiptMemoryAdapter adapts supermemory.Client to the ReceiptMemoryStore interface.
+type receiptMemoryAdapter struct {
+	client interface {
+		CreateMemories(ctx context.Context, containerTag string, memories []supermemoryclient.Memory) error
+	}
+}
+
+func (a *receiptMemoryAdapter) StoreMemory(ctx context.Context, userID string, content string) error {
+	return a.client.CreateMemories(ctx, userID, []supermemoryclient.Memory{{Content: content}})
 }
 
 // SetupRoutes configures all application routes
@@ -1361,6 +1373,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if imageHandler != nil {
 						imageHandler.SetBudgetRepo(container.BudgetRepo)
 						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
+						imageHandler.SetBankStatementRepo(container.BankStatementRepo)
+						if container.SupermemoryClient != nil {
+							imageHandler.SetMemoryStore(&receiptMemoryAdapter{client: container.SupermemoryClient})
+						}
 						if container.GetConversationService() != nil {
 							imageHandler.SetConversationPersister(container.GetConversationService())
 						}
@@ -1407,17 +1423,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 					// Bank statement upload & processing
 					if container.BankStatementRepo != nil {
-						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, container.ZapLog)
+						var progressReporter *statement.RedisProgressReporter
+						if container.RedisClient != nil {
+							progressReporter = statement.NewRedisProgressReporter(container.RedisClient.Client(), container.ZapLog)
+						}
+
+						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, progressReporter, container.ZapLog)
 						aiGroup.POST("/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandler.Upload)
 						aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)
 						aiGroup.GET("/statements", middleware.AuthRateLimit(20), stmtHandler.List)
 						aiGroup.DELETE("/statement/:id", middleware.AuthRateLimit(10), stmtHandler.Delete)
 
 						// V2 statement pipeline: supports images, OCR, real-time progress
-						var progressReporter *statement.RedisProgressReporter
-						if container.RedisClient != nil {
-							progressReporter = statement.NewRedisProgressReporter(container.RedisClient.Client(), container.ZapLog)
-						}
 						stmtHandlerV2 := handlers.NewStatementUploadHandlerV2(container.BankStatementRepo, container.JobQueueInstance, nil, progressReporter, container.ZapLog)
 						aiGroup.POST("/v2/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandlerV2.Upload)
 						aiGroup.GET("/v2/statement/:id/progress", middleware.AuthRateLimit(60), stmtHandlerV2.StreamProgress)

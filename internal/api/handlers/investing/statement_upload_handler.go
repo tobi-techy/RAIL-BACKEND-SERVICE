@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/statement"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/jobqueue"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -21,13 +22,14 @@ import (
 )
 
 type StatementUploadHandler struct {
-	repo   *repositories.BankStatementRepository
-	queue  *jobqueue.JobQueue
-	logger *zap.Logger
+	repo     *repositories.BankStatementRepository
+	queue    *jobqueue.JobQueue
+	reporter *statement.RedisProgressReporter
+	logger   *zap.Logger
 }
 
-func NewStatementUploadHandler(repo *repositories.BankStatementRepository, queue *jobqueue.JobQueue, logger *zap.Logger) *StatementUploadHandler {
-	return &StatementUploadHandler{repo: repo, queue: queue, logger: logger}
+func NewStatementUploadHandler(repo *repositories.BankStatementRepository, queue *jobqueue.JobQueue, reporter *statement.RedisProgressReporter, logger *zap.Logger) *StatementUploadHandler {
+	return &StatementUploadHandler{repo: repo, queue: queue, reporter: reporter, logger: logger}
 }
 
 // Upload handles POST /v1/ai/statement/upload
@@ -196,6 +198,7 @@ func (h *StatementUploadHandler) GetStatus(c *gin.Context) {
 		"bank_name":         upload.BankName,
 		"transaction_count": upload.TransactionCount,
 		"created_at":        upload.CreatedAt.Format(time.RFC3339),
+		"elapsed_seconds":   int(time.Since(upload.CreatedAt).Seconds()),
 	}
 	if upload.ErrorMessage != nil {
 		resp["error_message"] = *upload.ErrorMessage
@@ -211,6 +214,22 @@ func (h *StatementUploadHandler) GetStatus(c *gin.Context) {
 		if err := json.Unmarshal([]byte(*upload.Summary), &summaryObj); err == nil {
 			resp["summary"] = summaryObj
 		}
+	}
+
+	// Enrich with real-time progress from Redis for in-progress uploads
+	if h.reporter != nil && (upload.Status == entities.StatementStatusPending || upload.Status == entities.StatementStatusProcessing) {
+		if progress, err := h.reporter.GetProgress(c.Request.Context(), uploadID); err == nil {
+			resp["stage"] = string(progress.Stage)
+			resp["stage_detail"] = progress.Message
+			resp["progress_pct"] = int(progress.Progress * 100)
+			resp["transactions_found"] = upload.TransactionCount
+		}
+	}
+
+	// Set progress_pct to 100 for completed uploads
+	if upload.Status == entities.StatementStatusCompleted {
+		resp["progress_pct"] = 100
+		resp["stage"] = "complete"
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": resp})

@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 )
 
 type BankStatementRepository struct {
@@ -241,6 +242,122 @@ func (r *BankStatementRepository) GetPendingOlderThan(ctx context.Context, since
 	return uploads, err
 }
 
+// GetPreviousUploadSummary returns spending-by-category from the user's most recent
+// completed upload that was created before the given date.
+func (r *BankStatementRepository) GetPreviousUploadSummary(ctx context.Context, userID uuid.UUID, beforeDate time.Time) (map[string]decimal.Decimal, error) {
+	// Find the most recent completed upload before this one
+	var prevUploadID uuid.UUID
+	err := r.db.GetContext(ctx, &prevUploadID, `
+		SELECT id FROM bank_statement_uploads
+		WHERE user_id = $1 AND status = 'completed' AND created_at < $2
+		ORDER BY created_at DESC LIMIT 1`, userID, beforeDate)
+	if err != nil {
+		return nil, err // sql.ErrNoRows if no previous upload
+	}
+
+	type row struct {
+		Category string          `db:"category"`
+		Total    decimal.Decimal `db:"total"`
+	}
+	var rows []row
+	err = r.db.SelectContext(ctx, &rows, `
+		SELECT category, SUM(amount) as total FROM bank_statement_transactions
+		WHERE upload_id = $1 AND type = 'debit'
+		GROUP BY category`, prevUploadID)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		result[r.Category] = r.Total
+	}
+	return result, nil
+}
+
+// GetTopRecurringRecipients finds debit transaction descriptions that appear 3+ times.
+func (r *BankStatementRepository) GetTopRecurringRecipients(ctx context.Context, userID uuid.UUID, limit int) ([]string, []int, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	type row struct {
+		Description string `db:"description"`
+		Count       int    `db:"cnt"`
+	}
+	var rows []row
+	err := r.db.SelectContext(ctx, &rows, `
+		SELECT description, COUNT(*) as cnt FROM bank_statement_transactions
+		WHERE user_id = $1 AND type = 'debit'
+		GROUP BY description HAVING COUNT(*) >= 3
+		ORDER BY cnt DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	names := make([]string, len(rows))
+	counts := make([]int, len(rows))
+	for i, r := range rows {
+		names[i] = r.Description
+		counts[i] = r.Count
+	}
+	return names, counts, nil
+}
+
+// GetDailySpendingPace computes current month spend vs historical daily average from statement data.
+func (r *BankStatementRepository) GetDailySpendingPace(ctx context.Context, userID uuid.UUID) (float64, float64, error) {
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	var currentSpend float64
+	err := r.db.GetContext(ctx, &currentSpend, `
+		SELECT COALESCE(SUM(amount), 0) FROM bank_statement_transactions
+		WHERE user_id = $1 AND type = 'debit' AND transaction_date >= $2 AND transaction_date < $3`,
+		userID, monthStart, now)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var historicalTotal float64
+	var historicalDays int
+	err = r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(amount), 0), GREATEST(EXTRACT(DAY FROM (MAX(transaction_date) - MIN(transaction_date)))::int, 1)
+		FROM bank_statement_transactions
+		WHERE user_id = $1 AND type = 'debit' AND transaction_date < $2`,
+		userID, monthStart).Scan(&historicalTotal, &historicalDays)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var dailyAvg float64
+	if historicalDays > 0 {
+		dailyAvg = historicalTotal / float64(historicalDays)
+	}
+	return currentSpend, dailyAvg, nil
+}
+
+// GetCategoryMonthlyAverages computes average monthly spending per category
+// across all uploaded statements for a user. Only debit transactions are included.
+func (r *BankStatementRepository) GetCategoryMonthlyAverages(ctx context.Context, userID uuid.UUID) (map[string]decimal.Decimal, error) {
+	type row struct {
+		Category string          `db:"category"`
+		Total    decimal.Decimal `db:"total"`
+		Months   int             `db:"months"`
+	}
+	var rows []row
+	err := r.db.SelectContext(ctx, &rows, `
+		SELECT category, SUM(amount) as total,
+			GREATEST(1, EXTRACT(MONTH FROM AGE(MAX(transaction_date), MIN(transaction_date)))::int + 1) as months
+		FROM bank_statement_transactions
+		WHERE user_id = $1 AND type = 'debit'
+		GROUP BY category`, userID)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]decimal.Decimal, len(rows))
+	for _, r := range rows {
+		result[r.Category] = r.Total.Div(decimal.NewFromInt(int64(r.Months)))
+	}
+	return result, nil
+}
+
 func (r *BankStatementRepository) GetCompletedUploadSummary(ctx context.Context, userID uuid.UUID) (int, []string, error) {
 	type row struct {
 		BankName string `db:"bank_name"`
@@ -264,4 +381,24 @@ func (r *BankStatementRepository) GetCompletedUploadSummary(ctx context.Context,
 		}
 	}
 	return total, banks, nil
+}
+
+func (r *BankStatementRepository) FindMatchingTransaction(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, date time.Time, tolerance time.Duration) (*entities.BankStatementTransaction, error) {
+	lowerAmt := amount.Mul(decimal.NewFromFloat(0.95))
+	upperAmt := amount.Mul(decimal.NewFromFloat(1.05))
+	startDate := date.Add(-tolerance)
+	endDate := date.Add(tolerance)
+
+	var txn entities.BankStatementTransaction
+	err := r.db.GetContext(ctx, &txn, `
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		FROM bank_statement_transactions
+		WHERE user_id = $1 AND amount >= $2 AND amount <= $3 AND transaction_date >= $4 AND transaction_date <= $5
+		ORDER BY ABS(EXTRACT(EPOCH FROM (transaction_date - $6::timestamp))) ASC
+		LIMIT 1`,
+		userID, lowerAmt, upperAmt, startDate, endDate, date)
+	if err != nil {
+		return nil, err
+	}
+	return &txn, nil
 }

@@ -13,6 +13,8 @@ import (
 type BankStatementSummaryProvider interface {
 	GetSpendingSummaryByCategory(ctx context.Context, userID uuid.UUID, start, end time.Time) (map[string]float64, error)
 	GetCompletedUploadSummary(ctx context.Context, userID uuid.UUID) (totalTxns int, banks []string, err error)
+	GetTopRecurringRecipients(ctx context.Context, userID uuid.UUID, limit int) ([]string, []int, error)
+	GetDailySpendingPace(ctx context.Context, userID uuid.UUID) (currentMonthSpend float64, historicalDailyAvg float64, err error)
 }
 
 // BankStatementContextProvider supplies external bank statement data to the orchestrator.
@@ -58,16 +60,51 @@ func (p *BankStatementContextProvider) BuildContext(ctx context.Context, userID 
 
 	var parts []string
 	var totalSpend float64
+	var topCat string
+	var topCatAmount float64
 	for cat, amount := range summary {
 		parts = append(parts, fmt.Sprintf("%s: %.0f", cat, amount))
 		totalSpend += amount
+		if amount > topCatAmount {
+			topCat = cat
+			topCatAmount = amount
+		}
 	}
 
-	return fmt.Sprintf(
-		"[External bank data — %d transactions from %s. Spending by category (last 6 months): %s. Total external spend: %.0f. Use this data when the user asks about spending patterns, budgets, or financial habits outside Rail.]",
+	result := fmt.Sprintf(
+		"[External bank data — %d transactions from %s. Spending by category (last 6 months): %s. Total external spend: %.0f.",
 		totalTxns,
 		strings.Join(banks, ", "),
 		strings.Join(parts, " | "),
 		totalSpend,
 	)
+
+	// Top spending category with monthly average
+	if topCat != "" {
+		monthlyAvg := topCatAmount / 6
+		result += fmt.Sprintf(" Highest category: %s (%.0f/month avg).", topCat, monthlyAvg)
+	}
+
+	// Top recurring recipients
+	if names, counts, err := p.provider.GetTopRecurringRecipients(fetchCtx, userID, 5); err == nil && len(names) > 0 {
+		var recips []string
+		for i, name := range names {
+			recips = append(recips, fmt.Sprintf("%s (%dx)", name, counts[i]))
+		}
+		result += fmt.Sprintf(" Recurring recipients: %s.", strings.Join(recips, ", "))
+	}
+
+	// Spending pace pattern
+	if currentSpend, dailyAvg, err := p.provider.GetDailySpendingPace(fetchCtx, userID); err == nil && dailyAvg > 0 {
+		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		daysElapsed := now.Sub(monthStart).Hours() / 24
+		if daysElapsed < 1 {
+			daysElapsed = 1
+		}
+		currentDailyPace := currentSpend / daysElapsed
+		result += fmt.Sprintf(" Current daily pace: %.0f vs historical avg: %.0f/day.", currentDailyPace, dailyAvg)
+	}
+
+	result += " Use this data when the user asks about spending patterns, budgets, or financial habits outside Rail.]"
+	return result
 }
