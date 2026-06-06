@@ -917,23 +917,34 @@ func isFinancialDataTool(name string) bool {
 
 // enrichWithMemory appends relevant Supermemory results to a tool result map.
 func (o *Orchestrator) enrichWithMemory(ctx context.Context, userID uuid.UUID, tc ai.ToolCall, result map[string]interface{}) {
-	// Build a search query from the tool name and arguments
+	// Skip if tool returned an error
+	if _, hasErr := result["error"]; hasErr {
+		return
+	}
 	query := toolToMemoryQuery(tc)
 	if query == "" {
 		return
 	}
-	smCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// Use fresh context — the tool's ctx may be near expiry
+	smCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	memories, err := o.supermemory.SearchMemory(smCtx, userID.String(), query, 8)
+	memories, err := o.supermemory.SearchMemory(smCtx, userID.String(), query, 6)
 	if err != nil || len(memories) == 0 {
 		return
 	}
 	var relevant []string
 	for _, m := range memories {
-		if m.Similarity < 0.55 {
+		if m.Similarity < 0.6 {
 			continue
 		}
-		relevant = append(relevant, m.Memory)
+		mem := m.Memory
+		if len(mem) > 200 {
+			mem = mem[:200]
+		}
+		relevant = append(relevant, mem)
+		if len(relevant) >= 5 {
+			break
+		}
 	}
 	if len(relevant) > 0 {
 		result["bank_statement_context"] = relevant

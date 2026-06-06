@@ -167,23 +167,26 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 
 	// Auto-inject relevant Supermemory context for the user's query
-	if o.supermemory != nil && userID != uuid.Nil {
-		smCtx, smCancel := context.WithTimeout(ctx, 3*time.Second)
-		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), message, 10)
+	// Skip for short/non-financial messages to avoid wasted API calls
+	if o.supermemory != nil && userID != uuid.Nil && len(message) > 15 && looksFinancial(message) {
+		smCtx, smCancel := context.WithTimeout(ctx, 2*time.Second)
+		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), message, 8)
 		smCancel()
 		if smErr == nil && len(memories) > 0 {
 			var sb strings.Builder
-			sb.WriteString("[Personal financial memory — use this data to answer the user's question accurately:\n")
+			sb.WriteString("[Personal financial memory (from uploaded bank statements, may be in NGN/local currency — do NOT conflate with USD Rail balances):\n")
+			count := 0
 			for _, m := range memories {
-				if m.Similarity < 0.55 {
-					continue
+				if m.Similarity < 0.6 || count >= 6 {
+					break
 				}
 				sb.WriteString("• ")
 				sb.WriteString(m.Memory)
 				sb.WriteString("\n")
+				count++
 			}
 			sb.WriteString("]")
-			if sb.Len() > 80 { // Only inject if we found relevant memories
+			if count > 0 {
 				messages = append(messages, ai.Message{Role: "system", Content: sb.String()})
 			}
 		}
@@ -449,4 +452,24 @@ func thinkingMessage(toolName string) string {
 	default:
 		return "Working on it..."
 	}
+}
+
+// looksFinancial returns true if the message likely involves financial data
+// that would benefit from Supermemory context. Avoids wasted API calls for greetings.
+func looksFinancial(msg string) bool {
+	lower := strings.ToLower(msg)
+	keywords := []string{
+		"spend", "spent", "income", "salary", "earn", "money", "transfer",
+		"airtime", "bill", "budget", "category", "month", "week",
+		"how much", "total", "balance", "transaction", "payment",
+		"bank", "statement", "receipt", "expensive", "cost",
+		"who did i", "where did", "what did i", "compare",
+		"recurring", "subscription", "utilities", "food", "transport",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
