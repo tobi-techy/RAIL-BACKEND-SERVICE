@@ -80,8 +80,8 @@ func TestCalculateCryptoWithdrawalFee(t *testing.T) {
 		wantFee string
 	}{
 		{"same chain SOL→SOL", "100", "SOL", "SOL", "0.1"},
-		{"cross chain SOL→ETH", "500", "SOL", "ETH", "0.5"},
-		{"BASE→MATIC", "50", "BASE", "MATIC", "0.5"},
+		{"cross chain SOL→ETH", "500", "SOL", "ETH", "0.1"},
+		{"BASE→MATIC", "50", "BASE", "MATIC", "0.1"},
 	}
 
 	for _, tt := range tests {

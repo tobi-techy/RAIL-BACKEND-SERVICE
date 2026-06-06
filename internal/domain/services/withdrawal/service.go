@@ -33,8 +33,8 @@ const (
 	FiatWithdrawalMinAmountEUR  = 1.00 // Minimum EUR fiat withdrawal
 	CryptoWithdrawalFeePercent  = 0.0  // No percentage fee — flat only
 	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat service fee for Solana withdrawals
-	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat service fee for EVM chain withdrawals
-	FlatWithdrawalFee           = 0.50 // Default flat fee (legacy, use chain-specific)
+	CryptoWithdrawalFeeEVM      = 0.10 // $0.10 flat service fee for EVM chain withdrawals
+	FlatWithdrawalFee           = 0.10 // Default flat fee
 	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
 	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
 	FiatWithdrawalFeeGBP        = 1.00 // £1.00 flat fee for GBP withdrawals
