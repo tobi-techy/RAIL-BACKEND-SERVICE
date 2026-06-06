@@ -681,6 +681,8 @@ func (w *WorkerV2) postInstantInsightsWithBudgets(ctx context.Context, userID uu
 		Metadata:       metadata,
 	}); err != nil {
 		w.logger.Warn("failed to persist instant insights message", zap.Error(err), zap.String("user_id", userID.String()))
+	} else {
+		w.logger.Info("instant insights posted to conversation", zap.String("user_id", userID.String()), zap.String("conversation_id", convID.String()))
 	}
 }
 
