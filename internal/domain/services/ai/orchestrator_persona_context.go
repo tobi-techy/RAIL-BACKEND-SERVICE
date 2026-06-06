@@ -268,7 +268,7 @@ func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uui
 // BuildRealtimeInstructions returns Miriam's voice prompt with the same personal context
 // used by text chat. It is best-effort: missing context is skipped.
 func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
-	ch := make(chan string, 6)
+	ch := make(chan string, 7)
 
 	go func() { ch <- o.buildBalanceContext(ctx, userID) }()
 	go func() { ch <- o.buildStashLockContext(ctx, userID) }()
@@ -276,9 +276,16 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 	go func() { ch <- o.buildUserTimeContext(ctx, userID) }()
 	go func() { ch <- o.buildUserProfileContext(ctx, userID) }()
 	go func() { ch <- o.buildVoicePhaseContext(ctx, userID) }()
+	go func() {
+		if o.bankStatementCtx != nil {
+			ch <- o.bankStatementCtx.BuildContext(ctx, userID)
+		} else {
+			ch <- ""
+		}
+	}()
 
 	parts := []string{SystemPrompt}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 7; i++ {
 		if s := <-ch; s != "" {
 			parts = append(parts, s)
 		}

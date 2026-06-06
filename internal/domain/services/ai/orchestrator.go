@@ -354,7 +354,7 @@ YOUR USERS:
 MANDATORY TOOL USAGE (CRITICAL):
 - You MUST call the appropriate tool(s) BEFORE answering ANY question about the user's money, spending, balance, transactions, deposits, withdrawals, yield, or financial activity.
 - NEVER answer a financial question from memory or assumption. Always fetch fresh data first.
-- For general questions like "how am I doing", "give me an overview", "what changed", "what matters", "what should I do next", or "what's my financial situation" → call get_miriam_brief. It returns the canonical Miriam brief: exact snapshot, ranked insights, and next actions.
+- For general questions like "how am I doing", "give me an overview", "what changed", "what matters", "what should I do next", or "what's my financial situation" → call get_miriam_brief. It returns the canonical Miriam brief: exact snapshot, ranked insights, next actions, external bank transaction history from uploaded statements (in the "external_transactions" field — use this for detailed spending analysis), and a spending chart (in "chart_data"). When external_transactions are present, incorporate them into your analysis — mention specific categories, amounts, merchants, and patterns. Be thorough and proactive: highlight trends, anomalies, and actionable observations. The chart_data will be rendered visually for the user.
 - For "where did my money go" or "how much did I spend" → call get_money_flow FIRST, then get_recent_transactions if the user wants details.
 - For "what's my balance" or "how much do I have" → call get_account_summary.
 - For "show me my transactions" → call get_recent_transactions.
@@ -410,7 +410,7 @@ AUTOMATIONS — YOU CAN DO THIS:
 
 TOOL RULES:
 - ALWAYS call tools before answering money questions. Never guess balances or transactions.
-- Use get_miriam_brief for "how am I doing" / "what changed" / "what matters" / "what should I do next" / general overview.
+- Use get_miriam_brief for "how am I doing" / "what changed" / "what matters" / "what should I do next" / general overview / "what can you say about my finances". It includes external bank statement data and chart data — always incorporate external_transactions into a detailed analysis when present.
 - Use get_account_summary only for a simple balance snapshot.
 - Use get_money_flow for "where did my money go" / spending questions.
 - Use exact numbers from tools. $342.50 means $342.50, not "about $340".
@@ -894,10 +894,75 @@ func (o *Orchestrator) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	if err != nil && toolCtx.Err() == context.DeadlineExceeded {
 		o.logger.Warn("Tool execution timed out", zap.String("tool", tc.Name), zap.Duration("timeout", timeout))
 	}
+
+	// Enrich financial tool results with personal Supermemory data
+	if err == nil && result != nil && o.supermemory != nil && isFinancialDataTool(tc.Name) {
+		o.enrichWithMemory(ctx, userID, tc, result)
+	}
+
 	return result, err
 }
 
-// executeToolInner performs the actual tool dispatch.
+// isFinancialDataTool returns true for tools whose results benefit from personal memory context.
+func isFinancialDataTool(name string) bool {
+	switch name {
+	case ToolGetSpendingSummary, ToolGetSpendingChart, ToolGetRecentTransactions,
+		ToolGetMoneyFlow, ToolGetAccountSummary, ToolGetDepositHistory,
+		ToolGetIncomeTrend, ToolGetSpendingPatterns, ToolGetRecurringExpenses,
+		ToolGetMiriamBrief:
+		return true
+	}
+	return false
+}
+
+// enrichWithMemory appends relevant Supermemory results to a tool result map.
+func (o *Orchestrator) enrichWithMemory(ctx context.Context, userID uuid.UUID, tc ai.ToolCall, result map[string]interface{}) {
+	// Build a search query from the tool name and arguments
+	query := toolToMemoryQuery(tc)
+	if query == "" {
+		return
+	}
+	smCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	memories, err := o.supermemory.SearchMemory(smCtx, userID.String(), query, 8)
+	if err != nil || len(memories) == 0 {
+		return
+	}
+	var relevant []string
+	for _, m := range memories {
+		if m.Similarity < 0.55 {
+			continue
+		}
+		relevant = append(relevant, m.Memory)
+	}
+	if len(relevant) > 0 {
+		result["bank_statement_context"] = relevant
+		result["bank_statement_note"] = "Additional data from user's uploaded bank statements. Combine with Rail data above for a complete picture."
+	}
+}
+
+// toolToMemoryQuery builds a Supermemory search query based on tool call context.
+func toolToMemoryQuery(tc ai.ToolCall) string {
+	period, _ := tc.Arguments["period"].(string)
+	switch tc.Name {
+	case ToolGetSpendingSummary:
+		return "spending by category " + period
+	case ToolGetMoneyFlow:
+		return "income spending money flow " + period
+	case ToolGetRecentTransactions:
+		return "recent transactions " + period
+	case ToolGetSpendingPatterns:
+		return "spending patterns frequency"
+	case ToolGetDepositHistory, ToolGetIncomeTrend:
+		return "income received salary"
+	case ToolGetRecurringExpenses:
+		return "recurring payments subscription"
+	case ToolGetAccountSummary, ToolGetMiriamBrief:
+		return "monthly summary income spending"
+	default:
+		return ""
+	}
+}
 func (o *Orchestrator) executeToolInner(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
 	switch tc.Name {
 	case ToolVoiceMoneyLookup:

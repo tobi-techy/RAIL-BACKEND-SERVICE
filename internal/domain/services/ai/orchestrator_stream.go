@@ -166,6 +166,29 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		messages = append(messages, ai.Message{Role: "system", Content: timeCtx})
 	}
 
+	// Auto-inject relevant Supermemory context for the user's query
+	if o.supermemory != nil && userID != uuid.Nil {
+		smCtx, smCancel := context.WithTimeout(ctx, 3*time.Second)
+		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), message, 10)
+		smCancel()
+		if smErr == nil && len(memories) > 0 {
+			var sb strings.Builder
+			sb.WriteString("[Personal financial memory — use this data to answer the user's question accurately:\n")
+			for _, m := range memories {
+				if m.Similarity < 0.55 {
+					continue
+				}
+				sb.WriteString("• ")
+				sb.WriteString(m.Memory)
+				sb.WriteString("\n")
+			}
+			sb.WriteString("]")
+			if sb.Len() > 80 { // Only inject if we found relevant memories
+				messages = append(messages, ai.Message{Role: "system", Content: sb.String()})
+			}
+		}
+	}
+
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
 	req := &ai.ChatRequest{
