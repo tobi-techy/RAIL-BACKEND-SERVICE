@@ -7,12 +7,14 @@ import (
 )
 
 func TestBuildMiriamBriefCardKeepsDefaultsWhenInsightKeysMissing(t *testing.T) {
-	card := buildMiriamBriefCard(map[string]interface{}{
+	cards := buildMiriamBriefCards(map[string]interface{}{
 		"insights": []map[string]interface{}{
 			{"body": "missing title and severity"},
 		},
 	})
 
+	require.NotEmpty(t, cards)
+	card := cards[0]
 	require.Equal(t, "Miriam Brief", card.Title)
 	require.Equal(t, "neutral", card.Sentiment)
 }

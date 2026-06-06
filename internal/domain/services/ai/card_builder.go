@@ -52,7 +52,7 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 		case ToolGetFinancialTimeline:
 			cards = append(cards, buildFinancialTimelineCard(tr.Result))
 		case ToolGetMiriamBrief:
-			cards = append(cards, buildMiriamBriefCard(tr.Result))
+			cards = append(cards, buildMiriamBriefCards(tr.Result)...)
 		case ToolGetSubscriptions:
 			cards = append(cards, BuildSubscriptionAuditCard(tr.Result))
 		case ToolGetRunway:
@@ -68,7 +68,7 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 	return cards
 }
 
-func buildMiriamBriefCard(data map[string]interface{}) entities.InsightCard {
+func buildMiriamBriefCards(data map[string]interface{}) []entities.InsightCard {
 	insights := toMapSlice(data["insights"])
 	actions := toMapSlice(data["next_actions"])
 	title := "Miriam Brief"
@@ -82,7 +82,7 @@ func buildMiriamBriefCard(data map[string]interface{}) entities.InsightCard {
 			sentiment = fmt.Sprintf("%v", severityVal)
 		}
 	}
-	return entities.InsightCard{
+	cards := []entities.InsightCard{{
 		Type:      "miriam_brief",
 		Title:     title,
 		Subtitle:  subtitle,
@@ -92,7 +92,41 @@ func buildMiriamBriefCard(data map[string]interface{}) entities.InsightCard {
 			"insights":     insights,
 			"next_actions": actions,
 		},
+	}}
+
+	// Emit a chart card if chart_data is present
+	if chartRaw, ok := data["chart_data"]; ok && chartRaw != nil {
+		if chartMap, ok := chartRaw.(map[string]interface{}); ok {
+			points := toMapSlice(chartMap["data_points"])
+			if len(points) > 0 {
+				chartPoints := make([]entities.ChartPoint, 0, len(points))
+				for _, p := range points {
+					label := str(p, "date")
+					amountStr := str(p, "amount")
+					if label == "" || amountStr == "" {
+						continue
+					}
+					val, _ := decimal.NewFromString(amountStr)
+					chartPoints = append(chartPoints, entities.ChartPoint{
+						Label: label,
+						Value: val,
+					})
+				}
+				if len(chartPoints) > 0 {
+					cards = append(cards, entities.InsightCard{
+						Type:  "chart",
+						Title: "3-Month Spending Trend",
+						Data: entities.ChartData{
+							ChartType: "bar",
+							Points:    chartPoints,
+							YLabel:    "$",
+						},
+					})
+				}
+			}
+		}
 	}
+	return cards
 }
 
 func str(data map[string]interface{}, key string) string {
