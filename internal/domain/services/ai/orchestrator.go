@@ -937,7 +937,7 @@ func (o *Orchestrator) enrichWithMemory(ctx context.Context, userID uuid.UUID, t
 	}
 	if len(relevant) > 0 {
 		result["bank_statement_context"] = relevant
-		result["bank_statement_note"] = "Additional data from user's uploaded bank statements. Combine with Rail data above for a complete picture."
+		result["bank_statement_note"] = "Additional data from user's uploaded bank statements (may be in NGN or other local currency — do NOT mix with USD Rail balances). Present external bank data separately when relevant."
 	}
 }
 
@@ -1304,6 +1304,8 @@ func classifyQueryComplexity(message string) string {
 		"compared to", "versus", "vs ", "more than last", "less than last",
 		"how come", "what caused", "what happened",
 		"trend", "over time", "month over month", "week over week",
+		"last 3 month", "last 6 month", "my finance", "financial situation",
+		"what can you say", "what can you tell",
 	}
 	for _, p := range complexPatterns {
 		if strings.Contains(lower, p) {
