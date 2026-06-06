@@ -217,8 +217,8 @@ func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UU
 		limit = int(l)
 	}
 
-	period, _ := args["period"].(string)
-	hasPeriod := period != ""
+	period := resolvePeriodFromArgs(args)
+	hasPeriod := period != "this_month" || args["period"] != nil
 
 	var deposits []*entities.Deposit
 	if hasPeriod {
@@ -412,8 +412,8 @@ func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid
 		limit = int(l)
 	}
 
-	period, _ := args["period"].(string)
-	hasPeriod := period != ""
+	period := resolvePeriodFromArgs(args)
+	hasPeriod := period != "this_month" || args["period"] != nil
 
 	var withdrawals []*entities.Withdrawal
 	if hasPeriod {
@@ -577,7 +577,7 @@ func (o *Orchestrator) executeReceiptHistory(ctx context.Context, userID uuid.UU
 		return map[string]interface{}{"error": "receipt history not available"}, nil
 	}
 
-	period, _ := args["period"].(string)
+	period := resolvePeriodFromArgs(args)
 	start, end := parsePeriod(period)
 
 	receipts, err := o.receiptHistory.GetByUserIDInRange(ctx, userID, start, end, 15)

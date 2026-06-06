@@ -1344,9 +1344,11 @@ func (o *Orchestrator) executeAccountSummary(ctx context.Context, userID uuid.UU
 				result["stash_error"] = stashErr.Error()
 			}
 		} else {
-			result["spend_balance"] = spend.StringFixed(2)
-			result["stash_balance"] = stash.StringFixed(2)
-			result["total_balance"] = spend.Add(stash).StringFixed(2)
+			result["spend_balance"] = "$" + spend.StringFixed(2)
+			result["stash_balance"] = "$" + stash.StringFixed(2)
+			result["total_balance"] = "$" + spend.Add(stash).StringFixed(2)
+			result["currency"] = "USD"
+			result["currency_note"] = "All balances are in US Dollars (USDC). Read as dollars and cents, e.g. $0.79 is seventy-nine cents, $1.07 is one dollar and seven cents."
 		}
 	} else {
 		result["balances_error"] = "balance data is unavailable"

@@ -134,7 +134,7 @@ func (app *Application) Initialize() error {
 	app.log = log
 
 	// Initialize database
-	db, err := database.NewConnection(cfg.Database)
+	db, err := database.NewConnection(cfg.Database, cfg.Environment)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}

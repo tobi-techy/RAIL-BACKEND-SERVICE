@@ -62,8 +62,15 @@ func (h *VoiceHandler) HandleServerTool(c *gin.Context) {
 		return
 	}
 
-	// Remove user_id from params before passing to tool executor
+	// Remove meta params and strip placeholder/empty values that ElevenLabs
+	// sends when "required" fields have no meaningful value from the LLM.
 	delete(params, "user_id")
+	cleanServerToolParams(params)
+
+	h.logger.Debug("server tool call",
+		zap.String("user_id", userID.String()),
+		zap.String("tool", toolName),
+		zap.Any("params", params))
 
 	toolCtx, cancel := context.WithTimeout(c.Request.Context(), voiceToolTimeout)
 	defer cancel()
@@ -80,4 +87,23 @@ func (h *VoiceHandler) HandleServerTool(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// cleanServerToolParams removes empty, placeholder, or meaningless values that
+// ElevenLabs may force-send when query params are marked as required.
+func cleanServerToolParams(params map[string]interface{}) {
+	placeholders := map[string]bool{
+		"":     true,
+		"none": true, "null": true, "n/a": true,
+		"undefined": true, "not_applicable": true,
+	}
+	for key, val := range params {
+		s, ok := val.(string)
+		if !ok {
+			continue
+		}
+		if placeholders[strings.ToLower(strings.TrimSpace(s))] {
+			delete(params, key)
+		}
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -37,7 +38,19 @@ const (
 )
 
 // NewConnection creates a new database connection with enhanced configuration
-func NewConnection(cfg config.DatabaseConfig) (*sql.DB, error) {
+func NewConnection(cfg config.DatabaseConfig, environment ...string) (*sql.DB, error) {
+	env := "development"
+	if len(environment) > 0 {
+		env = environment[0]
+	}
+
+	if (env == "production" || env == "staging") &&
+		(strings.EqualFold(cfg.SSLMode, "disable") ||
+			strings.EqualFold(cfg.SSLMode, "allow") ||
+			strings.EqualFold(cfg.SSLMode, "prefer")) {
+		return nil, fmt.Errorf("database SSL mode %q is not allowed in %s environment; use 'require' or 'verify-full'", cfg.SSLMode, env)
+	}
+
 	var db *sql.DB
 	var lastErr error
 

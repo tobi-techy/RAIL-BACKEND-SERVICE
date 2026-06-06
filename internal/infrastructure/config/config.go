@@ -961,7 +961,7 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.user_limit", 200)
 	viper.SetDefault("rate_limit.user_window", 60) // 1 minute
 	viper.SetDefault("rate_limit.key_prefix", "ratelimit")
-	viper.SetDefault("rate_limit.fail_open", true)
+	viper.SetDefault("rate_limit.fail_open", false)
 	viper.SetDefault("rate_limit.response_headers", true)
 
 	// Endpoint-specific rate limits (per minute)

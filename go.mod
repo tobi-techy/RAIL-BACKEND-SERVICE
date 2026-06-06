@@ -2,7 +2,7 @@ module github.com/rail-service/rail_service
 
 go 1.25.0
 
-toolchain go1.25.1
+toolchain go1.25.5
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.9
