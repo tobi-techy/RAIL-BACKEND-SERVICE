@@ -21,7 +21,7 @@ type KYCSubmitRequest struct {
 	IDDocumentBack  string `json:"id_document_back,omitempty"`
 
 	// Source of funds questionnaire (required by Bridge)
-	SourceOfFunds              string `json:"source_of_funds,omitempty"`
+	SourceOfFunds              string `json:"source_of_funds,omitempty" validate:"omitempty,oneof=company_funds ecommerce_reseller gambling_proceeds gifts government_benefits inheritance investments_loans pension_retirement salary sale_of_assets_real_estate savings someone_elses_funds business_income freelance_income"`
 	EmploymentStatus           string `json:"employment_status,omitempty"`
 	ExpectedMonthlyPaymentsUSD string `json:"expected_monthly_payments_usd,omitempty"`
 	AccountPurpose             string `json:"account_purpose,omitempty"`

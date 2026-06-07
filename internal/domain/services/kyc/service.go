@@ -390,7 +390,7 @@ func (s *Service) StartSumsubSession(ctx context.Context, userID uuid.UUID, req 
 	// Submit source of funds to Bridge immediately (required before KYC approval)
 	if req.SourceOfFunds != "" {
 		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
-			SourceOfFunds:              req.SourceOfFunds,
+			SourceOfFunds:              normalizeBridgeSourceOfFunds(req.SourceOfFunds),
 			EmploymentStatus:           req.EmploymentStatus,
 			ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
 			AccountPurpose:             req.AccountPurpose,
@@ -913,7 +913,7 @@ func (s *Service) submitToBridge(ctx context.Context, customerID string, profile
 				ImageBack:      req.IDDocumentBack,
 			},
 		},
-		SourceOfFunds:              req.SourceOfFunds,
+		SourceOfFunds:              normalizeBridgeSourceOfFunds(req.SourceOfFunds),
 		EmploymentStatus:           req.EmploymentStatus,
 		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
 		AccountPurpose:             req.AccountPurpose,
@@ -948,7 +948,7 @@ func (s *Service) submitToBridgeFromSumsub(ctx context.Context, customerID strin
 				ImageBack:      req.IDDocumentBack,
 			},
 		},
-		SourceOfFunds:              req.SourceOfFunds,
+		SourceOfFunds:              normalizeBridgeSourceOfFunds(req.SourceOfFunds),
 		EmploymentStatus:           req.EmploymentStatus,
 		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
 		AccountPurpose:             req.AccountPurpose,
@@ -2282,7 +2282,7 @@ func (s *Service) buildBridgeKYCRequest(req *entities.KYCDigitSessionRequest, pr
 	}
 
 	bridgeReq := &bridge.UpdateCustomerRequest{
-		SourceOfFunds:              req.SourceOfFunds,
+		SourceOfFunds:              normalizeBridgeSourceOfFunds(req.SourceOfFunds),
 		EmploymentStatus:           req.EmploymentStatus,
 		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
 		AccountPurpose:             req.AccountPurpose,
@@ -2292,6 +2292,20 @@ func (s *Service) buildBridgeKYCRequest(req *entities.KYCDigitSessionRequest, pr
 	}
 
 	return bridgeReq
+}
+
+// normalizeBridgeSourceOfFunds maps client-sent source_of_funds values to valid Bridge API enum values.
+// Bridge accepts: company_funds, ecommerce_reseller, gambling_proceeds, gifts, government_benefits,
+// inheritance, investments_loans, pension_retirement, salary, sale_of_assets_real_estate, savings, someone_elses_funds.
+func normalizeBridgeSourceOfFunds(value string) string {
+	switch value {
+	case "business_income":
+		return "company_funds"
+	case "freelance_income":
+		return "salary"
+	default:
+		return value
+	}
 }
 
 // VerifyDiditWebhookSignature validates Didit webhook X-Signature-V2 + X-Timestamp.
