@@ -509,5 +509,46 @@ func voiceAliasParams(action string, params map[string]interface{}) {
 				delete(params, "target_date")
 			}
 		}
+	case ToolCreateAutomation:
+		// ElevenLabs sends simple params: {amount, frequency, name, note}
+		// Backend expects: {trigger_type, action_type, trigger_config, action_config, name}
+		if _, has := params["trigger_type"]; !has {
+			freq, _ := params["frequency"].(string)
+			triggerType := "schedule"
+			triggerConfig := map[string]interface{}{}
+
+			switch strings.ToLower(freq) {
+			case "daily":
+				triggerConfig["frequency"] = "daily"
+			case "weekly":
+				triggerConfig["frequency"] = "weekly"
+				if day, ok := params["day"].(string); ok {
+					triggerConfig["day"] = day
+				}
+			case "monthly":
+				triggerConfig["frequency"] = "monthly"
+				if dayOfMonth, ok := params["day_of_month"]; ok {
+					triggerConfig["day_of_month"] = dayOfMonth
+				}
+			default:
+				triggerConfig["frequency"] = "weekly"
+			}
+
+			params["trigger_type"] = triggerType
+			params["trigger_config"] = triggerConfig
+			params["action_type"] = "transfer_to_stash"
+			params["action_config"] = map[string]interface{}{
+				"amount": params["amount"],
+				"from":   "spend",
+				"to":     "stash",
+			}
+			delete(params, "amount")
+			delete(params, "frequency")
+			delete(params, "day")
+			delete(params, "day_of_month")
+			delete(params, "note")
+		}
+		// Mark as voice session to skip passcode check
+		params["_voice_session"] = true
 	}
 }

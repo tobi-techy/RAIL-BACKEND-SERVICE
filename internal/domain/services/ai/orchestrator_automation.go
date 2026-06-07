@@ -204,8 +204,13 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	actionConfig, _ := params["action_config"].(map[string]interface{})
 
 	if actionType == entities.ActionTransferToStash || actionType == entities.ActionTransferToSpend {
-		if err := validateTransferAutomationAuthorization(actionConfig, time.Now().UTC()); err != nil {
-			return nil, err
+		// Voice-created automations skip passcode check — user is already
+		// authenticated via voice session token (JWT-verified).
+		isVoice, _ := params["_voice_session"].(bool)
+		if !isVoice {
+			if err := validateTransferAutomationAuthorization(actionConfig, time.Now().UTC()); err != nil {
+				return nil, err
+			}
 		}
 	}
 
