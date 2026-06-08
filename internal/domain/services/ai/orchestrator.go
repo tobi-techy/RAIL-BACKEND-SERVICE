@@ -677,6 +677,36 @@ func (o *Orchestrator) ChatInContextWithOptions(ctx context.Context, userID, con
 		messages = append(messages, ai.Message{Role: "system", Content: voiceCtx})
 	}
 
+	// Auto-inject relevant Supermemory context for the user's query.
+	// This ensures external bank statement data is always available regardless of which tool the LLM calls.
+	if o.supermemory != nil && userID != uuid.Nil && len(message) > 15 && looksFinancial(message) {
+		smCtx, smCancel := context.WithTimeout(ctx, 3*time.Second)
+		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), message, 10)
+		smCancel()
+		if smErr == nil && len(memories) > 0 {
+			var sb strings.Builder
+			sb.WriteString("[Personal financial memory (from uploaded bank statements and past conversations — may be in NGN/local currency, do NOT conflate with USD Rail balances):\n")
+			count := 0
+			for _, m := range memories {
+				if m.Similarity < 0.55 || count >= 8 {
+					break
+				}
+				text := strings.TrimSpace(m.Memory)
+				if text == "" {
+					continue
+				}
+				sb.WriteString("• ")
+				sb.WriteString(text)
+				sb.WriteString("\n")
+				count++
+			}
+			sb.WriteString("Use this data to give detailed, proactive analysis. Reference specific transactions, categories, and patterns.]")
+			if count > 0 {
+				messages = append(messages, ai.Message{Role: "system", Content: sb.String()})
+			}
+		}
+	}
+
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
 	// Initial request

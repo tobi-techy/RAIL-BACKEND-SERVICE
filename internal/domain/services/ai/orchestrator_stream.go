@@ -465,6 +465,7 @@ func looksFinancial(msg string) bool {
 		"bank", "statement", "receipt", "expensive", "cost",
 		"who did i", "where did", "what did i", "compare",
 		"recurring", "subscription", "utilities", "food", "transport",
+		"finance", "financial", "overview", "summary",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
