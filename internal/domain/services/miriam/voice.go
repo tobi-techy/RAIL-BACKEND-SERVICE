@@ -241,12 +241,12 @@ var messageBank = map[Phase]map[MessageType][]messageFunc{
 		},
 		MsgPredictionIdleSurplus: {
 			func(v MessageVars) string {
-				return fmt.Sprintf("%s sitting in Spend. Stash earns yield if you want to move some.", v.Amount)
+				return fmt.Sprintf("%s sitting in Spend doing nothing. That could be earning yield in Stash right now.", v.Amount)
 			},
 		},
 		MsgPredictionStashOpportunity: {
 			func(v MessageVars) string {
-				return fmt.Sprintf("Stash has room to grow. %s could go there from Spend if you're comfortable.", v.Amount)
+				return fmt.Sprintf("Your Stash has room to grow. %s from Spend could start working for you — no pressure.", v.Amount)
 			},
 		},
 		MsgBillWarning: {

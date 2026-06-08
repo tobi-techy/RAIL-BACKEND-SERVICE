@@ -92,6 +92,7 @@ func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, user
 		// Extract facts and calibrate tone from this exchange
 		if o.memory != nil {
 			o.memory.ProcessExchange(userID, message, resp.Content)
+			o.memory.ExtractMoment(userID, message, resp.Content)
 		}
 
 		// Ingest into Supermemory in its own goroutine — don't block the persist goroutine

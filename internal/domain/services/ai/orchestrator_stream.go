@@ -106,6 +106,10 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 					o.logger.Error("failed to track streamed chat usage", zap.Error(trackErr))
 				}
 			}
+			// Extract memorable moments for future callbacks
+			if o.memory != nil {
+				o.memory.ExtractMoment(userID, message, content)
+			}
 		}()
 	}
 
@@ -136,61 +140,11 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	messages := make([]ai.Message, len(history), len(history)+10)
 	copy(messages, history)
 
-	// Inject current balance snapshot so the LLM always knows the user's financial position
-	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: balanceCtx})
-	}
-	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: profileCtx})
-	}
-	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: userProfileCtx})
-	}
-	if o.bankStatementCtx != nil {
-		if stmtCtx := o.bankStatementCtx.BuildContext(ctx, userID); stmtCtx != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: stmtCtx})
-		}
-	}
-	if o.memory != nil {
-		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: memCtx})
-		}
-		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: toneCtx})
-		}
-	}
-	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: toneModeCtx})
-	}
-	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: timeCtx})
-	}
-
-	// Auto-inject relevant Supermemory context for the user's query
-	// Skip for short/non-financial messages to avoid wasted API calls
-	if o.supermemory != nil && userID != uuid.Nil && len(message) > 15 && looksFinancial(message) {
-		smCtx, smCancel := context.WithTimeout(ctx, 2*time.Second)
-		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), message, 8)
-		smCancel()
-		if smErr == nil && len(memories) > 0 {
-			var sb strings.Builder
-			sb.WriteString("[Personal financial memory (from uploaded bank statements, may be in NGN/local currency — do NOT conflate with USD Rail balances):\n")
-			count := 0
-			for _, m := range memories {
-				if m.Similarity < 0.6 || count >= 6 {
-					break
-				}
-				sb.WriteString("• ")
-				sb.WriteString(m.Memory)
-				sb.WriteString("\n")
-				count++
-			}
-			sb.WriteString("]")
-			if count > 0 {
-				messages = append(messages, ai.Message{Role: "system", Content: sb.String()})
-			}
-		}
-	}
+	// Assemble all context in parallel (3s ceiling)
+	messages = append(messages, o.assembleContext(ctx, userID, ContextAssemblyOpts{
+		ToneMode: opts.ToneMode,
+		Message:  message,
+	})...)
 
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
@@ -198,12 +152,12 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
 		MaxTokens:    2048,
-		Temperature:  ai.Float64(0.4),
+		Temperature:  ai.Float64(0.6),
 		ModelHint:    classifyQueryComplexity(message),
 	}
 
 	// Non-streaming tool call rounds (up to 5)
-	tools := o.GetTools()
+	tools := o.RouteTools(message)
 	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 	if err != nil {
 		observeChat("unknown", time.Since(start), 0, err)
@@ -319,6 +273,19 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
 			content := o.applySafetyFilter(resp.Content)
+			// Quality gate: retry once if response is flat/boring
+			if verdict := CheckResponseQuality(content); !verdict.Pass {
+				if hint := QualityCorrectionHint(verdict.Failures); hint != "" {
+					retryMsgs := make([]ai.Message, len(req.Messages), len(req.Messages)+2)
+					copy(retryMsgs, req.Messages)
+					retryMsgs = append(retryMsgs, ai.Message{Role: "assistant", Content: content}, ai.Message{Role: "system", Content: hint})
+					retryReq := &ai.ChatRequest{Messages: retryMsgs, SystemPrompt: SystemPrompt, MaxTokens: 2048, Temperature: ai.Float64(0.7), ModelHint: "fast"}
+					if retryResp, err := o.aiProvider.ChatCompletion(ctx, retryReq); err == nil && retryResp.Content != "" {
+						content = o.applySafetyFilter(retryResp.Content)
+						cumulativeTokens += retryResp.TokensUsed
+					}
+				}
+			}
 			emit(StreamEvent{Type: "token", Content: content})
 		}
 		modelName := resp.Model
