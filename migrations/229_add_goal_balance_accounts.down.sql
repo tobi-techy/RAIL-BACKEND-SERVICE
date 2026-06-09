@@ -1,4 +1,5 @@
 -- Revert goal_balance sub-account support
+BEGIN;
 
 DROP INDEX IF EXISTS idx_ledger_accounts_user_goal_type;
 DROP INDEX IF EXISTS idx_ledger_accounts_user_goal;
@@ -39,3 +40,5 @@ ALTER TABLE ledger_accounts ADD CONSTRAINT chk_account_type CHECK (account_type 
 ALTER TABLE ledger_accounts VALIDATE CONSTRAINT chk_account_type;
 
 ALTER TABLE ledger_accounts DROP COLUMN IF EXISTS goal_id;
+
+COMMIT;
