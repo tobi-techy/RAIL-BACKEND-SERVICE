@@ -7,9 +7,18 @@ ALTER TABLE ledger_accounts DROP CONSTRAINT IF EXISTS chk_non_goal_no_goal_id;
 ALTER TABLE ledger_accounts DROP CONSTRAINT IF EXISTS chk_goal_balance_has_goal;
 
 -- Clean up any goal_balance accounts before removing the type from the constraint.
--- Merge goal balances back into stash (preserves funds).
-UPDATE ledger_accounts SET account_type = 'stash_balance', goal_id = NULL
-    WHERE account_type = 'goal_balance';
+-- Merge goal balances back into existing stash accounts, then delete goal rows.
+UPDATE ledger_accounts stash
+SET balance = stash.balance + goal.total
+FROM (
+    SELECT user_id, SUM(balance) AS total
+    FROM ledger_accounts
+    WHERE account_type = 'goal_balance'
+    GROUP BY user_id
+) goal
+WHERE stash.user_id = goal.user_id AND stash.account_type = 'stash_balance';
+
+DELETE FROM ledger_accounts WHERE account_type = 'goal_balance';
 
 ALTER TABLE ledger_accounts DROP CONSTRAINT IF EXISTS chk_account_type;
 ALTER TABLE ledger_accounts ADD CONSTRAINT chk_account_type CHECK (account_type IN (

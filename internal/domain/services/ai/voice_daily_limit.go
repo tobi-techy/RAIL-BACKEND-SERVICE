@@ -66,18 +66,25 @@ func (l *VoiceDailyLimiter) CheckAndRecord(ctx context.Context, userID uuid.UUID
 	}
 
 	if result != "0" {
-		remaining := voiceDailyLimitUSD - parseFloat(result)
+		current, pErr := parseFloat(result)
+		if pErr != nil {
+			return fmt.Errorf("voice_daily_limit: failed to parse spend (fail-closed): %w", pErr)
+		}
+		remaining := voiceDailyLimitUSD - current
 		if remaining < 0 {
 			remaining = 0
 		}
 		return fmt.Errorf("voice_daily_limit: You've used $%.0f of your $%.0f daily voice limit. Remaining: $%.0f. Open the app for larger transfers.",
-			parseFloat(result), voiceDailyLimitUSD, remaining)
+			current, voiceDailyLimitUSD, remaining)
 	}
 	return nil
 }
 
-func parseFloat(s string) float64 {
+func parseFloat(s string) (float64, error) {
 	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
+	_, err := fmt.Sscanf(s, "%f", &f)
+	if err != nil {
+		return 0, fmt.Errorf("invalid float %q: %w", s, err)
+	}
+	return f, nil
 }
