@@ -345,7 +345,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 		if p.Reasoning != "" {
 			return p.Reasoning
 		}
-		return "Miriam noticed something about your money — tap to see."
+		return "I noticed something about your money. Come talk to me."
 	}
 
 	msg := PhaseMessage(phase, msgType, vars)
@@ -353,7 +353,7 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 		if p.Reasoning != "" {
 			return p.Reasoning
 		}
-		return "Miriam noticed something about your money — tap to see."
+		return "Something's up with your money. Let's look at it together."
 	}
 	return msg
 }

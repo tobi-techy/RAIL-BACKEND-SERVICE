@@ -156,6 +156,21 @@ func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID u
 	return nil
 }
 
+// SetPersonalityMode updates the personality_mode column for a user's tone profile.
+func (r *MiriamMemoryRepository) SetPersonalityMode(ctx context.Context, userID uuid.UUID, mode string) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO miriam_tone_profiles (user_id, formality, directness, warmth, humor, brevity, personality_mode, sample_count)
+		VALUES ($1, 0.5, 0.5, 0.5, 0.5, 0.5, $2, 0)
+		ON CONFLICT (user_id) DO UPDATE SET
+			personality_mode = $2,
+			updated_at = NOW()`,
+		userID, mode)
+	if err != nil {
+		return fmt.Errorf("set personality mode: %w", err)
+	}
+	return nil
+}
+
 // --- Staleness & Decay ---
 
 // DecayStaleFacts reduces confidence of facts not confirmed within the given duration.

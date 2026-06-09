@@ -23,6 +23,7 @@ type MemoryStore interface {
 	DeleteFact(ctx context.Context, factID, userID uuid.UUID) error
 	GetToneProfile(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error)
 	UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle, localeStyle string) error
+	SetPersonalityMode(ctx context.Context, userID uuid.UUID, mode string) error
 	// Staleness
 	DecayStaleFacts(ctx context.Context, staleDuration time.Duration, decayAmount decimal.Decimal) (int64, error)
 	ExpireLowConfidenceFacts(ctx context.Context, threshold decimal.Decimal) (int64, error)
@@ -197,6 +198,7 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 		"income_pattern": true, "deposit_cadence": true, "salary_day": true,
 		"freelance_pattern": true, "family_support": true, "currency_context": true,
 		"risk_preference": true, "stash_behavior": true,
+		"conversation_moment": true,
 	}
 
 	for _, f := range result.Facts {
@@ -361,24 +363,25 @@ func (m *MemoryService) BuildMemoryContext(ctx context.Context, userID uuid.UUID
 	}
 
 	categoryLabels := map[string]string{
-		"goal":               "Goals",
-		"life_event":         "Life events",
-		"preference":         "Preferences",
-		"habit":              "Habits",
-		"fear":               "Concerns",
-		"family":             "Family",
-		"work":               "Work",
-		"location":           "Location",
-		"identity":           "Identity",
-		"financial_behavior": "Money personality",
-		"income_pattern":     "Income pattern",
-		"deposit_cadence":    "Deposit cadence",
-		"salary_day":         "Salary day",
-		"freelance_pattern":  "Freelance pattern",
-		"family_support":     "Family support",
-		"currency_context":   "Currency context",
-		"risk_preference":    "Risk preference",
-		"stash_behavior":     "Stash behavior",
+		"goal":                "Goals",
+		"life_event":          "Life events",
+		"preference":          "Preferences",
+		"habit":               "Habits",
+		"fear":                "Concerns",
+		"family":              "Family",
+		"work":                "Work",
+		"location":            "Location",
+		"identity":            "Identity",
+		"financial_behavior":  "Money personality",
+		"income_pattern":      "Income pattern",
+		"deposit_cadence":     "Deposit cadence",
+		"salary_day":          "Salary day",
+		"freelance_pattern":   "Freelance pattern",
+		"family_support":      "Family support",
+		"currency_context":    "Currency context",
+		"risk_preference":     "Risk preference",
+		"stash_behavior":      "Stash behavior",
+		"conversation_moment": "Past moments",
 	}
 
 	for cat, label := range categoryLabels {
@@ -463,6 +466,11 @@ func (m *MemoryService) BuildToneContext(ctx context.Context, userID uuid.UUID) 
 	}
 
 	return "[TONE CALIBRATION — adapt your style for this user: " + strings.Join(parts, ". ") + ".]"
+}
+
+// SetPersonalityMode updates the user's chosen personality mode.
+func (m *MemoryService) SetPersonalityMode(ctx context.Context, userID uuid.UUID, mode string) error {
+	return m.store.SetPersonalityMode(ctx, userID, mode)
 }
 
 // --- Memory Summarization ---
