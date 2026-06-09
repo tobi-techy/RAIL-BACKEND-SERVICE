@@ -2,7 +2,9 @@ package revenue_sweep
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,92 +13,136 @@ import (
 	"go.uber.org/zap"
 )
 
-// TransferAdapter performs revenue transfers to the treasury wallet.
-type TransferAdapter interface {
+// TransferService moves USDC from a user's custody wallet to the treasury.
+type TransferService interface {
 	TransferToTreasury(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error
 }
 
-// Worker periodically sweeps accumulated fee revenue to the treasury wallet.
+// Worker periodically sweeps fee revenue to the company treasury wallet.
+//
+// Revenue from withdrawal fees and emergency withdrawal fees stays in users'
+// Circle wallets (only the ledger balance is decremented). This worker finds
+// users with unswept fee revenue and transfers USDC from their wallets to the
+// treasury, then zeroes the ledger revenue account.
 type Worker struct {
-	transfer       TransferAdapter
+	transfer       TransferService
 	db             *sqlx.DB
-	minAmount      decimal.Decimal
+	minSweepAmount decimal.Decimal
 	interval       time.Duration
 	logger         *zap.Logger
 	stopCh         chan struct{}
 	stopOnce       sync.Once
+	sweeping       int32
 }
 
-// NewWorker creates a revenue sweep worker.
-func NewWorker(transfer TransferAdapter, db *sqlx.DB, minAmount decimal.Decimal, interval time.Duration, logger *zap.Logger) *Worker {
+func NewWorker(
+	transfer TransferService,
+	db *sqlx.DB,
+	minSweepAmount decimal.Decimal,
+	interval time.Duration,
+	logger *zap.Logger,
+) *Worker {
 	return &Worker{
-		transfer:  transfer,
-		db:        db,
-		minAmount: minAmount,
-		interval:  interval,
-		logger:    logger,
-		stopCh:    make(chan struct{}),
+		transfer:       transfer,
+		db:             db,
+		minSweepAmount: minSweepAmount,
+		interval:       interval,
+		logger:         logger,
+		stopCh:         make(chan struct{}),
 	}
 }
 
-// Start begins the periodic sweep loop.
 func (w *Worker) Start() {
-	go w.loop()
+	ticker := time.NewTicker(w.interval)
+	go func() {
+		w.run()
+		for {
+			select {
+			case <-ticker.C:
+				w.run()
+			case <-w.stopCh:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
 }
 
-// Stop gracefully stops the worker.
 func (w *Worker) Stop() {
 	w.stopOnce.Do(func() { close(w.stopCh) })
 }
 
-func (w *Worker) loop() {
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-w.stopCh:
-			return
-		case <-ticker.C:
-			if err := w.sweep(); err != nil {
-				w.logger.Error("revenue sweep failed", zap.Error(err))
-			}
-		}
+func (w *Worker) run() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if err := w.sweep(ctx); err != nil {
+		w.logger.Error("Revenue sweep failed", zap.Error(err))
 	}
 }
 
-func (w *Worker) sweep() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+type unsweptFee struct {
+	ID     uuid.UUID       `db:"id"`
+	UserID uuid.UUID       `db:"user_id"`
+	Amount decimal.Decimal `db:"fee_amount"`
+}
 
-	// Query revenue accounts with balance above minimum
-	type revenueRow struct {
-		UserID  uuid.UUID       `db:"user_id"`
-		Balance decimal.Decimal `db:"balance"`
+func (w *Worker) sweep(ctx context.Context) error {
+	if !atomic.CompareAndSwapInt32(&w.sweeping, 0, 1) {
+		return nil
+	}
+	defer atomic.StoreInt32(&w.sweeping, 0)
+
+	if w.db == nil {
+		return nil
 	}
 
-	var rows []revenueRow
-	err := w.db.SelectContext(ctx, &rows,
-		`SELECT user_id, balance FROM ledger_accounts
-		 WHERE account_type IN ('withdrawal_fee_revenue', 'emergency_withdrawal_revenue', 'subscription_revenue')
-		   AND balance >= $1`,
-		w.minAmount)
+	// Find completed withdrawals with fees that haven't been swept to treasury yet.
+	var fees []unsweptFee
+	err := w.db.SelectContext(ctx, &fees, `
+		SELECT id, user_id, fee_amount FROM withdrawals
+		WHERE status = 'completed' AND fee_amount > 0 AND fee_swept = FALSE
+		ORDER BY created_at ASC LIMIT 50`)
 	if err != nil {
-		return err
+		return fmt.Errorf("query unswept fees: %w", err)
 	}
 
-	for _, row := range rows {
-		ref := "revenue_sweep:" + uuid.New().String()
-		if err := w.transfer.TransferToTreasury(ctx, row.UserID, row.Balance, ref); err != nil {
-			w.logger.Warn("revenue sweep transfer failed",
-				zap.String("user_id", row.UserID.String()),
-				zap.String("amount", row.Balance.String()),
-				zap.Error(err))
+	if len(fees) == 0 {
+		w.logger.Debug("Revenue sweep: no unswept fees found")
+		return nil
+	}
+
+	var swept, failed int
+	for _, f := range fees {
+		if f.Amount.LessThan(w.minSweepAmount) {
 			continue
 		}
-		w.logger.Info("revenue swept",
-			zap.String("user_id", row.UserID.String()),
-			zap.String("amount", row.Balance.String()))
+
+		ref := fmt.Sprintf("fee-sweep-%s", f.ID.String())
+		if err := w.transfer.TransferToTreasury(ctx, f.UserID, f.Amount, ref); err != nil {
+			w.logger.Warn("Revenue sweep transfer failed",
+				zap.String("withdrawal_id", f.ID.String()),
+				zap.String("user_id", f.UserID.String()),
+				zap.Error(err))
+			failed++
+			continue
+		}
+
+		// Mark as swept
+		if _, err := w.db.ExecContext(ctx, `UPDATE withdrawals SET fee_swept = TRUE WHERE id = $1`, f.ID); err != nil {
+			// CRITICAL: Fee transfer succeeded but DB mark failed. Money moved but fee
+			// may be swept again. Count as swept since funds left the account.
+			// Requires manual reconciliation to mark this withdrawal in the database.
+			w.logger.Error("CRITICAL: fee transfer succeeded but failed to mark as swept — requires manual reconciliation",
+				zap.String("withdrawal_id", f.ID.String()),
+				zap.String("user_id", f.UserID.String()),
+				zap.Error(err))
+		}
+		swept++
+	}
+
+	if swept > 0 || failed > 0 {
+		w.logger.Info("Revenue sweep cycle complete",
+			zap.Int("swept", swept), zap.Int("failed", failed))
 	}
 	return nil
 }

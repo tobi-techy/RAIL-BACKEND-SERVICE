@@ -172,6 +172,10 @@ func (h *PajHandlers) ResolveBankAccount(c *gin.Context) {
 
 	resolved, err := h.service.ResolveBankAccount(c.Request.Context(), userID, req.BankID, req.AccountNumber)
 	if err != nil {
+		// For transient upstream failures, hint the client to retry.
+		if !h.isUserError(err) {
+			c.Header("Retry-After", "3")
+		}
 		h.handleSessionError(c, err)
 		return
 	}
@@ -447,6 +451,23 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 	// Everything else is a genuine upstream failure → 502
 	h.logger.Error("paj operation failed", zap.Error(err))
 	c.JSON(http.StatusBadGateway, gin.H{"code": "PAJ_ERROR", "message": "NGN service temporarily unavailable"})
+}
+
+// isUserError returns true if the error maps to a 4xx (user-actionable) response.
+func (h *PajHandlers) isUserError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "no paj session") || strings.Contains(msg, "paj session expired") {
+		return true
+	}
+	var pajErr *paj.APIError
+	if errors.As(err, &pajErr) && pajErr.StatusCode >= 400 && pajErr.StatusCode < 500 {
+		return true
+	}
+	var bridgeErr *bridge.ErrorResponse
+	if errors.As(err, &bridgeErr) && bridgeErr.StatusCode >= 400 && bridgeErr.StatusCode < 500 {
+		return true
+	}
+	return false
 }
 
 func maskEmail(email string) string {

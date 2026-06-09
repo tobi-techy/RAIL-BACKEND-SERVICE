@@ -76,6 +76,7 @@ type LedgerBalanceView struct {
 // LedgerIntegration interface for ledger operations
 type LedgerIntegration interface {
 	RecordDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string) error
+	RecordDepositWithAllocation(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string, spendingAmount, stashAmount decimal.Decimal) error
 	CompensateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID) error
 	GetUserBalance(ctx context.Context, userID uuid.UUID) (*LedgerBalanceView, error)
 }

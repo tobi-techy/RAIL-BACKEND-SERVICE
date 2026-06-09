@@ -277,6 +277,22 @@ func (r *GameplayRepository) CountFailedCharges(ctx context.Context, subscriptio
 	return count, err
 }
 
+func (r *GameplayRepository) MarkBridgeTransferred(ctx context.Context, chargeID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE subscription_charges SET bridge_transferred = TRUE WHERE id = $1`, chargeID)
+	return err
+}
+
+func (r *GameplayRepository) GetUnTransferredCharges(ctx context.Context, limit int) ([]*entities.SubscriptionCharge, error) {
+	var charges []*entities.SubscriptionCharge
+	err := r.db.SelectContext(ctx, &charges, `
+		SELECT id, subscription_id, user_id, amount, period_start, period_end
+		FROM subscription_charges
+		WHERE status = 'completed' AND bridge_transferred = FALSE AND charged_at < NOW() - INTERVAL '5 minutes'
+		ORDER BY charged_at ASC LIMIT $1`, limit)
+	return charges, err
+}
+
 // --- Active Users (for workers) ---
 
 func (r *GameplayRepository) GetActiveUserIDs(ctx context.Context) ([]uuid.UUID, error) {

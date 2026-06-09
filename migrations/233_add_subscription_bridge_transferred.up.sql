@@ -1,0 +1,1 @@
+ALTER TABLE subscription_charges ADD COLUMN IF NOT EXISTS bridge_transferred BOOLEAN NOT NULL DEFAULT FALSE;

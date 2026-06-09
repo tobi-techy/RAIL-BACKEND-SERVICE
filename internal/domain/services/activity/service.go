@@ -159,11 +159,13 @@ func (s *Service) fetchDepositsAndPajOrders(ctx context.Context, userID uuid.UUI
 
 func (s *Service) fetchWithdrawals(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, withdrawal_type, currency, amount, fee_amount, destination_chain,
-		       destination_address, tx_hash, status, created_at, completed_at
-		FROM withdrawals
-		WHERE user_id = $1
-		ORDER BY created_at DESC LIMIT $2`, userID, limit)
+		SELECT w.id, w.withdrawal_type, w.currency, w.amount, w.fee_amount, w.destination_chain,
+		       w.destination_address, w.tx_hash, w.status, w.created_at, w.completed_at,
+		       w.narration, ba.bank_name
+		FROM withdrawals w
+		LEFT JOIN bank_accounts ba ON ba.id = w.bank_account_id
+		WHERE w.user_id = $1
+		ORDER BY w.created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -172,19 +174,26 @@ func (s *Service) fetchWithdrawals(ctx context.Context, userID uuid.UUID, limit 
 	var items []entities.ActivityItem
 	for rows.Next() {
 		var w entities.Withdrawal
-		var destAddr, txHash *string
+		var destAddr, txHash, narration, bankName *string
 		var completedAt sql.NullTime
 		if err := rows.Scan(&w.ID, &w.WithdrawalType, &w.Currency, &w.Amount, &w.FeeAmount,
-			&w.DestinationChain, &destAddr, &txHash, &w.Status, &w.CreatedAt, &completedAt); err != nil {
+			&w.DestinationChain, &destAddr, &txHash, &w.Status, &w.CreatedAt, &completedAt,
+			&narration, &bankName); err != nil {
 			s.logger.Warn("scan withdrawal", zap.Error(err))
 			continue
 		}
 		w.DestinationAddress = destAddr
 		w.TxHash = txHash
+		w.Narration = narration
 		if completedAt.Valid {
 			w.CompletedAt = &completedAt.Time
 		}
-		items = append(items, entities.NormalizeWithdrawalToActivity(&w))
+		item := entities.NormalizeWithdrawalToActivity(&w)
+		if bankName != nil {
+			item.BankName = *bankName
+			item.ReceiverName = *bankName
+		}
+		items = append(items, item)
 	}
 	return items, nil
 }

@@ -10,6 +10,7 @@ import (
 // SubscriptionRenewer renews due subscriptions
 type SubscriptionRenewer interface {
 	RenewDueSubscriptions(ctx context.Context) (charged, failed int)
+	RetryFailedTransfers(ctx context.Context) (transferred, failed int)
 }
 
 // Worker runs daily subscription billing
@@ -53,6 +54,12 @@ func (w *Worker) run(ctx context.Context) {
 	if charged > 0 || failed > 0 {
 		w.logger.Info("Subscription billing cycle complete",
 			zap.Int("charged", charged), zap.Int("failed", failed))
+	}
+
+	transferred, retryFailed := w.renewer.RetryFailedTransfers(ctx)
+	if transferred > 0 || retryFailed > 0 {
+		w.logger.Info("Subscription transfer retry complete",
+			zap.Int("transferred", transferred), zap.Int("failed", retryFailed))
 	}
 }
 
