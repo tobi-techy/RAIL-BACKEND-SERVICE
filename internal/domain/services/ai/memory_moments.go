@@ -113,8 +113,11 @@ func (m *MemoryService) detectMoment(ctx context.Context, userMessage, assistant
 }
 
 func (m *MemoryService) saveMomentAsFact(ctx context.Context, userID uuid.UUID, moment *MomentFact, factText string) error {
-	// Supersede older moments of the same topic to prevent unbounded accumulation.
-	// Keep only the most recent moment per topic.
+	// Supersede older moments of the same type to prevent unbounded accumulation.
+	// We match by type prefix ("[goal]", "[preference]", etc.) rather than topic substring
+	// because topic matching via Contains was too fragile — partial matches like "money"
+	// would incorrectly supersede unrelated facts containing that word. Type-based matching
+	// ensures only one moment per category (e.g., one active goal, one active preference).
 	var supersedes *uuid.UUID
 	existing, err := m.store.GetActiveFactsByCategory(ctx, userID, "conversation_moment")
 	if err == nil {
