@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // TestSystemPromptContainsBigSisterPersonality verifies the core personality is embedded.
@@ -251,22 +252,56 @@ func TestBuildRealtimeInstructionsUsesSystemPrompt(t *testing.T) {
 
 	// Must contain the base system prompt (chat personality)
 	assert.Contains(t, instructions, "older sister who figured money out")
-	// Must also contain voice-specific additions
+	// Must also contain voice-specific additions (global locale for unknown user)
 	assert.Contains(t, instructions, "VOICE OUTPUT")
-	assert.Contains(t, instructions, "NIGERIAN FINANCIAL PIDGIN RECOGNITION")
+	assert.Contains(t, instructions, "MIRIAM VOICE MODE")
+	assert.Contains(t, instructions, "voice_money_lookup")
 	// Must contain the aligned voice identity (not the old "calm, sharp" one)
 	assert.Contains(t, instructions, "warm but firm")
 	assert.NotContains(t, instructions, "a calm, sharp financial voice")
 }
 
-// TestTemperatureIsCreativeNotRobotic verifies temperature setting.
+// TestTemperatureIsCreativeNotRobotic verifies the orchestrator sets Temperature=0.6
+// on the outgoing AI chat request — creative enough for personality, not wild.
 func TestTemperatureIsCreativeNotRobotic(t *testing.T) {
-	// The temperature should be 0.6 (creative enough for personality, not wild)
-	// This is verified implicitly by checking the constant used in chatStreamInternal
-	temp := 0.6
-	assert.Greater(t, temp, 0.4, "temperature too low — responses will be robotic")
-	assert.Less(t, temp, 0.8, "temperature too high — may hallucinate numbers")
+	var capturedReq *ai.ChatRequest
+	provider := &capturingAIProvider{onRequest: func(req *ai.ChatRequest) {
+		capturedReq = req
+	}}
+
+	o := &Orchestrator{
+		aiProvider: provider,
+		logger:     zap.NewNop(),
+	}
+
+	_, _ = o.Chat(context.Background(), uuid.New(), "what's my balance?", nil)
+
+	require.NotNil(t, capturedReq, "AI provider should have been called")
+	require.NotNil(t, capturedReq.Temperature, "Temperature must be set")
+	assert.Equal(t, 0.6, *capturedReq.Temperature, "temperature should be 0.6 — creative but not wild")
 }
 
 // --- Helpers for time-based tests ---
 var _ = time.Now // satisfy import
+
+// capturingAIProvider captures the ChatRequest for assertion.
+type capturingAIProvider struct {
+	onRequest func(req *ai.ChatRequest)
+}
+
+func (c *capturingAIProvider) ChatCompletion(_ context.Context, req *ai.ChatRequest) (*ai.ChatResponse, error) {
+	if c.onRequest != nil {
+		c.onRequest(req)
+	}
+	return &ai.ChatResponse{Content: "test response"}, nil
+}
+
+func (c *capturingAIProvider) ChatCompletionWithTools(_ context.Context, req *ai.ChatRequest, _ []ai.Tool) (*ai.ChatResponse, error) {
+	if c.onRequest != nil {
+		c.onRequest(req)
+	}
+	return &ai.ChatResponse{Content: "test response"}, nil
+}
+
+func (c *capturingAIProvider) Name() string              { return "capturing" }
+func (c *capturingAIProvider) IsAvailable(_ context.Context) bool { return true }

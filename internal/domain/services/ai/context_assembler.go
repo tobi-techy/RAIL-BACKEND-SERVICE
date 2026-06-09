@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -30,59 +31,49 @@ func (o *Orchestrator) assembleContext(ctx context.Context, userID uuid.UUID, op
 
 	g, gCtx := errgroup.WithContext(ctx)
 
-	// Slot 0: Balance
-	g.Go(func() error {
-		results[0] = o.buildBalanceContext(gCtx, userID)
-		return nil
-	})
+	slotNames := [numSlots]string{
+		"balance", "stash_lock", "financial_profile", "user_profile",
+		"bank_statement", "memory", "personality", "user_time",
+	}
 
-	// Slot 1: Stash lock status
-	g.Go(func() error {
-		results[1] = o.buildStashLockContext(gCtx, userID)
-		return nil
-	})
+	buildSlot := func(slot int, name string, fn func() string) func() error {
+		return func() error {
+			defer func() {
+				if r := recover(); r != nil && o.logger != nil {
+					o.logger.Error("context builder panicked", zap.String("slot", name), zap.Any("panic", r), zap.String("user_id", userID.String()))
+				}
+			}()
+			results[slot] = fn()
+			return nil
+		}
+	}
 
-	// Slot 2: Financial profile
-	g.Go(func() error {
-		results[2] = o.buildFinancialProfileContext(gCtx, userID)
-		return nil
-	})
-
-	// Slot 3: User profile (name, country, age)
-	g.Go(func() error {
-		results[3] = o.buildUserProfileContext(gCtx, userID)
-		return nil
-	})
-
-	// Slot 4: Bank statement context
-	g.Go(func() error {
+	g.Go(buildSlot(0, slotNames[0], func() string { return o.buildBalanceContext(gCtx, userID) }))
+	g.Go(buildSlot(1, slotNames[1], func() string { return o.buildStashLockContext(gCtx, userID) }))
+	g.Go(buildSlot(2, slotNames[2], func() string { return o.buildFinancialProfileContext(gCtx, userID) }))
+	g.Go(buildSlot(3, slotNames[3], func() string { return o.buildUserProfileContext(gCtx, userID) }))
+	g.Go(buildSlot(4, slotNames[4], func() string {
 		if o.bankStatementCtx != nil {
-			results[4] = o.bankStatementCtx.BuildContext(gCtx, userID)
+			return o.bankStatementCtx.BuildContext(gCtx, userID)
 		}
-		return nil
-	})
-
-	// Slot 5: Long-term memory
-	g.Go(func() error {
+		return ""
+	}))
+	g.Go(buildSlot(5, slotNames[5], func() string {
 		if o.memory != nil {
-			results[5] = o.memory.BuildMemoryContextWithSummary(gCtx, userID)
+			return o.memory.BuildMemoryContextWithSummary(gCtx, userID)
 		}
-		return nil
-	})
+		return ""
+	}))
+	g.Go(buildSlot(6, slotNames[6], func() string {
+		return o.buildConsolidatedPersonalityContext(gCtx, userID, opts.ToneMode)
+	}))
+	g.Go(buildSlot(7, slotNames[7], func() string { return o.buildUserTimeContext(gCtx, userID) }))
 
-	// Slot 6: Consolidated personality (phase + tone calibration + tone mode)
-	g.Go(func() error {
-		results[6] = o.buildConsolidatedPersonalityContext(gCtx, userID, opts.ToneMode)
-		return nil
-	})
+	_ = g.Wait()
 
-	// Slot 7: User time context
-	g.Go(func() error {
-		results[7] = o.buildUserTimeContext(gCtx, userID)
-		return nil
-	})
-
-	_ = g.Wait() // errors are swallowed — each builder returns "" on failure
+	if ctx.Err() != nil && o.logger != nil {
+		o.logger.Warn("context assembly hit timeout", zap.Error(ctx.Err()), zap.String("user_id", userID.String()))
+	}
 
 	// Assemble in stable order
 	messages := make([]ai.Message, 0, numSlots+1)

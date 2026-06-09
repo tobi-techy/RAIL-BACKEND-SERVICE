@@ -119,7 +119,7 @@ func (m *MemoryService) saveMomentAsFact(ctx context.Context, userID uuid.UUID, 
 	existing, err := m.store.GetActiveFactsByCategory(ctx, userID, "conversation_moment")
 	if err == nil {
 		for _, f := range existing {
-			if strings.Contains(f.Fact, moment.Topic) || strings.Contains(f.Fact, "["+moment.Type+"]") {
+			if strings.HasPrefix(f.Fact, "["+moment.Type+"]") {
 				id := f.ID
 				supersedes = &id
 				break

@@ -21,13 +21,40 @@ type PersonalityMetrics struct {
 	TotalMs           int64 `json:"total_ms"`
 
 	// Routing
-	ToolCategory string `json:"tool_category"`
-	ToolsOffered int    `json:"tools_offered"`
+	ToolCategory     ToolCategory `json:"tool_category"`
+	ToolCategoryName string       `json:"tool_category_name,omitempty"`
+	ToolsOffered     int          `json:"tools_offered"`
+}
+
+// ToolCategoryToName converts a ToolCategory int to a human-readable string.
+func ToolCategoryToName(cat ToolCategory) string {
+	switch cat {
+	case CategoryOverview:
+		return "overview"
+	case CategorySpending:
+		return "spending"
+	case CategoryAction:
+		return "action"
+	case CategoryPlanning:
+		return "planning"
+	case CategoryHistory:
+		return "history"
+	case CategoryAutomation:
+		return "automation"
+	case CategoryFull:
+		return "full"
+	default:
+		return "unknown"
+	}
 }
 
 // TrackPersonalityEvent is called after each chat response to log engagement data.
 // This feeds into A/B test analysis — compare sessions before/after personality changes.
 func TrackPersonalityEvent(metrics PersonalityMetrics) map[string]interface{} {
+	catName := metrics.ToolCategoryName
+	if catName == "" {
+		catName = ToolCategoryToName(metrics.ToolCategory)
+	}
 	return map[string]interface{}{
 		"event":                "miriam_response_quality",
 		"timestamp":            time.Now().UTC().Format(time.RFC3339),
@@ -37,8 +64,10 @@ func TrackPersonalityEvent(metrics PersonalityMetrics) map[string]interface{} {
 		"response_length":      metrics.ResponseLengthChars,
 		"tools_used":           metrics.ToolsUsed,
 		"context_assembly_ms":  metrics.ContextAssemblyMs,
+		"first_token_ms":       metrics.FirstTokenMs,
 		"total_ms":             metrics.TotalMs,
-		"tool_category":        metrics.ToolCategory,
+		"tool_category":        int(metrics.ToolCategory),
+		"tool_category_name":   catName,
 		"tools_offered":        metrics.ToolsOffered,
 	}
 }
