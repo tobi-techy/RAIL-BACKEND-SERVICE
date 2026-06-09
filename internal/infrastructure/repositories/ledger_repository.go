@@ -1061,7 +1061,7 @@ func (r *LedgerRepository) GetGoalAccounts(ctx context.Context, userID uuid.UUID
 // GetTotalGoalAllocated returns the total balance across all goal accounts for a user.
 func (r *LedgerRepository) GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
 	var total decimal.Decimal
-	err := r.db.QueryRowxContext(ctx,
+	err := r.queryRowxContext(ctx,
 		`SELECT COALESCE(SUM(balance), 0) FROM ledger_accounts WHERE user_id = $1 AND account_type = 'goal_balance'`,
 		userID,
 	).Scan(&total)
@@ -1071,7 +1071,7 @@ func (r *LedgerRepository) GetTotalGoalAllocated(ctx context.Context, userID uui
 // GetProtectedGoalAllocated returns the total balance of goal accounts whose shared_goal is marked as protected.
 func (r *LedgerRepository) GetProtectedGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
 	var total decimal.Decimal
-	err := r.db.QueryRowxContext(ctx,
+	err := r.queryRowxContext(ctx,
 		`SELECT COALESCE(SUM(la.balance), 0)
 		 FROM ledger_accounts la
 		 JOIN shared_goals sg ON sg.id = la.goal_id

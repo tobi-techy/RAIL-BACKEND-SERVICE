@@ -331,7 +331,7 @@ func voiceMemoryQuery(tool string, args map[string]interface{}) string {
 
 // isVoiceFinancialAction returns true for actions that move money.
 func isVoiceFinancialAction(action string) bool {
-	return action == ToolTransferFunds || action == ToolCreateAutomation
+	return action == ToolTransferFunds
 }
 
 // extractAmountFromParams tries to get the dollar amount from action params.

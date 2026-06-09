@@ -19,11 +19,15 @@ ALTER TABLE ledger_accounts VALIDATE CONSTRAINT chk_account_type;
 
 -- 3. Ensure goal_balance accounts always have a goal_id
 ALTER TABLE ledger_accounts ADD CONSTRAINT chk_goal_balance_has_goal
-    CHECK (account_type != 'goal_balance' OR goal_id IS NOT NULL);
+    CHECK (account_type != 'goal_balance' OR goal_id IS NOT NULL) NOT VALID;
 
 -- 4. Ensure non-goal accounts don't have a goal_id
 ALTER TABLE ledger_accounts ADD CONSTRAINT chk_non_goal_no_goal_id
-    CHECK (account_type = 'goal_balance' OR goal_id IS NULL);
+    CHECK (account_type = 'goal_balance' OR goal_id IS NULL) NOT VALID;
+
+-- 5. Validate goal constraints (separate step avoids long locks on large tables)
+ALTER TABLE ledger_accounts VALIDATE CONSTRAINT chk_goal_balance_has_goal;
+ALTER TABLE ledger_accounts VALIDATE CONSTRAINT chk_non_goal_no_goal_id;
 
 -- 5. One goal_balance account per user per goal
 CREATE UNIQUE INDEX idx_ledger_accounts_user_goal

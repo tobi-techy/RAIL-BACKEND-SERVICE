@@ -325,10 +325,10 @@ func (b *UserBalances) TotalValue() decimal.Decimal {
 // CalculateTotalUSD calculates total balance in USD equivalent
 // Assumes 1 USDC = 1 USD for simplicity
 func (b *UserBalances) CalculateTotalUSD() decimal.Decimal {
+	// GoalBalance is a virtual sub-account of StashBalance (not additive).
 	return b.USDCBalance.
 		Add(b.SpendingBalance).
 		Add(b.StashBalance).
-		Add(b.GoalBalance).
 		Add(b.FiatExposure).
 		Add(b.PendingInvestment)
 }

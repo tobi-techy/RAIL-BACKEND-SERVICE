@@ -29,30 +29,55 @@ func (l *VoiceDailyLimiter) key(userID uuid.UUID) string {
 	return fmt.Sprintf("%s%s:%s", voiceDailySpendPrefix, userID, today)
 }
 
+// luaCheckAndRecord atomically checks the limit and records spend.
+// Returns 0 on success, or the current spend if over limit.
+var luaCheckAndRecord = `
+local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+local amount = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+local newTotal = current + amount
+if newTotal > limit then
+    return tostring(current)
+end
+redis.call('SET', KEYS[1], tostring(newTotal), 'EX', ttl)
+return '0'
+`
+
 // CheckAndRecord checks if the amount would exceed the daily limit.
-// If within limit, records the spend and returns nil.
-// If over limit, returns an error with the remaining allowance.
+// If within limit, atomically records the spend and returns nil.
+// If over limit or Redis fails, returns an error (fail-closed).
 func (l *VoiceDailyLimiter) CheckAndRecord(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error {
 	if l == nil || l.redis == nil {
 		return nil // limiter not configured — allow
 	}
 
 	key := l.key(userID)
-	var current float64
-	if err := l.redis.Get(ctx, key, &current); err != nil {
-		current = 0 // key doesn't exist = first action today
+	ttlSeconds := int(24 * time.Hour / time.Second)
+
+	result, err := l.redis.Client().Eval(ctx, luaCheckAndRecord,
+		[]string{key},
+		amount.InexactFloat64(),
+		voiceDailyLimitUSD,
+		ttlSeconds,
+	).Text()
+	if err != nil {
+		return fmt.Errorf("voice_daily_limit: redis error (fail-closed): %w", err)
 	}
 
-	newTotal := current + amount.InexactFloat64()
-	if newTotal > voiceDailyLimitUSD {
-		remaining := voiceDailyLimitUSD - current
+	if result != "0" {
+		remaining := voiceDailyLimitUSD - parseFloat(result)
 		if remaining < 0 {
 			remaining = 0
 		}
-		return fmt.Errorf("voice_daily_limit: You've used $%.0f of your $%.0f daily voice limit. Remaining: $%.0f. Open the app for larger transfers.", current, voiceDailyLimitUSD, remaining)
+		return fmt.Errorf("voice_daily_limit: You've used $%.0f of your $%.0f daily voice limit. Remaining: $%.0f. Open the app for larger transfers.",
+			parseFloat(result), voiceDailyLimitUSD, remaining)
 	}
-
-	// Record the spend with 24h TTL (auto-expires at end of day)
-	_ = l.redis.Set(ctx, key, newTotal, 24*time.Hour)
 	return nil
+}
+
+func parseFloat(s string) float64 {
+	var f float64
+	fmt.Sscanf(s, "%f", &f)
+	return f
 }

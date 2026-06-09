@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,6 +94,7 @@ type Service struct {
 	depositAutomation   DepositAutomationEvaluator
 	logger              *logger.Logger
 	wg                  sync.WaitGroup // tracks in-flight async goroutines for graceful shutdown
+	shuttingDown        atomic.Bool    // prevents new async work after Shutdown begins
 }
 
 // NewService creates a new allocation service
@@ -112,6 +114,7 @@ func NewService(
 // Call this during graceful shutdown to avoid killing yield routing, auto-invest,
 // or notification goroutines mid-operation.
 func (s *Service) Shutdown(timeout time.Duration) {
+	s.shuttingDown.Store(true)
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
@@ -129,6 +132,15 @@ func (s *Service) Shutdown(timeout time.Duration) {
 // SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
+}
+
+// tryStartAsync returns false if shutdown is in progress, preventing new async work.
+func (s *Service) tryStartAsync() bool {
+	if s.shuttingDown.Load() {
+		return false
+	}
+	s.wg.Add(1)
+	return true
 }
 
 // SetYieldSnapshotter sets the yield snapshot recorder.
@@ -483,7 +495,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		} else {
 			// Include goal balances in the snapshot for yield TWB calculation
 			goalTotal, goalErr := s.ledgerService.GetTotalGoalAllocated(ctx, req.UserID)
-			if goalErr == nil {
+			if goalErr != nil {
+				s.logger.Error("Failed to get goal balances for yield snapshot", "user_id", req.UserID, "error", goalErr)
+			} else {
 				newStashBalance = newStashBalance.Add(goalTotal)
 			}
 			if err := s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance); err != nil {
@@ -696,7 +710,20 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	if s.depositAutomation != nil {
 		depositUserID := req.UserID
 		depositAmount := req.Amount
-		go s.depositAutomation.EvaluateDepositReceived(context.Background(), depositUserID, depositAmount)
+		if s.tryStartAsync() {
+			go func() {
+				defer s.wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error("Panic in deposit automation goroutine",
+							"user_id", depositUserID,
+							"panic", r,
+							"stack", string(debug.Stack()))
+					}
+				}()
+				s.depositAutomation.EvaluateDepositReceived(context.Background(), depositUserID, depositAmount)
+			}()
+		}
 	}
 
 	return nil
@@ -1233,7 +1260,11 @@ func metadataHasValue(metadata map[string]any, key string) bool {
 	if !ok || value == nil {
 		return false
 	}
-	return strings.TrimSpace(fmt.Sprintf("%v", value)) != ""
+	s := strings.TrimSpace(fmt.Sprintf("%v", value))
+	if s == "" || s == "false" || s == "0" {
+		return false
+	}
+	return true
 }
 
 func copyMetadata(metadata map[string]any) map[string]any {

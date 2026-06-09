@@ -812,12 +812,12 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 			if err == nil && len(accounts) > 0 {
 				for _, ga := range accounts {
 					if ga.GoalID != nil && ga.Balance.IsPositive() {
-						parts = append(parts, fmt.Sprintf("goal %s: $%s saved", ga.GoalID, ga.Balance.StringFixed(2)))
+						parts = append(parts, fmt.Sprintf("savings goal (id %s): $%s saved", ga.GoalID, ga.Balance.StringFixed(2)))
 					}
 				}
 			}
 		}
-		// Fallback to Redis goal store
+		// Fallback to Redis goal store (has human-friendly name)
 		if len(parts) == 0 && o.savingsGoalStore != nil {
 			goal, err := o.savingsGoalStore.Get(fetchCtx, userID)
 			if err == nil && goal != nil && goal.Name != "" {

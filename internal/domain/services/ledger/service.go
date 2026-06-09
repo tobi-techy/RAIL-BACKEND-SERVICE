@@ -1033,11 +1033,9 @@ func (s *Service) observeStashRaid(userID uuid.UUID, amount decimal.Decimal, ref
 	}()
 }
 
-// DistributeYieldToGoals is kept for interface compatibility but delegates to CreditYieldToSavings.
+// DistributeYieldToGoals delegates to CreditYieldToSavings for interface compatibility.
 func (s *Service) DistributeYieldToGoals(ctx context.Context, userID uuid.UUID, yieldAmount decimal.Decimal, distributionID string) error {
-	// No-op: CreditYieldToSavings handles direct crediting now.
-	// Kept to satisfy the LedgerCreditor interface.
-	return nil
+	return s.CreditYieldToSavings(ctx, userID, yieldAmount, distributionID)
 }
 
 // CreditYieldToSavings credits yield directly to stash AND each goal account in a single transaction.

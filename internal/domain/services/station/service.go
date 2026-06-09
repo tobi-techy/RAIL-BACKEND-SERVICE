@@ -320,7 +320,8 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 		}
 	}
 
-	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance).Add(goalBalance)
+	// goalBalance is a virtual sub-account of stash (already in investBalance), shown separately for UI only.
+	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{
 		SpendingBalance: spendingBalance,

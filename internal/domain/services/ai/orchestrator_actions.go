@@ -395,7 +395,10 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		// Hard block: protected goals cannot be raided
 		if o.goalProtection != nil {
 			withdrawable, gpErr := o.goalProtection.GetWithdrawableStashBalance(ctx, userID)
-			if gpErr == nil && amount.GreaterThan(withdrawable) {
+			if gpErr != nil {
+				return nil, fmt.Errorf("check goal protection: %w", gpErr)
+			}
+			if amount.GreaterThan(withdrawable) {
 				return map[string]interface{}{
 					"error":            "Protected goals block this transfer",
 					"withdrawable":     withdrawable.StringFixed(2),

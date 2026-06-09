@@ -2108,27 +2108,6 @@ func (c *Container) initializeDomainServices() error {
 
 		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 
-		// Revenue sweep: periodically transfer accumulated fee revenue to treasury wallet.
-		if c.Config.Bridge.TreasuryWalletAddress != "" && c.CircleAdapter != nil {
-			revSweepAdapter := &revenueSweepTransferAdapter{
-				circle:          c.CircleAdapter,
-				treasuryAddress: c.Config.Bridge.TreasuryWalletAddress,
-			}
-			revSweep := revenue_sweep.NewWorker(
-				revSweepAdapter,
-				sqlxDB,
-				decimal.NewFromFloat(0.10), // min $0.10 to sweep (flat fees are $0.10)
-				24*time.Hour,
-				c.ZapLog,
-			)
-			revSweep.Start()
-			c.RevenueSweepWorker = revSweep
-			c.ZapLog.Info("Revenue sweep worker started",
-				zap.String("treasury_address", c.Config.Bridge.TreasuryWalletAddress))
-		} else {
-			c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
-		}
-
 		// Stash reconciliation: daily check that ledger stash total matches Reflect deposited value.
 		if c.Config.Reflect.OwnerWallet != "" {
 			reconAdapter := &reflectReconciliationAdapter{db: sqlxDB}
@@ -2158,6 +2137,28 @@ func (c *Container) initializeDomainServices() error {
 	} else {
 		c.ZapLog.Warn("Reflect Solana RPC not configured; yield routing disabled")
 		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
+	}
+
+	// Revenue sweep: periodically transfer accumulated fee revenue to treasury wallet.
+	// Independent of Reflect — only requires Circle + treasury address.
+	if c.Config.Bridge.TreasuryWalletAddress != "" && c.CircleAdapter != nil {
+		revSweepAdapter := &revenueSweepTransferAdapter{
+			circle:          c.CircleAdapter,
+			treasuryAddress: c.Config.Bridge.TreasuryWalletAddress,
+		}
+		revSweep := revenue_sweep.NewWorker(
+			revSweepAdapter,
+			sqlxDB,
+			decimal.NewFromFloat(0.10), // min $0.10 to sweep (flat fees are $0.10)
+			24*time.Hour,
+			c.ZapLog,
+		)
+		revSweep.Start()
+		c.RevenueSweepWorker = revSweep
+		c.ZapLog.Info("Revenue sweep worker started",
+			zap.String("treasury_address", c.Config.Bridge.TreasuryWalletAddress))
+	} else {
+		c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
 	}
 
 	// Initialize ledger integration (bridges legacy and new ledger system)
