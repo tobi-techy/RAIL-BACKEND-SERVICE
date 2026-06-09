@@ -154,6 +154,7 @@ type Orchestrator struct {
 	userProfile         UserProfileProvider
 	reportEmail         ReportEmailSender
 	savingsGoalStore    SavingsGoalStore
+	sharedGoalCreator   SharedGoalCreator
 	recurringDetector   RecurringExpenseDetector
 	warrantyTracker     WarrantyTracker
 	receiptChallenges   ReceiptChallengeProvider
@@ -164,6 +165,8 @@ type Orchestrator struct {
 	accountChecker      UserAccountChecker
 	emergencyWithdrawer EmergencyWithdrawer
 	automationProvider  AutomationProvider
+	goalProtection      GoalProtectionProvider
+	voiceLimiter        *VoiceDailyLimiter
 	contextSignals      ContextSignalProvider
 	memory              *MemoryService
 	miriamIntelligence  MiriamIntelligenceReader

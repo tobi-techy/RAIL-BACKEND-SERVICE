@@ -46,6 +46,14 @@ type EmergencyWithdrawer interface {
 	EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error)
 }
 
+// GoalProtectionProvider checks whether a withdrawal would impact goal-allocated funds.
+type GoalProtectionProvider interface {
+	GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+	GetGoalAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error)
+	GetUnallocatedStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+	GetWithdrawableStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+}
+
 // UserAccountChecker verifies user account status before executing financial actions.
 type UserAccountChecker interface {
 	IsActiveAndUnfrozen(ctx context.Context, userID uuid.UUID) (active bool, frozen bool, err error)
@@ -68,6 +76,11 @@ type SavingsGoal struct {
 type SavingsGoalStore interface {
 	Set(ctx context.Context, userID uuid.UUID, goal *SavingsGoal) error
 	Get(ctx context.Context, userID uuid.UUID) (*SavingsGoal, error)
+}
+
+// SharedGoalCreator creates shared goals from Miriam conversations.
+type SharedGoalCreator interface {
+	CreateGoalFromAI(ctx context.Context, userID uuid.UUID, name, targetAmount string, deadline *string) (uuid.UUID, error)
 }
 
 // AutomationCreator creates Miriam automation rules after confirmation.
@@ -173,6 +186,11 @@ func (o *Orchestrator) SetSavingsGoalStore(s SavingsGoalStore) {
 	o.savingsGoalStore = s
 }
 
+// SetSharedGoalCreator wires the shared goal creator for unified goal persistence.
+func (o *Orchestrator) SetSharedGoalCreator(c SharedGoalCreator) {
+	o.sharedGoalCreator = c
+}
+
 func (o *Orchestrator) SetAutomationCreator(a AutomationCreator) {
 	o.automationCreator = a
 }
@@ -189,6 +207,16 @@ func (o *Orchestrator) SetAccountChecker(c UserAccountChecker) {
 // SetEmergencyWithdrawer wires the emergency stash withdrawal dependency.
 func (o *Orchestrator) SetEmergencyWithdrawer(e EmergencyWithdrawer) {
 	o.emergencyWithdrawer = e
+}
+
+// SetGoalProtectionProvider wires the goal protection provider for withdrawal warnings.
+func (o *Orchestrator) SetGoalProtectionProvider(g GoalProtectionProvider) {
+	o.goalProtection = g
+}
+
+// SetVoiceDailyLimiter wires the voice daily transfer cap.
+func (o *Orchestrator) SetVoiceDailyLimiter(l *VoiceDailyLimiter) {
+	o.voiceLimiter = l
 }
 
 // checkUserCanTransact verifies the user is active and not frozen before financial actions.
@@ -227,7 +255,7 @@ func ActionTools() []ai.Tool {
 		},
 		{
 			Name:        ToolSetSavingsGoal,
-			Description: "Set a savings goal. Call this when the user says 'save for', 'I want to save', 'set a goal', 'saving up for', or mentions a target amount for something. When in doubt, call this.",
+			Description: "Set a savings goal. Call this when the user says 'save for', 'I want to save', 'set a goal', 'saving up for', or mentions a target amount for something. After the goal is confirmed and created, ALWAYS suggest creating an automation to fund it (e.g. 'Want me to save $X every week toward this?'). If the response contains suggest_automation=true and goal_id, proactively offer to create a transfer_to_stash automation linked to that goal.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -361,29 +389,43 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		return nil, fmt.Errorf("check destination balance: %w", err)
 	}
 
-	// When moving from stash, check if funds are locked and preview the emergency fee.
+	// When moving from stash, first check protected goals, then stash lock.
 	var emergencyPreview *entities.EmergencyWithdrawalPreviewResponse
-	if from == "stash" && o.emergencyWithdrawer != nil {
-		locked, lockErr := o.emergencyWithdrawer.IsStashLocked(ctx, userID)
-		if lockErr != nil {
-			return nil, fmt.Errorf("check stash lock: %w", lockErr)
-		}
-		if locked {
-			preview, previewErr := o.emergencyWithdrawer.EmergencyWithdrawalPreview(ctx, userID, amount)
-			if previewErr != nil {
-				return nil, fmt.Errorf("emergency withdrawal preview: %w", previewErr)
-			}
-			emergencyPreview = preview
-			// Emergency withdrawals charge the fee separately: spending receives the full
-			// requested amount, while stash is debited by amount + fee.
-			if balance.LessThan(amount.Add(preview.FeeAmount)) {
+	if from == "stash" {
+		// Hard block: protected goals cannot be raided
+		if o.goalProtection != nil {
+			withdrawable, gpErr := o.goalProtection.GetWithdrawableStashBalance(ctx, userID)
+			if gpErr == nil && amount.GreaterThan(withdrawable) {
 				return map[string]interface{}{
-					"error":             "Insufficient stash balance after early withdrawal fee",
-					"available_balance": balance.StringFixed(2),
-					"requested_amount":  amount.StringFixed(2),
-					"fee_amount":        preview.FeeAmount.StringFixed(2),
-					"total_needed":      amount.Add(preview.FeeAmount).StringFixed(2),
+					"error":            "Protected goals block this transfer",
+					"withdrawable":     withdrawable.StringFixed(2),
+					"requested_amount": amount.StringFixed(2),
+					"message":          fmt.Sprintf("You can only move $%s from stash — the rest is locked in protected goals. Unprotect a goal first, or transfer a smaller amount.", withdrawable.StringFixed(2)),
 				}, nil
+			}
+		}
+
+		// Emergency withdrawal preview if stash is locked
+		if o.emergencyWithdrawer != nil {
+			locked, lockErr := o.emergencyWithdrawer.IsStashLocked(ctx, userID)
+			if lockErr != nil {
+				return nil, fmt.Errorf("check stash lock: %w", lockErr)
+			}
+			if locked {
+				preview, previewErr := o.emergencyWithdrawer.EmergencyWithdrawalPreview(ctx, userID, amount)
+				if previewErr != nil {
+					return nil, fmt.Errorf("emergency withdrawal preview: %w", previewErr)
+				}
+				emergencyPreview = preview
+				if balance.LessThan(amount.Add(preview.FeeAmount)) {
+					return map[string]interface{}{
+						"error":             "Insufficient stash balance after early withdrawal fee",
+						"available_balance": balance.StringFixed(2),
+						"requested_amount":  amount.StringFixed(2),
+						"fee_amount":        preview.FeeAmount.StringFixed(2),
+						"total_needed":      amount.Add(preview.FeeAmount).StringFixed(2),
+					}, nil
+				}
 			}
 		}
 	}
@@ -397,6 +439,22 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 		"destination_balance_before": destinationBalance.StringFixed(2),
 		"destination_balance_after":  destinationBalance.Add(amount).StringFixed(2),
 	}
+
+	// Soft warning: unprotected goals would be impacted
+	if from == "stash" && o.goalProtection != nil {
+		unallocated, err := o.goalProtection.GetUnallocatedStashBalance(ctx, userID)
+		if err == nil && amount.GreaterThan(unallocated) {
+			goalImpact := amount.Sub(unallocated)
+			impact["goal_warning"] = true
+			impact["unallocated_stash"] = unallocated.StringFixed(2)
+			impact["goal_impact_amount"] = goalImpact.StringFixed(2)
+			impact["goal_warning_message"] = fmt.Sprintf(
+				"⚠️ Only $%s of your stash is unallocated. This transfer will pull $%s from your savings goals.",
+				unallocated.StringFixed(2), goalImpact.StringFixed(2),
+			)
+		}
+	}
+
 	if emergencyPreview != nil {
 		impact["emergency_withdrawal"] = true
 		impact["fee_percent"] = emergencyPreview.FeePercent.StringFixed(2)
@@ -491,7 +549,22 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	case ToolTransferFunds:
 		execErr = o.executeTransfer(ctx, userID, action)
 	case ToolSetSavingsGoal:
-		if o.savingsGoalStore != nil {
+		// Prefer SharedGoal creation (persistent, ledger-backed sub-account)
+		if o.sharedGoalCreator != nil {
+			name := fmt.Sprintf("%v", action.Params["name"])
+			target := fmt.Sprintf("%v", action.Params["target"])
+			var deadline *string
+			if d, ok := action.Params["deadline"].(string); ok && d != "" {
+				deadline = &d
+			}
+			goalID, err := o.sharedGoalCreator.CreateGoalFromAI(ctx, userID, name, target, deadline)
+			if err == nil {
+				action.Params["goal_id"] = goalID.String()
+				action.Params["suggest_automation"] = true
+			}
+			execErr = err
+		} else if o.savingsGoalStore != nil {
+			// Fallback to Redis (legacy)
 			goal := &SavingsGoal{
 				Name:      fmt.Sprintf("%v", action.Params["name"]),
 				Target:    fmt.Sprintf("%v", action.Params["target"]),

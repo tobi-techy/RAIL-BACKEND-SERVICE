@@ -34,6 +34,8 @@ type RewardSummary struct {
 // LedgerCreditor credits a user's stash balance in the ledger.
 type LedgerCreditor interface {
 	CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error
+	DistributeYieldToGoals(ctx context.Context, userID uuid.UUID, yieldAmount decimal.Decimal, distributionID string) error
+	CreditYieldToSavings(ctx context.Context, userID uuid.UUID, totalYield decimal.Decimal, distributionID string) error
 }
 
 // YieldNotifier sends push notifications after yield is credited.
@@ -150,9 +152,8 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 		return nil
 	}
 
-	// Distribute proportionally: credit ledger first, then record.
+	// Distribute proportionally: credit each user's savings accounts directly.
 	totalDistributed := decimal.Zero
-	desc := fmt.Sprintf("Yield distribution %s", dist.ID)
 	for _, ut := range twbs {
 		sharePct := ut.twb.Div(totalTWB)
 		reward := totalReward.Mul(sharePct).Truncate(6)
@@ -161,9 +162,9 @@ func (s *Service) RunDistribution(ctx context.Context, periodStart, periodEnd, f
 			continue
 		}
 
-		// Credit ledger first — source of truth.
-		if err := s.ledger.CreditStash(ctx, ut.userID, reward, desc); err != nil {
-			s.logger.Error("Failed to credit stash for yield", zap.String("user_id", ut.userID.String()), zap.Error(err))
+		// Credit yield directly to stash and each goal account proportionally.
+		if err := s.ledger.CreditYieldToSavings(ctx, ut.userID, reward, dist.ID.String()); err != nil {
+			s.logger.Error("Failed to credit yield to savings", zap.String("user_id", ut.userID.String()), zap.Error(err))
 			continue
 		}
 
