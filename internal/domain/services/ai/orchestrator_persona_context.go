@@ -627,6 +627,9 @@ You have two tools. Use them for EVERY question about money:
    "move X to stash" → action: "transfer_funds", params: {from: "spend", to: "stash", amount: X}
    "set budget to X" → action: "set_budget", params: {monthly_limit: X}
    "save X every week" → action: "create_automation", params: {trigger_type: "schedule", amount: X, frequency: "weekly"}
+   "save X on every deposit" → action: "create_automation", params: {trigger_type: "deposit_received", amount: X, frequency: "on_deposit"}
+   "save for my trip" → action: "set_savings_goal", params: {name: "Trip", target: 2000}
+   "save X every week for my trip goal" → action: "create_automation", params: {amount: X, frequency: "weekly", savings_goal_id: "<goal_id>", name: "Trip weekly save"}
    "remind me about rent" → action: "create_obligation_reminder", params: {name: "rent", ...}
 
 PERIOD MAPPING — when the user mentions a timeframe, ALWAYS set period:
@@ -921,20 +924,30 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 	}()
 
 	go func() {
-		if o.savingsGoalStore == nil {
-			goalCh <- ""
-			return
+		var parts []string
+		// Check shared goals with real balances (preferred)
+		if o.goalProtection != nil {
+			accounts, err := o.goalProtection.GetGoalAccounts(fetchCtx, userID)
+			if err == nil && len(accounts) > 0 {
+				for _, ga := range accounts {
+					if ga.GoalID != nil && ga.Balance.IsPositive() {
+						parts = append(parts, fmt.Sprintf("savings goal (id %s): $%s saved", ga.GoalID, ga.Balance.StringFixed(2)))
+					}
+				}
+			}
 		}
-		goal, err := o.savingsGoalStore.Get(fetchCtx, userID)
-		if err != nil || goal == nil || goal.Name == "" {
-			goalCh <- ""
-			return
+		// Fallback to Redis goal store (has human-friendly name)
+		if len(parts) == 0 && o.savingsGoalStore != nil {
+			goal, err := o.savingsGoalStore.Get(fetchCtx, userID)
+			if err == nil && goal != nil && goal.Name != "" {
+				if goal.Target != "" {
+					parts = append(parts, fmt.Sprintf("saving for %s (target %s)", goal.Name, goal.Target))
+				} else {
+					parts = append(parts, fmt.Sprintf("saving for %s", goal.Name))
+				}
+			}
 		}
-		if goal.Target != "" {
-			goalCh <- fmt.Sprintf("saving for %s (target %s)", goal.Name, goal.Target)
-		} else {
-			goalCh <- fmt.Sprintf("saving for %s", goal.Name)
-		}
+		goalCh <- strings.Join(parts, "; ")
 	}()
 
 	go func() {

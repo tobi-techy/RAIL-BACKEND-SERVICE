@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -219,6 +220,17 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 	}
 	coerceNumericStrings(params)
 	voiceAliasParams(action, params)
+
+	// Enforce daily voice transfer cap for financial actions
+	if o.voiceLimiter != nil && isVoiceFinancialAction(action) {
+		amount := extractAmountFromParams(params)
+		if amount.IsPositive() {
+			if err := o.voiceLimiter.CheckAndRecord(ctx, userID, amount); err != nil {
+				return map[string]interface{}{"error": err.Error()}, nil
+			}
+		}
+	}
+
 	return o.executeActionToolDirect(ctx, userID, infraai.ToolCall{
 		Name:      action,
 		Arguments: params,
@@ -315,6 +327,26 @@ func voiceMemoryQuery(tool string, args map[string]interface{}) string {
 	default:
 		return ""
 	}
+}
+
+// isVoiceFinancialAction returns true for actions that move money.
+func isVoiceFinancialAction(action string) bool {
+	return action == ToolTransferFunds
+}
+
+// extractAmountFromParams tries to get the dollar amount from action params.
+func extractAmountFromParams(params map[string]interface{}) decimal.Decimal {
+	// Direct amount field
+	if v, ok := params["amount"].(float64); ok && v > 0 {
+		return decimal.NewFromFloat(v)
+	}
+	// Nested in action_config
+	if ac, ok := params["action_config"].(map[string]interface{}); ok {
+		if v, ok := ac["amount"].(float64); ok && v > 0 {
+			return decimal.NewFromFloat(v)
+		}
+	}
+	return decimal.Zero
 }
 
 func isVoiceActionTool(name string) bool {
@@ -510,8 +542,8 @@ func voiceAliasParams(action string, params map[string]interface{}) {
 			}
 		}
 	case ToolCreateAutomation:
-		// ElevenLabs sends simple params: {amount, frequency, name, note}
-		// Backend expects: {trigger_type, action_type, trigger_config, action_config, name}
+		// ElevenLabs sends simple params: {amount, frequency, name, note, destination}
+		// Backend expects: {trigger_type, action_type, trigger_config, action_config, name, savings_goal_id}
 		if _, has := params["trigger_type"]; !has {
 			freq, _ := params["frequency"].(string)
 			triggerType := "schedule"
@@ -525,11 +557,16 @@ func voiceAliasParams(action string, params map[string]interface{}) {
 				if day, ok := params["day"].(string); ok {
 					triggerConfig["day"] = day
 				}
+			case "biweekly", "every_two_weeks", "every 2 weeks":
+				triggerConfig["frequency"] = "biweekly"
 			case "monthly":
 				triggerConfig["frequency"] = "monthly"
 				if dayOfMonth, ok := params["day_of_month"]; ok {
 					triggerConfig["day_of_month"] = dayOfMonth
 				}
+			case "on_deposit", "every_deposit", "on deposit", "every deposit", "per_deposit", "each_deposit":
+				triggerType = "deposit_received"
+				triggerConfig = map[string]interface{}{}
 			default:
 				triggerConfig["frequency"] = "weekly"
 			}
@@ -547,6 +584,13 @@ func voiceAliasParams(action string, params map[string]interface{}) {
 			delete(params, "day")
 			delete(params, "day_of_month")
 			delete(params, "note")
+		}
+		// If destination looks like a goal reference, set savings_goal_id
+		if dest, ok := params["destination"].(string); ok && dest != "" {
+			if _, err := uuid.Parse(dest); err == nil {
+				params["savings_goal_id"] = dest
+			}
+			delete(params, "destination")
 		}
 		// Mark as voice session to skip passcode check
 		params["_voice_session"] = true

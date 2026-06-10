@@ -30,6 +30,12 @@ type TransferExecutor interface {
 	TransferBetweenStashes(ctx context.Context, userID uuid.UUID, from, to string, amount decimal.Decimal) error
 }
 
+// GoalTransferExecutor routes transfers to goal sub-accounts.
+type GoalTransferExecutor interface {
+	TransferSpendToGoal(ctx context.Context, userID, goalID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
+	GetGoalBalance(ctx context.Context, userID, goalID uuid.UUID) (decimal.Decimal, error)
+}
+
 // CardController freezes/unfreezes cards for cooldown automations.
 type CardController interface {
 	FreezeCard(ctx context.Context, userID, cardID uuid.UUID) error
@@ -50,18 +56,38 @@ type ObligationProvider interface {
 // GoalChecker checks if a savings goal has been reached.
 type GoalChecker interface {
 	IsGoalReached(ctx context.Context, userID uuid.UUID, goalID uuid.UUID) (bool, error)
+	GetGoalTarget(ctx context.Context, goalID uuid.UUID) (decimal.Decimal, error)
+}
+
+// GoalContributor records goal contributions after successful transfers.
+type GoalContributor interface {
+	RecordAutomationContribution(ctx context.Context, userID, goalID uuid.UUID, amount decimal.Decimal) error
+}
+
+// YieldSnapshotRecorder records balance snapshots for yield TWB calculation.
+type YieldSnapshotRecorder interface {
+	RecordSnapshot(ctx context.Context, userID uuid.UUID, balance decimal.Decimal) error
+}
+
+// TotalSavingsProvider returns the total savings position (stash + goals).
+type TotalSavingsProvider interface {
+	GetTotalSavingsBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
 // Service manages automation CRUD and execution.
 type Service struct {
-	repo        *repositories.AutomationRepository
-	balance     BalanceProvider
-	transfer    TransferExecutor
-	card        CardController
-	notifier    NotificationSender
-	obligations ObligationProvider
-	goals       GoalChecker
-	logger      *zap.Logger
+	repo            *repositories.AutomationRepository
+	balance         BalanceProvider
+	transfer        TransferExecutor
+	goalTransfer    GoalTransferExecutor
+	goalContributor GoalContributor
+	yieldSnapshot   YieldSnapshotRecorder
+	totalSavings    TotalSavingsProvider
+	card            CardController
+	notifier        NotificationSender
+	obligations     ObligationProvider
+	goals           GoalChecker
+	logger          *zap.Logger
 }
 
 func NewService(repo *repositories.AutomationRepository, balance BalanceProvider, transfer TransferExecutor, logger *zap.Logger) *Service {
@@ -79,6 +105,18 @@ func (s *Service) SetObligationProvider(o ObligationProvider) { s.obligations = 
 
 // SetGoalChecker sets the goal checker for goal-linked automations.
 func (s *Service) SetGoalChecker(g GoalChecker) { s.goals = g }
+
+// SetGoalTransferExecutor sets the goal transfer executor for goal-linked automations.
+func (s *Service) SetGoalTransferExecutor(g GoalTransferExecutor) { s.goalTransfer = g }
+
+// SetGoalContributor sets the contributor for recording goal contributions.
+func (s *Service) SetGoalContributor(g GoalContributor) { s.goalContributor = g }
+
+// SetYieldSnapshotRecorder sets the yield snapshot recorder for post-transfer snapshots.
+func (s *Service) SetYieldSnapshotRecorder(r YieldSnapshotRecorder) { s.yieldSnapshot = r }
+
+// SetTotalSavingsProvider sets the total savings balance provider.
+func (s *Service) SetTotalSavingsProvider(p TotalSavingsProvider) { s.totalSavings = p }
 
 // Create creates a new automation rule.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateAutomationRequest) (*entities.MiriamAutomation, error) {
@@ -158,7 +196,7 @@ func validateCreateRequest(req *CreateAutomationRequest) error {
 func validTrigger(value string) bool {
 	switch value {
 	case entities.TriggerSchedule, entities.TriggerBalanceThreshold, entities.TriggerIncomeDetected, entities.TriggerSpendingSpike, entities.TriggerPayday, entities.TriggerCustom,
-		entities.TriggerObligationDue, entities.TriggerLifeEvent:
+		entities.TriggerObligationDue, entities.TriggerLifeEvent, entities.TriggerDepositReceived:
 		return true
 	default:
 		return false
@@ -417,6 +455,26 @@ func (s *Service) executeAction(ctx context.Context, a *entities.MiriamAutomatio
 			return err
 		}
 		amount := decimal.NewFromFloat(cfg.Amount)
+
+		// Route to goal sub-account if linked to a savings goal
+		if a.SavingsGoalID != nil && s.goalTransfer != nil {
+			idempotencyKey := fmt.Sprintf("automation-goal-%s-%s-%d", a.ID, a.SavingsGoalID, a.TriggerCount+1)
+			if err := s.goalTransfer.TransferSpendToGoal(ctx, a.UserID, *a.SavingsGoalID, amount, idempotencyKey); err != nil {
+				return err
+			}
+			// Record as goal contribution
+			if s.goalContributor != nil {
+				if err := s.goalContributor.RecordAutomationContribution(ctx, a.UserID, *a.SavingsGoalID, amount); err != nil {
+					s.logger.Warn("failed to record goal contribution", zap.Error(err), zap.String("automation_id", a.ID.String()))
+				}
+			}
+			// Check milestone and notify
+			s.checkGoalMilestone(ctx, a.UserID, *a.SavingsGoalID, a.Name)
+			// Update yield snapshot so goal funds earn yield
+			s.recordYieldSnapshot(ctx, a.UserID)
+			return nil
+		}
+
 		return s.transfer.TransferBetweenStashes(ctx, a.UserID, "spend", "stash", amount)
 	case entities.ActionTransferToSpend:
 		if err := ensureTransferReauthorization(raw, time.Now().UTC()); err != nil {
@@ -716,7 +774,21 @@ func (s *Service) EvaluateBillShield(ctx context.Context, userID uuid.UUID) erro
 	if err != nil {
 		return err
 	}
-	transferAmt := decimal.Min(shortfall, stashBal)
+	// Only use unallocated stash (not goal-earmarked funds) for bill shield
+	availableStash := stashBal
+	if s.goalTransfer != nil {
+		if gp, ok := s.goalTransfer.(interface {
+			GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+		}); ok {
+			if allocated, err := gp.GetTotalGoalAllocated(ctx, userID); err == nil {
+				availableStash = stashBal.Sub(allocated)
+				if availableStash.IsNegative() {
+					availableStash = decimal.Zero
+				}
+			}
+		}
+	}
+	transferAmt := decimal.Min(shortfall, availableStash)
 	if !transferAmt.IsPositive() {
 		if s.notifier != nil {
 			_ = s.notifier.SendPush(ctx, userID, "Bill Shield Alert",
@@ -808,6 +880,88 @@ func coalesce(val, def int) int {
 
 // automationPushData builds a push notification data map that deep-links into
 // the Miriam AI chat with a contextual pre-loaded message.
+// checkGoalMilestone sends a push notification when a goal hits 25/50/75/100%.
+func (s *Service) checkGoalMilestone(ctx context.Context, userID, goalID uuid.UUID, automationName string) {
+	if s.notifier == nil || s.goalTransfer == nil || s.goals == nil {
+		return
+	}
+	balance, err := s.goalTransfer.GetGoalBalance(ctx, userID, goalID)
+	if err != nil || balance.IsZero() {
+		return
+	}
+	target, err := s.goals.GetGoalTarget(ctx, goalID)
+	if err != nil || target.IsZero() {
+		return
+	}
+	pct, _ := balance.Div(target).Mul(decimal.NewFromInt(100)).Float64()
+
+	var milestone int
+	switch {
+	case pct >= 100:
+		milestone = 100
+	case pct >= 75 && pct < 80: // only fire near the threshold
+		milestone = 75
+	case pct >= 50 && pct < 55:
+		milestone = 50
+	case pct >= 25 && pct < 30:
+		milestone = 25
+	default:
+		return
+	}
+
+	titles := map[int]string{
+		25:  "25% there! 🌱",
+		50:  "Halfway! 🎯",
+		75:  "Almost there! 🔥",
+		100: "Goal reached! 🎉",
+	}
+	msgs := map[int]string{
+		25:  fmt.Sprintf("Your goal is 25%% funded — $%s of $%s. Keep going!", balance.StringFixed(2), target.StringFixed(2)),
+		50:  fmt.Sprintf("You're halfway to your goal! $%s of $%s saved.", balance.StringFixed(2), target.StringFixed(2)),
+		75:  fmt.Sprintf("75%% done! Only $%s left to go.", target.Sub(balance).StringFixed(2)),
+		100: fmt.Sprintf("You did it! Your goal of $%s is fully funded. 🎊", target.StringFixed(2)),
+	}
+
+	_ = s.notifier.SendPush(ctx, userID, titles[milestone], msgs[milestone],
+		automationPushData("goal_milestone", fmt.Sprintf("I just hit %d%% on my savings goal! What should I do next?", milestone)))
+}
+
+// EvaluateDepositReceived triggers all deposit_received automations for a user.
+// Called by the allocation service after a deposit is split.
+func (s *Service) EvaluateDepositReceived(ctx context.Context, userID uuid.UUID, depositAmount decimal.Decimal) {
+	automations, err := s.repo.ListByUser(ctx, userID)
+	if err != nil {
+		s.logger.Warn("failed to list automations for deposit trigger", zap.Error(err))
+		return
+	}
+	now := time.Now().UTC()
+	for _, a := range automations {
+		if !a.IsActive || a.TriggerType != entities.TriggerDepositReceived {
+			continue
+		}
+		if !s.shouldTrigger(ctx, &a, now) {
+			continue
+		}
+		automation := a
+		go s.execute(context.Background(), &automation)
+	}
+}
+
+// recordYieldSnapshot records a yield balance snapshot after a savings-position change.
+func (s *Service) recordYieldSnapshot(ctx context.Context, userID uuid.UUID) {
+	if s.yieldSnapshot == nil || s.totalSavings == nil {
+		return
+	}
+	total, err := s.totalSavings.GetTotalSavingsBalance(ctx, userID)
+	if err != nil {
+		s.logger.Warn("failed to get total savings for yield snapshot", zap.Error(err))
+		return
+	}
+	if err := s.yieldSnapshot.RecordSnapshot(ctx, userID, total); err != nil {
+		s.logger.Warn("failed to record yield snapshot", zap.Error(err))
+	}
+}
+
 func automationPushData(automationType, preloadedMessage string) map[string]interface{} {
 	return map[string]interface{}{
 		"type":              "automation",

@@ -31,6 +31,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
+	"github.com/rail-service/rail_service/internal/domain/services/sharedgoal"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
@@ -90,6 +91,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
+	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
 	treasury_sweep "github.com/rail-service/rail_service/internal/workers/treasury_sweep"
 	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
 	"github.com/rail-service/rail_service/pkg/auth"
@@ -336,6 +338,10 @@ func (a *LedgerIntegrationAdapter) RecordDeposit(ctx context.Context, userID uui
 	return a.integration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash)
 }
 
+func (a *LedgerIntegrationAdapter) RecordDepositWithAllocation(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID, chain, txHash string, spendingAmount, stashAmount decimal.Decimal) error {
+	return a.integration.RecordDepositWithAllocation(ctx, userID, amount, depositID, chain, txHash, spendingAmount, stashAmount)
+}
+
 func (a *LedgerIntegrationAdapter) CompensateDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, depositID uuid.UUID) error {
 	return a.integration.CompensateDeposit(ctx, userID, amount, depositID)
 }
@@ -368,6 +374,7 @@ func (a *BridgeVirtualAccountWebhookAdapter) ProcessFiatDeposit(ctx *gin.Context
 
 	return a.service.ProcessFiatDeposit(ctx.Request.Context(), &funding.BridgeFiatDepositEvent{
 		VirtualAccountID: event.VirtualAccountID,
+		CustomerID:       event.CustomerID,
 		Amount:           event.Amount,
 		Currency:         event.Currency,
 		TransactionRef:   event.TransactionRef,
@@ -743,7 +750,35 @@ func (a *WithdrawalBridgeAdapter) CreateRecipient(ctx context.Context, req map[s
 		}
 		return customerID + ":" + extAcct.ID, nil
 	case "EUR":
-		return "", fmt.Errorf("EUR bank recipients are not yet supported by the Bridge adapter")
+		iban, _ := req["iban"].(string)
+		bic, _ := req["bic"].(string)
+		extAcct, err := a.adapter.Client().CreateExternalAccount(ctx, customerID, &bridge.CreateExternalAccountRequest{
+			Currency: bridge.CurrencyEUR,
+			BankDetails: bridge.ExternalAccountBankDetails{
+				AccountOwnerName: strings.TrimSpace(accountHolderName),
+				IBAN:             strings.TrimSpace(iban),
+				BIC:              strings.TrimSpace(bic),
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("bridge create external account: %w", err)
+		}
+		return customerID + ":" + extAcct.ID, nil
+	case "GBP":
+		sortCode, _ := req["sort_code"].(string)
+		accountNumber, _ := req["account_number"].(string)
+		extAcct, err := a.adapter.Client().CreateExternalAccount(ctx, customerID, &bridge.CreateExternalAccountRequest{
+			Currency: bridge.CurrencyGBP,
+			BankDetails: bridge.ExternalAccountBankDetails{
+				AccountOwnerName: strings.TrimSpace(accountHolderName),
+				SortCode:         strings.TrimSpace(sortCode),
+				AccountNumber:    strings.TrimSpace(accountNumber),
+			},
+		})
+		if err != nil {
+			return "", fmt.Errorf("bridge create external account: %w", err)
+		}
+		return customerID + ":" + extAcct.ID, nil
 	default:
 		return "", fmt.Errorf("unsupported fiat currency: %s", currency)
 	}
@@ -843,6 +878,8 @@ func mapFiatCurrencyToPaymentRail(currency string) (bridge.PaymentRail, error) {
 		return bridge.PaymentRail("us_ach"), nil
 	case "EUR":
 		return bridge.PaymentRail("sepa"), nil
+	case "GBP":
+		return bridge.PaymentRail("faster_payments"), nil
 	default:
 		return "", fmt.Errorf("unsupported fiat payment rail for currency %s", currency)
 	}
@@ -854,6 +891,8 @@ func mapFiatCurrencyToBridgeCurrency(currency string) (bridge.Currency, error) {
 		return bridge.CurrencyUSD, nil
 	case "EUR":
 		return bridge.CurrencyEUR, nil
+	case "GBP":
+		return bridge.CurrencyGBP, nil
 	default:
 		return "", fmt.Errorf("unsupported fiat currency %s", currency)
 	}
@@ -1216,6 +1255,7 @@ type Container struct {
 	FinancialProfileRepo      *repositories.FinancialProfileRepository
 	FinancialObligationRepo   *repositories.FinancialObligationRepository
 	AutomationRepo            *repositories.AutomationRepository
+	SharedGoalRepo            *repositories.SharedGoalRepository
 	ContextSignalRepo         *repositories.ContextSignalRepository
 	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
@@ -1268,6 +1308,7 @@ type Container struct {
 	ReconciliationScheduler        *reconciliation.Scheduler
 	StashReconciliation            *recon.Worker
 	TreasurySweepWorker            *treasury_sweep.Worker
+	RevenueSweepWorker             *revenue_sweep.Worker
 	ReflectDepositRouter           *reflect.CircleDepositRouter
 	YieldDistributionWorker        *yield_distribution.Worker
 	AllocationService              *allocation.Service
@@ -1300,6 +1341,7 @@ type Container struct {
 	MiriamNotificationDispatcher   *miriamservice.NotificationDispatcher
 	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
 	AutomationService              *automation.Service
+	SharedGoalService              *sharedgoal.Service
 	GrowthMailService              *growthmail.Service
 	GrowthEngineService            *growthengine.Service
 	NotificationService            *services.NotificationService
@@ -1514,6 +1556,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
 	financialObligationRepo := repositories.NewFinancialObligationRepository(sqlxDB)
 	automationRepo := repositories.NewAutomationRepository(sqlxDB)
+	sharedGoalRepo := repositories.NewSharedGoalRepository(sqlxDB)
 	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
@@ -1669,6 +1712,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		FinancialProfileRepo:      financialProfileRepo,
 		FinancialObligationRepo:   financialObligationRepo,
 		AutomationRepo:            automationRepo,
+		SharedGoalRepo:            sharedGoalRepo,
 		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
@@ -1865,6 +1909,7 @@ func (c *Container) initializeDomainServices() error {
 	c.FinancialObligationService = obligationservice.NewService(c.FinancialObligationRepo)
 	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService}
 	c.AutomationService = automation.NewService(c.AutomationRepo, automationAdapter, automationAdapter, c.ZapLog)
+	c.SharedGoalService = sharedgoal.NewService(c.SharedGoalRepo, nil, c.ZapLog) // nil UserLookup: invite resolution is not needed for AI-created goals
 
 	// Wire optional automation dependencies
 	if c.NotificationService != nil {
@@ -1872,6 +1917,14 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.FinancialObligationService != nil {
 		c.AutomationService.SetObligationProvider(c.FinancialObligationService)
+	}
+	// Wire goal sub-account support
+	c.AutomationService.SetGoalChecker(&goalCheckerAdapter{goalRepo: c.SharedGoalRepo, ledger: c.LedgerService})
+	c.AutomationService.SetGoalTransferExecutor(&goalTransferAdapter{ledger: c.LedgerService})
+	c.AutomationService.SetGoalContributor(&goalContributorAdapter{goalRepo: c.SharedGoalRepo})
+	c.AutomationService.SetTotalSavingsProvider(c.LedgerService)
+	if c.YieldService != nil {
+		c.AutomationService.SetYieldSnapshotRecorder(c.YieldService)
 	}
 	moneyGuardSpendingSvc := spendingsvc.NewService(c.LedgerSpendingRepo)
 	c.MoneyGuardService = moneyguardservice.NewService(
@@ -2086,6 +2139,28 @@ func (c *Container) initializeDomainServices() error {
 		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 	}
 
+	// Revenue sweep: periodically transfer accumulated fee revenue to treasury wallet.
+	// Independent of Reflect — only requires Circle + treasury address.
+	if c.Config.Bridge.TreasuryWalletAddress != "" && c.CircleAdapter != nil {
+		revSweepAdapter := &revenueSweepTransferAdapter{
+			circle:          c.CircleAdapter,
+			treasuryAddress: c.Config.Bridge.TreasuryWalletAddress,
+		}
+		revSweep := revenue_sweep.NewWorker(
+			revSweepAdapter,
+			sqlxDB,
+			decimal.NewFromFloat(0.10), // min $0.10 to sweep (flat fees are $0.10)
+			24*time.Hour,
+			c.ZapLog,
+		)
+		revSweep.Start()
+		c.RevenueSweepWorker = revSweep
+		c.ZapLog.Info("Revenue sweep worker started",
+			zap.String("treasury_address", c.Config.Bridge.TreasuryWalletAddress))
+	} else {
+		c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
+	}
+
 	// Initialize ledger integration (bridges legacy and new ledger system)
 	ledgerIntegration := integration.NewLedgerIntegration(
 		c.LedgerService,
@@ -2253,6 +2328,10 @@ func (c *Container) initializeDomainServices() error {
 	if c.StashLockService != nil {
 		c.AllocationService.SetStashLockRecorder(c.StashLockService)
 	}
+	// Wire deposit-triggered automations
+	if c.AutomationService != nil {
+		c.AllocationService.SetDepositAutomationEvaluator(c.AutomationService)
+	}
 
 	// Inject allocation service into onboarding service (for auto-enabling 70/30 mode)
 	c.OnboardingService.SetAllocationService(c.AllocationService)
@@ -2265,6 +2344,10 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.StationService.SetAlpacaAccountRepository(c.AlpacaAccountRepo)
+	if c.FinancialObligationService != nil {
+		c.StationService.SetObligationProvider(&stationObligationAdapter{obligations: c.FinancialObligationService})
+	}
+	c.StationService.SetGoalBalanceProvider(c.LedgerService)
 
 	// Initialize gameplay services (notifiers wired after push service is resolved below)
 	c.GameplayRepo = repositories.NewGameplayRepository(sqlxDB)
@@ -3611,12 +3694,22 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		// WithdrawalService also satisfies WithdrawalInitiator (fiat bank withdrawals via voice)
 		c.AIOrchestrator.SetWithdrawalInitiator(c.WithdrawalService)
 	}
+	// Goal protection: warns before withdrawals that impact goal-allocated funds
+	c.AIOrchestrator.SetGoalProtectionProvider(c.LedgerService)
+
+	// Voice daily transfer cap ($100/day via voice)
+	if c.RedisClient != nil {
+		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
+	}
 
 	// Use Redis for pending actions (survives restarts, works across instances)
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
 		// Redis-backed savings goal store (persists user goals across sessions)
 		c.AIOrchestrator.SetSavingsGoalStore(aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
+	}
+	if c.SharedGoalService != nil {
+		c.AIOrchestrator.SetSharedGoalCreator(&sharedGoalCreatorAdapter{svc: c.SharedGoalService})
 	}
 
 	// Wire read-only data tools
@@ -5132,4 +5225,25 @@ func (a *supermemoryAdapter) SearchMemory(ctx context.Context, userID, query str
 		out[i] = aiservice.SupermemoryResult{Memory: r.Memory, Similarity: r.Similarity}
 	}
 	return out, nil
+}
+
+// revenueSweepTransferAdapter wraps Circle adapter for revenue sweep transfers from user wallets.
+type revenueSweepTransferAdapter struct {
+	circle          *circleadapter.Adapter
+	treasuryAddress string
+}
+
+func (a *revenueSweepTransferAdapter) TransferToTreasury(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	walletID, tokenID, _, _, err := a.circle.FindWalletWithUSDC(ctx, userID.String())
+	if err != nil {
+		return fmt.Errorf("find user wallet: %w", err)
+	}
+	tx, err := a.circle.TransferUSDCWithIdempotency(ctx, walletID, tokenID, a.treasuryAddress, amount.StringFixed(2), reference)
+	if err != nil {
+		return err
+	}
+	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+		return fmt.Errorf("transfer %s: %s", tx.State, tx.ID)
+	}
+	return nil
 }

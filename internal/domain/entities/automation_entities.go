@@ -17,6 +17,7 @@ const (
 	TriggerCustom           = "custom"
 	TriggerObligationDue    = "obligation_due"
 	TriggerLifeEvent        = "life_event"
+	TriggerDepositReceived  = "deposit_received"
 )
 
 // Automation action types

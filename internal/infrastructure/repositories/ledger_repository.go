@@ -182,8 +182,8 @@ func (r *LedgerRepository) CreateAccount(ctx context.Context, account *entities.
 	}
 
 	query := `
-		INSERT INTO ledger_accounts (id, user_id, account_type, currency, balance, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO ledger_accounts (id, user_id, account_type, goal_id, currency, balance, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -197,6 +197,7 @@ func (r *LedgerRepository) CreateAccount(ctx context.Context, account *entities.
 		account.ID,
 		account.UserID,
 		account.AccountType,
+		account.GoalID,
 		account.Currency,
 		account.Balance,
 		account.CreatedAt,
@@ -781,6 +782,7 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 		USDCBalance:       decimal.Zero,
 		SpendingBalance:   decimal.Zero,
 		StashBalance:      decimal.Zero,
+		GoalBalance:       decimal.Zero,
 		FiatExposure:      decimal.Zero,
 		PendingInvestment: decimal.Zero,
 	}
@@ -806,6 +808,8 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 			balances.FiatExposure = balance
 		case entities.AccountTypePendingInvestment:
 			balances.PendingInvestment = balance
+		case entities.AccountTypeGoalBalance:
+			balances.GoalBalance = balances.GoalBalance.Add(balance)
 		}
 
 		if updatedAt.After(latestUpdate) {
@@ -999,6 +1003,80 @@ func (r *LedgerRepository) GetTotalStashBalance(ctx context.Context) (decimal.De
 	var total decimal.Decimal
 	err := r.db.QueryRowxContext(ctx,
 		`SELECT COALESCE(SUM(balance), 0) FROM ledger_accounts WHERE account_type = 'stash_balance'`,
+	).Scan(&total)
+	return total, err
+}
+
+// GetOrCreateGoalAccount retrieves or creates a goal_balance account for a user+goal pair.
+func (r *LedgerRepository) GetOrCreateGoalAccount(ctx context.Context, userID, goalID uuid.UUID) (*entities.LedgerAccount, error) {
+	query := `
+		SELECT id, user_id, account_type, goal_id, currency, balance, created_at, updated_at
+		FROM ledger_accounts
+		WHERE user_id = $1 AND account_type = 'goal_balance' AND goal_id = $2
+	`
+	var account entities.LedgerAccount
+	err := r.getContext(ctx, &account, query, userID, goalID)
+	if err == nil {
+		return &account, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("get goal account: %w", err)
+	}
+
+	account = entities.LedgerAccount{
+		ID:          uuid.New(),
+		UserID:      &userID,
+		AccountType: entities.AccountTypeGoalBalance,
+		GoalID:      &goalID,
+		Currency:    "USDC",
+		Balance:     decimal.Zero,
+	}
+	if err := r.CreateAccount(ctx, &account); err != nil {
+		// Race condition: another request created it
+		var existing entities.LedgerAccount
+		if getErr := r.getContext(ctx, &existing, query, userID, goalID); getErr == nil {
+			return &existing, nil
+		}
+		return nil, fmt.Errorf("create goal account: %w", err)
+	}
+	return &account, nil
+}
+
+// GetGoalAccounts returns all goal_balance accounts for a user.
+func (r *LedgerRepository) GetGoalAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error) {
+	query := `
+		SELECT id, user_id, account_type, goal_id, currency, balance, created_at, updated_at
+		FROM ledger_accounts
+		WHERE user_id = $1 AND account_type = 'goal_balance'
+		ORDER BY created_at
+	`
+	var accounts []*entities.LedgerAccount
+	err := r.selectContext(ctx, &accounts, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get goal accounts: %w", err)
+	}
+	return accounts, nil
+}
+
+// GetTotalGoalAllocated returns the total balance across all goal accounts for a user.
+func (r *LedgerRepository) GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := r.queryRowxContext(ctx,
+		`SELECT COALESCE(SUM(balance), 0) FROM ledger_accounts WHERE user_id = $1 AND account_type = 'goal_balance'`,
+		userID,
+	).Scan(&total)
+	return total, err
+}
+
+// GetProtectedGoalAllocated returns the total balance of goal accounts whose shared_goal is marked as protected.
+func (r *LedgerRepository) GetProtectedGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	var total decimal.Decimal
+	err := r.queryRowxContext(ctx,
+		`SELECT COALESCE(SUM(la.balance), 0)
+		 FROM ledger_accounts la
+		 JOIN shared_goals sg ON sg.id = la.goal_id
+		 WHERE la.user_id = $1 AND la.account_type = 'goal_balance' AND sg.protected = true`,
+		userID,
 	).Scan(&total)
 	return total, err
 }

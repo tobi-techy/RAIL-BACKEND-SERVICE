@@ -764,8 +764,8 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 		return fmt.Errorf("get stash account: %w", err)
 	}
 
-	desc := fmt.Sprintf("Roundup collection: %s", amount.String())
-	refType := "roundup_collection"
+	desc := fmt.Sprintf("Transfer to stash: $%s", amount.StringFixed(2))
+	refType := "spend_to_stash"
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeInternalTransfer,
@@ -820,8 +820,8 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 		return fmt.Errorf("get stash account: %w", err)
 	}
 
-	desc := fmt.Sprintf("Transfer stash to spending: %s", amount.String())
-	refType := "miriam_transfer"
+	desc := fmt.Sprintf("Transfer from stash: $%s", amount.StringFixed(2))
+	refType := "stash_to_spend"
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeInternalTransfer,
@@ -1031,4 +1031,284 @@ func (s *Service) observeStashRaid(userID uuid.UUID, amount decimal.Decimal, ref
 			s.logger.Warn("stash raid observer failed", "user_id", userID.String(), "error", err)
 		}
 	}()
+}
+
+// DistributeYieldToGoals delegates to CreditYieldToSavings for interface compatibility.
+func (s *Service) DistributeYieldToGoals(ctx context.Context, userID uuid.UUID, yieldAmount decimal.Decimal, distributionID string) error {
+	return s.CreditYieldToSavings(ctx, userID, yieldAmount, distributionID)
+}
+
+// CreditYieldToSavings credits yield directly to stash AND each goal account in a single transaction.
+// Each account earns yield independently based on its share of total savings.
+func (s *Service) CreditYieldToSavings(ctx context.Context, userID uuid.UUID, totalYield decimal.Decimal, distributionID string) error {
+	if totalYield.IsZero() || totalYield.IsNegative() {
+		return nil
+	}
+
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+	systemAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("get system buffer account: %w", err)
+	}
+	goalAccounts, err := s.ledgerRepo.GetGoalAccounts(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("get goal accounts: %w", err)
+	}
+
+	// Calculate total savings position
+	totalSavings := stashAccount.Balance
+	for _, ga := range goalAccounts {
+		totalSavings = totalSavings.Add(ga.Balance)
+	}
+
+	// Build batch entries: one debit per account, one credit to system
+	var entries []entities.CreateEntryRequest
+	desc := fmt.Sprintf("Yield distribution %s", distributionID)
+	systemCreditTotal := decimal.Zero
+
+	if totalSavings.IsZero() {
+		// No savings anywhere — credit all to stash as fallback
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: totalYield, Currency: "USDC", Description: &desc,
+		})
+		systemCreditTotal = totalYield
+	} else {
+		distributed := decimal.Zero
+
+		// Stash share
+		stashShare := stashAccount.Balance.Div(totalSavings).Mul(totalYield).Truncate(6)
+		if stashShare.IsPositive() {
+			entries = append(entries, entities.CreateEntryRequest{
+				AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: stashShare, Currency: "USDC", Description: &desc,
+			})
+			distributed = distributed.Add(stashShare)
+		}
+
+		// Each goal's share
+		for _, ga := range goalAccounts {
+			share := ga.Balance.Div(totalSavings).Mul(totalYield).Truncate(6)
+			if share.IsZero() {
+				continue
+			}
+			goalDesc := fmt.Sprintf("Yield on goal %s", ga.GoalID)
+			entries = append(entries, entities.CreateEntryRequest{
+				AccountID: ga.ID, EntryType: entities.EntryTypeDebit, Amount: share, Currency: "USDC", Description: &goalDesc,
+			})
+			distributed = distributed.Add(share)
+		}
+
+		// Rounding dust to stash
+		dust := totalYield.Sub(distributed)
+		if dust.IsPositive() {
+			entries = append(entries, entities.CreateEntryRequest{
+				AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: dust, Currency: "USDC", Description: &desc,
+			})
+			distributed = distributed.Add(dust)
+		}
+		systemCreditTotal = distributed
+	}
+
+	// Single system credit to balance the debits
+	entries = append(entries, entities.CreateEntryRequest{
+		AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: systemCreditTotal, Currency: "USDC", Description: &desc,
+	})
+
+	idempKey := fmt.Sprintf("yield-%s-%s", distributionID, userID)
+	refType := "yield_distribution"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"distribution_id": distributionID},
+		Entries:         entries,
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// --- Automation Transfer Operations ---
+
+// AutomationTransferSpendToStash moves funds from spend to stash, labeled as an automation transfer
+// so it appears correctly in transaction history.
+func (s *Service) AutomationTransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey, automationName string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Automation: %s — $%s to stash", automationName, amount.StringFixed(2))
+	refType := "automation_transfer"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"source": "automation", "automation_name": automationName},
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// --- Goal Sub-Account Operations ---
+
+// GetOrCreateGoalAccount ensures a goal_balance ledger account exists for a user+goal pair.
+func (s *Service) GetOrCreateGoalAccount(ctx context.Context, userID, goalID uuid.UUID) (*entities.LedgerAccount, error) {
+	return s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+}
+
+// TransferSpendToGoal moves funds from the user's spending balance to a goal sub-account.
+func (s *Service) TransferSpendToGoal(ctx context.Context, userID, goalID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+
+	goalAccount, err := s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+	if err != nil {
+		return fmt.Errorf("get goal account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Goal contribution: spend → goal %s", goalID)
+	refType := "goal_contribution"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"goal_id": goalID.String()},
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: goalAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// TransferGoalToSpend moves funds from a goal sub-account back to spending.
+func (s *Service) TransferGoalToSpend(ctx context.Context, userID, goalID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	goalAccount, err := s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+	if err != nil {
+		return fmt.Errorf("get goal account: %w", err)
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Goal withdrawal: goal %s → spend", goalID)
+	refType := "goal_withdrawal"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"goal_id": goalID.String()},
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: goalAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// GetGoalBalance returns the balance of a specific goal sub-account.
+func (s *Service) GetGoalBalance(ctx context.Context, userID, goalID uuid.UUID) (decimal.Decimal, error) {
+	account, err := s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return account.Balance, nil
+}
+
+// GetTotalGoalAllocated returns the sum of all goal sub-account balances for a user.
+func (s *Service) GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	return s.ledgerRepo.GetTotalGoalAllocated(ctx, userID)
+}
+
+// GetGoalAccounts returns all goal sub-accounts with balances for a user.
+func (s *Service) GetGoalAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error) {
+	return s.ledgerRepo.GetGoalAccounts(ctx, userID)
+}
+
+// GetTotalSavingsBalance returns stash_balance + all goal_balance accounts for a user.
+// This represents the user's total savings position for yield calculation.
+func (s *Service) GetTotalSavingsBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	goalTotal, err := s.ledgerRepo.GetTotalGoalAllocated(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return stashAccount.Balance.Add(goalTotal), nil
+}
+
+// GetUnallocatedStashBalance returns the stash balance minus all goal-allocated funds.
+// This is the amount available for withdrawal without impacting any goals.
+func (s *Service) GetUnallocatedStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	goalTotal, err := s.ledgerRepo.GetTotalGoalAllocated(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	unallocated := stashAccount.Balance.Sub(goalTotal)
+	if unallocated.IsNegative() {
+		return decimal.Zero, nil
+	}
+	return unallocated, nil
+}
+
+// GetWithdrawableStashBalance returns the stash balance minus ONLY protected goal funds.
+// Unprotected goals produce a warning but don't block withdrawals.
+func (s *Service) GetWithdrawableStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	protectedTotal, err := s.ledgerRepo.GetProtectedGoalAllocated(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	withdrawable := stashAccount.Balance.Sub(protectedTotal)
+	if withdrawable.IsNegative() {
+		return decimal.Zero, nil
+	}
+	return withdrawable, nil
 }

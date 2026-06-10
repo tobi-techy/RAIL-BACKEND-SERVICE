@@ -18,6 +18,8 @@ import (
 type Balances struct {
 	SpendingBalance          decimal.Decimal
 	StashBalance             decimal.Decimal
+	GoalBalance              decimal.Decimal
+	SafeToSpend              decimal.Decimal
 	InvestBalance            decimal.Decimal
 	FiatExposure             decimal.Decimal
 	UnallocatedUSDC          decimal.Decimal
@@ -107,6 +109,16 @@ type AlpacaAccountService interface {
 	GetUserAccount(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
 }
 
+// ObligationProvider fetches upcoming obligations for safe-to-spend calculation.
+type ObligationProvider interface {
+	GetUpcomingTotal(ctx context.Context, userID uuid.UUID, withinDays int) (decimal.Decimal, error)
+}
+
+// GoalBalanceProvider fetches total goal sub-account balance.
+type GoalBalanceProvider interface {
+	GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+}
+
 // Service handles station/home screen data retrieval
 type Service struct {
 	ledgerService     LedgerService
@@ -118,6 +130,8 @@ type Service struct {
 	transactionRepo   TransactionRepository
 	alpacaAccountRepo AlpacaAccountRepository
 	alpacaAccountSvc  AlpacaAccountService
+	obligationProv    ObligationProvider
+	goalBalanceProv   GoalBalanceProvider
 	logger            *zap.Logger
 }
 
@@ -165,6 +179,12 @@ func (s *Service) SetAlpacaAccountRepository(repo AlpacaAccountRepository) {
 func (s *Service) SetAlpacaAccountService(svc AlpacaAccountService) {
 	s.alpacaAccountSvc = svc
 }
+
+// SetObligationProvider sets the obligation provider for safe-to-spend calculation.
+func (s *Service) SetObligationProvider(p ObligationProvider) { s.obligationProv = p }
+
+// SetGoalBalanceProvider sets the goal balance provider.
+func (s *Service) SetGoalBalanceProvider(p GoalBalanceProvider) { s.goalBalanceProv = p }
 
 func (s *Service) getAccountBalanceOrZero(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, label string) decimal.Decimal {
 	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, accountType)
@@ -282,11 +302,32 @@ func (s *Service) GetUserBalances(ctx context.Context, userID uuid.UUID) (*Balan
 	}
 
 	investBalance := portfolioValue.Add(stashBalance).Add(fiatExposure)
+
+	// Compute goal balance and safe-to-spend
+	var goalBalance decimal.Decimal
+	if s.goalBalanceProv != nil {
+		if gb, err := s.goalBalanceProv.GetTotalGoalAllocated(ctx, userID); err == nil {
+			goalBalance = gb
+		}
+	}
+	safeToSpend := spendingBalance
+	if s.obligationProv != nil {
+		if upcoming, err := s.obligationProv.GetUpcomingTotal(ctx, userID, 7); err == nil {
+			safeToSpend = spendingBalance.Sub(upcoming)
+			if safeToSpend.IsNegative() {
+				safeToSpend = decimal.Zero
+			}
+		}
+	}
+
+	// goalBalance is a virtual sub-account of stash (already in investBalance), shown separately for UI only.
 	totalBalance := spendingBalance.Add(investBalance).Add(usdcBalance)
 
 	return &Balances{
 		SpendingBalance: spendingBalance,
 		StashBalance:    stashBalance,
+		GoalBalance:     goalBalance,
+		SafeToSpend:     safeToSpend,
 		InvestBalance:   investBalance,
 		FiatExposure:    fiatExposure,
 		UnallocatedUSDC: usdcBalance,
