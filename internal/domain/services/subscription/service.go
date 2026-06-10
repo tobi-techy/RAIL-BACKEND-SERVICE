@@ -19,6 +19,8 @@ type Repository interface {
 	CreateCharge(ctx context.Context, c *entities.SubscriptionCharge) error
 	GetDueSubscriptions(ctx context.Context) ([]*entities.Subscription, error)
 	CountFailedCharges(ctx context.Context, subscriptionID uuid.UUID, periodStart time.Time) (int, error)
+	MarkBridgeTransferred(ctx context.Context, chargeID uuid.UUID) error
+	GetUnTransferredCharges(ctx context.Context, limit int) ([]*entities.SubscriptionCharge, error)
 }
 
 // LedgerService handles the actual balance debit/credit
@@ -237,10 +239,18 @@ func (s *Service) ChargeSubscription(ctx context.Context, sub *entities.Subscrip
 	if s.bridgeTransfer != nil {
 		ref := fmt.Sprintf("sub-%s-%s", sub.ID, sub.CurrentPeriodStart.Format("2006-01-02"))
 		if err := s.bridgeTransfer.TransferToCompanyWallet(ctx, sub.UserID, amount, ref); err != nil {
-			s.logger.Warn("Subscription charged in ledger but Bridge transfer failed — will retry next cycle",
+			s.logger.Warn("Subscription charged in ledger but Bridge transfer failed — will retry",
 				zap.String("user_id", sub.UserID.String()),
 				zap.String("amount", amount.String()),
 				zap.Error(err))
+		} else {
+			if markErr := s.markBridgeTransferred(ctx, charge.ID); markErr != nil {
+				s.logger.Error("CRITICAL: Bridge transfer succeeded but failed to mark as transferred - charge will be retried",
+					zap.String("charge_id", charge.ID.String()),
+					zap.String("subscription_id", sub.ID.String()),
+					zap.String("user_id", sub.UserID.String()),
+					zap.Error(markErr))
+			}
 		}
 	}
 
@@ -307,4 +317,47 @@ func (s *Service) invalidateCache(ctx context.Context, userID uuid.UUID) {
 	if s.cache != nil {
 		s.cache.Delete(ctx, fmt.Sprintf("pro:%s", userID))
 	}
+}
+
+func (s *Service) markBridgeTransferred(ctx context.Context, chargeID uuid.UUID) error {
+	return s.repo.MarkBridgeTransferred(ctx, chargeID)
+}
+
+// RetryFailedTransfers retries Bridge transfers for charges that were ledgered but not yet transferred.
+func (s *Service) RetryFailedTransfers(ctx context.Context) (transferred, failed int) {
+	if s.bridgeTransfer == nil {
+		return
+	}
+	charges, err := s.repo.GetUnTransferredCharges(ctx, 50)
+	if err != nil {
+		s.logger.Error("Failed to get untransferred charges", zap.Error(err))
+		return
+	}
+	for i, charge := range charges {
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
+		ref := fmt.Sprintf("sub-%s-%s", charge.SubscriptionID, charge.PeriodStart.Format("2006-01-02"))
+		if err := s.bridgeTransfer.TransferToCompanyWallet(ctx, charge.UserID, charge.Amount, ref); err != nil {
+			s.logger.Warn("Subscription Bridge transfer retry failed",
+				zap.String("charge_id", charge.ID.String()),
+				zap.Error(err))
+			failed++
+			continue
+		}
+		if err := s.markBridgeTransferred(ctx, charge.ID); err != nil {
+			// CRITICAL: Bridge transfer succeeded but DB mark failed — charge will be
+			// retried causing potential duplicate transfer. Idempotency depends on Bridge
+			// deduplicating on the reference string.
+			s.logger.Error("CRITICAL: Bridge transfer succeeded but failed to mark charge — requires manual reconciliation",
+				zap.String("charge_id", charge.ID.String()),
+				zap.String("subscription_id", charge.SubscriptionID.String()),
+				zap.String("user_id", charge.UserID.String()),
+				zap.Error(err))
+			transferred++
+			continue
+		}
+		transferred++
+	}
+	return
 }

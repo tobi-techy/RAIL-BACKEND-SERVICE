@@ -408,7 +408,10 @@ func (s *Service) ResolveBankAccount(ctx context.Context, userID uuid.UUID, bank
 	if err != nil {
 		return nil, err
 	}
-	account, err := s.pajClient.ResolveBankAccount(ctx, token, bankID, accountNumber)
+	// Resolve is a lightweight lookup — use a tighter timeout to fail fast.
+	resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	account, err := s.pajClient.ResolveBankAccount(resolveCtx, token, bankID, accountNumber)
 	if err != nil {
 		return nil, s.invalidateSessionIfUnauthorized(ctx, userID, err)
 	}

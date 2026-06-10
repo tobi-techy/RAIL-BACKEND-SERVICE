@@ -63,6 +63,9 @@ type ActivityItem struct {
 	Chain       string               `json:"chain,omitempty"`
 	TxHash      string               `json:"txHash,omitempty"`
 	Destination string               `json:"destination,omitempty"` // address, bank, railtag
+	ReceiverName string              `json:"receiverName,omitempty"`
+	BankName     string              `json:"bankName,omitempty"`
+	Narration    string              `json:"narration,omitempty"`
 	SourceID    string               `json:"sourceId"`              // original entity ID for detail fetch
 	SourceType  string               `json:"sourceType"`            // "deposit", "withdrawal", "paj_order", "p2p_transfer"
 	GroupID     string               `json:"groupId,omitempty"`     // links related txns (e.g., PAJ order + deposit)
@@ -111,24 +114,29 @@ func NormalizeWithdrawalToActivity(w *Withdrawal) ActivityItem {
 		title = "Fiat withdrawal"
 		subtitle = string(w.Currency)
 	}
+	narration := ""
+	if w.Narration != nil {
+		narration = *w.Narration
+	}
 	fee := w.FeeAmount
 	return ActivityItem{
-		ID:          w.ID.String(),
-		Type:        ActivityTypeWithdrawal,
-		Direction:   ActivityDirectionOut,
-		Status:      status,
-		Title:       title,
-		Subtitle:    subtitle,
-		Amount:      w.Amount,
-		Currency:    ActivityCurrencyPair{Primary: string(w.Currency)},
-		FeeAmount:   &fee,
-		Chain:       w.DestinationChain,
-		TxHash:      derefStr(w.TxHash),
-		Destination: dest,
-		SourceID:    w.ID.String(),
-		SourceType:  "withdrawal",
-		CreatedAt:   w.CreatedAt,
-		CompletedAt: w.CompletedAt,
+		ID:           w.ID.String(),
+		Type:         ActivityTypeWithdrawal,
+		Direction:    ActivityDirectionOut,
+		Status:       status,
+		Title:        title,
+		Subtitle:     subtitle,
+		Amount:       w.Amount,
+		Currency:     ActivityCurrencyPair{Primary: string(w.Currency)},
+		FeeAmount:    &fee,
+		Chain:        w.DestinationChain,
+		TxHash:       derefStr(w.TxHash),
+		Destination:  dest,
+		Narration:    narration,
+		SourceID:     w.ID.String(),
+		SourceType:   "withdrawal",
+		CreatedAt:    w.CreatedAt,
+		CompletedAt:  w.CompletedAt,
 	}
 }
 
@@ -178,18 +186,20 @@ func NormalizePajOrderToActivity(o *PajOrderForActivity) ActivityItem {
 		bankName = *o.BankAccountName
 	}
 	return ActivityItem{
-		ID:          o.ID,
-		Type:        ActivityTypeNairaWithdraw,
-		Direction:   ActivityDirectionOut,
-		Status:      status,
-		Title:       "Withdrew to bank",
-		Subtitle:    formatNaira(o.FiatAmount) + " • " + bankName,
-		Amount:      fiatAmount,
-		Currency:    ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
-		FiatAmount:  &fiatAmount,
-		SourceID:    o.ID,
-		SourceType:  "paj_order",
-		CreatedAt:   o.CreatedAt,
+		ID:           o.ID,
+		Type:         ActivityTypeNairaWithdraw,
+		Direction:    ActivityDirectionOut,
+		Status:       status,
+		Title:        "Withdrew to bank",
+		Subtitle:     formatNaira(o.FiatAmount) + " • " + bankName,
+		Amount:       fiatAmount,
+		Currency:     ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
+		FiatAmount:   &fiatAmount,
+		ReceiverName: bankName,
+		BankName:     bankName,
+		SourceID:     o.ID,
+		SourceType:   "paj_order",
+		CreatedAt:    o.CreatedAt,
 	}
 }
 
@@ -241,9 +251,11 @@ func NormalizeP2PToActivity(t *P2PTransferForActivity, viewerID uuid.UUID) Activ
 
 func normalizeDepositStatus(s string) ActivityStatus {
 	switch s {
-	case "confirmed":
+	case "confirmed", "off_ramp_completed", "broker_funded":
 		return ActivityStatusCompleted
-	case "failed":
+	case "off_ramp_initiated":
+		return ActivityStatusProcessing
+	case "failed", "expired":
 		return ActivityStatusFailed
 	default:
 		return ActivityStatusPending

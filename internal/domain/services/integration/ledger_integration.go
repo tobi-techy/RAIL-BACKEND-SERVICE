@@ -589,6 +589,121 @@ func (i *LedgerIntegration) RecordWithdrawal(
 	return nil
 }
 
+// RecordDepositWithAllocation atomically records a deposit and splits funds directly
+// into spending_balance and stash_balance accounts in a single ledger transaction.
+// This eliminates the race condition where funds are briefly in usdc_balance and
+// spendable before allocation completes.
+func (i *LedgerIntegration) RecordDepositWithAllocation(
+	ctx context.Context,
+	userID uuid.UUID,
+	amount decimal.Decimal,
+	depositID uuid.UUID,
+	chain string,
+	txHash string,
+	spendingAmount decimal.Decimal,
+	stashAmount decimal.Decimal,
+) error {
+	if amount.IsNegative() || spendingAmount.IsNegative() || stashAmount.IsNegative() {
+		return fmt.Errorf("amounts must be non-negative: amount=%s spending=%s stash=%s", amount, spendingAmount, stashAmount)
+	}
+	if !spendingAmount.Add(stashAmount).Equal(amount) {
+		return fmt.Errorf("allocation mismatch: spending(%s) + stash(%s) != amount(%s)", spendingAmount, stashAmount, amount)
+	}
+	if spendingAmount.IsZero() && stashAmount.IsZero() {
+		return fmt.Errorf("invalid allocation: both spending and stash amounts are zero")
+	}
+	i.logger.Info("Recording deposit with atomic allocation",
+		"user_id", userID,
+		"amount", amount,
+		"deposit_id", depositID,
+		"spending", spendingAmount,
+		"stash", stashAmount,
+		"chain", chain)
+
+	// Get system buffer account (source of deposited funds)
+	systemAccount, err := i.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("failed to get system buffer account: %w", err)
+	}
+
+	// Get spending and stash accounts (destinations)
+	spendingAccount, err := i.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get spending account: %w", err)
+	}
+
+	stashAccount, err := i.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get stash account: %w", err)
+	}
+
+	description := fmt.Sprintf("USDC deposit from %s with allocation: %s (spend %s / stash %s)", chain, txHash, spendingAmount.String(), stashAmount.String())
+	idempotencyKey := fmt.Sprintf("deposit-alloc-%s", depositID.String())
+	refType := "deposit_with_allocation"
+
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &description,
+		},
+	}
+
+	if !spendingAmount.IsZero() {
+		spendDesc := fmt.Sprintf("Spending allocation: %s", spendingAmount.String())
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   spendingAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      spendingAmount,
+			Currency:    "USDC",
+			Description: &spendDesc,
+		})
+	}
+
+	if !stashAmount.IsZero() {
+		stashDesc := fmt.Sprintf("Stash allocation: %s", stashAmount.String())
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   stashAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      stashAmount,
+			Currency:    "USDC",
+			Description: &stashDesc,
+		})
+	}
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		ReferenceID:     &depositID,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &description,
+		Metadata: map[string]any{
+			"chain":           chain,
+			"tx_hash":         txHash,
+			"spending_amount": spendingAmount.String(),
+			"stash_amount":    stashAmount.String(),
+			"atomic_split":    true,
+		},
+		Entries: entries,
+	}
+
+	_, err = i.ledgerService.CreateTransaction(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to create deposit+allocation ledger transaction: %w", err)
+	}
+
+	i.logger.Info("Deposit with allocation recorded atomically",
+		"user_id", userID,
+		"deposit_id", depositID,
+		"spending", spendingAmount,
+		"stash", stashAmount)
+
+	return nil
+}
+
 // GetLedgerService returns the underlying ledger service for direct access
 func (i *LedgerIntegration) GetLedgerService() *ledger.Service {
 	return i.ledgerService

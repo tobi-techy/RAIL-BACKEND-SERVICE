@@ -1351,12 +1351,25 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 				s.logger.Info("Found existing EUR bank account", "bank_account_id", acc.ID.String())
 				return acc, nil
 			}
+		case entities.WithdrawalCurrencyGBP:
+			sanitizedReqSortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+			if len(sanitizedReqSortCode) != 6 {
+				return nil, fmt.Errorf("invalid UK sort code: must be exactly 6 digits, got %d", len(sanitizedReqSortCode))
+			}
+			routingMatches := acc.RoutingNumber != nil && *acc.RoutingNumber == sanitizedReqSortCode
+			accountMatches := acc.AccountNumberLast4 == accountLast4 && accountLast4 != ""
+			if routingMatches && accountMatches {
+				s.logger.Info("Found existing GBP bank account", "bank_account_id", acc.ID.String())
+				return acc, nil
+			}
 		}
 	}
 
 	bankCurrency := entities.BankAccountCurrencyUSD
 	if req.Currency == entities.WithdrawalCurrencyEUR {
 		bankCurrency = entities.BankAccountCurrencyEUR
+	} else if req.Currency == entities.WithdrawalCurrencyGBP {
+		bankCurrency = entities.BankAccountCurrencyGBP
 	}
 
 	bankAccount := &entities.BankAccount{
@@ -1384,6 +1397,16 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 		}
 		bankAccount.AccountNumberLast4 = ibanLast4
 	}
+	if req.Currency == entities.WithdrawalCurrencyGBP {
+		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+		if len(sortCode) != 6 {
+			return nil, fmt.Errorf("invalid UK sort code: must be exactly 6 digits, got %d", len(sortCode))
+		}
+		sortCodeLast4 := sortCode[len(sortCode)-4:]
+		bankAccount.RoutingNumberLast4 = &sortCodeLast4
+		bankAccount.RoutingNumber = &sortCode
+		bankAccount.AccountNumberLast4 = accountLast4
+	}
 
 	// Register with Bridge to get recipient ID
 	if s.bridgeAdapter != nil {
@@ -1401,6 +1424,10 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 			if bic := strings.TrimSpace(req.BIC); bic != "" {
 				recipientReq["bic"] = bic
 			}
+		case entities.WithdrawalCurrencyGBP:
+			sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+			recipientReq["sort_code"] = sortCode
+			recipientReq["account_number"] = strings.TrimSpace(req.AccountNumber)
 		}
 
 		recipientID, err := s.bridgeAdapter.CreateRecipient(ctx, recipientReq)

@@ -30,12 +30,14 @@ type BankAccountCurrency string
 const (
 	BankAccountCurrencyUSD BankAccountCurrency = "USD"
 	BankAccountCurrencyEUR BankAccountCurrency = "EUR"
+	BankAccountCurrencyGBP BankAccountCurrency = "GBP"
 )
 
 // ValidBankAccountCurrencies contains all valid currencies
 var ValidBankAccountCurrencies = map[BankAccountCurrency]bool{
 	BankAccountCurrencyUSD: true,
 	BankAccountCurrencyEUR: true,
+	BankAccountCurrencyGBP: true,
 }
 
 // BankAccount represents a user's linked bank account
@@ -73,7 +75,7 @@ func (b *BankAccount) Validate() error {
 	if len(b.AccountNumberLast4) != 4 {
 		return fmt.Errorf("account number last 4 must be exactly 4 characters")
 	}
-	if b.Currency != BankAccountCurrencyUSD && b.Currency != BankAccountCurrencyEUR {
+	if !ValidBankAccountCurrencies[b.Currency] {
 		return fmt.Errorf("invalid currency: %s", b.Currency)
 	}
 	// For USD, require routing number
@@ -83,6 +85,10 @@ func (b *BankAccount) Validate() error {
 	// For EUR, require IBAN
 	if b.Currency == BankAccountCurrencyEUR && b.IBAN == nil {
 		return fmt.Errorf("IBAN is required for EUR accounts")
+	}
+	// For GBP, require routing number (sort code)
+	if b.Currency == BankAccountCurrencyGBP && b.RoutingNumberLast4 == nil {
+		return fmt.Errorf("sort code is required for GBP accounts")
 	}
 	return nil
 }
@@ -97,6 +103,8 @@ func (b *BankAccount) CanReceiveWithdrawal(currency WithdrawalCurrency) bool {
 		return b.Currency == BankAccountCurrencyUSD
 	case WithdrawalCurrencyEUR:
 		return b.Currency == BankAccountCurrencyEUR
+	case WithdrawalCurrencyGBP:
+		return b.Currency == BankAccountCurrencyGBP
 	default:
 		return false
 	}
