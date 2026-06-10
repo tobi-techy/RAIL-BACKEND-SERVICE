@@ -12,6 +12,7 @@ WHERE status = 'pending'
     JOIN deposits d ON d.user_id = t.user_id
       AND d.amount = t.amount
       AND d.status IN ('confirmed', 'off_ramp_completed', 'broker_funded')
+      AND ABS(EXTRACT(EPOCH FROM (d.created_at - t.created_at))) < 60
     WHERE t.status = 'pending' AND t.type = 'deposit'
   );
 
@@ -24,11 +25,12 @@ WHERE status = 'pending'
     SELECT t.id FROM transactions t
     JOIN withdrawals w ON w.user_id = t.user_id AND w.amount = t.amount
       AND w.status = 'completed'
+      AND ABS(EXTRACT(EPOCH FROM (w.created_at - t.created_at))) < 60
     WHERE t.status = 'pending' AND t.type = 'withdrawal'
   );
 
--- 3) Direct fix: mark all withdrawals with 'completed' status in withdrawals table
--- so they display correctly in activity feed
+-- 3) Direct fix: mark withdrawals as completed if provider confirmed transfer.
+-- NOTE: Only safe for withdrawals with a provider_transfer_id (confirms provider processed it).
 UPDATE withdrawals
 SET status = 'completed', updated_at = NOW(), completed_at = COALESCE(completed_at, NOW())
 WHERE status = 'processing'

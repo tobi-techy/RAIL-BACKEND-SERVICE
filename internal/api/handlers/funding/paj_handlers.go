@@ -455,6 +455,9 @@ func (h *PajHandlers) handleSessionError(c *gin.Context, err error) {
 
 // isUserError returns true if the error maps to a 4xx (user-actionable) response.
 func (h *PajHandlers) isUserError(err error) bool {
+	if err == nil {
+		return false
+	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "no paj session") || strings.Contains(msg, "paj session expired") {
 		return true

@@ -1352,7 +1352,8 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 				return acc, nil
 			}
 		case entities.WithdrawalCurrencyGBP:
-			routingMatches := acc.RoutingNumber != nil && *acc.RoutingNumber == req.RoutingNumber
+			sanitizedReqSortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+			routingMatches := acc.RoutingNumber != nil && *acc.RoutingNumber == sanitizedReqSortCode
 			accountMatches := acc.AccountNumberLast4 == accountLast4 && accountLast4 != ""
 			if routingMatches && accountMatches {
 				s.logger.Info("Found existing GBP bank account", "bank_account_id", acc.ID.String())
@@ -1395,10 +1396,11 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 	}
 	if req.Currency == entities.WithdrawalCurrencyGBP {
 		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
-		if len(sortCode) >= 4 {
-			sortCodeLast4 := sortCode[len(sortCode)-4:]
-			bankAccount.RoutingNumberLast4 = &sortCodeLast4
+		if len(sortCode) != 6 {
+			return nil, fmt.Errorf("invalid UK sort code: must be exactly 6 digits, got %d", len(sortCode))
 		}
+		sortCodeLast4 := sortCode[len(sortCode)-4:]
+		bankAccount.RoutingNumberLast4 = &sortCodeLast4
 		bankAccount.RoutingNumber = &sortCode
 		bankAccount.AccountNumberLast4 = accountLast4
 	}

@@ -603,6 +603,15 @@ func (i *LedgerIntegration) RecordDepositWithAllocation(
 	spendingAmount decimal.Decimal,
 	stashAmount decimal.Decimal,
 ) error {
+	if amount.IsNegative() || spendingAmount.IsNegative() || stashAmount.IsNegative() {
+		return fmt.Errorf("amounts must be non-negative: amount=%s spending=%s stash=%s", amount, spendingAmount, stashAmount)
+	}
+	if !spendingAmount.Add(stashAmount).Equal(amount) {
+		return fmt.Errorf("allocation mismatch: spending(%s) + stash(%s) != amount(%s)", spendingAmount, stashAmount, amount)
+	}
+	if spendingAmount.IsZero() && stashAmount.IsZero() {
+		return fmt.Errorf("invalid allocation: both spending and stash amounts are zero")
+	}
 	i.logger.Info("Recording deposit with atomic allocation",
 		"user_id", userID,
 		"amount", amount,

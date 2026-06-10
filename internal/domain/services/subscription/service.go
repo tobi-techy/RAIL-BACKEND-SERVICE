@@ -244,7 +244,11 @@ func (s *Service) ChargeSubscription(ctx context.Context, sub *entities.Subscrip
 				zap.String("amount", amount.String()),
 				zap.Error(err))
 		} else {
-			s.markBridgeTransferred(ctx, charge.ID)
+			if markErr := s.markBridgeTransferred(ctx, charge.ID); markErr != nil {
+				s.logger.Error("Failed to mark charge as bridge transferred",
+					zap.String("charge_id", charge.ID.String()),
+					zap.Error(markErr))
+			}
 		}
 	}
 
@@ -313,8 +317,8 @@ func (s *Service) invalidateCache(ctx context.Context, userID uuid.UUID) {
 	}
 }
 
-func (s *Service) markBridgeTransferred(ctx context.Context, chargeID uuid.UUID) {
-	s.repo.MarkBridgeTransferred(ctx, chargeID)
+func (s *Service) markBridgeTransferred(ctx context.Context, chargeID uuid.UUID) error {
+	return s.repo.MarkBridgeTransferred(ctx, chargeID)
 }
 
 // RetryFailedTransfers retries Bridge transfers for charges that were ledgered but not yet transferred.
@@ -336,7 +340,13 @@ func (s *Service) RetryFailedTransfers(ctx context.Context) (transferred, failed
 			failed++
 			continue
 		}
-		s.markBridgeTransferred(ctx, charge.ID)
+		if err := s.markBridgeTransferred(ctx, charge.ID); err != nil {
+			s.logger.Error("Failed to mark charge as transferred after successful Bridge transfer",
+				zap.String("charge_id", charge.ID.String()),
+				zap.Error(err))
+			failed++
+			continue
+		}
 		transferred++
 	}
 	return
