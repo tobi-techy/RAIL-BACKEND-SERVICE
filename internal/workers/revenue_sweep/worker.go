@@ -101,16 +101,17 @@ func (w *Worker) sweep(ctx context.Context) error {
 	err := w.db.SelectContext(ctx, &fees, `
 		SELECT id, user_id, fee_amount FROM withdrawals
 		WHERE status = 'completed' AND fee_amount > 0 AND fee_swept = FALSE
-		ORDER BY created_at ASC LIMIT 50
-		FOR UPDATE SKIP LOCKED`)
+		ORDER BY created_at ASC LIMIT 50`)
 	if err != nil {
 		return fmt.Errorf("query unswept fees: %w", err)
 	}
 
 	if len(fees) == 0 {
-		w.logger.Debug("Revenue sweep: no unswept fees found")
+		w.logger.Info("Revenue sweep: no unswept fees found")
 		return nil
 	}
+
+	w.logger.Info("Revenue sweep: found unswept fees", zap.Int("count", len(fees)))
 
 	var swept, failed int
 	for _, f := range fees {
