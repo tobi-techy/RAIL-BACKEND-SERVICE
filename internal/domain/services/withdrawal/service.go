@@ -1353,6 +1353,9 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 			}
 		case entities.WithdrawalCurrencyGBP:
 			sanitizedReqSortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+			if len(sanitizedReqSortCode) != 6 {
+				return nil, fmt.Errorf("invalid UK sort code: must be exactly 6 digits, got %d", len(sanitizedReqSortCode))
+			}
 			routingMatches := acc.RoutingNumber != nil && *acc.RoutingNumber == sanitizedReqSortCode
 			accountMatches := acc.AccountNumberLast4 == accountLast4 && accountLast4 != ""
 			if routingMatches && accountMatches {

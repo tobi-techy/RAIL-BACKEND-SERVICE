@@ -341,11 +341,12 @@ func (s *Service) RetryFailedTransfers(ctx context.Context) (transferred, failed
 			continue
 		}
 		if err := s.markBridgeTransferred(ctx, charge.ID); err != nil {
-			s.logger.Error("Failed to mark charge as transferred after successful Bridge transfer",
+			// CRITICAL: Bridge transfer succeeded but DB mark failed. Money moved but charge
+			// may be retried. Count as transferred to avoid double-counting failures.
+			// Requires manual reconciliation to mark this charge in the database.
+			s.logger.Error("CRITICAL: Bridge transfer succeeded but failed to mark charge — requires manual reconciliation",
 				zap.String("charge_id", charge.ID.String()),
 				zap.Error(err))
-			failed++
-			continue
 		}
 		transferred++
 	}
