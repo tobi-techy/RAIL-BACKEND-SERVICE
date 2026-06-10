@@ -22,7 +22,7 @@ WHERE status = 'pending'
         SELECT 1 FROM transactions t2
         WHERE t2.user_id = d.user_id AND t2.amount = d.amount
           AND t2.status = 'processed' AND t2.type = 'deposit'
-          AND ABS(EXTRACT(EPOCH FROM (d.created_at - t2.created_at))) < 300
+          AND ABS(EXTRACT(EPOCH FROM (d.created_at - t2.created_at))) < 5
       )
     ORDER BY t.id, ABS(EXTRACT(EPOCH FROM (d.created_at - t.created_at)))
   );
@@ -42,7 +42,7 @@ WHERE status = 'pending'
         SELECT 1 FROM transactions t2
         WHERE t2.user_id = w.user_id AND t2.amount = w.amount
           AND t2.status = 'processed' AND t2.type = 'withdrawal'
-          AND ABS(EXTRACT(EPOCH FROM (w.created_at - t2.created_at))) < 300
+          AND ABS(EXTRACT(EPOCH FROM (w.created_at - t2.created_at))) < 5
       )
     ORDER BY t.id, ABS(EXTRACT(EPOCH FROM (w.created_at - t.created_at)))
   );
