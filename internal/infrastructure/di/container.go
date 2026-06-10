@@ -2141,10 +2141,10 @@ func (c *Container) initializeDomainServices() error {
 
 	// Revenue sweep: periodically transfer accumulated fee revenue to treasury wallet.
 	// Independent of Reflect — only requires Circle + treasury address.
-	if c.Config.Bridge.TreasuryWalletAddress != "" && c.CircleAdapter != nil {
+	if c.Config.Circle.TreasuryWalletAddress != "" && c.CircleAdapter != nil {
 		revSweepAdapter := &revenueSweepTransferAdapter{
 			circle:          c.CircleAdapter,
-			treasuryAddress: c.Config.Bridge.TreasuryWalletAddress,
+			treasuryAddress: c.Config.Circle.TreasuryWalletAddress,
 		}
 		revSweep := revenue_sweep.NewWorker(
 			revSweepAdapter,
@@ -2156,7 +2156,7 @@ func (c *Container) initializeDomainServices() error {
 		revSweep.Start()
 		c.RevenueSweepWorker = revSweep
 		c.ZapLog.Info("Revenue sweep worker started",
-			zap.String("treasury_address", c.Config.Bridge.TreasuryWalletAddress))
+			zap.String("treasury_address", c.Config.Circle.TreasuryWalletAddress))
 	} else {
 		c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
 	}
@@ -2505,12 +2505,12 @@ func (c *Container) initializeDomainServices() error {
 	}
 
 	// Wire Bridge transfer into subscription service for fee collection
-	if c.BridgeClient != nil && c.Config.Bridge.TreasuryWalletAddress != "" && c.WalletRepo != nil {
+	if c.BridgeClient != nil && c.Config.Circle.TreasuryWalletAddress != "" && c.WalletRepo != nil {
 		c.SubscriptionService.SetBridgeTransfer(&SubscriptionBridgeTransferAdapter{
 			bridgeClient:      c.BridgeClient,
 			walletRepo:        c.WalletRepo,
 			userRepo:          c.UserRepo,
-			companyWalletAddr: c.Config.Bridge.TreasuryWalletAddress,
+			companyWalletAddr: c.Config.Circle.TreasuryWalletAddress,
 			logger:            c.ZapLog,
 		})
 	}
@@ -2809,7 +2809,7 @@ func (c *Container) initializeDomainServices() error {
 		&BridgeWalletBalanceAdapter{adapter: c.BridgeAdapter},
 		&deletionUserRepoAdapter{userRepo: c.UserRepo},
 		c.DomainAuditService,
-		c.Config.Bridge.TreasuryWalletAddress,
+		c.Config.Circle.TreasuryWalletAddress,
 		c.Logger,
 	)
 
