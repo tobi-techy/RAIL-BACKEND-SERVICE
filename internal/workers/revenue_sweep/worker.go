@@ -101,7 +101,8 @@ func (w *Worker) sweep(ctx context.Context) error {
 	err := w.db.SelectContext(ctx, &fees, `
 		SELECT id, user_id, fee_amount FROM withdrawals
 		WHERE status = 'completed' AND fee_amount > 0 AND fee_swept = FALSE
-		ORDER BY created_at ASC LIMIT 50`)
+		ORDER BY created_at ASC LIMIT 50
+		FOR UPDATE SKIP LOCKED`)
 	if err != nil {
 		return fmt.Errorf("query unswept fees: %w", err)
 	}
@@ -130,12 +131,14 @@ func (w *Worker) sweep(ctx context.Context) error {
 		// Mark as swept
 		if _, err := w.db.ExecContext(ctx, `UPDATE withdrawals SET fee_swept = TRUE WHERE id = $1`, f.ID); err != nil {
 			// CRITICAL: Fee transfer succeeded but DB mark failed. Money moved but fee
-			// may be swept again. Count as swept since funds left the account.
-			// Requires manual reconciliation to mark this withdrawal in the database.
+			// will be selected again since fee_swept is still FALSE. Count as swept for
+			// metrics accuracy. Requires manual reconciliation.
 			w.logger.Error("CRITICAL: fee transfer succeeded but failed to mark as swept — requires manual reconciliation",
 				zap.String("withdrawal_id", f.ID.String()),
 				zap.String("user_id", f.UserID.String()),
 				zap.Error(err))
+			swept++
+			continue
 		}
 		swept++
 	}

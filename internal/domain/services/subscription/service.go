@@ -245,8 +245,10 @@ func (s *Service) ChargeSubscription(ctx context.Context, sub *entities.Subscrip
 				zap.Error(err))
 		} else {
 			if markErr := s.markBridgeTransferred(ctx, charge.ID); markErr != nil {
-				s.logger.Error("Failed to mark charge as bridge transferred",
+				s.logger.Error("CRITICAL: Bridge transfer succeeded but failed to mark as transferred - charge will be retried",
 					zap.String("charge_id", charge.ID.String()),
+					zap.String("subscription_id", sub.ID.String()),
+					zap.String("user_id", sub.UserID.String()),
 					zap.Error(markErr))
 			}
 		}
@@ -331,7 +333,10 @@ func (s *Service) RetryFailedTransfers(ctx context.Context) (transferred, failed
 		s.logger.Error("Failed to get untransferred charges", zap.Error(err))
 		return
 	}
-	for _, charge := range charges {
+	for i, charge := range charges {
+		if i > 0 {
+			time.Sleep(100 * time.Millisecond)
+		}
 		ref := fmt.Sprintf("sub-%s-%s", charge.SubscriptionID, charge.PeriodStart.Format("2006-01-02"))
 		if err := s.bridgeTransfer.TransferToCompanyWallet(ctx, charge.UserID, charge.Amount, ref); err != nil {
 			s.logger.Warn("Subscription Bridge transfer retry failed",
@@ -341,12 +346,16 @@ func (s *Service) RetryFailedTransfers(ctx context.Context) (transferred, failed
 			continue
 		}
 		if err := s.markBridgeTransferred(ctx, charge.ID); err != nil {
-			// CRITICAL: Bridge transfer succeeded but DB mark failed. Money moved but charge
-			// may be retried. Count as transferred to avoid double-counting failures.
-			// Requires manual reconciliation to mark this charge in the database.
+			// CRITICAL: Bridge transfer succeeded but DB mark failed — charge will be
+			// retried causing potential duplicate transfer. Idempotency depends on Bridge
+			// deduplicating on the reference string.
 			s.logger.Error("CRITICAL: Bridge transfer succeeded but failed to mark charge — requires manual reconciliation",
 				zap.String("charge_id", charge.ID.String()),
+				zap.String("subscription_id", charge.SubscriptionID.String()),
+				zap.String("user_id", charge.UserID.String()),
 				zap.Error(err))
+			transferred++
+			continue
 		}
 		transferred++
 	}

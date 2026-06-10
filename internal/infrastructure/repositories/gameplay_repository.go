@@ -289,7 +289,8 @@ func (r *GameplayRepository) GetUnTransferredCharges(ctx context.Context, limit 
 		SELECT id, subscription_id, user_id, amount, period_start, period_end
 		FROM subscription_charges
 		WHERE status = 'completed' AND bridge_transferred = FALSE AND charged_at < NOW() - INTERVAL '5 minutes'
-		ORDER BY charged_at ASC LIMIT $1`, limit)
+		ORDER BY charged_at ASC LIMIT $1
+		FOR UPDATE SKIP LOCKED`, limit)
 	return charges, err
 }
 

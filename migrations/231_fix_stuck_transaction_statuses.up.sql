@@ -4,6 +4,7 @@
 --
 -- NOTE: Ideally these joins would use foreign keys (deposit_id/withdrawal_id on transactions).
 -- Amount+user+timestamp matching is a workaround until FK relationships are added.
+-- Run with caution: verify users with duplicate amounts in the 300s window before applying.
 
 -- 1) Deposits that completed but transactions table still says 'pending'
 UPDATE transactions
@@ -17,6 +18,11 @@ WHERE status = 'pending'
       AND d.status IN ('confirmed', 'off_ramp_completed', 'broker_funded')
       AND ABS(EXTRACT(EPOCH FROM (d.created_at - t.created_at))) < 300
     WHERE t.status = 'pending' AND t.type = 'deposit'
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions t2
+        WHERE t2.user_id = d.user_id AND t2.amount = d.amount
+          AND t2.status = 'processed' AND t2.type = 'deposit' AND t2.id != t.id
+      )
     ORDER BY t.id, ABS(EXTRACT(EPOCH FROM (d.created_at - t.created_at)))
   );
 
@@ -31,11 +37,16 @@ WHERE status = 'pending'
       AND w.status = 'completed'
       AND ABS(EXTRACT(EPOCH FROM (w.created_at - t.created_at))) < 300
     WHERE t.status = 'pending' AND t.type = 'withdrawal'
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions t2
+        WHERE t2.user_id = w.user_id AND t2.amount = w.amount
+          AND t2.status = 'processed' AND t2.type = 'withdrawal' AND t2.id != t.id
+      )
     ORDER BY t.id, ABS(EXTRACT(EPOCH FROM (w.created_at - t.created_at)))
   );
 
 -- 3) Direct fix: mark withdrawals as completed if provider confirmed transfer.
--- NOTE: Only safe for withdrawals with a provider_transfer_id (confirms provider processed it).
+-- Only safe for withdrawals with a provider_transfer_id (confirms provider processed it).
 UPDATE withdrawals
 SET status = 'completed', updated_at = NOW(), completed_at = COALESCE(completed_at, NOW())
 WHERE status = 'processing'
