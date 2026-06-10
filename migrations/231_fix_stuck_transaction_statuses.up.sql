@@ -47,10 +47,3 @@ WHERE status = 'pending'
     ORDER BY t.id, ABS(EXTRACT(EPOCH FROM (w.created_at - t.created_at)))
   );
 
--- 3) Direct fix: mark withdrawals as completed if provider confirmed transfer.
--- Only safe for withdrawals with a provider_transfer_id (confirms provider processed it).
-UPDATE withdrawals
-SET status = 'completed', updated_at = NOW(), completed_at = COALESCE(completed_at, NOW())
-WHERE status = 'processing'
-  AND provider_transfer_id IS NOT NULL
-  AND created_at < NOW() - INTERVAL '1 hour';
