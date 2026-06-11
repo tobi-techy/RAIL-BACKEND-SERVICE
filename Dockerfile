@@ -60,7 +60,7 @@ COPY --from=builder /app/static /static
 USER builduser
 
 # Expose port
-EXPOSE 8080
+EXPOSE 3000
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
