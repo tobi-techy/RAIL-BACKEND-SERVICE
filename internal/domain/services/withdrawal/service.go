@@ -1021,8 +1021,65 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
 		}
 	} else {
-		s.logger.Info("async: crypto withdrawal processing",
+		s.logger.Info("async: crypto withdrawal processing, will poll for completion",
 			"withdrawal_id", withdrawal.ID.String(), "state", transferResult.State)
+		// Poll for completion — Circle transfers typically confirm within seconds
+		s.pollCircleWithdrawalCompletion(ctx, withdrawal, req, transferResult.TransferID)
+	}
+}
+
+func (s *WithdrawalService) pollCircleWithdrawalCompletion(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest, transferID string) {
+	if s.circleTransfer == nil || transferID == "" {
+		return
+	}
+	// Poll every 3 seconds for up to 2 minutes
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			s.logger.Warn("async: Circle withdrawal poll timeout — will rely on webhook",
+				"withdrawal_id", withdrawal.ID.String(), "transfer_id", transferID)
+			return
+		case <-ticker.C:
+			tx, err := s.circleTransfer.GetTransaction(ctx, transferID)
+			if err != nil {
+				continue
+			}
+			state := strings.ToUpper(string(tx.State))
+			if state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" {
+				if tx.TxHash != "" {
+					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+				}
+				if s.limitsService != nil {
+					_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				if s.tieredLimits != nil {
+					_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+				}
+				s.logger.Info("async: Circle withdrawal confirmed via polling",
+					"withdrawal_id", withdrawal.ID.String(), "tx_hash", tx.TxHash)
+				return
+			}
+			if state == "FAILED" || state == "DENIED" || state == "CANCELLED" || state == "CANCELED" {
+				if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+					s.logger.Error("async: failed to reverse ledger after Circle failure",
+						"error", revErr, "withdrawal_id", withdrawal.ID.String())
+				}
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "circle transfer "+strings.ToLower(state))
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+				}
+				return
+			}
+		}
 	}
 }
 
