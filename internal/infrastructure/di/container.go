@@ -2305,6 +2305,9 @@ func (c *Container) initializeDomainServices() error {
 		if c.CircleAdapter != nil {
 			c.CircleWebhookHandler.SetUnsupportedAssetService(c.CircleAdapter)
 		}
+		if c.WithdrawalService != nil {
+			c.CircleWebhookHandler.SetWithdrawalCompleter(c.WithdrawalService)
+		}
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
@@ -2717,6 +2720,10 @@ func (c *Container) initializeDomainServices() error {
 	c.WithdrawalService.SetEmergencyLedger(c.LedgerService)
 	c.LedgerService.SetStashLockChecker(stashLockSvc)
 	c.StashLockService = stashLockSvc
+
+	// Wire stash transfer repo for audit logging
+	stashTransferRepo := repositories.NewStashTransferRepository(sqlx.NewDb(c.DB, "postgres"))
+	c.WithdrawalService.SetStashTransferRepo(stashTransferRepo)
 
 	// Wire Circle crypto transfer adapter
 	if c.CircleAdapter != nil {

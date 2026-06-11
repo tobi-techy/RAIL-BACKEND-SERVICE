@@ -134,6 +134,7 @@ type CircleCryptoTransferAdapter interface {
 	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
 	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
 	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID string, tokenID string, blockchain string, address string, err error)
+	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
 }
 
 // StashLockChecker enforces the 90-day lock / 7-day window rule for stash withdrawals.
@@ -294,6 +295,11 @@ func (s *WithdrawalService) SetTieredWithdrawalLimits(c TieredWithdrawalLimitChe
 // SetEmergencyLedger wires the emergency ledger for stash-to-spending transfers with fee.
 func (s *WithdrawalService) SetEmergencyLedger(l EmergencyLedger) {
 	s.emergencyLedger = l
+}
+
+// SetStashTransferRepo wires the stash transfer repository for audit logging.
+func (s *WithdrawalService) SetStashTransferRepo(r StashTransferRepository) {
+	s.stashTransferRepo = r
 }
 
 // SetFraudChecker wires the fraud detection service (optional, graceful degradation).
@@ -2585,6 +2591,36 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 		return withdrawal.Status, nil
 	}
 
+	// Circle withdrawals: poll Circle for transaction status
+	if s.circleTransfer != nil && strings.EqualFold(withdrawal.ProviderWalletType, "circle") {
+		tx, err := s.getCircleTransactionStatus(ctx, transferID)
+		if err != nil {
+			s.logger.Warn("Circle transaction status check failed", zap.String("transfer_id", transferID), zap.Error(err))
+			return withdrawal.Status, nil // non-fatal: will retry on next read
+		}
+		if tx == nil {
+			return withdrawal.Status, nil
+		}
+		state := strings.ToUpper(strings.TrimSpace(string(tx.State)))
+		switch state {
+		case "COMPLETE", "COMPLETED", "CONFIRMED":
+			if tx.TxHash != "" {
+				_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+			}
+			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+				return withdrawal.Status, err
+			}
+			return entities.WithdrawalStatusCompleted, nil
+		case "FAILED", "DENIED", "CANCELLED", "CANCELED":
+			reason := "circle transfer " + strings.ToLower(state)
+			if err := s.failWithdrawal(ctx, withdrawal, reason); err != nil {
+				return withdrawal.Status, err
+			}
+			return entities.WithdrawalStatusFailed, nil
+		}
+		return withdrawal.Status, nil
+	}
+
 	transfer, err := s.bridgeAdapter.GetTransferStatus(ctx, transferID)
 	if err != nil {
 		return withdrawal.Status, err
@@ -2617,6 +2653,14 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 
 func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {
 	return s.syncWithdrawalStatusFromProvider(ctx, withdrawal)
+}
+
+// getCircleTransactionStatus fetches a Circle transaction by ID for status polling.
+func (s *WithdrawalService) getCircleTransactionStatus(ctx context.Context, txID string) (*circlepkg.Transaction, error) {
+	if s.circleTransfer == nil {
+		return nil, fmt.Errorf("circle adapter not configured")
+	}
+	return s.circleTransfer.GetTransaction(ctx, txID)
 }
 
 func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey string) string {
