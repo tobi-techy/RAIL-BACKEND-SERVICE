@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pdfcpu/pdfcpu/pkg/api"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"go.uber.org/zap"
 )
 
@@ -118,7 +120,30 @@ func (e *DocumentExtractor) extractPDF(ctx context.Context, data []byte) (*Extra
 			}, nil
 		}
 		if err != nil {
-			e.logger.Warn("textract extraction failed", zap.Error(err))
+			e.logger.Warn("textract sync extraction failed", zap.Error(err))
+		}
+
+		// Textract sync API doesn't support multi-page PDFs. Split into single pages
+		// and retry per page.
+		pageCount := 1
+		if result != nil {
+			pageCount = result.PageCount
+		}
+		if pageCount > 1 {
+			e.logger.Info("splitting multi-page PDF for per-page Textract", zap.Int("pages", pageCount))
+			pagesText, pErr := e.extractTextractByPage(ctx, data, pageCount)
+			if pErr == nil && len(strings.TrimSpace(pagesText)) > 50 {
+				pages := strings.Split(pagesText, "\n---PAGE BREAK---\n")
+				return &ExtractionResult{
+					Text:      pagesText,
+					Pages:     pages,
+					PageCount: pageCount,
+					Strategy:  StrategyTextract,
+				}, nil
+			}
+			if pErr != nil {
+				e.logger.Warn("textract per-page extraction also failed", zap.Error(pErr))
+			}
 		}
 	}
 
@@ -135,6 +160,42 @@ func (e *DocumentExtractor) extractPDF(ctx context.Context, data []byte) (*Extra
 		return nil, fmt.Errorf("scanned PDF and no OCR service available")
 	}
 	return nil, fmt.Errorf("all extraction strategies failed")
+}
+
+// extractTextractByPage splits a multi-page PDF into single pages and calls
+// Textract's sync DetectDocumentText on each page (which only supports 1 page per call).
+func (e *DocumentExtractor) extractTextractByPage(ctx context.Context, data []byte, pageCount int) (string, error) {
+	conf := model.NewDefaultConfiguration()
+	conf.ValidationMode = model.ValidationRelaxed
+
+	spans, err := api.SplitRaw(bytes.NewReader(data), 1, conf)
+	if err != nil {
+		return "", fmt.Errorf("split pdf: %w", err)
+	}
+
+	var pageTexts []string
+	for i, span := range spans {
+		if span.Reader == nil {
+			continue
+		}
+		pageData, rErr := io.ReadAll(span.Reader)
+		if rErr != nil {
+			e.logger.Warn("failed to read split page", zap.Int("page", i+1), zap.Error(rErr))
+			continue
+		}
+		text, tErr := e.textractClient.ExtractText(ctx, pageData, "application/pdf")
+		if tErr != nil {
+			e.logger.Warn("textract failed on split page", zap.Int("page", i+1), zap.Error(tErr))
+			continue
+		}
+		pageTexts = append(pageTexts, text)
+	}
+
+	if len(pageTexts) == 0 {
+		return "", fmt.Errorf("textract per-page: no pages extracted")
+	}
+
+	return strings.Join(pageTexts, "\n---PAGE BREAK---\n"), nil
 }
 
 func (e *DocumentExtractor) extractImage(ctx context.Context, data []byte, contentType string) (*ExtractionResult, error) {
