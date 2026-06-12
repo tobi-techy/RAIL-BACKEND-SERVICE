@@ -113,6 +113,7 @@ func detectBank(text string) string {
 		{"kuda", []string{"KUDA", "KUDA.COM", "KUDA MICROFINANCE"}},
 		{"gtbank", []string{"GUARANTY TRUST", "GTBANK", "GTBANK.COM", "GTB"}},
 		{"access", []string{"ACCESS BANK", "DIAMOND BANK", "ACCESS.BANK"}},
+		{"nectarfi", []string{"NECTARFI", "NECTAR FI", "NECTAR FINANCE", "NECTARFI.COM"}},
 	}
 
 	for _, c := range checks {
@@ -140,6 +141,8 @@ func bankParsingHints(bank string) string {
 		return "Access Bank statements show Trans Date | Value Date | Reference | Debits | Credits | Balance | Remarks. The Remarks field contains transfer details."
 	case "moniepoint":
 		return "Moniepoint statements show Date | Description | Amount | Balance. Transfers include recipient name and bank in description."
+	case "nectarfi":
+		return "NectarFi statements show Date | Description | Debit | Credit | Balance. Digital finance platform; transactions may include wallet top-ups, transfers, and bill payments."
 	default:
 		return ""
 	}
