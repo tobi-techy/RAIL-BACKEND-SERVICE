@@ -75,7 +75,7 @@ func (r *BankStatementRepository) GetByUserID(ctx context.Context, userID uuid.U
 
 func (r *BankStatementRepository) ExistsByHash(ctx context.Context, userID uuid.UUID, hash string) (bool, error) {
 	var exists bool
-	err := r.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM bank_statement_uploads WHERE user_id = $1 AND file_hash = $2)`, userID, hash)
+	err := r.db.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM bank_statement_uploads WHERE user_id = $1 AND file_hash = $2 AND status = 'completed')`, userID, hash)
 	return exists, err
 }
 
