@@ -44,7 +44,6 @@ type ProgressReporter interface {
 type Pipeline struct {
 	extractor *DocumentExtractor
 	parser    *TransactionParser
-	fallback  *TransactionParser // fallback LLM parser
 	reporter  ProgressReporter
 	logger    *zap.Logger
 }
@@ -52,7 +51,7 @@ type Pipeline struct {
 type PipelineConfig struct {
 	Extractor      *DocumentExtractor
 	PrimaryParser  *TransactionParser
-	FallbackParser *TransactionParser
+	FallbackParser *TransactionParser // deprecated: kept for compile compat, unused
 	FileStore      FileStore // unused by Pipeline — stored for DI convenience
 	Reporter       ProgressReporter
 	Logger         *zap.Logger
@@ -62,7 +61,6 @@ func NewPipeline(cfg PipelineConfig) *Pipeline {
 	return &Pipeline{
 		extractor: cfg.Extractor,
 		parser:    cfg.PrimaryParser,
-		fallback:  cfg.FallbackParser,
 		reporter:  cfg.Reporter,
 		logger:    cfg.Logger,
 	}
@@ -76,7 +74,7 @@ type PipelineResult struct {
 	PeriodEnd    *time.Time
 	PageCount    int
 	Strategy     ExtractionStrategy
-	ParserUsed   string // "primary" or "fallback"
+	ParserUsed   string // "primary"
 }
 
 // Process runs the full pipeline: extract → parse → validate.
@@ -135,25 +133,9 @@ func (p *Pipeline) parseWithFallback(ctx context.Context, result *ExtractionResu
 		if err == nil && len(parsed.Transactions) > 0 {
 			return parsed, "primary", nil
 		}
-		if p.fallback != nil {
-			p.logger.Info("primary parser failed on chunked doc, trying fallback")
-			parsed, err = p.parseChunkedWithParser(ctx, result.Pages, bankHint, p.fallback)
-			if err == nil && len(parsed.Transactions) > 0 {
-				return parsed, "fallback", nil
-			}
-			// Last resort: try full text (truncated to ~50 pages) with fallback parser
-			p.logger.Info("chunked parsing failed on both parsers, trying full text with fallback")
-			truncated := result.Text
-			if len(truncated) > 200000 {
-				truncated = truncated[:200000]
-			}
-			parsed, err = p.fallback.Parse(ctx, truncated, bankHint)
-			if err == nil && len(parsed.Transactions) > 0 {
-				return parsed, "fallback-fulltext", nil
-			}
-		}
 		if err != nil {
-			return nil, "", err
+			p.logger.Warn("chunked parsing failed", zap.Error(err), zap.Int("pages", result.PageCount))
+			return nil, "", fmt.Errorf("parse: %w", err)
 		}
 		return nil, "", fmt.Errorf("no transactions found after chunked parsing")
 	}
@@ -164,17 +146,9 @@ func (p *Pipeline) parseWithFallback(ctx context.Context, result *ExtractionResu
 		return parsed, "primary", nil
 	}
 
-	// Fallback to secondary parser
-	if p.fallback != nil {
-		p.logger.Info("primary parser failed, trying fallback", zap.Error(err))
-		parsed, err = p.fallback.Parse(ctx, result.Text, bankHint)
-		if err == nil && len(parsed.Transactions) > 0 {
-			return parsed, "fallback", nil
-		}
-	}
-
 	if err != nil {
-		return nil, "", err
+		p.logger.Warn("primary parser failed", zap.Error(err), zap.Int("text_length", len(result.Text)))
+		return nil, "", fmt.Errorf("parse: %w", err)
 	}
 	return nil, "", fmt.Errorf("no transactions extracted")
 }

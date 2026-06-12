@@ -567,15 +567,8 @@ func (app *Application) initializeWorkers() error {
 			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
 
 			// Primary parser: Kimi (has credit, handles long contexts)
-			// Fallback: Groq (fast but limited free tier TPM)
-			var fallbackParser *statement.TransactionParser
 			var primaryParser *statement.TransactionParser
 			primaryParser = parser // Kimi primary
-			if app.container.Config.AI.Groq.APIKey != "" {
-				fallbackParser = statement.NewTransactionParserWithConfig(
-					app.container.Config.AI.Groq.APIKey, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", app.log.Zap(),
-				)
-			}
 
 			// File store: S3 if configured, nil falls back to DB BLOB
 			var fileStore statement.FileStore
@@ -606,7 +599,7 @@ func (app *Application) initializeWorkers() error {
 			pipeline := statement.NewPipeline(statement.PipelineConfig{
 				Extractor:      extractor,
 				PrimaryParser:  primaryParser,
-				FallbackParser: fallbackParser,
+				FallbackParser: nil,
 				FileStore:      fileStore,
 				Reporter:       reporter,
 				Logger:         app.log.Zap(),
