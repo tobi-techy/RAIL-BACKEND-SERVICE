@@ -2,6 +2,7 @@ package statement
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -150,6 +151,22 @@ func (p *Pipeline) parseWithFallback(ctx context.Context, result *ExtractionResu
 		p.logger.Warn("primary parser failed", zap.Error(err), zap.Int("text_length", len(result.Text)))
 		return nil, "", fmt.Errorf("parse: %w", err)
 	}
+
+	// Model returned 0 transactions — retry once with explicit instruction
+	p.logger.Warn("primary parser returned 0 transactions, retrying with explicit prompt",
+		zap.String("bank_hint", bankHint),
+		zap.Int("text_length", len(result.Text)),
+		zap.String("response_preview", truncateFirstN(parsed, 200)),
+	)
+	forcedText := "CRITICAL: Extract ALL transactions from this bank statement. Do NOT return an empty list. Every single transaction must be captured.\n\n" + result.Text
+	parsed, err = p.parser.Parse(ctx, forcedText, bankHint)
+	if err == nil && len(parsed.Transactions) > 0 {
+		return parsed, "primary", nil
+	}
+	if err != nil {
+		p.logger.Warn("retry also failed", zap.Error(err))
+		return nil, "", fmt.Errorf("parse: %w", err)
+	}
 	return nil, "", fmt.Errorf("no transactions extracted")
 }
 
@@ -226,4 +243,16 @@ func (p *Pipeline) report(ctx context.Context, uploadID uuid.UUID, stage Process
 		Message:   msg,
 		StartedAt: time.Now(),
 	})
+}
+
+func truncateFirstN(r *ParseResult, n int) string {
+	if r == nil {
+		return "<nil>"
+	}
+	b, _ := json.Marshal(r)
+	s := string(b)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

@@ -114,6 +114,7 @@ func detectBank(text string) string {
 		{"gtbank", []string{"GUARANTY TRUST", "GTBANK", "GTBANK.COM", "GTB"}},
 		{"access", []string{"ACCESS BANK", "DIAMOND BANK", "ACCESS.BANK"}},
 		{"nectarfi", []string{"NECTARFI", "NECTAR FI", "NECTAR FINANCE", "NECTARFI.COM"}},
+		{"autobank", []string{"AUTOBANK", "AUTO BANK", "AUTO FINANCE"}},
 	}
 
 	for _, c := range checks {
@@ -143,6 +144,8 @@ func bankParsingHints(bank string) string {
 		return "Moniepoint statements show Date | Description | Amount | Balance. Transfers include recipient name and bank in description."
 	case "nectarfi":
 		return "NectarFi statements show Date | Description | Debit | Credit | Balance. Digital finance platform; transactions may include wallet top-ups, transfers, and bill payments."
+	case "autobank":
+		return "AutoBank statements show Date | Description | Debit | Credit | Balance. Look for transaction rows with dates and amounts. May contain auto loan/finance entries."
 	default:
 		return ""
 	}
@@ -210,6 +213,17 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	if len(userPrompt) > 30000 {
 		userPrompt = userPrompt[:30000]
 	}
+
+	// Log a preview of the extracted text to debug 0-transaction issues
+	preview := strings.TrimSpace(userPrompt)
+	if len(preview) > 500 {
+		preview = preview[:500]
+	}
+	p.logger.Info("sending text to LLM",
+		zap.String("model", p.model),
+		zap.Int("input_length", len(userPrompt)),
+		zap.String("text_preview", preview),
+	)
 
 	// Build system prompt with bank-specific hints
 	sysPrompt := parserSystemPrompt
