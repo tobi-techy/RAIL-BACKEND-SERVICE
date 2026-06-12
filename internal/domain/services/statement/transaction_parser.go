@@ -48,7 +48,7 @@ func NewTransactionParser(apiKey string, logger *zap.Logger) *TransactionParser 
 	return &TransactionParser{
 		apiKey:      apiKey,
 		baseURL:     "https://api.moonshot.ai/v1",
-		model:       "kimi-k2.6",
+		model:       "moonshot-v1-128k",
 		logger:      logger,
 		minInterval: 3 * time.Second,
 		cbThreshold: 5,
@@ -62,7 +62,7 @@ func NewTransactionParserWithConfig(apiKey, baseURL, model string, logger *zap.L
 		baseURL = "https://api.moonshot.ai/v1"
 	}
 	if model == "" {
-		model = "kimi-k2.6"
+		model = "moonshot-v1-128k"
 	}
 	return &TransactionParser{apiKey: apiKey, baseURL: baseURL, model: model, logger: logger, minInterval: 3 * time.Second, cbThreshold: 5, cbCooldown: 2 * time.Minute}
 }
@@ -219,7 +219,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 
 	body := map[string]interface{}{
 		"model":       p.model,
-		"temperature": 1.0,
+		"temperature": 0.1,
 		"max_tokens":  16000,
 		"stream":      true,
 		"messages": []map[string]interface{}{

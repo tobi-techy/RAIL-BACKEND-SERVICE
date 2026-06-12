@@ -321,6 +321,10 @@
         {
           "name": "CIRCLE_PUBLIC_KEY_PEM",
           "valueFrom": "/rail/prod/CIRCLE_PUBLIC_KEY_PEM"
+        },
+        {
+          "name": "KIMI_MODEL",
+          "valueFrom": "/rail/prod/KIMI_MODEL"
         }
       ],
       "logConfiguration": {
