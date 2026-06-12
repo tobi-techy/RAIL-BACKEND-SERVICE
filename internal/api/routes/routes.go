@@ -181,6 +181,25 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.JSON(200, gin.H{"deleted": true})
 	})
 
+	// Purge all statements for a user (resets dedup)
+	internal.DELETE("/statement/user/:user_id", func(c *gin.Context) {
+		uid := c.Param("user_id")
+		_, err := container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_transactions WHERE upload_id IN (SELECT id FROM bank_statement_uploads WHERE user_id = $1)", uid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		res, err := container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_uploads WHERE user_id = $1", uid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		n, _ := res.RowsAffected()
+		c.JSON(200, gin.H{"deleted": true, "count": n})
+	})
+
 	if container.GrowthEngineService != nil {
 		growthHandlers := handlers.NewGrowthEngineHandlers(container.GrowthEngineService, container.ZapLog)
 		internal.POST("/growth/events", growthHandlers.TrackEvent)
