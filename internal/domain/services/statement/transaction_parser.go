@@ -306,10 +306,30 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		content = strings.TrimSuffix(strings.TrimSpace(content), "```")
 	}
 
+	if len(content) == 0 {
+		return nil, fmt.Errorf("empty response from model %s", p.model)
+	}
+
+	p.logger.Info("LLM parse response", zap.String("model", p.model), zap.Int("response_length", len(content)), zap.Int("transactions_preview", min(len(content), 200)))
+
 	var parsed ParseResult
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		return nil, fmt.Errorf("parse LLM output: %w", err)
+		// Log first 500 chars for debugging
+		preview := content
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		return nil, fmt.Errorf("parse LLM output (%s): %w — preview: %s", p.model, err, preview)
 	}
+
+	if len(parsed.Transactions) == 0 {
+		preview := content
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		p.logger.Warn("model returned 0 transactions", zap.String("model", p.model), zap.String("response_preview", preview))
+	}
+
 	return &parsed, nil
 }
 
