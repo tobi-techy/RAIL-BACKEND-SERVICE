@@ -235,7 +235,35 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 				c.Writer.Flush()
 				return nil
 			}
-			return h.orchestrator.ChatStreamInConversationWithOptions(c.Request.Context(), userID, conv, message, aiservice.ChatOptions{ToneMode: req.ToneMode}, emitFn)
+			// Inject conversation_id into done event so frontend can track it
+			convEmit := func(event aiservice.StreamEvent) {
+				if event.Type == "done" {
+					if m, ok := event.Data.(map[string]interface{}); ok {
+						m["conversation_id"] = conv.ID.String()
+					}
+				}
+				emitFn(event)
+			}
+			return h.orchestrator.ChatStreamInConversationWithOptions(c.Request.Context(), userID, conv, message, aiservice.ChatOptions{ToneMode: req.ToneMode}, convEmit)
+		}
+
+		// Auto-create conversation server-side if frontend didn't provide one.
+		// This prevents orphaned messages that can't be continued.
+		if h.convService != nil {
+			conv, convErr := h.convService.CreateConversation(c.Request.Context(), userID, "")
+			if convErr == nil && conv != nil {
+				// Wrap emitFn to inject conversation_id into the done event
+				originalEmit := emitFn
+				emitFn = func(event aiservice.StreamEvent) {
+					if event.Type == "done" {
+						if m, ok := event.Data.(map[string]interface{}); ok {
+							m["conversation_id"] = conv.ID.String()
+						}
+					}
+					originalEmit(event)
+				}
+				return h.orchestrator.ChatStreamInConversationWithOptions(c.Request.Context(), userID, conv, message, aiservice.ChatOptions{ToneMode: req.ToneMode}, emitFn)
+			}
 		}
 
 		return h.orchestrator.ChatStreamWithOptions(c.Request.Context(), userID, message, req.History, aiservice.ChatOptions{ToneMode: req.ToneMode}, emitFn)

@@ -299,7 +299,7 @@ func (s *Service) summarize(convID uuid.UUID) {
 	}
 
 	sumReq := &ai.ChatRequest{
-		SystemPrompt: "Do not include any personal information, account numbers, or addresses in the summary. Summarize this conversation in under 200 words. Preserve key facts, user preferences, financial context, and any advice given. Be concise.",
+		SystemPrompt: "Do not include any personal information, account numbers, or addresses in the summary. Summarize this conversation in under 200 words. Preserve: key facts, user preferences, financial context, advice given, any receipt details (merchant, amount, date, category), image analysis results, and pending action items. Be concise.",
 		Messages:     []ai.Message{{Role: "user", Content: sb.String()}},
 		MaxTokens:    300,
 		Temperature:  ai.Float64(0.3),
@@ -365,8 +365,6 @@ func (s *Service) RecordImageExchange(ctx context.Context, convID uuid.UUID, use
 		EstimatedCost:  decimal.Zero,
 		Model:          model,
 	}); err != nil {
-		// User message saved but assistant failed — conversation is inconsistent.
-		// Log for monitoring; the orphaned user message is harmless (shows image was sent).
 		s.logger.Error("partial image exchange persist: assistant message failed after user message saved",
 			zap.String("conversation_id", convID.String()),
 			zap.Error(err))
@@ -376,5 +374,19 @@ func (s *Service) RecordImageExchange(ctx context.Context, convID uuid.UUID, use
 	if err := s.repo.IncrementStats(ctx, convID, tokens, decimal.Zero); err != nil {
 		s.logger.Warn("failed to increment stats for image exchange", zap.Error(err))
 	}
+
+	// Trigger summarization and title generation (same as RecordExchange)
+	count, err := s.repo.CountMessages(ctx, convID)
+	if err != nil {
+		s.logger.Warn("failed to count messages for image exchange", zap.Error(err))
+		return nil
+	}
+	if count >= entities.SummarizationThreshold && count%entities.SummarizationThreshold == 0 {
+		go s.summarize(convID)
+	}
+	if count == 2 {
+		go s.generateTitle(convID, userMsg)
+	}
+
 	return nil
 }
