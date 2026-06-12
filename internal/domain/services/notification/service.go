@@ -19,7 +19,7 @@ type EmailSenderService interface {
 
 // NotificationPersister persists notifications to the database
 type NotificationPersister interface {
-	Create(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error
+	Create(ctx context.Context, userID uuid.UUID, notifType, priority, title, body string, data map[string]interface{}) error
 }
 
 // PushSender sends push notifications
@@ -202,7 +202,7 @@ func (s *NotificationService) sendSMS(ctx context.Context, notification *entitie
 
 func (s *NotificationService) sendInApp(ctx context.Context, notification *entities.Notification) error {
 	if s.persister != nil {
-		return s.persister.Create(ctx, notification.UserID, string(notification.Type), notification.Title, notification.Body, notification.Data)
+		return s.persister.Create(ctx, notification.UserID, string(notification.Type), string(notification.Priority), notification.Title, notification.Body, notification.Data)
 	}
 	s.logger.Info("No persister configured, in-app notification dropped", zap.String("user_id", notification.UserID.String()))
 	return nil
@@ -213,7 +213,7 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
 	// 1. Always persist to in-app notification center
 	if s.persister != nil {
-		if err := s.persister.Create(ctx, userID, notifType, title, body, data); err != nil {
+		if err := s.persister.Create(ctx, userID, notifType, "medium", title, body, data); err != nil {
 			s.logger.Warn("Failed to persist notification", zap.Error(err))
 			s.metrics.mu.Lock()
 			s.metrics.PersistFail++

@@ -846,13 +846,18 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Verify by polling Paj directly — don't trust unsigned webhook payload.
 	token, err := s.getSessionToken(ctx, orderUserID)
 	if err != nil {
-		// Session expired — we can't verify via PAJ API. For onramp orders,
-		// mark as needing verification so PollOrderStatus or recovery worker
-		// can pick it up when the user re-authenticates.
-		s.logger.Warn("cannot verify paj webhook — session expired, marking for retry",
-			zap.String("paj_order_id", payload.ID), zap.String("order_type", orderType))
-		s.db.ExecContext(ctx, `UPDATE paj_orders SET last_webhook_status = $1, last_webhook_at = NOW() WHERE paj_order_id = $2`,
-			"unverified:"+payload.Status, payload.ID)
+		// Session expired — we can't verify via PAJ API. Still update the order
+		// status from the webhook payload so the app reflects reality; flag as
+		// unverified so PollOrderStatus or the next valid session can re-verify
+		// and perform any ledger operations.
+		s.logger.Warn("cannot verify paj webhook — session expired, applying status from payload, marking for retry",
+			zap.String("paj_order_id", payload.ID), zap.String("payload_status", payload.Status), zap.String("order_type", orderType))
+		payloadNewStatus := mapPajStatus(payload.Status)
+		s.db.ExecContext(ctx, `
+			UPDATE paj_orders SET
+				status = $1, last_webhook_status = $2, last_webhook_at = NOW(), updated_at = NOW()
+			WHERE paj_order_id = $3 AND status NOT IN ('completed', 'failed')`,
+			payloadNewStatus, "unverified:"+payload.Status, payload.ID)
 		return nil
 	}
 
@@ -871,7 +876,7 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 		UPDATE paj_orders SET
 			status = $1, token_amount = $2, rate = $3,
 			last_webhook_status = $4, last_webhook_at = NOW(), updated_at = NOW()
-		WHERE paj_order_id = $5 AND status NOT IN ('completed', 'failed')`,
+		WHERE paj_order_id = $5 AND (status NOT IN ('completed', 'failed') OR last_webhook_status LIKE 'unverified:%')`,
 		newStatus, tx.Amount, tx.Rate, tx.Status, payload.ID)
 	if err != nil {
 		return fmt.Errorf("update paj order: %w", err)
@@ -940,7 +945,7 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 	newStatus := mapPajStatus(tx.Status)
 	s.db.ExecContext(ctx, `
 		UPDATE paj_orders SET status = $1, token_amount = $2, rate = $3, updated_at = NOW()
-		WHERE paj_order_id = $4 AND status NOT IN ('completed', 'failed')`,
+		WHERE paj_order_id = $4 AND (status NOT IN ('completed', 'failed') OR last_webhook_status LIKE 'unverified:%')`,
 		newStatus, tx.Amount, tx.Rate, pajOrderID)
 
 	// Credit ledger if onramp just completed (same logic as webhook path).

@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"context"
+	"time"
 
 	"github.com/mixpanel/mixpanel-go"
 	"go.uber.org/zap"
@@ -25,7 +26,9 @@ func (c *Client) Track(ctx context.Context, userID, event string, props map[stri
 		return
 	}
 	go func() {
-		if err := c.mp.Track(ctx, []*mixpanel.Event{
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.mp.Track(bgCtx, []*mixpanel.Event{
 			c.mp.NewEvent(event, userID, props),
 		}); err != nil {
 			c.logger.Error("mixpanel track failed", zap.String("event", event), zap.Error(err))
@@ -39,7 +42,9 @@ func (c *Client) Identify(ctx context.Context, userID string, props map[string]a
 		return
 	}
 	go func() {
-		if err := c.mp.PeopleSet(ctx, []*mixpanel.PeopleProperties{
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.mp.PeopleSet(bgCtx, []*mixpanel.PeopleProperties{
 			mixpanel.NewPeopleProperties(userID, props),
 		}); err != nil {
 			c.logger.Error("mixpanel identify failed", zap.String("user_id", userID), zap.Error(err))
@@ -53,7 +58,9 @@ func (c *Client) Increment(ctx context.Context, userID string, props map[string]
 		return
 	}
 	go func() {
-		if err := c.mp.PeopleIncrement(ctx, userID, props); err != nil {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.mp.PeopleIncrement(bgCtx, userID, props); err != nil {
 			c.logger.Error("mixpanel increment failed", zap.String("user_id", userID), zap.Error(err))
 		}
 	}()
@@ -65,11 +72,13 @@ func (c *Client) TrackRevenue(ctx context.Context, userID string, amount float64
 		return
 	}
 	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
 		txn := map[string]any{"$amount": amount}
 		for k, v := range props {
 			txn[k] = v
 		}
-		if err := c.mp.PeopleAppendListProperty(ctx, userID, map[string]any{
+		if err := c.mp.PeopleAppendListProperty(bgCtx, userID, map[string]any{
 			"$transactions": txn,
 		}); err != nil {
 			c.logger.Error("mixpanel revenue failed", zap.String("user_id", userID), zap.Error(err))

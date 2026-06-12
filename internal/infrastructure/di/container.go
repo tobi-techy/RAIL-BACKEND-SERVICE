@@ -2305,9 +2305,6 @@ func (c *Container) initializeDomainServices() error {
 		if c.CircleAdapter != nil {
 			c.CircleWebhookHandler.SetUnsupportedAssetService(c.CircleAdapter)
 		}
-		if c.WithdrawalService != nil {
-			c.CircleWebhookHandler.SetWithdrawalCompleter(c.WithdrawalService)
-		}
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
@@ -2874,6 +2871,11 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.SessionAnomalyService != nil {
 		c.WithdrawalService.SetSessionAnomalyChecker(c.SessionAnomalyService)
+	}
+
+	// Wire Circle webhook handler to withdrawal service now that it's initialized
+	if c.CircleWebhookHandler != nil {
+		c.CircleWebhookHandler.SetWithdrawalCompleter(c.WithdrawalService)
 	}
 
 	// Initialize P2P transfer services

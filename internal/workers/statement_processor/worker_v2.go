@@ -161,7 +161,7 @@ func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data
 	}
 
 	// Auto-detect bank name
-	if bankName == "" || bankName == "unknown" {
+	if bankName == "" || bankName == "auto" || bankName == "unknown" {
 		if result.ParseResult.BankName != "" {
 			bankName = result.ParseResult.BankName
 		} else {
@@ -699,14 +699,20 @@ func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, tx
 	// 1. Build per-transaction memories
 	var memories []SupermemoryMemory
 	for _, t := range txns {
-		dir := "Received"
-		if t.Type == entities.StatementTxnTypeDebit {
-			dir = "Spent"
+		dateStr := t.TransactionDate.Format("January 2, 2006")
+		amountStr := commaFormat(t.Amount)
+		balanceStr := ""
+		if t.BalanceAfter != nil {
+			balanceStr = " Balance after: " + currency + " " + commaFormat(*t.BalanceAfter) + "."
 		}
-		content := fmt.Sprintf("%s %s %s on %s — %s [%s]",
-			dir, currency, t.Amount.StringFixed(0),
-			t.TransactionDate.Format("2006-01-02"),
-			t.Description, t.Category)
+		var content string
+		if t.Type == entities.StatementTxnTypeDebit {
+			content = fmt.Sprintf("On %s, you spent %s %s on %s (%s).%s",
+				dateStr, currency, amountStr, t.Description, t.Category, balanceStr)
+		} else {
+			content = fmt.Sprintf("On %s, you received %s %s — %s (%s).%s",
+				dateStr, currency, amountStr, t.Description, t.Category, balanceStr)
+		}
 		memories = append(memories, SupermemoryMemory{
 			Content:   content,
 			EventDate: t.TransactionDate.Format("2006-01-02"),
@@ -1128,4 +1134,19 @@ func ordinal(n int) string {
 		suffix = "rd"
 	}
 	return fmt.Sprintf("%d%s", n, suffix)
+}
+
+func commaFormat(v decimal.Decimal) string {
+	s := v.StringFixed(0)
+	if len(s) <= 3 {
+		return s
+	}
+	var b []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b = append(b, ',')
+		}
+		b = append(b, byte(c))
+	}
+	return string(b)
 }
