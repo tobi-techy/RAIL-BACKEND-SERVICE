@@ -1389,7 +1389,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 						// Receipt split with friends
 						if container.P2PService != nil {
-							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.P2PService, container.ZapLog)
+							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.ReceiptSplitRepo, container.P2PService, container.ZapLog)
 							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
 						}
 

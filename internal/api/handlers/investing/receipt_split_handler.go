@@ -18,13 +18,14 @@ import (
 
 // ReceiptSplitHandler handles splitting receipts with friends via P2P.
 type ReceiptSplitHandler struct {
-	receiptRepo *repositories.ReceiptRepository
-	p2pService  *p2pservice.Service
-	logger      *zap.Logger
+	receiptRepo      *repositories.ReceiptRepository
+	receiptSplitRepo *repositories.ReceiptSplitRepository
+	p2pService       *p2pservice.Service
+	logger           *zap.Logger
 }
 
-func NewReceiptSplitHandler(receiptRepo *repositories.ReceiptRepository, p2pService *p2pservice.Service, logger *zap.Logger) *ReceiptSplitHandler {
-	return &ReceiptSplitHandler{receiptRepo: receiptRepo, p2pService: p2pService, logger: logger}
+func NewReceiptSplitHandler(receiptRepo *repositories.ReceiptRepository, receiptSplitRepo *repositories.ReceiptSplitRepository, p2pService *p2pservice.Service, logger *zap.Logger) *ReceiptSplitHandler {
+	return &ReceiptSplitHandler{receiptRepo: receiptRepo, receiptSplitRepo: receiptSplitRepo, p2pService: p2pService, logger: logger}
 }
 
 type splitRequest struct {
@@ -70,6 +71,14 @@ func (h *ReceiptSplitHandler) SplitReceipt(c *gin.Context) {
 	if err != nil {
 		common.SendNotFound(c, common.ErrCodeNotFound, "Receipt not found")
 		return
+	}
+
+	// Prevent re-splitting a receipt that was already split
+	if h.receiptSplitRepo != nil {
+		if existing, err := h.receiptSplitRepo.GetSplitByReceipt(c.Request.Context(), userID, receiptID); err == nil && existing != nil {
+			common.SendBadRequest(c, common.ErrCodeInvalidRequest, "This receipt has already been split")
+			return
+		}
 	}
 
 	if !receipt.Amount.IsPositive() {

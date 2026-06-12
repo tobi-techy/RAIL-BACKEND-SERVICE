@@ -115,9 +115,22 @@ func (h *ReceiptSplitTrackingHandler) MarkPaid(c *gin.Context) {
 	}
 
 	// Verify ownership
-	_, err = h.repo.GetByID(c.Request.Context(), userID, splitID)
+	split, err := h.repo.GetByID(c.Request.Context(), userID, splitID)
 	if err != nil {
 		common.SendNotFound(c, common.ErrCodeNotFound, "Split not found")
+		return
+	}
+
+	// Verify participant belongs to this split
+	participantFound := false
+	for _, p := range split.Participants {
+		if p.ID == participantID {
+			participantFound = true
+			break
+		}
+	}
+	if !participantFound {
+		common.SendNotFound(c, common.ErrCodeNotFound, "Participant not found in this split")
 		return
 	}
 
