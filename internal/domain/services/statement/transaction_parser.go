@@ -219,7 +219,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 
 	body := map[string]interface{}{
 		"model":       p.model,
-		"temperature": 0.7,
+		"temperature": 1.0,
 		"max_tokens":  16000,
 		"stream":      true,
 		"messages": []map[string]interface{}{
