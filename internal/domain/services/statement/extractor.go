@@ -73,19 +73,27 @@ func (e *DocumentExtractor) extractPDF(ctx context.Context, data []byte) (*Extra
 	// Strategy 1: pdfcpu (fast, free, works for digital PDFs)
 	result, err := ExtractTextFromBytes(data)
 	if err == nil && !result.IsScanned && len(strings.TrimSpace(result.Text)) > 50 {
-		// If we have substantial text (>1000 chars), use it even if some "garbage" characters
-		// are present — the LLM can handle noise. Only reject if short AND garbage-heavy.
-		isGarbage := IsGarbageText(result.Text)
-		if !isGarbage || len(result.Text) > 1000 {
-			if isGarbage {
-				e.logger.Info("pdfcpu text has noise but is substantial, proceeding", zap.Int("chars", len(result.Text)))
+		// Reject if pdfcpu extracted raw content stream noise (CID fonts, hex strings)
+		if IsPDFContentNoise(result.Text) {
+			e.logger.Info("pdfcpu extracted content stream noise, falling back",
+				zap.Int("chars", len(result.Text)),
+				zap.Int("lines", len(strings.Split(result.Text, "\n"))),
+			)
+		} else {
+			// If we have substantial text (>1000 chars), use it even if some "garbage" characters
+			// are present — the LLM can handle noise. Only reject if short AND garbage-heavy.
+			isGarbage := IsGarbageText(result.Text)
+			if !isGarbage || len(result.Text) > 1000 {
+				if isGarbage {
+					e.logger.Info("pdfcpu text has noise but is substantial, proceeding", zap.Int("chars", len(result.Text)))
+				}
+				return &ExtractionResult{
+					Text:      result.Text,
+					Pages:     result.Pages,
+					PageCount: result.PageCount,
+					Strategy:  StrategyPDFCPU,
+				}, nil
 			}
-			return &ExtractionResult{
-				Text:      result.Text,
-				Pages:     result.Pages,
-				PageCount: result.PageCount,
-				Strategy:  StrategyPDFCPU,
-			}, nil
 		}
 	}
 
