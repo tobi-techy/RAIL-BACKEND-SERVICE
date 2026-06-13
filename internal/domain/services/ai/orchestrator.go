@@ -172,7 +172,23 @@ type Orchestrator struct {
 	miriamIntelligence  MiriamIntelligenceReader
 	bankStatementCtx    *BankStatementContextProvider
 	supermemory         SupermemoryClient
+	moneyMoveNotifier   MoneyMoveNotifier
 	logger              *zap.Logger
+}
+
+// MoneyMoveNotifier sends a push notification when Miriam moves money on a
+// user's behalf. It is intentionally a single-method interface so the
+// orchestrator package does not depend on the notification package. The
+// emergency flag carries through whether the action used the early-stash
+// withdrawal path so the push copy can reflect the fee.
+type MoneyMoveNotifier interface {
+	NotifyMiriamMovedFunds(ctx context.Context, userID uuid.UUID, action, from, to string, amount decimal.Decimal, emergency, succeeded bool, errMsg string) error
+}
+
+// SetMoneyMoveNotifier wires the notifier used to push messages after
+// confirmed Miriam money-moving actions.
+func (o *Orchestrator) SetMoneyMoveNotifier(n MoneyMoveNotifier) {
+	o.moneyMoveNotifier = n
 }
 
 // OrchestratorDeps groups all optional dependencies for the Orchestrator.

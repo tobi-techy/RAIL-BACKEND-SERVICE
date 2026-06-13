@@ -161,6 +161,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	internal := router.Group("/internal")
 	internal.Use(middleware.RateLimit(5))
 	internal.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
+	// Defense-in-depth: when an internal signing secret is configured, require
+	// a fresh HMAC-SHA256 request signature so a leaked static key alone cannot
+	// drive money-moving internal routes (TM-001). No-op until configured.
+	internal.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
@@ -176,8 +180,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			return
 		}
 		// Also clean up transactions
-		container.DB.ExecContext(c.Request.Context(),
-			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id)
+		if _, err := container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id); err != nil {
+			container.ZapLog.Warn("failed to delete statement transactions during internal cleanup",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to delete statement transactions"})
+			return
+		}
 		c.JSON(200, gin.H{"deleted": true})
 	})
 
@@ -1483,7 +1492,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 				// Conversation endpoints
 				if container.GetConversationService() != nil {
-					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog)
+					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog, container.GetPasscodeService(), container.Config.Security.AIFundActionsRequirePasscode)
 					convGroup := protected.Group("/ai/conversations")
 					{
 						convGroup.POST("", convHandlers.CreateConversation)

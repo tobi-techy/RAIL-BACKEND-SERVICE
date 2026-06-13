@@ -3659,6 +3659,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
 	}
 
+	// Push notifications when Miriam moves money on the user's behalf
+	if c.NotificationService != nil {
+		c.AIOrchestrator.SetMoneyMoveNotifier(c.NotificationService)
+	}
+
 	// Use Redis for pending actions (survives restarts, works across instances)
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))

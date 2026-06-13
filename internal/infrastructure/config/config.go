@@ -365,6 +365,18 @@ type SecurityConfig struct {
 	// Internal API key for service-to-service auth
 	InternalAPIKey string `mapstructure:"internal_api_key"`
 
+	// InternalRequestSigningSecret, when set, requires HMAC-SHA256 request
+	// signing on /internal/* endpoints in addition to the static API key
+	// (defense-in-depth, TM-001). Empty = signing not enforced.
+	InternalRequestSigningSecret string `mapstructure:"internal_request_signing_secret"`
+
+	// AIFundActionsRequirePasscode requires a verified passcode session
+	// (X-Passcode-Session) before the AI assistant can confirm a money-moving
+	// action (withdrawal / stash transfer), mirroring the step-up the direct
+	// withdrawal routes enforce (TM-004, TM-006). Default false so it can be
+	// enabled once clients send the passcode-session header on AI confirms.
+	AIFundActionsRequirePasscode bool `mapstructure:"ai_fund_actions_require_passcode"`
+
 	// Webhook replay protection
 	WebhookReplay WebhookReplayConfig `mapstructure:"webhook_replay"`
 

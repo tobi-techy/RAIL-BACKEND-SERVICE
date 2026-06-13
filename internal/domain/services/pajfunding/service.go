@@ -680,10 +680,10 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 	}
 
 	_, dbErr := s.db.ExecContext(ctx, `
-		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, bank_account_name, paj_deposit_address, hold_amount)
-		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		INSERT INTO paj_orders (user_id, paj_order_id, order_type, status, fiat_amount, token_amount, currency, rate, fee, bank_id, bank_account_number, bank_account_name, paj_deposit_address, hold_amount, rail_fee_usdc)
+		VALUES ($1, $2, 'offramp', 'pending', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		userID, order.ID, order.FiatAmount, order.Amount, currency, order.Rate, order.Fee,
-		bankID, accountNumber, s.resolveAccountName(ctx, token, accountNumber), order.Address, totalHold)
+		bankID, accountNumber, s.resolveAccountName(ctx, token, accountNumber), order.Address, totalHold, railFee)
 	if dbErr != nil {
 		s.logger.Error("CRITICAL: failed to persist paj offramp order — reversing hold",
 			zap.Error(dbErr), zap.String("paj_order_id", order.ID))
