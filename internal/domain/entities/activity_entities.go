@@ -20,6 +20,7 @@ const (
 	ActivityTypeInvestment     ActivityType = "investment"
 	ActivityTypeCardPayment    ActivityType = "card_payment"
 	ActivityTypeAllocation     ActivityType = "allocation"      // internal 70/30 split
+	ActivityTypeMiriamAction   ActivityType = "miriam_action"   // financial agent moved money
 )
 
 // ActivityStatus is a normalized status across all transaction types.
@@ -245,6 +246,91 @@ func NormalizeP2PToActivity(t *P2PTransferForActivity, viewerID uuid.UUID) Activ
 		CreatedAt:   t.CreatedAt,
 		CompletedAt: t.CompletedAt,
 	}
+}
+
+// MiriamActionForActivity is the minimal Miriam (financial agent) action data
+// needed to render a transaction-feed entry.
+type MiriamActionForActivity struct {
+	ID           uuid.UUID
+	Action       string
+	Status       string // executed, failed, cancelled, expired
+	ErrorMessage string
+	From         string // "spend" or "stash" for transfers
+	To           string
+	Amount       decimal.Decimal
+	Currency     string // defaults to USDC
+	Emergency    bool   // true when params.impact.emergency_withdrawal was set
+	CreatedAt    time.Time
+}
+
+// NormalizeMiriamActionToActivity converts a Miriam fund-moving audit entry
+// into an ActivityItem. Only money-moving actions should be passed here —
+// purely informational actions (set_goal, set_budget) are filtered upstream.
+func NormalizeMiriamActionToActivity(a *MiriamActionForActivity) ActivityItem {
+	status := normalizeMiriamStatus(a.Status)
+	currency := a.Currency
+	if currency == "" {
+		currency = "USDC"
+	}
+
+	title, subtitle, direction := miriamActionLabels(a.Action, a.From, a.To, a.Amount, currency, a.Emergency)
+
+	item := ActivityItem{
+		ID:         a.ID.String(),
+		Type:       ActivityTypeMiriamAction,
+		Direction:  direction,
+		Status:     status,
+		Title:      title,
+		Subtitle:   subtitle,
+		Amount:     a.Amount,
+		Currency:   ActivityCurrencyPair{Primary: currency},
+		SourceID:   a.ID.String(),
+		SourceType: "miriam_action",
+		Narration:  a.ErrorMessage,
+		CreatedAt:  a.CreatedAt,
+	}
+	if status == ActivityStatusCompleted {
+		t := a.CreatedAt
+		item.CompletedAt = &t
+	}
+	return item
+}
+
+// IsMiriamMoneyMovingAction returns true for action types that physically move
+// user funds and should appear in the transaction feed. initiate_withdrawal is
+// intentionally NOT in this set — those actions surface via the withdrawals
+// table (fetchWithdrawals) so emitting them here would double-count.
+func IsMiriamMoneyMovingAction(action string) bool {
+	return action == "transfer_funds"
+}
+
+func miriamActionLabels(action, from, to string, amount decimal.Decimal, currency string, emergency bool) (string, string, ActivityDirection) {
+	amountStr := amount.StringFixed(2)
+	if action == "transfer_funds" {
+		switch {
+		case emergency && from == "stash" && to == "spend":
+			return "Miriam ran an emergency stash withdrawal", "Stash → Spend • $" + amountStr + " (early-withdrawal fee applies)", ActivityDirectionIn
+		case from == "spend" && to == "stash":
+			return "Miriam moved to Stash", "Spend → Stash • $" + amountStr, ActivityDirectionOut
+		case from == "stash" && to == "spend":
+			return "Miriam moved to Spend", "Stash → Spend • $" + amountStr, ActivityDirectionIn
+		default:
+			return "Miriam moved funds", from + " → " + to + " • $" + amountStr, ActivityDirectionOut
+		}
+	}
+	return "Miriam took an action", action, ActivityDirectionOut
+}
+
+func normalizeMiriamStatus(s string) ActivityStatus {
+	switch s {
+	case "executed":
+		return ActivityStatusCompleted
+	case "failed":
+		return ActivityStatusFailed
+	case "cancelled", "expired":
+		return ActivityStatusCancelled
+	}
+	return ActivityStatusPending
 }
 
 // --- helpers ---

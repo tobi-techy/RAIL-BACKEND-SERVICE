@@ -3,6 +3,7 @@ package activity
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"sort"
 	"time"
 
@@ -36,7 +37,7 @@ func (s *Service) GetActivityFeed(ctx context.Context, userID uuid.UUID, limit, 
 		items []entities.ActivityItem
 		err   error
 	}
-	ch := make(chan result, 4)
+	ch := make(chan result, 5)
 
 	go func() {
 		items, err := s.fetchDepositsAndPajOrders(ctx, userID, limit+offset+10)
@@ -54,9 +55,13 @@ func (s *Service) GetActivityFeed(ctx context.Context, userID uuid.UUID, limit, 
 		items, err := s.fetchPajOfframpOrders(ctx, userID, limit+offset+10)
 		ch <- result{items, err}
 	}()
+	go func() {
+		items, err := s.fetchMiriamActions(ctx, userID, limit+offset+10)
+		ch <- result{items, err}
+	}()
 
 	var all []entities.ActivityItem
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		r := <-ch
 		if r.err != nil {
 			s.logger.Warn("activity source fetch failed", zap.Error(r.err))
@@ -227,6 +232,108 @@ func (s *Service) fetchP2PTransfers(ctx context.Context, userID uuid.UUID, limit
 		items = append(items, entities.NormalizeP2PToActivity(&t, userID))
 	}
 	return items, nil
+}
+
+// fetchMiriamActions returns money-moving Miriam (financial agent) actions for
+// the transaction feed. Only internal transfer_funds entries are surfaced —
+// initiate_withdrawal actions are intentionally excluded because the
+// corresponding row in the `withdrawals` table is already surfaced via
+// fetchWithdrawals, and showing both would produce duplicate feed entries.
+func (s *Service) fetchMiriamActions(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, action, status, error_message, params, created_at
+		FROM ai_action_audit
+		WHERE user_id = $1
+		  AND action = 'transfer_funds'
+		  AND status IN ('executed', 'failed')
+		ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []entities.ActivityItem
+	for rows.Next() {
+		var (
+			id         uuid.UUID
+			action     string
+			status     string
+			errMsg     string
+			paramsJSON []byte
+			createdAt  time.Time
+		)
+		if err := rows.Scan(&id, &action, &status, &errMsg, &paramsJSON, &createdAt); err != nil {
+			s.logger.Warn("scan miriam action", zap.Error(err))
+			continue
+		}
+		params := map[string]interface{}{}
+		if len(paramsJSON) > 0 {
+			if err := json.Unmarshal(paramsJSON, &params); err != nil {
+				// Corrupt or unexpectedly-shaped params — log and surface a
+				// degraded entry rather than silently mislabel it $0.00.
+				s.logger.Warn("miriam action params unmarshal failed",
+					zap.String("action_id", id.String()),
+					zap.Error(err))
+			}
+		}
+
+		amount := parseDecimalParam(params, "amount")
+		from, _ := params["from"].(string)
+		to, _ := params["to"].(string)
+		currency, _ := params["currency"].(string)
+		emergency := miriamActionIsEmergency(params)
+
+		entry := &entities.MiriamActionForActivity{
+			ID:           id,
+			Action:       action,
+			Status:       status,
+			ErrorMessage: errMsg,
+			From:         from,
+			To:           to,
+			Amount:       amount,
+			Currency:     currency,
+			Emergency:    emergency,
+			CreatedAt:    createdAt,
+		}
+		items = append(items, entities.NormalizeMiriamActionToActivity(entry))
+	}
+	return items, nil
+}
+
+// miriamActionIsEmergency detects an emergency stash-to-spend transfer by
+// reading the `impact.emergency_withdrawal` flag set in orchestrator_actions.go
+// when the user is in the stash lock window.
+func miriamActionIsEmergency(params map[string]interface{}) bool {
+	impact, ok := params["impact"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, isEmergency := impact["emergency_withdrawal"]
+	return isEmergency
+}
+
+// parseDecimalParam reads a string/float/int decimal from a params map. Returns
+// zero if the key is absent or unparseable — caller decides whether that's OK.
+func parseDecimalParam(params map[string]interface{}, key string) decimal.Decimal {
+	v, ok := params[key]
+	if !ok {
+		return decimal.Zero
+	}
+	switch x := v.(type) {
+	case string:
+		d, err := decimal.NewFromString(x)
+		if err != nil {
+			return decimal.Zero
+		}
+		return d
+	case float64:
+		return decimal.NewFromFloat(x)
+	case int:
+		return decimal.NewFromInt(int64(x))
+	case int64:
+		return decimal.NewFromInt(x)
+	}
+	return decimal.Zero
 }
 
 func (s *Service) fetchPajOfframpOrders(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
