@@ -61,6 +61,7 @@ type StationResponse struct {
 	BalanceTrends            *BalanceTrendsResponse `json:"balance_trends,omitempty"`
 	RecentActivity           []ActivityItemResponse `json:"recent_activity"`
 	UnreadAlertCount         int                    `json:"unread_alert_count"`
+	HasCard                  bool                   `json:"has_card"`
 }
 
 // StationService interface for station data retrieval
@@ -72,6 +73,7 @@ type StationService interface {
 	GetBalanceTrends(ctx context.Context, userID uuid.UUID, currentSpend, currentInvest decimal.Decimal) (*station.BalanceTrends, error)
 	GetUserSettings(ctx context.Context, userID uuid.UUID) (*station.UserSettings, error)
 	GetUnreadNotificationCount(ctx context.Context, userID uuid.UUID) (int, error)
+	HasCards(ctx context.Context, userID uuid.UUID) (bool, error)
 	GetRecentActivity(ctx context.Context, userID uuid.UUID, limit int) ([]*station.ActivityItem, error)
 }
 
@@ -124,12 +126,13 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		activity     []*station.ActivityItem
 		unreadCount  int
 		trends       *station.BalanceTrends
+		hasCard      bool
 		balanceErr   error
 	)
 
 	var wg sync.WaitGroup
 	balanceReady := make(chan struct{})
-	wg.Add(6)
+	wg.Add(7)
 
 	go func() {
 		defer wg.Done()
@@ -162,6 +165,13 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 		defer wg.Done()
 		if n, err := h.stationService.GetUnreadNotificationCount(ctx, userID); err == nil {
 			unreadCount = n
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		if has, err := h.stationService.HasCards(ctx, userID); err == nil {
+			hasCard = has
 		}
 	}()
 
@@ -230,6 +240,7 @@ func (h *StationHandlers) GetStation(c *gin.Context) {
 	}
 
 	response.UnreadAlertCount = unreadCount
+	response.HasCard = hasCard
 
 	c.JSON(http.StatusOK, response)
 }

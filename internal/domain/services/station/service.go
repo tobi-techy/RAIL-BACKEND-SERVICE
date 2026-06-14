@@ -119,6 +119,11 @@ type GoalBalanceProvider interface {
 	GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
+// CardCountProvider checks whether a user has any cards.
+type CardCountProvider interface {
+	CountByUserID(ctx context.Context, userID uuid.UUID) (int, error)
+}
+
 // Service handles station/home screen data retrieval
 type Service struct {
 	ledgerService     LedgerService
@@ -132,6 +137,7 @@ type Service struct {
 	alpacaAccountSvc  AlpacaAccountService
 	obligationProv    ObligationProvider
 	goalBalanceProv   GoalBalanceProvider
+	cardCountProv     CardCountProvider
 	logger            *zap.Logger
 }
 
@@ -185,6 +191,9 @@ func (s *Service) SetObligationProvider(p ObligationProvider) { s.obligationProv
 
 // SetGoalBalanceProvider sets the goal balance provider.
 func (s *Service) SetGoalBalanceProvider(p GoalBalanceProvider) { s.goalBalanceProv = p }
+
+// SetCardCountProvider sets the card count provider.
+func (s *Service) SetCardCountProvider(p CardCountProvider) { s.cardCountProv = p }
 
 func (s *Service) getAccountBalanceOrZero(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, label string) decimal.Decimal {
 	balance, err := s.ledgerService.GetAccountBalance(ctx, userID, accountType)
@@ -428,6 +437,15 @@ func (s *Service) GetRecentActivity(ctx context.Context, userID uuid.UUID, limit
 		return []*ActivityItem{}, nil
 	}
 	return s.transactionRepo.GetRecentByUserID(ctx, userID, limit)
+}
+
+// HasCards checks whether the user has at least one card
+func (s *Service) HasCards(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if s.cardCountProv == nil {
+		return false, nil
+	}
+	count, err := s.cardCountProv.CountByUserID(ctx, userID)
+	return count > 0, err
 }
 
 // GetAllocationMode retrieves the user's allocation mode

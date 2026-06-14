@@ -2348,6 +2348,9 @@ func (c *Container) initializeDomainServices() error {
 		c.StationService.SetObligationProvider(&stationObligationAdapter{obligations: c.FinancialObligationService})
 	}
 	c.StationService.SetGoalBalanceProvider(c.LedgerService)
+	if c.CardRepo != nil {
+		c.StationService.SetCardCountProvider(c.CardRepo)
+	}
 
 	// Initialize gameplay services (notifiers wired after push service is resolved below)
 	c.GameplayRepo = repositories.NewGameplayRepository(sqlxDB)
