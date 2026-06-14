@@ -536,6 +536,30 @@ func (o *Orchestrator) createSavingsGoalAction(ctx context.Context, userID, conv
 	}, nil
 }
 
+// PeekPendingAction returns the pending action for a conversation without
+// executing it, after verifying it belongs to userID. The API layer uses this
+// to decide whether passcode step-up is required before ConfirmAction (TM-004,
+// TM-006) without granting the model a way to self-confirm.
+func (o *Orchestrator) PeekPendingAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, bool) {
+	action := o.pending.Get(ctx, convID)
+	if action == nil || action.UserID != userID {
+		return nil, false
+	}
+	return action, true
+}
+
+// IsFundMovingAction reports whether a staged action type moves money and
+// therefore warrants the same passcode step-up that the direct withdrawal and
+// stash-transfer routes enforce.
+func IsFundMovingAction(action string) bool {
+	switch action {
+	case ToolTransferFunds, ToolInitiateWithdrawal:
+		return true
+	default:
+		return false
+	}
+}
+
 // ConfirmAction executes a pending action after user confirmation.
 func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, error) {
 	action := o.pending.Get(ctx, convID)
@@ -663,10 +687,89 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	}
 	o.auditAction(ctx, userID, convID, action, status, errMsg)
 
+	// initiate_withdrawal triggers the standard withdrawal notification pipeline
+	// (NotifyWithdrawalSubmitted/Completed/Failed) and is intentionally excluded
+	// here — emitting another push would duplicate the user-facing message.
+	if o.moneyMoveNotifier != nil && action.Action == ToolTransferFunds {
+		go o.notifyMoneyMoved(userID, action, execErr == nil, errMsg)
+	}
+
 	if execErr != nil {
 		return nil, execErr
 	}
 	return action, nil
+}
+
+// auditVoiceTransfer records a voice-direct transfer in the action audit log
+// so it surfaces in the user's transaction feed. The voice path bypasses the
+// pending/confirm flow, so without this call the action would otherwise be
+// invisible outside the live conversation.
+//
+// Uses a background context with a short timeout because the request ctx may
+// already be cancelled by the time we get here (Gin may have flushed, the
+// voice client may have hung up); we still want the audit row to land — the
+// money already moved at the ledger.
+func (o *Orchestrator) auditVoiceTransfer(userID uuid.UUID, action, from, to string, amount decimal.Decimal, succeeded bool, errMsg string) {
+	if o.actionAuditor == nil {
+		return
+	}
+	status := "executed"
+	if !succeeded {
+		status = "failed"
+	}
+	entry := &entities.ActionAuditEntry{
+		ID:             uuid.New(),
+		UserID:         userID,
+		ConversationID: uuid.Nil,
+		Action:         action,
+		Params: map[string]interface{}{
+			"from":   from,
+			"to":     to,
+			"amount": amount.StringFixed(2),
+			"source": "voice_direct",
+		},
+		Status:       status,
+		ErrorMessage: errMsg,
+		CreatedAt:    time.Now(),
+	}
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := o.actionAuditor.RecordAction(bgCtx, entry); err != nil {
+		o.logger.Warn("voice direct transfer audit failed", zap.Error(err))
+	}
+}
+
+// notifyMoneyMoved fires a push notification on a confirmed Miriam money move.
+// Runs in a goroutine because the caller is the API request path and we don't
+// want notification latency on the response.
+func (o *Orchestrator) notifyMoneyMoved(userID uuid.UUID, action *entities.PendingAction, succeeded bool, errMsg string) {
+	if o.moneyMoveNotifier == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	from, _ := action.Params["from"].(string)
+	to, _ := action.Params["to"].(string)
+	amount := decimal.Zero
+	if a, ok := action.Params["amount"].(string); ok {
+		if d, err := decimal.NewFromString(a); err == nil {
+			amount = d
+		}
+	}
+	emergency := false
+	if impact, ok := action.Params["impact"].(map[string]interface{}); ok {
+		if _, isEmergency := impact["emergency_withdrawal"]; isEmergency {
+			emergency = true
+		}
+	}
+
+	if err := o.moneyMoveNotifier.NotifyMiriamMovedFunds(ctx, userID, action.Action, from, to, amount, emergency, succeeded, errMsg); err != nil {
+		o.logger.Warn("miriam money-move notification failed",
+			zap.String("user_id", userID.String()),
+			zap.String("action", action.Action),
+			zap.Error(err))
+	}
 }
 
 // CancelAction discards a pending action.
@@ -798,6 +901,22 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 			err = o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, key)
 		} else {
 			return map[string]interface{}{"error": "Invalid from/to combination"}, nil
+		}
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		// Persist to the audit log so the action shows up in the user's
+		// transaction feed alongside the confirm-flow transfers.
+		o.auditVoiceTransfer(userID, ToolTransferFunds, from, to, amount, err == nil, errMsg)
+		if o.moneyMoveNotifier != nil {
+			// Voice-direct transfers don't go through the stash-lock window
+			// (the emergency path is confirm-only), so emergency is always false here.
+			go func(succeeded bool, em string) {
+				nctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = o.moneyMoveNotifier.NotifyMiriamMovedFunds(nctx, userID, ToolTransferFunds, from, to, amount, false, succeeded, em)
+			}(err == nil, errMsg)
 		}
 		if err != nil {
 			o.logger.Error("voice direct transfer failed", zap.Error(err), zap.String("user_id", userID.String()))

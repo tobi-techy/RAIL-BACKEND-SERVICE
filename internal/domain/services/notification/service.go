@@ -394,6 +394,73 @@ func (s *NotificationService) NotifyP2PClaimed(ctx context.Context, senderID uui
 	return s.queueNotification(ctx, senderID, "push", "Transfer claimed", body, map[string]interface{}{"type": "p2p_claimed"})
 }
 
+// NotifyMiriamMovedFunds notifies the user when Miriam (the financial agent)
+// executes a money-moving action on their behalf. Covers both confirmed
+// chat-flow actions and voice-direct executions.
+//
+// emergency reflects params.impact.emergency_withdrawal so the user gets the
+// "stash unlocked early" framing rather than a vanilla transfer message; PAJ
+// withdrawals go through the regular NotifyWithdrawalSubmitted/Completed
+// pipeline and are intentionally not handled here.
+func (s *NotificationService) NotifyMiriamMovedFunds(ctx context.Context, userID uuid.UUID, action, from, to string, amount decimal.Decimal, emergency, succeeded bool, errMsg string) error {
+	amountStr := amount.StringFixed(2)
+	var title, body string
+
+	switch {
+	case !succeeded && action == "transfer_funds":
+		title = "Miriam couldn't finish that"
+		body = fmt.Sprintf("Tried to move $%s %s → %s but hit a snag. Tap to retry.", amountStr, friendlyAccountLabel(from), friendlyAccountLabel(to))
+	case !succeeded:
+		title = "Miriam couldn't finish that"
+		body = "An action failed. Open the chat to see what happened."
+	case action == "transfer_funds" && emergency:
+		title = "Stash unlocked early"
+		body = fmt.Sprintf("Miriam pulled $%s from stash to spend (early-withdrawal fee applies).", amountStr)
+	case action == "transfer_funds":
+		title = "Miriam moved your money"
+		body = fmt.Sprintf("$%s went from %s to %s. Tap to see the receipt.", amountStr, friendlyAccountLabel(from), friendlyAccountLabel(to))
+	default:
+		title = "Miriam took action"
+		body = "Tap to see what changed."
+	}
+
+	data := map[string]interface{}{
+		"type":      "miriam_action",
+		"action":    action,
+		"amount":    amountStr,
+		"from":      from,
+		"to":        to,
+		"emergency": emergency,
+		"succeeded": succeeded,
+	}
+	// Raw provider/ledger error strings can leak internals — keep them in
+	// server logs but only surface a generic message to the device.
+	if errMsg != "" {
+		if s.logger != nil {
+			s.logger.Warn("miriam money-move action failed",
+				zap.String("user_id", userID.String()),
+				zap.String("action", action),
+				zap.String("error", errMsg),
+				zap.Time("at", time.Now()))
+		}
+		data["error_message"] = "An error occurred. Please try again or contact support."
+	}
+	return s.queueNotification(ctx, userID, "push", title, body, data)
+}
+
+func friendlyAccountLabel(s string) string {
+	switch s {
+	case "spend":
+		return "Spend"
+	case "stash":
+		return "Stash"
+	}
+	if s == "" {
+		return "Balance"
+	}
+	return s
+}
+
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
 	return s.queueNotification(ctx, userID, "push", title, message, nil)
 }

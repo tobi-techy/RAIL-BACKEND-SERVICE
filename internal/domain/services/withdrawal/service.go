@@ -2712,6 +2712,22 @@ func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.C
 	return s.syncWithdrawalStatusFromProvider(ctx, withdrawal)
 }
 
+// SyncStuckWithdrawal is the public entry point used by the recovery worker
+// to poll the upstream provider for a withdrawal stuck in processing after
+// the provider transfer was initiated. It either settles the withdrawal on
+// success or reverses it on a provider-confirmed terminal failure.
+func (s *WithdrawalService) SyncStuckWithdrawal(ctx context.Context, withdrawalID uuid.UUID) error {
+	withdrawal, err := s.withdrawalRepo.GetByID(ctx, withdrawalID)
+	if err != nil {
+		return fmt.Errorf("get withdrawal: %w", err)
+	}
+	if withdrawal == nil || withdrawal.Status.IsTerminal() {
+		return nil
+	}
+	_, err = s.syncWithdrawalStatusFromProvider(ctx, withdrawal)
+	return err
+}
+
 // getCircleTransactionStatus fetches a Circle transaction by ID for status polling.
 func (s *WithdrawalService) getCircleTransactionStatus(ctx context.Context, txID string) (*circlepkg.Transaction, error) {
 	if s.circleTransfer == nil {

@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -161,23 +162,58 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	internal := router.Group("/internal")
 	internal.Use(middleware.RateLimit(5))
 	internal.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
+	// Defense-in-depth: when an internal signing secret is configured, require
+	// a fresh HMAC-SHA256 request signature so a leaked static key alone cannot
+	// drive money-moving internal routes (TM-001). No-op until configured.
+	internal.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 	}
 
-	// Internal statement management
+	// Internal statement management.
+	//
+	// Order matters: delete child rows (bank_statement_transactions) BEFORE
+	// the parent upload so a partial failure can't leave orphaned transactions
+	// pointing at a deleted upload. Both deletes share a single transaction so
+	// the operation is all-or-nothing.
 	internal.DELETE("/statement/:id", func(c *gin.Context) {
 		id := c.Param("id")
-		_, err := container.DB.ExecContext(c.Request.Context(),
-			"DELETE FROM bank_statement_uploads WHERE id = $1", id)
+		tx, err := container.DB.BeginTx(c.Request.Context(), nil)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			container.ZapLog.Error("internal statement delete: begin tx failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to start transaction"})
 			return
 		}
-		// Also clean up transactions
-		container.DB.ExecContext(c.Request.Context(),
-			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id)
+		rollback := func() {
+			if rbErr := tx.Rollback(); rbErr != nil && rbErr != sql.ErrTxDone {
+				container.ZapLog.Warn("internal statement delete: rollback failed",
+					zap.String("upload_id", id), zap.Error(rbErr))
+			}
+		}
+		if _, err := tx.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id); err != nil {
+			rollback()
+			container.ZapLog.Error("internal statement delete: transactions delete failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to delete statement transactions"})
+			return
+		}
+		if _, err := tx.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_uploads WHERE id = $1", id); err != nil {
+			rollback()
+			container.ZapLog.Error("internal statement delete: upload delete failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to delete statement upload"})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			container.ZapLog.Error("internal statement delete: commit failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to commit statement delete"})
+			return
+		}
 		c.JSON(200, gin.H{"deleted": true})
 	})
 
@@ -1475,9 +1511,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 				}
 
-				// Conversation endpoints
+				// Conversation endpoints. The "gate-on + nil-passcode" invariant
+				// is validated at application startup (Application.validateSecurityConfig),
+				// so the gate is guaranteed wired by the time we reach this route
+				// setup — no mid-route Fatal here.
 				if container.GetConversationService() != nil {
-					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog)
+					convHandlers := handlers.NewConversationHandlers(
+						container.GetAIOrchestrator(),
+						container.GetConversationService(),
+						container.ZapLog,
+						container.GetPasscodeService(),
+						container.Config.Security.AIFundActionsRequirePasscode,
+					)
 					convGroup := protected.Group("/ai/conversations")
 					{
 						convGroup.POST("", convHandlers.CreateConversation)

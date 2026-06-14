@@ -26,6 +26,7 @@ import (
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -159,6 +160,13 @@ func (app *Application) Initialize() error {
 	}
 	app.container = container
 
+	// Cross-component config validation: fail fast BEFORE workers spin up or
+	// the HTTP server binds, so a half-configured security gate never reaches
+	// a state where the misconfig surfaces as silent 403s on every request.
+	if err := app.validateSecurityConfig(); err != nil {
+		return fmt.Errorf("security config validation failed: %w", err)
+	}
+
 	// Initialize workers
 	if err := app.initializeWorkers(); err != nil {
 		return fmt.Errorf("failed to initialize workers: %w", err)
@@ -247,9 +255,19 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Deposit allocation recovery worker started")
 	}
 
-	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals
+	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals and
+	// reconciles orders whose Circle transfer was initiated but never
+	// webhooked, using Circle's own state as the source of truth.
 	if app.container.DB != nil && app.container.PajHandlers != nil && app.container.LedgerService != nil {
 		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
+		if app.container.NotificationService != nil {
+			app.pajOfframpRecoveryWorker.SetNotifier(&pajOfframpRecoveryNotifierAdapter{svc: app.container.NotificationService})
+		}
+		if app.container.CircleAdapter != nil {
+			app.pajOfframpRecoveryWorker.SetCircleStatusChecker(&pajOfframpCircleStatusAdapter{adapter: app.container.CircleAdapter})
+		} else {
+			app.log.Warn("Paj offramp recovery: no Circle adapter — reconciliation of post-transfer stuck orders disabled")
+		}
 		go app.pajOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj offramp recovery worker started")
 	}
@@ -261,9 +279,13 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Paj onramp recovery worker started")
 	}
 
-	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals
+	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals and
+	// polls the provider for withdrawals whose webhook never landed.
 	if app.container.DB != nil && app.container.LedgerService != nil {
 		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
+		if app.container.WithdrawalService != nil {
+			app.withdrawalRecoveryWorker.SetWithdrawalSyncer(app.container.WithdrawalService)
+		}
 		go app.withdrawalRecoveryWorker.Start(context.Background())
 		app.log.Info("Withdrawal recovery worker started")
 	}
@@ -802,6 +824,21 @@ func (app *Application) initializeFundingWebhooks() error {
 	return nil
 }
 
+// validateSecurityConfig checks invariants that span the container + config
+// after both have been built. Anything caught here turns into a clean
+// initialization error rather than a half-running process with subtle
+// fail-closed behaviour.
+func (app *Application) validateSecurityConfig() error {
+	// AI fund-action passcode gate: if it's on, the passcode service must be
+	// wired. With the gate on but no validator, every Miriam money-move
+	// confirmation would return 403 — looking like a per-request bug rather
+	// than a deployment misconfiguration.
+	if app.cfg.Security.AIFundActionsRequirePasscode && app.container.GetPasscodeService() == nil {
+		return fmt.Errorf("AIFundActionsRequirePasscode is enabled but passcode service is not available")
+	}
+	return nil
+}
+
 // initializeServer initializes the HTTP server
 func (app *Application) initializeServer() error {
 	// Set Gin mode
@@ -1274,6 +1311,51 @@ func (g *gzipWriter) WriteString(s string) (int, error) {
 
 func (g *gzipWriter) Flush() {
 	g.Writer.Flush()
+}
+
+// pajOfframpRecoveryNotifierAdapter adapts NotificationService.NotifyWithdrawalCompleted
+// (which takes amount + destination as separate args) to the worker's Notifier interface.
+type pajOfframpRecoveryNotifierAdapter struct {
+	svc interface {
+		NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error
+	}
+}
+
+func (a *pajOfframpRecoveryNotifierAdapter) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destination string) error {
+	if a.svc == nil {
+		return nil
+	}
+	return a.svc.NotifyWithdrawalCompleted(ctx, userID, amount, destination)
+}
+
+// pajOfframpCircleStatusAdapter translates Circle's transaction state into
+// the worker's CircleTransferStatus enum without exposing the adapter package
+// to the worker (which would pull in the full Circle SDK at the worker layer).
+type pajOfframpCircleStatusAdapter struct {
+	adapter *circleadapter.Adapter
+}
+
+func (a *pajOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.Context, circleTxID string) (paj_offramp_recovery.CircleTransferStatus, error) {
+	if a.adapter == nil {
+		return paj_offramp_recovery.CircleTransferUnknown, nil
+	}
+	tx, err := a.adapter.GetTransaction(ctx, circleTxID)
+	if err != nil {
+		return paj_offramp_recovery.CircleTransferUnknown, err
+	}
+	if tx == nil {
+		return paj_offramp_recovery.CircleTransferUnknown, nil
+	}
+	switch tx.State {
+	case circleadapter.TransactionStateComplete:
+		return paj_offramp_recovery.CircleTransferComplete, nil
+	case circleadapter.TransactionStateFailed,
+		circleadapter.TransactionStateCancelled,
+		circleadapter.TransactionStateDenied:
+		return paj_offramp_recovery.CircleTransferFailed, nil
+	default:
+		return paj_offramp_recovery.CircleTransferPending, nil
+	}
 }
 
 // userRepositoryAdapter adapts infrastructure UserRepository to wallet provisioning UserRepository
