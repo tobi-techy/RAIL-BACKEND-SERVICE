@@ -1517,18 +1517,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 				}
 
-				// Conversation endpoints
+				// Conversation endpoints. The "gate-on + nil-passcode" invariant
+				// is validated at application startup (Application.validateSecurityConfig),
+				// so the gate is guaranteed wired by the time we reach this route
+				// setup — no mid-route Fatal here.
 				if container.GetConversationService() != nil {
-					// Refuse to boot in a half-configured state: if the gate is
-					// on, the validator MUST be wired — otherwise verifyPasscodeSession
-					// would fail closed on every Miriam confirm, breaking the
-					// feature without any indication that the cause is misconfig.
-					passcodeSvc := container.GetPasscodeService()
-					requirePasscode := container.Config.Security.AIFundActionsRequirePasscode
-					if requirePasscode && passcodeSvc == nil {
-						container.ZapLog.Fatal("AIFundActionsRequirePasscode is enabled but passcode service is not available")
-					}
-					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog, passcodeSvc, requirePasscode)
+					convHandlers := handlers.NewConversationHandlers(
+						container.GetAIOrchestrator(),
+						container.GetConversationService(),
+						container.ZapLog,
+						container.GetPasscodeService(),
+						container.Config.Security.AIFundActionsRequirePasscode,
+					)
 					convGroup := protected.Group("/ai/conversations")
 					{
 						convGroup.POST("", convHandlers.CreateConversation)
