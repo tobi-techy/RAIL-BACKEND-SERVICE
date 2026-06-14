@@ -198,7 +198,11 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 		w.logger.Error("paj offramp reconciliation: query failed", zap.Error(err))
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			w.logger.Error("paj offramp reconciliation: rows close failed", zap.Error(err))
+		}
+	}()
 
 	var candidates []stuckOrder
 	for rows.Next() {
@@ -271,7 +275,10 @@ func (w *Worker) promoteCompleted(ctx context.Context, c stuckOrder) error {
 	if err != nil {
 		return fmt.Errorf("promote stuck offramp: %w", err)
 	}
-	affected, _ := res.RowsAffected()
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("promote stuck offramp: rows affected: %w", err)
+	}
 	if affected == 0 {
 		return nil
 	}
@@ -299,6 +306,17 @@ func (w *Worker) reverseConfirmedFailure(ctx context.Context, c stuckOrder) erro
 		return nil
 	}
 
+	// Fail-fast BEFORE we mutate the order: claiming the row sets status=failed
+	// and burns the deposit_id slot. If the ledger isn't wired, that claim would
+	// leave the order permanently failed with no corresponding ledger refund —
+	// the worst possible state for a money-moving path.
+	if w.ledger == nil {
+		w.logger.Error("CRITICAL: ledger reverser not configured for confirmed-failure reversal — skipping claim",
+			zap.String("paj_order_id", c.PajOrderID),
+			zap.String("user_id", c.UserID.String()))
+		return fmt.Errorf("ledger reverser not configured")
+	}
+
 	var claimedHold decimal.Decimal
 	err := w.db.QueryRowContext(ctx, `
 		UPDATE paj_orders
@@ -318,13 +336,6 @@ func (w *Worker) reverseConfirmedFailure(ctx context.Context, c stuckOrder) erro
 	}
 	if claimedHold.IsZero() || claimedHold.IsNegative() {
 		return nil
-	}
-
-	if w.ledger == nil {
-		w.logger.Error("CRITICAL: ledger reverser not configured for confirmed-failure reversal",
-			zap.String("paj_order_id", c.PajOrderID),
-			zap.String("user_id", c.UserID.String()))
-		return fmt.Errorf("ledger reverser not configured")
 	}
 
 	if err := w.ledger.ReverseTransaction(ctx, c.UserID, entities.AccountTypeSpendingBalance,
