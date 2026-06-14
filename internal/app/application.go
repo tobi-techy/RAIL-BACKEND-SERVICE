@@ -160,6 +160,13 @@ func (app *Application) Initialize() error {
 	}
 	app.container = container
 
+	// Cross-component config validation: fail fast BEFORE workers spin up or
+	// the HTTP server binds, so a half-configured security gate never reaches
+	// a state where the misconfig surfaces as silent 403s on every request.
+	if err := app.validateSecurityConfig(); err != nil {
+		return fmt.Errorf("security config validation failed: %w", err)
+	}
+
 	// Initialize workers
 	if err := app.initializeWorkers(); err != nil {
 		return fmt.Errorf("failed to initialize workers: %w", err)
@@ -814,6 +821,21 @@ func (app *Application) initializeFundingWebhooks() error {
 	app.container.FundingWebhookManager = webhookManager
 	app.log.Info("Funding webhook workers started")
 
+	return nil
+}
+
+// validateSecurityConfig checks invariants that span the container + config
+// after both have been built. Anything caught here turns into a clean
+// initialization error rather than a half-running process with subtle
+// fail-closed behaviour.
+func (app *Application) validateSecurityConfig() error {
+	// AI fund-action passcode gate: if it's on, the passcode service must be
+	// wired. With the gate on but no validator, every Miriam money-move
+	// confirmation would return 403 — looking like a per-request bug rather
+	// than a deployment misconfiguration.
+	if app.cfg.Security.AIFundActionsRequirePasscode && app.container.GetPasscodeService() == nil {
+		return fmt.Errorf("AIFundActionsRequirePasscode is enabled but passcode service is not available")
+	}
 	return nil
 }
 
