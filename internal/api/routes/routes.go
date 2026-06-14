@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -170,21 +171,47 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 	}
 
-	// Internal statement management
+	// Internal statement management.
+	//
+	// Order matters: delete child rows (bank_statement_transactions) BEFORE
+	// the parent upload so a partial failure can't leave orphaned transactions
+	// pointing at a deleted upload. Both deletes share a single transaction so
+	// the operation is all-or-nothing.
 	internal.DELETE("/statement/:id", func(c *gin.Context) {
 		id := c.Param("id")
-		_, err := container.DB.ExecContext(c.Request.Context(),
-			"DELETE FROM bank_statement_uploads WHERE id = $1", id)
+		tx, err := container.DB.BeginTx(c.Request.Context(), nil)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			container.ZapLog.Error("internal statement delete: begin tx failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to start transaction"})
 			return
 		}
-		// Also clean up transactions
-		if _, err := container.DB.ExecContext(c.Request.Context(),
+		rollback := func() {
+			if rbErr := tx.Rollback(); rbErr != nil && rbErr != sql.ErrTxDone {
+				container.ZapLog.Warn("internal statement delete: rollback failed",
+					zap.String("upload_id", id), zap.Error(rbErr))
+			}
+		}
+		if _, err := tx.ExecContext(c.Request.Context(),
 			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id); err != nil {
-			container.ZapLog.Warn("failed to delete statement transactions during internal cleanup",
+			rollback()
+			container.ZapLog.Error("internal statement delete: transactions delete failed",
 				zap.String("upload_id", id), zap.Error(err))
 			c.JSON(500, gin.H{"error": "failed to delete statement transactions"})
+			return
+		}
+		if _, err := tx.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_uploads WHERE id = $1", id); err != nil {
+			rollback()
+			container.ZapLog.Error("internal statement delete: upload delete failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to delete statement upload"})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			container.ZapLog.Error("internal statement delete: commit failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to commit statement delete"})
 			return
 		}
 		c.JSON(200, gin.H{"deleted": true})
@@ -1486,7 +1513,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 				// Conversation endpoints
 				if container.GetConversationService() != nil {
-					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog, container.GetPasscodeService(), container.Config.Security.AIFundActionsRequirePasscode)
+					// Refuse to boot in a half-configured state: if the gate is
+					// on, the validator MUST be wired — otherwise verifyPasscodeSession
+					// would fail closed on every Miriam confirm, breaking the
+					// feature without any indication that the cause is misconfig.
+					passcodeSvc := container.GetPasscodeService()
+					requirePasscode := container.Config.Security.AIFundActionsRequirePasscode
+					if requirePasscode && passcodeSvc == nil {
+						container.ZapLog.Fatal("AIFundActionsRequirePasscode is enabled but passcode service is not available")
+					}
+					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog, passcodeSvc, requirePasscode)
 					convGroup := protected.Group("/ai/conversations")
 					{
 						convGroup.POST("", convHandlers.CreateConversation)

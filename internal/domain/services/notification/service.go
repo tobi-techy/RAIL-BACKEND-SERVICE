@@ -433,8 +433,17 @@ func (s *NotificationService) NotifyMiriamMovedFunds(ctx context.Context, userID
 		"emergency": emergency,
 		"succeeded": succeeded,
 	}
+	// Raw provider/ledger error strings can leak internals — keep them in
+	// server logs but only surface a generic message to the device.
 	if errMsg != "" {
-		data["error_message"] = errMsg
+		if s.logger != nil {
+			s.logger.Warn("miriam money-move action failed",
+				zap.String("user_id", userID.String()),
+				zap.String("action", action),
+				zap.String("error", errMsg),
+				zap.Time("at", time.Now()))
+		}
+		data["error_message"] = "An error occurred. Please try again or contact support."
 	}
 	return s.queueNotification(ctx, userID, "push", title, body, data)
 }

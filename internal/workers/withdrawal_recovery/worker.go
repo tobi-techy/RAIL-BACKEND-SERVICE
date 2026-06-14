@@ -159,7 +159,11 @@ func (w *Worker) syncPostTransferStuck(ctx context.Context) {
 		w.logger.Error("withdrawal recovery: post-transfer query failed", zap.Error(err))
 		return
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			w.logger.Error("withdrawal recovery: post-transfer rows close failed", zap.Error(err))
+		}
+	}()
 
 	var ids []uuid.UUID
 	for rows.Next() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -250,7 +251,11 @@ func (s *Service) fetchMiriamActions(ctx context.Context, userID uuid.UUID, limi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			s.logger.Warn("fetchMiriamActions: rows.Close failed", zap.Error(err))
+		}
+	}()
 
 	var items []entities.ActivityItem
 	for rows.Next() {
@@ -277,7 +282,7 @@ func (s *Service) fetchMiriamActions(ctx context.Context, userID uuid.UUID, limi
 			}
 		}
 
-		amount := parseDecimalParam(params, "amount")
+		amount := parseDecimalParam(params, "amount", id, s.logger)
 		from, _ := params["from"].(string)
 		to, _ := params["to"].(string)
 		currency, _ := params["currency"].(string)
@@ -313,8 +318,10 @@ func miriamActionIsEmergency(params map[string]interface{}) bool {
 }
 
 // parseDecimalParam reads a string/float/int decimal from a params map. Returns
-// zero if the key is absent or unparseable — caller decides whether that's OK.
-func parseDecimalParam(params map[string]interface{}, key string) decimal.Decimal {
+// zero if the key is absent or unparseable; logs (at warn) when an existing
+// value can't be parsed or is an unexpected type so data-quality regressions
+// don't silently mislabel feed entries as $0.00.
+func parseDecimalParam(params map[string]interface{}, key string, actionID uuid.UUID, logger *zap.Logger) decimal.Decimal {
 	v, ok := params[key]
 	if !ok {
 		return decimal.Zero
@@ -323,6 +330,13 @@ func parseDecimalParam(params map[string]interface{}, key string) decimal.Decima
 	case string:
 		d, err := decimal.NewFromString(x)
 		if err != nil {
+			if logger != nil {
+				logger.Warn("activity feed: decimal param parse failed",
+					zap.String("action_id", actionID.String()),
+					zap.String("key", key),
+					zap.String("value", x),
+					zap.Error(err))
+			}
 			return decimal.Zero
 		}
 		return d
@@ -332,6 +346,12 @@ func parseDecimalParam(params map[string]interface{}, key string) decimal.Decima
 		return decimal.NewFromInt(int64(x))
 	case int64:
 		return decimal.NewFromInt(x)
+	}
+	if logger != nil {
+		logger.Warn("activity feed: decimal param unexpected type",
+			zap.String("action_id", actionID.String()),
+			zap.String("key", key),
+			zap.String("go_type", fmt.Sprintf("%T", v)))
 	}
 	return decimal.Zero
 }
