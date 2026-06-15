@@ -2514,6 +2514,27 @@ func (s *WithdrawalService) failWithdrawal(ctx context.Context, withdrawal *enti
 		return nil
 	}
 
+	// Guard: verify the on-chain transfer hasn't actually succeeded before reversing.
+	// This prevents a race where a webhook marks the transfer failed while the tx
+	// already landed on-chain, which would double-credit the sender.
+	if s.circleTransfer != nil && withdrawal.ProviderTransferID != nil && strings.TrimSpace(*withdrawal.ProviderTransferID) != "" {
+		tx, err := s.circleTransfer.GetTransaction(ctx, strings.TrimSpace(*withdrawal.ProviderTransferID))
+		if err == nil && tx != nil {
+			state := strings.ToUpper(string(tx.State))
+			if state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" {
+				s.logger.Warn("failWithdrawal: on-chain transfer confirmed — settling instead of reversing",
+					"withdrawal_id", withdrawal.ID.String(),
+					"provider_transfer_id", *withdrawal.ProviderTransferID,
+					"tx_hash", tx.TxHash,
+					"reason_ignored", reason)
+				if tx.TxHash != "" {
+					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+				}
+				return s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+			}
+		}
+	}
+
 	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
 		return fmt.Errorf("failed to reverse withdrawal ledger entry: %w", err)
 	}
