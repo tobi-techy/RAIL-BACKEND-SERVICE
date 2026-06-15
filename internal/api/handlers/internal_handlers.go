@@ -156,3 +156,41 @@ func (h *InternalHandlers) DeleteUser(c *gin.Context) {
 	n, _ := res.RowsAffected()
 	c.JSON(http.StatusOK, gin.H{"deleted": n > 0, "user_id": uid, "related_rows_deleted": deleted})
 }
+
+// CompleteStuckPajOrders marks stuck PAJ offramp orders as completed.
+// POST /internal/paj-orders/complete-stuck
+func (h *InternalHandlers) CompleteStuckPajOrders(c *gin.Context) {
+	var req struct {
+		MaxAgeHours int    `json:"max_age_hours"`
+		Status      string `json:"status"` // "completed" or "failed"
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		req.MaxAgeHours = 1
+	}
+	if req.MaxAgeHours < 1 {
+		req.MaxAgeHours = 1
+	}
+	targetStatus := "completed"
+	if req.Status == "failed" {
+		targetStatus = "failed"
+	}
+
+	res, err := h.db.ExecContext(c.Request.Context(), `
+		UPDATE paj_orders
+		SET status = $1,
+		    last_webhook_status = 'manual-' || $1 || ':admin-api',
+		    updated_at = NOW()
+		WHERE order_type = 'offramp'
+		  AND status IN ('pending', 'processing')
+		  AND created_at < NOW() - make_interval(hours => $2)`,
+		targetStatus, req.MaxAgeHours)
+	if err != nil {
+		h.logger.Error("complete stuck paj orders failed", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
+		return
+	}
+
+	rows, _ := res.RowsAffected()
+	h.logger.Info("Completed stuck PAJ orders", zap.Int64("rows_affected", rows), zap.String("target_status", targetStatus))
+	c.JSON(http.StatusOK, gin.H{"updated": rows, "status": targetStatus})
+}
