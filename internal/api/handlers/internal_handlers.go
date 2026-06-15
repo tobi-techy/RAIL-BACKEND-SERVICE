@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/subtle"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -175,15 +176,16 @@ func (h *InternalHandlers) CompleteStuckPajOrders(c *gin.Context) {
 		targetStatus = "failed"
 	}
 
+	webhookStatus := fmt.Sprintf("manual-%s:admin-api", targetStatus)
 	res, err := h.db.ExecContext(c.Request.Context(), `
 		UPDATE paj_orders
 		SET status = $1,
-		    last_webhook_status = 'manual-' || $1 || ':admin-api',
+		    last_webhook_status = $2,
 		    updated_at = NOW()
 		WHERE order_type = 'offramp'
 		  AND status IN ('pending', 'processing')
-		  AND created_at < NOW() - ($2 || ' hours')::interval`,
-		targetStatus, req.MaxAgeHours)
+		  AND created_at < NOW() - ($3 || ' hours')::interval`,
+		targetStatus, webhookStatus, fmt.Sprintf("%d", req.MaxAgeHours))
 	if err != nil {
 		h.logger.Error("complete stuck paj orders failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
