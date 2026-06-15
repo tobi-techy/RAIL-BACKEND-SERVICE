@@ -66,6 +66,9 @@ type ActivityItem struct {
 	Destination string               `json:"destination,omitempty"` // address, bank, railtag
 	ReceiverName string              `json:"receiverName,omitempty"`
 	BankName     string              `json:"bankName,omitempty"`
+	AccountNumber string             `json:"accountNumber,omitempty"`
+	Rate          *decimal.Decimal   `json:"rate,omitempty"`
+	TokenAmount   *decimal.Decimal   `json:"tokenAmount,omitempty"`
 	Narration    string              `json:"narration,omitempty"`
 	SourceID    string               `json:"sourceId"`              // original entity ID for detail fetch
 	SourceType  string               `json:"sourceType"`            // "deposit", "withdrawal", "paj_order", "p2p_transfer"
@@ -152,6 +155,8 @@ type PajOrderForActivity struct {
 	Rate              float64
 	Fee               float64
 	BankAccountName   *string
+	BankAccountNumber *string
+	BankName          *string
 	CreatedAt         time.Time
 }
 
@@ -182,25 +187,44 @@ func NormalizePajOrderToActivity(o *PajOrderForActivity) ActivityItem {
 	}
 
 	// offramp
-	bankName := ""
+	bankAccountName := ""
 	if o.BankAccountName != nil {
-		bankName = *o.BankAccountName
+		bankAccountName = *o.BankAccountName
 	}
+	resolvedBankName := ""
+	if o.BankName != nil {
+		resolvedBankName = *o.BankName
+	}
+	accountNumber := ""
+	if o.BankAccountNumber != nil {
+		accountNumber = *o.BankAccountNumber
+	}
+	subtitle := formatNaira(o.FiatAmount)
+	if bankAccountName != "" {
+		subtitle += " • " + bankAccountName
+	} else if accountNumber != "" {
+		subtitle += " • " + accountNumber
+	}
+	rate := decimal.NewFromFloat(o.Rate)
+	tokenAmt := decimal.NewFromFloat(o.TokenAmount)
 	return ActivityItem{
-		ID:           o.ID,
-		Type:         ActivityTypeNairaWithdraw,
-		Direction:    ActivityDirectionOut,
-		Status:       status,
-		Title:        "Withdrew to bank",
-		Subtitle:     formatNaira(o.FiatAmount) + " • " + bankName,
-		Amount:       fiatAmount,
-		Currency:     ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
-		FiatAmount:   &fiatAmount,
-		ReceiverName: bankName,
-		BankName:     bankName,
-		SourceID:     o.ID,
-		SourceType:   "paj_order",
-		CreatedAt:    o.CreatedAt,
+		ID:            o.ID,
+		Type:          ActivityTypeNairaWithdraw,
+		Direction:     ActivityDirectionOut,
+		Status:        status,
+		Title:         "Withdrew to bank",
+		Subtitle:      subtitle,
+		Amount:        fiatAmount,
+		Currency:      ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
+		FiatAmount:    &fiatAmount,
+		ReceiverName:  bankAccountName,
+		BankName:      resolvedBankName,
+		AccountNumber: accountNumber,
+		Rate:          &rate,
+		TokenAmount:   &tokenAmt,
+		SourceID:      o.ID,
+		SourceType:    "paj_order",
+		CreatedAt:     o.CreatedAt,
 	}
 }
 

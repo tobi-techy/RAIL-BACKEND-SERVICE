@@ -359,7 +359,7 @@ func parseDecimalParam(params map[string]interface{}, key string, actionID uuid.
 func (s *Service) fetchPajOfframpOrders(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT paj_order_id, order_type, status, fiat_amount, COALESCE(token_amount,0),
-		       currency, COALESCE(rate,0), COALESCE(fee,0), pay_account_name, created_at
+		       currency, COALESCE(rate,0), COALESCE(fee,0), bank_account_name, bank_account_number, bank_id, created_at
 		FROM paj_orders
 		WHERE user_id = $1 AND order_type = 'offramp'
 		ORDER BY created_at DESC LIMIT $2`, userID, limit)
@@ -371,13 +371,15 @@ func (s *Service) fetchPajOfframpOrders(ctx context.Context, userID uuid.UUID, l
 	var items []entities.ActivityItem
 	for rows.Next() {
 		var o entities.PajOrderForActivity
-		var bankName *string
+		var bankAcctName, bankAcctNumber, bankID *string
 		if err := rows.Scan(&o.ID, &o.OrderType, &o.Status, &o.FiatAmount, &o.TokenAmount,
-			&o.Currency, &o.Rate, &o.Fee, &bankName, &o.CreatedAt); err != nil {
+			&o.Currency, &o.Rate, &o.Fee, &bankAcctName, &bankAcctNumber, &bankID, &o.CreatedAt); err != nil {
 			s.logger.Warn("scan paj offramp", zap.Error(err))
 			continue
 		}
-		o.BankAccountName = bankName
+		o.BankAccountName = bankAcctName
+		o.BankAccountNumber = bankAcctNumber
+		o.BankName = bankID // bankId maps to bank name via PAJ banks list
 		items = append(items, entities.NormalizePajOrderToActivity(&o))
 	}
 	return items, nil
