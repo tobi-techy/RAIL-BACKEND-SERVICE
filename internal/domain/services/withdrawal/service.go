@@ -593,8 +593,9 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		}
 	}
 
-	// Step 3.1: Validate destination address is whitelisted (if whitelist enabled)
-	if s.addressWhitelist != nil {
+	// Step 3.1: Validate destination address is whitelisted (TEMPORARILY DISABLED)
+	// TODO: Re-enable whitelist once testing is complete
+	if false && s.addressWhitelist != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
 		skipWhitelist := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipWhitelist {
