@@ -169,6 +169,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
+		internal.POST("/paj-orders/complete-stuck", internalHandlers.CompleteStuckPajOrders)
 	}
 
 	// Internal statement management.
