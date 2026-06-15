@@ -182,7 +182,7 @@ func (h *InternalHandlers) CompleteStuckPajOrders(c *gin.Context) {
 		    updated_at = NOW()
 		WHERE order_type = 'offramp'
 		  AND status IN ('pending', 'processing')
-		  AND created_at < NOW() - make_interval(hours => $2)`,
+		  AND created_at < NOW() - ($2 || ' hours')::interval`,
 		targetStatus, req.MaxAgeHours)
 	if err != nil {
 		h.logger.Error("complete stuck paj orders failed", zap.Error(err))
