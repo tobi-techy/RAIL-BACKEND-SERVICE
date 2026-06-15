@@ -54,6 +54,7 @@ type Worker struct {
 	logger           *zap.Logger
 	checkInterval    time.Duration
 	maxPendingAge    time.Duration
+	hardMaxAge       time.Duration
 	completeAfterAge time.Duration
 	stopCh           chan struct{}
 }
@@ -65,6 +66,7 @@ func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
 		logger:           logger,
 		checkInterval:    2 * time.Minute,
 		maxPendingAge:    15 * time.Minute,
+		hardMaxAge:       6 * time.Hour,
 		completeAfterAge: 2 * time.Hour,
 		stopCh:           make(chan struct{}),
 	}
@@ -105,6 +107,7 @@ func (w *Worker) Stop() { close(w.stopCh) }
 func (w *Worker) recover(ctx context.Context) {
 	w.reverseAbandonedOrders(ctx)
 	w.reconcileStuckOrders(ctx)
+	w.failExpiredOrders(ctx)
 }
 
 // reverseAbandonedOrders refunds offramps where the Circle/Bridge transfer
@@ -405,4 +408,83 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userI
 		zap.String("amount", claimedHold.String()),
 		zap.Float64("fiat_amount", fiatAmount))
 	return nil
+}
+
+// failExpiredOrders is a hard safety net: any offramp order still pending after
+// hardMaxAge (6h) is force-failed and the hold reversed, regardless of
+// bridge_transfer_id status. This prevents orders from being stuck indefinitely
+// when Circle status is perpetually pending or the webhook never arrives.
+func (w *Worker) failExpiredOrders(ctx context.Context) {
+	if w.ledger == nil {
+		return
+	}
+
+	hardAgeSeconds := int(w.hardMaxAge.Seconds())
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT paj_order_id, user_id, COALESCE(hold_amount, token_amount, 0), fiat_amount
+		FROM paj_orders
+		WHERE order_type = 'offramp'
+		  AND status = 'pending'
+		  AND deposit_id IS NULL
+		  AND created_at < NOW() - make_interval(secs => $1)
+		LIMIT 20`, hardAgeSeconds)
+	if err != nil {
+		w.logger.Error("paj offramp hard-timeout: query failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	type expired struct {
+		PajOrderID string
+		UserID     uuid.UUID
+		HoldAmount decimal.Decimal
+		FiatAmount float64
+	}
+
+	var orders []expired
+	for rows.Next() {
+		var o expired
+		if err := rows.Scan(&o.PajOrderID, &o.UserID, &o.HoldAmount, &o.FiatAmount); err != nil {
+			continue
+		}
+		if o.HoldAmount.IsZero() || o.HoldAmount.IsNegative() {
+			continue
+		}
+		orders = append(orders, o)
+	}
+
+	for _, o := range orders {
+		var claimedHold decimal.Decimal
+		err := w.db.QueryRowContext(ctx, `
+			UPDATE paj_orders
+			SET status = 'failed',
+			    deposit_id = gen_random_uuid(),
+			    last_webhook_status = 'auto-failed:hard-timeout',
+			    updated_at = NOW()
+			WHERE paj_order_id = $1
+			  AND status = 'pending'
+			  AND deposit_id IS NULL
+			RETURNING COALESCE(hold_amount, token_amount)`, o.PajOrderID).Scan(&claimedHold)
+		if err != nil {
+			continue
+		}
+
+		if err := w.ledger.ReverseTransaction(ctx, o.UserID, entities.AccountTypeSpendingBalance,
+			"paj-offramp-"+o.PajOrderID, claimedHold, map[string]interface{}{
+				"provider":     "paj",
+				"type":         "hard_timeout_reversal",
+				"paj_order_id": o.PajOrderID,
+				"fiat_amount":  o.FiatAmount,
+			}); err != nil {
+			w.logger.Error("paj offramp hard-timeout: reversal failed",
+				zap.Error(err), zap.String("paj_order_id", o.PajOrderID))
+			continue
+		}
+
+		w.logger.Warn("Paj offramp force-failed after hard timeout",
+			zap.String("paj_order_id", o.PajOrderID),
+			zap.String("user_id", o.UserID.String()),
+			zap.String("amount", claimedHold.String()),
+			zap.Float64("fiat_amount", o.FiatAmount))
+	}
 }

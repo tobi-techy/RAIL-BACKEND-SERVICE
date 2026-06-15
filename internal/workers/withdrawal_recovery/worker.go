@@ -83,6 +83,7 @@ func (w *Worker) Stop() { close(w.stopCh) }
 func (w *Worker) recover(ctx context.Context) {
 	w.recoverPreTransferStuck(ctx)
 	w.syncPostTransferStuck(ctx)
+	w.failChainRailsExpired(ctx)
 }
 
 // recoverPreTransferStuck reverses withdrawals where the provider transfer
@@ -229,4 +230,73 @@ func (w *Worker) recoverStuckWithdrawal(ctx context.Context, withdrawalID, userI
 		zap.String("user_id", userID.String()),
 		zap.String("amount", totalAmount.String()))
 	return nil
+}
+
+// failChainRailsExpired catches ChainRails crypto withdrawals that have been
+// stuck in processing for over 1 hour. ChainRails relies on webhooks for
+// status updates — if the webhook is missed, these stay pending forever.
+// After 1h, we assume the transfer failed and reverse the ledger hold.
+func (w *Worker) failChainRailsExpired(ctx context.Context) {
+	if w.ledger == nil {
+		return
+	}
+
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT id, user_id, amount, fee_amount, source_account
+		FROM withdrawals
+		WHERE status IN ('processing', 'onchain_transfer')
+		  AND withdrawal_type = 'crypto'
+		  AND bridge_transfer_id LIKE 'cr:%'
+		  AND updated_at < NOW() - interval '1 hour'
+		LIMIT 10`)
+	if err != nil {
+		w.logger.Error("withdrawal recovery: chainrails expired query failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	type stuck struct {
+		ID            uuid.UUID
+		UserID        uuid.UUID
+		Amount        decimal.Decimal
+		FeeAmount     decimal.Decimal
+		SourceAccount string
+	}
+
+	var items []stuck
+	for rows.Next() {
+		var s stuck
+		if err := rows.Scan(&s.ID, &s.UserID, &s.Amount, &s.FeeAmount, &s.SourceAccount); err != nil {
+			continue
+		}
+		items = append(items, s)
+	}
+
+	for _, s := range items {
+		totalAmount := s.Amount.Add(s.FeeAmount)
+		accountType := entities.AccountTypeSpendingBalance
+		if s.SourceAccount == string(entities.WithdrawalSourceStashBalance) {
+			accountType = entities.AccountTypeStashBalance
+		}
+
+		if err := w.ledger.ReverseTransaction(ctx, s.UserID, accountType, s.ID.String(), totalAmount, map[string]interface{}{
+			"withdrawal_id":   s.ID.String(),
+			"reversal_reason": "chainrails_webhook_timeout",
+			"source_account":  s.SourceAccount,
+		}); err != nil {
+			w.logger.Error("withdrawal recovery: chainrails reversal failed",
+				zap.Error(err), zap.String("withdrawal_id", s.ID.String()))
+			continue
+		}
+
+		_, _ = w.db.ExecContext(ctx, `
+			UPDATE withdrawals
+			SET status = 'failed', error_message = 'auto-failed: ChainRails webhook timeout (1h)', updated_at = NOW()
+			WHERE id = $1 AND status IN ('processing', 'onchain_transfer')`, s.ID)
+
+		w.logger.Warn("ChainRails withdrawal auto-failed after timeout",
+			zap.String("withdrawal_id", s.ID.String()),
+			zap.String("user_id", s.UserID.String()),
+			zap.String("amount", totalAmount.String()))
+	}
 }
