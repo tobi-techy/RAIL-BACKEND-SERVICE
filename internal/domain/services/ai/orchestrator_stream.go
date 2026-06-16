@@ -416,6 +416,8 @@ func thinkingMessage(toolName string) string {
 		return "Looking at your balance history..."
 	case ToolGetRecurringExpenses:
 		return "Scanning for recurring expenses..."
+	case ToolSendMeme:
+		return "Cooking up a meme..."
 	default:
 		return "Working on it..."
 	}

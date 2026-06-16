@@ -63,9 +63,35 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, BuildYieldSummaryCard(tr.Result))
 		case ToolGetSpendingComparison:
 			cards = append(cards, BuildComparisonCard(tr.Result))
+		case ToolSendMeme:
+			cards = append(cards, buildMemeCard(tr.Result))
 		}
 	}
 	return cards
+}
+
+// buildMemeCard turns a send_meme tool result into a "meme" card. The app renders
+// this as an image/sticker bubble rather than a stat card.
+func buildMemeCard(data map[string]interface{}) entities.InsightCard {
+	caption := str(data, "caption")
+	sentiment := str(data, "sentiment")
+	if sentiment == "" {
+		sentiment = "neutral"
+	}
+	return entities.InsightCard{
+		Type:      "meme",
+		Title:     caption,
+		Sentiment: sentiment,
+		Data: map[string]interface{}{
+			"meme_id":     str(data, "meme_id"),
+			"template":    str(data, "template"),
+			"top_text":    str(data, "top_text"),
+			"bottom_text": str(data, "bottom_text"),
+			"caption":     caption,
+			"image_url":   str(data, "image_url"),
+			"alt":         str(data, "alt"),
+		},
+	}
 }
 
 func buildMiriamBriefCards(data map[string]interface{}) []entities.InsightCard {

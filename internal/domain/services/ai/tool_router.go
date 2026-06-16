@@ -189,9 +189,11 @@ func filterToolsByCategory(tools []ai.Tool, category ToolCategory) []ai.Tool {
 	if len(allowed) == 0 {
 		return tools
 	}
-	filtered := make([]ai.Tool, 0, len(allowed))
+	filtered := make([]ai.Tool, 0, len(allowed)+1)
 	for _, t := range tools {
-		if allowed[t.Name] {
+		// send_meme is intent-agnostic: Miriam can react with a meme in any
+		// conversation, so it bypasses category filtering.
+		if allowed[t.Name] || t.Name == ToolSendMeme {
 			filtered = append(filtered, t)
 		}
 	}

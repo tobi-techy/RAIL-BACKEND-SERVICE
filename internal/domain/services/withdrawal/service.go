@@ -158,6 +158,7 @@ type StashYieldRedeemer interface {
 // ChainRailsTransferAdapter creates cross-chain intents via ChainRails.
 type ChainRailsTransferAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+	GetIntentStatus(ctx context.Context, intentAddress string) (*chainrailspkg.IntentStatus, error)
 }
 
 // FraudChecker screens withdrawals for fraud risk.
@@ -199,9 +200,10 @@ type WithdrawalService struct {
 }
 
 type CryptoTransferResult struct {
-	TxHash     string
-	TransferID string
-	State      string
+	TxHash         string
+	TransferID     string
+	State          string
+	IntentAddress  string // ChainRails intent address for polling
 }
 
 // NewWithdrawalService creates a new withdrawal service
@@ -1024,8 +1026,11 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	} else {
 		s.logger.Info("async: crypto withdrawal processing, will poll for completion",
 			"withdrawal_id", withdrawal.ID.String(), "state", transferResult.State)
-		// Poll for completion — Circle transfers typically confirm within seconds
-		s.pollCircleWithdrawalCompletion(ctx, withdrawal, req, transferResult.TransferID)
+		if strings.HasPrefix(transferResult.TransferID, "cr:") {
+			s.pollChainRailsCompletion(ctx, withdrawal, req, transferResult.IntentAddress)
+		} else {
+			s.pollCircleWithdrawalCompletion(ctx, withdrawal, req, transferResult.TransferID)
+		}
 	}
 }
 
@@ -1078,6 +1083,63 @@ func (s *WithdrawalService) pollCircleWithdrawalCompletion(ctx context.Context, 
 				if s.notificationService != nil {
 					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
 				}
+				return
+			}
+		}
+	}
+}
+
+// pollChainRailsCompletion polls ChainRails for intent status until terminal.
+func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest, intentAddress string) {
+	if s.chainRailsAdapter == nil || intentAddress == "" {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	deadline := time.After(5 * time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			s.logger.Warn("async: ChainRails poll timeout — relying on webhook",
+				"withdrawal_id", withdrawal.ID.String(), "intent_address", intentAddress)
+			return
+		case <-ticker.C:
+			status, err := s.chainRailsAdapter.GetIntentStatus(ctx, intentAddress)
+			if err != nil {
+				continue
+			}
+			state := strings.ToUpper(status.Status)
+			if state == "COMPLETED" || state == "COMPLETE" || state == "SUCCESS" {
+				if status.TxHash != "" {
+					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash)
+				}
+				if s.limitsService != nil {
+					_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				if s.tieredLimits != nil {
+					_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+				}
+				s.logger.Info("async: ChainRails withdrawal confirmed via polling",
+					"withdrawal_id", withdrawal.ID.String(), "tx_hash", status.TxHash)
+				return
+			}
+			if state == "REFUNDED" || state == "FAILED" || state == "EXPIRED" || state == "CANCELLED" {
+				if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+					s.logger.Error("async: failed to reverse ledger after ChainRails failure",
+						"error", revErr, "withdrawal_id", withdrawal.ID.String())
+				}
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "chainrails intent "+strings.ToLower(state))
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+				}
+				s.logger.Warn("async: ChainRails withdrawal failed via polling",
+					"withdrawal_id", withdrawal.ID.String(), "state", state)
 				return
 			}
 		}
@@ -2107,8 +2169,9 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		"intent_address", intent.IntentAddress)
 
 	return &CryptoTransferResult{
-		TransferID: fmt.Sprintf("cr:%d:%s", intent.ID, tx.ID),
-		State:      intent.IntentStatus,
+		TransferID:    fmt.Sprintf("cr:%d:%s", intent.ID, tx.ID),
+		State:         intent.IntentStatus,
+		IntentAddress: intent.IntentAddress,
 	}, nil
 }
 
