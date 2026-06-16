@@ -140,4 +140,19 @@ func (m *MemoryService) saveMomentAsFact(ctx context.Context, userID uuid.UUID, 
 	return m.store.SaveFact(ctx, fact, supersedes)
 }
 
-// MiriamUserFactInput is unused — moments use entities.MiriamUserFact directly.
+// GetRecentCallbacks returns the summaries of the most recent stored conversation
+// moments so the personality context can inject them as natural callbacks.
+func (m *MemoryService) GetRecentCallbacks(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
+	facts, err := m.store.GetActiveFactsByCategory(ctx, userID, "conversation_moment")
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, limit)
+	for _, f := range facts {
+		if len(result) >= limit {
+			break
+		}
+		result = append(result, strings.TrimSpace(f.Fact))
+	}
+	return result, nil
+}

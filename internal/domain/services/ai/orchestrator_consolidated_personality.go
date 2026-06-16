@@ -73,6 +73,22 @@ func (o *Orchestrator) buildConsolidatedPersonalityContext(ctx context.Context, 
 		parts = append(parts, "[TONE THIS RESPONSE: extra blunt. User wants accountability. Roast patterns, not the person. Tie every hard line to exact numbers.]")
 	}
 
+	// --- Memory Callbacks (conversation continuity — reference prior moments naturally) ---
+	// Pull the most recent memorable moments stored from past exchanges and surface them
+	// as callbacks so Miriam can open with "last time you said X" or "three weeks ago
+	// you hit Y" without needing to call a tool. Cap at 2 so the prompt stays tight.
+	if o.memory != nil {
+		if callbacks, err := o.memory.GetRecentCallbacks(fetchCtx, userID, 2); err == nil && len(callbacks) > 0 {
+			var cb strings.Builder
+			cb.WriteString("[MEMORY CALLBACKS — weave these into your reply naturally where relevant, like a friend who was paying attention. Don't list them all; use one as a natural hook:]")
+			for _, c := range callbacks {
+				cb.WriteString("\n- ")
+				cb.WriteString(c)
+			}
+			parts = append(parts, cb.String())
+		}
+	}
+
 	if len(parts) == 0 {
 		return ""
 	}
