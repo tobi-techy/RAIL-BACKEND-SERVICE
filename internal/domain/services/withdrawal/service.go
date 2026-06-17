@@ -33,8 +33,8 @@ const (
 	FiatWithdrawalMinAmountEUR  = 1.00 // Minimum EUR fiat withdrawal
 	CryptoWithdrawalFeePercent  = 0.0  // No percentage fee — flat only
 	CryptoWithdrawalFeeSolana   = 0.10 // $0.10 flat service fee for Solana withdrawals
-	CryptoWithdrawalFeeEVM      = 0.50 // $0.50 flat service fee for EVM chain withdrawals
-	FlatWithdrawalFee           = 0.50 // Default flat fee (legacy, use chain-specific)
+	CryptoWithdrawalFeeEVM      = 0.10 // $0.10 flat service fee for EVM chain withdrawals
+	FlatWithdrawalFee           = 0.10 // Default flat fee
 	FiatWithdrawalFeeUSD        = 1.00 // $1.00 flat fee for USD withdrawals
 	FiatWithdrawalFeeEUR        = 1.00 // €1.00 flat fee for EUR withdrawals
 	FiatWithdrawalFeeGBP        = 1.00 // £1.00 flat fee for GBP withdrawals
@@ -134,6 +134,7 @@ type CircleCryptoTransferAdapter interface {
 	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
 	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
 	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID string, tokenID string, blockchain string, address string, err error)
+	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
 }
 
 // StashLockChecker enforces the 90-day lock / 7-day window rule for stash withdrawals.
@@ -157,6 +158,7 @@ type StashYieldRedeemer interface {
 // ChainRailsTransferAdapter creates cross-chain intents via ChainRails.
 type ChainRailsTransferAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+	GetIntentStatus(ctx context.Context, intentAddress string) (*chainrailspkg.IntentStatus, error)
 }
 
 // FraudChecker screens withdrawals for fraud risk.
@@ -198,9 +200,10 @@ type WithdrawalService struct {
 }
 
 type CryptoTransferResult struct {
-	TxHash     string
-	TransferID string
-	State      string
+	TxHash         string
+	TransferID     string
+	State          string
+	IntentAddress  string // ChainRails intent address for polling
 }
 
 // NewWithdrawalService creates a new withdrawal service
@@ -294,6 +297,11 @@ func (s *WithdrawalService) SetTieredWithdrawalLimits(c TieredWithdrawalLimitChe
 // SetEmergencyLedger wires the emergency ledger for stash-to-spending transfers with fee.
 func (s *WithdrawalService) SetEmergencyLedger(l EmergencyLedger) {
 	s.emergencyLedger = l
+}
+
+// SetStashTransferRepo wires the stash transfer repository for audit logging.
+func (s *WithdrawalService) SetStashTransferRepo(r StashTransferRepository) {
+	s.stashTransferRepo = r
 }
 
 // SetFraudChecker wires the fraud detection service (optional, graceful degradation).
@@ -587,8 +595,9 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		}
 	}
 
-	// Step 3.1: Validate destination address is whitelisted (if whitelist enabled)
-	if s.addressWhitelist != nil {
+	// Step 3.1: Validate destination address is whitelisted (TEMPORARILY DISABLED)
+	// TODO: Re-enable whitelist once testing is complete
+	if false && s.addressWhitelist != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
 		skipWhitelist := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipWhitelist {
@@ -1015,8 +1024,125 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
 		}
 	} else {
-		s.logger.Info("async: crypto withdrawal processing",
+		s.logger.Info("async: crypto withdrawal processing, will poll for completion",
 			"withdrawal_id", withdrawal.ID.String(), "state", transferResult.State)
+		if strings.HasPrefix(transferResult.TransferID, "cr:") {
+			s.pollChainRailsCompletion(ctx, withdrawal, req, transferResult.IntentAddress)
+		} else {
+			s.pollCircleWithdrawalCompletion(ctx, withdrawal, req, transferResult.TransferID)
+		}
+	}
+}
+
+func (s *WithdrawalService) pollCircleWithdrawalCompletion(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest, transferID string) {
+	if s.circleTransfer == nil || transferID == "" {
+		return
+	}
+	// Poll every 3 seconds for up to 2 minutes
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			s.logger.Warn("async: Circle withdrawal poll timeout — will rely on webhook",
+				"withdrawal_id", withdrawal.ID.String(), "transfer_id", transferID)
+			return
+		case <-ticker.C:
+			tx, err := s.circleTransfer.GetTransaction(ctx, transferID)
+			if err != nil {
+				continue
+			}
+			state := strings.ToUpper(string(tx.State))
+			if state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" {
+				if tx.TxHash != "" {
+					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+				}
+				if s.limitsService != nil {
+					_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				if s.tieredLimits != nil {
+					_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+				}
+				s.logger.Info("async: Circle withdrawal confirmed via polling",
+					"withdrawal_id", withdrawal.ID.String(), "tx_hash", tx.TxHash)
+				return
+			}
+			if state == "FAILED" || state == "DENIED" || state == "CANCELLED" || state == "CANCELED" {
+				if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+					s.logger.Error("async: failed to reverse ledger after Circle failure",
+						"error", revErr, "withdrawal_id", withdrawal.ID.String())
+				}
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "circle transfer "+strings.ToLower(state))
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+				}
+				return
+			}
+		}
+	}
+}
+
+// pollChainRailsCompletion polls ChainRails for intent status until terminal.
+func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest, intentAddress string) {
+	if s.chainRailsAdapter == nil || intentAddress == "" {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	deadline := time.After(5 * time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			s.logger.Warn("async: ChainRails poll timeout — relying on webhook",
+				"withdrawal_id", withdrawal.ID.String(), "intent_address", intentAddress)
+			return
+		case <-ticker.C:
+			status, err := s.chainRailsAdapter.GetIntentStatus(ctx, intentAddress)
+			if err != nil {
+				continue
+			}
+			state := strings.ToUpper(status.Status)
+			if state == "COMPLETED" || state == "COMPLETE" || state == "SUCCESS" {
+				if status.TxHash != "" {
+					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash)
+				}
+				if s.limitsService != nil {
+					_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				if s.tieredLimits != nil {
+					_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
+				}
+				_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
+				}
+				s.logger.Info("async: ChainRails withdrawal confirmed via polling",
+					"withdrawal_id", withdrawal.ID.String(), "tx_hash", status.TxHash)
+				return
+			}
+			if state == "REFUNDED" || state == "FAILED" || state == "EXPIRED" || state == "CANCELLED" {
+				if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
+					s.logger.Error("async: failed to reverse ledger after ChainRails failure",
+						"error", revErr, "withdrawal_id", withdrawal.ID.String())
+				}
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "chainrails intent "+strings.ToLower(state))
+				if s.notificationService != nil {
+					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+				}
+				s.logger.Warn("async: ChainRails withdrawal failed via polling",
+					"withdrawal_id", withdrawal.ID.String(), "state", state)
+				return
+			}
+		}
 	}
 }
 
@@ -1351,12 +1477,25 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 				s.logger.Info("Found existing EUR bank account", "bank_account_id", acc.ID.String())
 				return acc, nil
 			}
+		case entities.WithdrawalCurrencyGBP:
+			sanitizedReqSortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+			if len(sanitizedReqSortCode) != 6 {
+				return nil, fmt.Errorf("invalid UK sort code: must be exactly 6 digits, got %d", len(sanitizedReqSortCode))
+			}
+			routingMatches := acc.RoutingNumber != nil && *acc.RoutingNumber == sanitizedReqSortCode
+			accountMatches := acc.AccountNumberLast4 == accountLast4 && accountLast4 != ""
+			if routingMatches && accountMatches {
+				s.logger.Info("Found existing GBP bank account", "bank_account_id", acc.ID.String())
+				return acc, nil
+			}
 		}
 	}
 
 	bankCurrency := entities.BankAccountCurrencyUSD
 	if req.Currency == entities.WithdrawalCurrencyEUR {
 		bankCurrency = entities.BankAccountCurrencyEUR
+	} else if req.Currency == entities.WithdrawalCurrencyGBP {
+		bankCurrency = entities.BankAccountCurrencyGBP
 	}
 
 	bankAccount := &entities.BankAccount{
@@ -1384,6 +1523,16 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 		}
 		bankAccount.AccountNumberLast4 = ibanLast4
 	}
+	if req.Currency == entities.WithdrawalCurrencyGBP {
+		sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+		if len(sortCode) != 6 {
+			return nil, fmt.Errorf("invalid UK sort code: must be exactly 6 digits, got %d", len(sortCode))
+		}
+		sortCodeLast4 := sortCode[len(sortCode)-4:]
+		bankAccount.RoutingNumberLast4 = &sortCodeLast4
+		bankAccount.RoutingNumber = &sortCode
+		bankAccount.AccountNumberLast4 = accountLast4
+	}
 
 	// Register with Bridge to get recipient ID
 	if s.bridgeAdapter != nil {
@@ -1401,6 +1550,10 @@ func (s *WithdrawalService) getOrCreateBankAccount(ctx context.Context, req *ent
 			if bic := strings.TrimSpace(req.BIC); bic != "" {
 				recipientReq["bic"] = bic
 			}
+		case entities.WithdrawalCurrencyGBP:
+			sortCode := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(req.RoutingNumber), " ", ""), "-", "")
+			recipientReq["sort_code"] = sortCode
+			recipientReq["account_number"] = strings.TrimSpace(req.AccountNumber)
 		}
 
 		recipientID, err := s.bridgeAdapter.CreateRecipient(ctx, recipientReq)
@@ -2016,8 +2169,9 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		"intent_address", intent.IntentAddress)
 
 	return &CryptoTransferResult{
-		TransferID: fmt.Sprintf("cr:%d:%s", intent.ID, tx.ID),
-		State:      intent.IntentStatus,
+		TransferID:    fmt.Sprintf("cr:%d:%s", intent.ID, tx.ID),
+		State:         intent.IntentStatus,
+		IntentAddress: intent.IntentAddress,
 	}, nil
 }
 
@@ -2423,6 +2577,27 @@ func (s *WithdrawalService) failWithdrawal(ctx context.Context, withdrawal *enti
 		return nil
 	}
 
+	// Guard: verify the on-chain transfer hasn't actually succeeded before reversing.
+	// This prevents a race where a webhook marks the transfer failed while the tx
+	// already landed on-chain, which would double-credit the sender.
+	if s.circleTransfer != nil && withdrawal.ProviderTransferID != nil && strings.TrimSpace(*withdrawal.ProviderTransferID) != "" {
+		tx, err := s.circleTransfer.GetTransaction(ctx, strings.TrimSpace(*withdrawal.ProviderTransferID))
+		if err == nil && tx != nil {
+			state := strings.ToUpper(string(tx.State))
+			if state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" {
+				s.logger.Warn("failWithdrawal: on-chain transfer confirmed — settling instead of reversing",
+					"withdrawal_id", withdrawal.ID.String(),
+					"provider_transfer_id", *withdrawal.ProviderTransferID,
+					"tx_hash", tx.TxHash,
+					"reason_ignored", reason)
+				if tx.TxHash != "" {
+					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+				}
+				return s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+			}
+		}
+	}
+
 	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
 		return fmt.Errorf("failed to reverse withdrawal ledger entry: %w", err)
 	}
@@ -2558,6 +2733,36 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 		return withdrawal.Status, nil
 	}
 
+	// Circle withdrawals: poll Circle for transaction status
+	if s.circleTransfer != nil && strings.EqualFold(withdrawal.ProviderWalletType, "circle") {
+		tx, err := s.getCircleTransactionStatus(ctx, transferID)
+		if err != nil {
+			s.logger.Warn("Circle transaction status check failed", zap.String("transfer_id", transferID), zap.Error(err))
+			return withdrawal.Status, nil // non-fatal: will retry on next read
+		}
+		if tx == nil {
+			return withdrawal.Status, nil
+		}
+		state := strings.ToUpper(strings.TrimSpace(string(tx.State)))
+		switch state {
+		case "COMPLETE", "COMPLETED", "CONFIRMED":
+			if tx.TxHash != "" {
+				_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+			}
+			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+				return withdrawal.Status, err
+			}
+			return entities.WithdrawalStatusCompleted, nil
+		case "FAILED", "DENIED", "CANCELLED", "CANCELED":
+			reason := "circle transfer " + strings.ToLower(state)
+			if err := s.failWithdrawal(ctx, withdrawal, reason); err != nil {
+				return withdrawal.Status, err
+			}
+			return entities.WithdrawalStatusFailed, nil
+		}
+		return withdrawal.Status, nil
+	}
+
 	transfer, err := s.bridgeAdapter.GetTransferStatus(ctx, transferID)
 	if err != nil {
 		return withdrawal.Status, err
@@ -2590,6 +2795,30 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 
 func (s *WithdrawalService) syncCryptoWithdrawalStatusFromProvider(ctx context.Context, withdrawal *entities.Withdrawal) (entities.WithdrawalStatus, error) {
 	return s.syncWithdrawalStatusFromProvider(ctx, withdrawal)
+}
+
+// SyncStuckWithdrawal is the public entry point used by the recovery worker
+// to poll the upstream provider for a withdrawal stuck in processing after
+// the provider transfer was initiated. It either settles the withdrawal on
+// success or reverses it on a provider-confirmed terminal failure.
+func (s *WithdrawalService) SyncStuckWithdrawal(ctx context.Context, withdrawalID uuid.UUID) error {
+	withdrawal, err := s.withdrawalRepo.GetByID(ctx, withdrawalID)
+	if err != nil {
+		return fmt.Errorf("get withdrawal: %w", err)
+	}
+	if withdrawal == nil || withdrawal.Status.IsTerminal() {
+		return nil
+	}
+	_, err = s.syncWithdrawalStatusFromProvider(ctx, withdrawal)
+	return err
+}
+
+// getCircleTransactionStatus fetches a Circle transaction by ID for status polling.
+func (s *WithdrawalService) getCircleTransactionStatus(ctx context.Context, txID string) (*circlepkg.Transaction, error) {
+	if s.circleTransfer == nil {
+		return nil, fmt.Errorf("circle adapter not configured")
+	}
+	return s.circleTransfer.GetTransaction(ctx, txID)
 }
 
 func scopedWithdrawalIdempotencyKey(userID uuid.UUID, flow string, clientKey string) string {

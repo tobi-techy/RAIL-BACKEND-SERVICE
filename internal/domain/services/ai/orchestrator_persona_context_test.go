@@ -61,7 +61,8 @@ func TestBuildRealtimeGreetingFallsBackWithoutBalances(t *testing.T) {
 	require.Contains(t, greeting, "Miriam")
 	require.NotContains(t, greeting, "Spend is")
 	require.NotContains(t, greeting, "stash is")
-	require.Contains(t, greeting, "What money move are we making?")
+	// With no miriam intelligence, phase defaults to Observer ("What's on your mind?")
+	require.Contains(t, greeting, "What's on your mind?")
 }
 
 func TestBuildRealtimeInstructionsIncludesPremiumVoiceMode(t *testing.T) {
@@ -69,7 +70,7 @@ func TestBuildRealtimeInstructionsIncludesPremiumVoiceMode(t *testing.T) {
 
 	require.Contains(t, instructions, "MIRIAM VOICE MODE")
 	require.Contains(t, instructions, "paid, live money operator")
-	require.Contains(t, instructions, "Default to 1-2 spoken sentences")
+	require.Contains(t, instructions, "voice_money_lookup")
 	require.Contains(t, instructions, "Never guess account data")
 	require.Contains(t, instructions, "Never end with \"Is there anything else I can help with?\"")
 	require.NotContains(t, instructions, "[RECENT CONVERSATIONS")

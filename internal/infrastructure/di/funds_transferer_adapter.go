@@ -28,7 +28,7 @@ func (a *fundsTransfererAdapter) TransferBetweenStashes(ctx context.Context, use
 	idempotencyKey := "automation-" + userID.String() + "-" + from + "-" + to + "-" + amount.String()
 	switch {
 	case from == "spend" && to == "stash":
-		return a.TransferSpendToStash(ctx, userID, amount, idempotencyKey)
+		return a.ledger.AutomationTransferSpendToStash(ctx, userID, amount, idempotencyKey, "Scheduled transfer")
 	case from == "stash" && to == "spend":
 		return a.TransferStashToSpend(ctx, userID, amount, idempotencyKey)
 	default:

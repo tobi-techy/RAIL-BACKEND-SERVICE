@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,11 @@ import (
 	"golang.org/x/image/draw"
 )
 
+// ReceiptMemoryStore stores receipt-related memories for long-term recall.
+type ReceiptMemoryStore interface {
+	StoreMemory(ctx context.Context, userID string, content string) error
+}
+
 // ImageAnalysisHandler handles receipt/image analysis via vision-capable LLM.
 type ImageAnalysisHandler struct {
 	apiKey        string
@@ -37,6 +43,8 @@ type ImageAnalysisHandler struct {
 	receiptRepo   *repositories.ReceiptRepository
 	budgetRepo    *repositories.BudgetRepository
 	spendingRepo  *repositories.LedgerSpendingRepository
+	bankStmtRepo  *repositories.BankStatementRepository
+	memoryStore   ReceiptMemoryStore
 	convPersister ConversationPersister
 	logger        *zap.Logger
 }
@@ -95,6 +103,16 @@ func (h *ImageAnalysisHandler) SetConversationPersister(cp ConversationPersister
 // SetSpendingRepo sets the spending repository for category spending lookups.
 func (h *ImageAnalysisHandler) SetSpendingRepo(s *repositories.LedgerSpendingRepository) {
 	h.spendingRepo = s
+}
+
+// SetBankStatementRepo sets the bank statement repository for receipt-transaction matching.
+func (h *ImageAnalysisHandler) SetBankStatementRepo(r *repositories.BankStatementRepository) {
+	h.bankStmtRepo = r
+}
+
+// SetMemoryStore sets the memory store for persisting receipt match memories.
+func (h *ImageAnalysisHandler) SetMemoryStore(m ReceiptMemoryStore) {
+	h.memoryStore = m
 }
 
 type imageRequest struct {
@@ -201,6 +219,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 
 	// Persist the receipt
 	scan := h.buildReceiptScan(userID, req.Image, &parsed, raw)
+	saved := false
 	if h.receiptRepo != nil {
 		// Check for duplicate
 		if scan.ImageHash != nil {
@@ -222,14 +241,63 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 		// Only persist if amount is valid
 		if scan.Amount.IsPositive() {
 			if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
+				// Handle unique constraint violation (concurrent duplicate)
+				if strings.Contains(dbErr.Error(), "uq_receipt_scans_user_hash") || strings.Contains(dbErr.Error(), "duplicate key") {
+					existing, _ := h.receiptRepo.GetByImageHash(c.Request.Context(), userID, *scan.ImageHash)
+					if existing != nil {
+						c.JSON(http.StatusOK, gin.H{"data": gin.H{
+							"content":    "This receipt has already been scanned",
+							"receipt_id": existing.ID.String(),
+							"duplicate":  true,
+							"provider":   "openai-vision",
+						}})
+						return
+					}
+				}
 				h.logger.Warn("failed to persist receipt scan", zap.Error(dbErr))
+			} else {
+				saved = true
+				// Persist receipt to long-term memory so it survives conversation
+				// summarization and can be recalled in future conversations.
+				if h.memoryStore != nil {
+					dateStr := "unknown date"
+					if scan.ReceiptDate != nil {
+						dateStr = scan.ReceiptDate.Format("Jan 2, 2006")
+					}
+					memContent := fmt.Sprintf("Scanned receipt: %s %s at %s on %s (%s)",
+						scan.Currency, scan.Amount.StringFixed(0), parsed.Merchant, dateStr, parsed.Category)
+					go func(uid uuid.UUID, content string) {
+						smCtx, smCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer smCancel()
+						_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content)
+					}(userID, memContent)
+				}
 			}
 		} else {
 			h.logger.Warn("receipt amount invalid, skipping persistence", zap.String("raw_amount", parsed.Amount))
 		}
 	}
 
-	saved := scan.Amount.IsPositive()
+	// Receipt ↔ Statement Transaction Matching
+	var statementMatch *string
+	if saved && h.bankStmtRepo != nil && scan.ReceiptDate != nil {
+		tolerance := 3 * 24 * time.Hour
+		if txn, err := h.bankStmtRepo.FindMatchingTransaction(c.Request.Context(), userID, scan.Amount, *scan.ReceiptDate, tolerance); err == nil && txn != nil {
+			msg := fmt.Sprintf("This receipt matches a transaction in your bank statement: %s %s to %s on %s",
+				txn.Currency, txn.Amount.StringFixed(0), txn.Description, txn.TransactionDate.Format("Jan 2, 2006"))
+			statementMatch = &msg
+			// Store match as Supermemory memory
+			if h.memoryStore != nil {
+				memoryContent := fmt.Sprintf("Receipt from %s for %s %s on %s matched to bank statement transaction: %s",
+					parsed.Merchant, scan.Currency, scan.Amount.StringFixed(0), scan.ReceiptDate.Format("Jan 2, 2006"), txn.Description)
+				go func(uid uuid.UUID, content string) {
+					smCtx, smCancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer smCancel()
+					_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content)
+				}(userID, memoryContent)
+			}
+		}
+	}
 
 	// Budget impact lookup
 	var budgetImpact map[string]interface{}
@@ -290,8 +358,22 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 	}
 	if saved {
 		resp["receipt_id"] = scan.ID.String()
+		// Suggest follow-up actions so the user knows what they can do next
+		suggestions := []map[string]string{
+			{"label": "Split with friends", "prompt": "Split this receipt with my friends"},
+			{"label": "Add to budget", "prompt": "Add this to my budget tracking"},
+		}
+		if parsed.Category != "" {
+			suggestions = append(suggestions, map[string]string{
+				"label": "Category spending", "prompt": fmt.Sprintf("How much have I spent on %s this month?", parsed.Category),
+			})
+		}
+		resp["suggestions"] = suggestions
 	} else {
 		resp["warning"] = "Could not extract a valid amount from this receipt"
+	}
+	if statementMatch != nil {
+		resp["statement_match"] = *statementMatch
 	}
 	// Include thumbnail so frontend can display the image in chat history
 	if scan.Thumbnail != nil {
@@ -301,9 +383,24 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 	// Persist to conversation if conversation_id provided
 	if req.ConversationID != "" && h.convPersister != nil {
 		if convID, err := uuid.Parse(req.ConversationID); err == nil {
+			resp["conversation_id"] = req.ConversationID
 			thumbValue := ""
 			if scan.Thumbnail != nil {
 				thumbValue = "data:image/jpeg;base64," + *scan.Thumbnail
+			}
+			// Build a rich assistant message for conversation context so follow-up
+			// questions ("what was the total?", "split this") have full receipt data.
+			richSummary := parsed.Summary + "\n\n"
+			richSummary += fmt.Sprintf("Receipt details:\n- Merchant: %s\n- Amount: %s %s\n- Date: %s\n- Category: %s",
+				parsed.Merchant, parsed.Amount, parsed.Currency, parsed.Date, parsed.Category)
+			if len(parsed.Items) > 0 {
+				richSummary += "\n- Items:"
+				for _, item := range parsed.Items {
+					richSummary += fmt.Sprintf("\n  • %s (x%d) — %s", item.Name, item.Quantity, item.Price)
+				}
+			}
+			if saved {
+				richSummary += fmt.Sprintf("\n- Receipt ID: %s", scan.ID.String())
 			}
 			go func(convID uuid.UUID, userMsg, summary, thumb string, tokens int, model string) {
 				persistCtx, persistCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -313,7 +410,7 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 				); err != nil {
 					h.logger.Warn("failed to persist image exchange to conversation", zap.Error(err))
 				}
-			}(convID, req.Message, parsed.Summary, thumbValue, tokensUsed, h.visionModel)
+			}(convID, req.Message, richSummary, thumbValue, tokensUsed, h.visionModel)
 		}
 	}
 
@@ -331,15 +428,38 @@ func normalizeCurrency(raw string) string {
 	case "euro", "€", "eur":
 		return "EUR"
 	case "":
-		return "USD"
+		return ""
 	default:
 		return strings.ToUpper(strings.TrimSpace(raw))
 	}
 }
 
+// inferCurrencyFromAmount detects currency symbols embedded in the amount string.
+func inferCurrencyFromAmount(amount string) string {
+	if strings.Contains(amount, "₦") || strings.Contains(amount, "NGN") {
+		return "NGN"
+	}
+	if strings.Contains(amount, "£") || strings.Contains(amount, "GBP") {
+		return "GBP"
+	}
+	if strings.Contains(amount, "€") || strings.Contains(amount, "EUR") {
+		return "EUR"
+	}
+	if strings.Contains(amount, "$") || strings.Contains(amount, "USD") {
+		return "USD"
+	}
+	return ""
+}
+
 func (h *ImageAnalysisHandler) buildReceiptScan(userID uuid.UUID, base64Image string, parsed *visionReceiptResponse, rawText string) *entities.ReceiptScan {
 	amount, _ := decimal.NewFromString(parsed.Amount)
 	currency := normalizeCurrency(parsed.Currency)
+	if currency == "" {
+		currency = inferCurrencyFromAmount(parsed.Amount)
+	}
+	if currency == "" {
+		currency = "USD"
+	}
 	category := parsed.Category
 	if category == "" {
 		category = "Uncategorized"
@@ -350,11 +470,17 @@ func (h *ImageAnalysisHandler) buildReceiptScan(userID uuid.UUID, base64Image st
 
 	var receiptDate *time.Time
 	if parsed.Date != "" {
-		for _, layout := range []string{"2006-01-02", "01/02/2006", "02/01/2006", "Jan 2, 2006", "2 Jan 2006", "January 2, 2006"} {
+		// Priority: YYYY-MM-DD (the format we request from the LLM)
+		// Avoid ambiguous day/month formats like MM/DD/YYYY vs DD/MM/YYYY
+		for _, layout := range []string{"2006-01-02", "Jan 2, 2006", "2 Jan 2006", "January 2, 2006", "2006/01/02"} {
 			if t, err := time.Parse(layout, parsed.Date); err == nil {
 				receiptDate = &t
 				break
 			}
+		}
+		// Sanity check: if the parsed date is more than 1 year in the past, discard it
+		if receiptDate != nil && time.Since(*receiptDate) > 365*24*time.Hour {
+			receiptDate = nil
 		}
 	}
 
@@ -728,68 +854,82 @@ func (h *ImageAnalysisHandler) BatchAnalyzeImages(c *gin.Context) {
 		Error     string `json:"error,omitempty"`
 	}
 
+	results := make([]batchResult, len(req.Images))
+	tokens := make([]int, len(req.Images))
+
+	var wg sync.WaitGroup
+	for i, img := range req.Images {
+		wg.Add(1)
+		go func(i int, img imageRequest) {
+			defer wg.Done()
+
+			if len(img.Image) > 20*1024*1024 {
+				results[i] = batchResult{Index: i, Error: "image too large", Saved: false}
+				return
+			}
+
+			raw, toks, err := h.callVisionAPI(c.Request.Context(), img.Image, img.Message)
+			tokens[i] = toks
+			if err != nil {
+				h.logger.Warn("batch vision API failed", zap.Int("index", i), zap.Error(err))
+				results[i] = batchResult{Index: i, Error: "Could not analyze image", Saved: false}
+				return
+			}
+
+			var parsed visionReceiptResponse
+			if err := json.Unmarshal([]byte(raw), &parsed); err != nil || !parsed.IsReceipt {
+				results[i] = batchResult{Index: i, Error: "Could not parse receipt", Saved: false}
+				return
+			}
+
+			scan := h.buildReceiptScan(userID, img.Image, &parsed, raw)
+			saved := false
+
+			if h.receiptRepo != nil && scan.Amount.IsPositive() {
+				if scan.ImageHash != nil {
+					if exists, err := h.receiptRepo.ExistsByImageHash(c.Request.Context(), userID, *scan.ImageHash); err == nil && exists {
+						results[i] = batchResult{Index: i, Error: "duplicate receipt", Saved: false}
+						return
+					}
+				}
+				if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
+					if strings.Contains(dbErr.Error(), "uq_receipt_scans_user_hash") || strings.Contains(dbErr.Error(), "duplicate key") {
+						results[i] = batchResult{Index: i, Error: "duplicate receipt", Saved: false}
+						return
+					}
+					h.logger.Warn("batch: failed to persist receipt", zap.Int("index", i), zap.Error(dbErr))
+				} else {
+					saved = true
+				}
+			}
+
+			r := batchResult{Index: i, Merchant: parsed.Merchant, Amount: parsed.Amount, Saved: saved}
+			if saved {
+				r.ReceiptID = scan.ID.String()
+			} else if !scan.Amount.IsPositive() {
+				r.Error = "invalid amount"
+			}
+			results[i] = r
+		}(i, img)
+	}
+	wg.Wait()
+
 	var (
-		results     []batchResult
 		totalTokens int
 		savedCount  int
 		failedCount int
 		totalAmount decimal.Decimal
 	)
-
-	for i, img := range req.Images {
-		if len(img.Image) > 20*1024*1024 {
-			results = append(results, batchResult{Index: i, Error: "image too large", Saved: false})
-			failedCount++
-			continue
-		}
-
-		raw, tokens, err := h.callVisionAPI(c.Request.Context(), img.Image, img.Message)
-		totalTokens += tokens
-		if err != nil {
-			h.logger.Warn("batch vision API failed", zap.Int("index", i), zap.Error(err))
-			results = append(results, batchResult{Index: i, Error: "Could not analyze image", Saved: false})
-			failedCount++
-			continue
-		}
-
-		var parsed visionReceiptResponse
-		if err := json.Unmarshal([]byte(raw), &parsed); err != nil || !parsed.IsReceipt {
-			results = append(results, batchResult{Index: i, Error: "Could not parse receipt", Saved: false})
-			failedCount++
-			continue
-		}
-
-		scan := h.buildReceiptScan(userID, img.Image, &parsed, raw)
-		saved := false
-
-		if h.receiptRepo != nil && scan.Amount.IsPositive() {
-			// Check duplicate
-			if scan.ImageHash != nil {
-				if exists, err := h.receiptRepo.ExistsByImageHash(c.Request.Context(), userID, *scan.ImageHash); err == nil && exists {
-					results = append(results, batchResult{Index: i, Error: "duplicate receipt", Saved: false})
-					failedCount++
-					continue
-				}
-			}
-			if dbErr := h.receiptRepo.Create(c.Request.Context(), scan); dbErr != nil {
-				h.logger.Warn("batch: failed to persist receipt", zap.Int("index", i), zap.Error(dbErr))
-			} else {
-				saved = true
-			}
-		}
-
-		r := batchResult{Index: i, Merchant: parsed.Merchant, Amount: parsed.Amount, Saved: saved}
-		if saved {
-			r.ReceiptID = scan.ID.String()
+	for i := range results {
+		totalTokens += tokens[i]
+		if results[i].Saved {
 			savedCount++
-			totalAmount = totalAmount.Add(scan.Amount)
-		} else if !scan.Amount.IsPositive() {
-			r.Error = "invalid amount"
-			failedCount++
-		} else {
+			if amt, err := decimal.NewFromString(results[i].Amount); err == nil {
+				totalAmount = totalAmount.Add(amt)
+			}
+		} else if results[i].Error != "" {
 			failedCount++
 		}
-		results = append(results, r)
 	}
 
 	if h.orchestrator != nil && totalTokens > 0 {

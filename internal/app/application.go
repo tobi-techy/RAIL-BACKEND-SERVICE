@@ -26,6 +26,7 @@ import (
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -33,6 +34,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
@@ -133,7 +135,7 @@ func (app *Application) Initialize() error {
 	app.log = log
 
 	// Initialize database
-	db, err := database.NewConnection(cfg.Database)
+	db, err := database.NewConnection(cfg.Database, cfg.Environment)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -157,6 +159,13 @@ func (app *Application) Initialize() error {
 		return fmt.Errorf("failed to create DI container: %w", err)
 	}
 	app.container = container
+
+	// Cross-component config validation: fail fast BEFORE workers spin up or
+	// the HTTP server binds, so a half-configured security gate never reaches
+	// a state where the misconfig surfaces as silent 403s on every request.
+	if err := app.validateSecurityConfig(); err != nil {
+		return fmt.Errorf("security config validation failed: %w", err)
+	}
 
 	// Initialize workers
 	if err := app.initializeWorkers(); err != nil {
@@ -246,9 +255,19 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Deposit allocation recovery worker started")
 	}
 
-	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals
+	// Paj offramp recovery worker — auto-reverses stuck NGN withdrawals and
+	// reconciles orders whose Circle transfer was initiated but never
+	// webhooked, using Circle's own state as the source of truth.
 	if app.container.DB != nil && app.container.PajHandlers != nil && app.container.LedgerService != nil {
 		app.pajOfframpRecoveryWorker = paj_offramp_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
+		if app.container.NotificationService != nil {
+			app.pajOfframpRecoveryWorker.SetNotifier(&pajOfframpRecoveryNotifierAdapter{svc: app.container.NotificationService})
+		}
+		if app.container.CircleAdapter != nil {
+			app.pajOfframpRecoveryWorker.SetCircleStatusChecker(&pajOfframpCircleStatusAdapter{adapter: app.container.CircleAdapter})
+		} else {
+			app.log.Warn("Paj offramp recovery: no Circle adapter — reconciliation of post-transfer stuck orders disabled")
+		}
 		go app.pajOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj offramp recovery worker started")
 	}
@@ -260,9 +279,13 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Paj onramp recovery worker started")
 	}
 
-	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals
+	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals and
+	// polls the provider for withdrawals whose webhook never landed.
 	if app.container.DB != nil && app.container.LedgerService != nil {
 		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
+		if app.container.WithdrawalService != nil {
+			app.withdrawalRecoveryWorker.SetWithdrawalSyncer(app.container.WithdrawalService)
+		}
 		go app.withdrawalRecoveryWorker.Start(context.Background())
 		app.log.Info("Withdrawal recovery worker started")
 	}
@@ -531,24 +554,120 @@ func (app *Application) initializeWorkers() error {
 	}
 
 
-	// Statement processor worker: processes uploaded bank statement PDFs via Kimi
+	// Statement processor worker: processes uploaded bank statement PDFs via multi-strategy pipeline
 	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
 		kimiKey := app.container.Config.AI.Kimi.APIKey
 		kimiBase := app.container.Config.AI.Kimi.BaseURL
 		kimiModel := app.container.Config.AI.Kimi.Model
 		if kimiKey != "" {
 			parser := statement.NewTransactionParserWithConfig(kimiKey, kimiBase, kimiModel, app.log.Zap())
-			stmtWorker := statement_processor.NewWorker(
+
+			// Build V2 pipeline with multi-strategy extraction and LLM failover
+			var textractClient statement.TextractClient
+			if app.container.Config.Statement.EnableOCR && app.container.Config.Statement.TextractRegion != "" {
+				tc, err := statement.NewTextractExtractor(context.Background(), statement.TextractConfig{
+					Region: app.container.Config.Statement.TextractRegion,
+				}, app.log.Zap())
+				if err == nil {
+					textractClient = tc
+					app.log.Info("Textract OCR enabled for statement processing")
+				} else {
+					app.log.Warn("Textract init failed, OCR disabled", "error", err)
+				}
+			}
+
+			var visionClient statement.VisionClient
+			if app.container.Config.AI.Kimi.APIKey != "" {
+				visionClient = statement.NewOpenAIVisionClientWithConfig(
+					app.container.Config.AI.Kimi.APIKey,
+					"https://api.moonshot.ai/v1",
+					"moonshot-v1-32k-vision-preview",
+					app.log.Zap(),
+				)
+			}
+
+			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
+
+			// Primary parser: Kimi (has credit, handles long contexts)
+			var primaryParser *statement.TransactionParser
+			primaryParser = parser // Kimi primary
+
+			// File store: S3 if configured, nil falls back to DB BLOB
+			var fileStore statement.FileStore
+			if app.container.Config.Statement.S3Bucket != "" {
+				fs, err := statement.NewS3FileStore(context.Background(), statement.S3Config{
+					Region: app.container.Config.Statement.S3Region,
+					Bucket: app.container.Config.Statement.S3Bucket,
+					Prefix: app.container.Config.Statement.S3Prefix,
+				}, app.log.Zap())
+				if err == nil {
+					fileStore = fs
+					app.log.Info("S3 file store enabled for statements", "bucket", app.container.Config.Statement.S3Bucket)
+				}
+			}
+
+			// Progress reporter via Redis
+			var reporter statement.ProgressReporter
+			if app.container.RedisClient != nil {
+				rr := statement.NewRedisProgressReporter(app.container.RedisClient.Client(), app.log.Zap())
+				if rr != nil {
+					reporter = rr
+				}
+			}
+			if reporter == nil {
+				reporter = &statement.NoOpReporter{}
+			}
+
+			pipeline := statement.NewPipeline(statement.PipelineConfig{
+				Extractor:      extractor,
+				PrimaryParser:  primaryParser,
+				FallbackParser: nil,
+				FileStore:      fileStore,
+				Reporter:       reporter,
+				Logger:         app.log.Zap(),
+			})
+
+			// Build Supermemory writer adapter for statement worker
+			var smWriter statement_processor.SupermemoryWriter
+			if app.container.SupermemoryClient != nil {
+				smWriter = &statementSupermemoryAdapter{client: app.container.SupermemoryClient}
+			}
+
+			stmtWorkerV2 := statement_processor.NewWorkerV2(
+				app.container.BankStatementRepo,
+				pipeline,
+				fileStore,
+				app.container.MiriamMemoryRepo,
+				smWriter,
+				app.container.NotificationService,
+				&statementConversationAdapter{repo: app.container.ConversationRepo},
+				reporter,
+				app.log.Zap(),
+			)
+
+			// Also keep V1 worker for backward compat with existing queued jobs
+			stmtWorkerV1 := statement_processor.NewWorker(
 				app.container.BankStatementRepo,
 				app.container.MiriamMemoryRepo,
 				app.container.NotificationService,
 				parser,
 				app.log.Zap(),
 			)
+
+			// Cache handler functions to avoid re-creating closures on every job
+			v2Handler := stmtWorkerV2.HandlerV2()
+			v1Handler := stmtWorkerV1.Handler()
+
 			jqWorker := jobqueue.NewWorker(app.container.JobQueueInstance, app.log.Zap(), 5)
-			jqWorker.RegisterHandler(statement_processor.JobType, stmtWorker.Handler())
+			// Register a unified handler that routes based on payload version
+			jqWorker.RegisterHandler(statement_processor.JobType, func(ctx context.Context, job *jobqueue.Job) error {
+				if v, _ := job.Payload["version"].(string); v == "v2" {
+					return v2Handler(ctx, job)
+				}
+				return v1Handler(ctx, job)
+			})
 			go jqWorker.Start(context.Background())
-			app.log.Info("Statement processor worker started (Kimi k2.6)")
+			app.log.Info("Statement processor started (V2 pipeline: Kimi + OpenAI fallback + OCR)")
 
 			// Reconcile orphaned pending uploads (stuck from a prior crash)
 			go app.reconcileOrphanedStatements(context.Background())
@@ -702,6 +821,21 @@ func (app *Application) initializeFundingWebhooks() error {
 	app.container.FundingWebhookManager = webhookManager
 	app.log.Info("Funding webhook workers started")
 
+	return nil
+}
+
+// validateSecurityConfig checks invariants that span the container + config
+// after both have been built. Anything caught here turns into a clean
+// initialization error rather than a half-running process with subtle
+// fail-closed behaviour.
+func (app *Application) validateSecurityConfig() error {
+	// AI fund-action passcode gate: if it's on, the passcode service must be
+	// wired. With the gate on but no validator, every Miriam money-move
+	// confirmation would return 403 — looking like a per-request bug rather
+	// than a deployment misconfiguration.
+	if app.cfg.Security.AIFundActionsRequirePasscode && app.container.GetPasscodeService() == nil {
+		return fmt.Errorf("AIFundActionsRequirePasscode is enabled but passcode service is not available")
+	}
 	return nil
 }
 
@@ -1179,6 +1313,51 @@ func (g *gzipWriter) Flush() {
 	g.Writer.Flush()
 }
 
+// pajOfframpRecoveryNotifierAdapter adapts NotificationService.NotifyWithdrawalCompleted
+// (which takes amount + destination as separate args) to the worker's Notifier interface.
+type pajOfframpRecoveryNotifierAdapter struct {
+	svc interface {
+		NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destinationAddress string) error
+	}
+}
+
+func (a *pajOfframpRecoveryNotifierAdapter) NotifyWithdrawalCompleted(ctx context.Context, userID uuid.UUID, amount, destination string) error {
+	if a.svc == nil {
+		return nil
+	}
+	return a.svc.NotifyWithdrawalCompleted(ctx, userID, amount, destination)
+}
+
+// pajOfframpCircleStatusAdapter translates Circle's transaction state into
+// the worker's CircleTransferStatus enum without exposing the adapter package
+// to the worker (which would pull in the full Circle SDK at the worker layer).
+type pajOfframpCircleStatusAdapter struct {
+	adapter *circleadapter.Adapter
+}
+
+func (a *pajOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.Context, circleTxID string) (paj_offramp_recovery.CircleTransferStatus, error) {
+	if a.adapter == nil {
+		return paj_offramp_recovery.CircleTransferUnknown, nil
+	}
+	tx, err := a.adapter.GetTransaction(ctx, circleTxID)
+	if err != nil {
+		return paj_offramp_recovery.CircleTransferUnknown, err
+	}
+	if tx == nil {
+		return paj_offramp_recovery.CircleTransferUnknown, nil
+	}
+	switch tx.State {
+	case circleadapter.TransactionStateComplete:
+		return paj_offramp_recovery.CircleTransferComplete, nil
+	case circleadapter.TransactionStateFailed,
+		circleadapter.TransactionStateCancelled,
+		circleadapter.TransactionStateDenied:
+		return paj_offramp_recovery.CircleTransferFailed, nil
+	default:
+		return paj_offramp_recovery.CircleTransferPending, nil
+	}
+}
+
 // userRepositoryAdapter adapts infrastructure UserRepository to wallet provisioning UserRepository
 type userRepositoryAdapter struct {
 	repo interface {
@@ -1241,19 +1420,85 @@ func (a *opportunityUserListerAdapter) GetAllActiveUserIDs(ctx context.Context) 
 }
 
 // reconcileOrphanedStatements re-enqueues bank statement uploads that got stuck in "pending"
+// statementSupermemoryAdapter bridges the statement_processor.SupermemoryWriter interface
+// with the infrastructure Supermemory client.
+type statementSupermemoryAdapter struct {
+	client *supermemoryclient.Client
+}
+
+func (a *statementSupermemoryAdapter) IngestConversation(ctx context.Context, userID string, messages []statement_processor.SupermemoryMsg) error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	msgs := make([]supermemoryclient.Message, len(messages))
+	for i, m := range messages {
+		msgs[i] = supermemoryclient.Message{Role: m.Role, Content: m.Content}
+	}
+	return a.client.IngestConversation(ctx, userID, msgs)
+}
+
+func (a *statementSupermemoryAdapter) CreateMemories(ctx context.Context, containerTag string, memories []statement_processor.SupermemoryMemory) error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	mems := make([]supermemoryclient.Memory, len(memories))
+	for i, m := range memories {
+		mems[i] = supermemoryclient.Memory{
+			Content:  m.Content,
+			Metadata: m.Metadata,
+		}
+		if m.EventDate != "" {
+			mems[i].TemporalContext = &supermemoryclient.TemporalContext{
+				EventDate: []string{m.EventDate},
+			}
+		}
+	}
+	return a.client.CreateMemories(ctx, containerTag, mems)
+}
+
+// statementConversationAdapter bridges the statement_processor.ConversationWriter interface
+// with the conversation repository.
+type statementConversationAdapter struct {
+	repo *repositories.ConversationRepository
+}
+
+func (a *statementConversationAdapter) GetOrCreateConversation(ctx context.Context, userID uuid.UUID) (uuid.UUID, error) {
+	convs, err := a.repo.ListByUserID(ctx, userID, 1, 0)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if len(convs) > 0 {
+		return convs[0].ID, nil
+	}
+	conv := &entities.AIConversation{
+		UserID: userID,
+		Title:  "Miriam",
+	}
+	if err := a.repo.CreateConversation(ctx, conv); err != nil {
+		return uuid.Nil, err
+	}
+	return conv.ID, nil
+}
+
+func (a *statementConversationAdapter) CreateMessage(ctx context.Context, msg *entities.AIMessage) error {
+	return a.repo.CreateMessage(ctx, msg)
+}
+
 // or "processing" status (e.g. after a server crash). Runs once at startup and exits.
 func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 	const minAge = 20 * time.Minute
-	orphans, err := app.container.BankStatementRepo.GetPendingOlderThan(ctx, minAge)
-	if err != nil {
-		app.log.Warnw("failed to reconcile orphaned statements", "error", err)
-		return
-	}
-	if len(orphans) == 0 {
-		return
-	}
-	app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
-	for _, u := range orphans {
+	// Run periodically, not just once at startup
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	// Run immediately on first call, then every 10 minutes
+	for {
+		orphans, err := app.container.BankStatementRepo.GetPendingOlderThan(ctx, minAge)
+		if err != nil {
+			app.log.Warnw("failed to reconcile orphaned statements", "error", err)
+		} else if len(orphans) > 0 {
+			app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
+			for _, u := range orphans {
 		// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
 		// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
 		// claimed or completed the upload between the fetch and this update.
@@ -1286,6 +1531,14 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 				"upload_id", u.ID.String(),
 				"error", err,
 			)
+		}
+	}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }

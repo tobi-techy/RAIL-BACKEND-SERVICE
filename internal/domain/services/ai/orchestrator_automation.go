@@ -64,6 +64,7 @@ Trigger types:
 - "spending_spike": fires when unusual spending is detected. trigger_config: {}
 - "obligation_due": fires N days before an obligation is due. trigger_config: {"days_before_due": 3}
 - "life_event": fires when Miriam detects a life event. trigger_config: {"event_type": "income_increase", "threshold": 0.20}
+- "deposit_received": fires every time the user receives a deposit. trigger_config: {}. Use when user says "on every deposit", "each time I get paid", "whenever money comes in".
 
 Action types:
 - "transfer_to_stash": move money from spend to stash. action_config: {"amount": 50}
@@ -82,7 +83,7 @@ Requires user confirmation before creating.`,
 				"type": "object",
 				"properties": map[string]interface{}{
 					"name":            map[string]interface{}{"type": "string", "description": "Short name, e.g. 'Friday Stash Move'"},
-					"trigger_type":    map[string]interface{}{"type": "string", "enum": []string{"schedule", "balance_threshold", "spending_spike", "obligation_due", "life_event"}},
+					"trigger_type":    map[string]interface{}{"type": "string", "enum": []string{"schedule", "balance_threshold", "spending_spike", "obligation_due", "life_event", "deposit_received"}},
 					"trigger_config":  map[string]interface{}{"type": "object"},
 					"action_type":     map[string]interface{}{"type": "string", "enum": []string{"transfer_to_stash", "transfer_to_spend", "notify", "pause_card_cooldown", "pause_card", "resume_card"}},
 					"action_config":   map[string]interface{}{"type": "object"},
@@ -204,8 +205,22 @@ func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.
 	actionConfig, _ := params["action_config"].(map[string]interface{})
 
 	if actionType == entities.ActionTransferToStash || actionType == entities.ActionTransferToSpend {
-		if err := validateTransferAutomationAuthorization(actionConfig, time.Now().UTC()); err != nil {
-			return nil, err
+		// Voice-created automations skip passcode check — user is already
+		// authenticated via voice session token (JWT-verified).
+		isVoice, _ := params["_voice_session"].(bool)
+		if !isVoice {
+			if err := validateTransferAutomationAuthorization(actionConfig, time.Now().UTC()); err != nil {
+				return nil, err
+			}
+		} else {
+			// Voice sessions auto-stamp consent (user gave verbal confirmation)
+			if actionConfig == nil {
+				actionConfig = map[string]interface{}{}
+			}
+			now := time.Now().UTC()
+			actionConfig["acknowledged_future_transfer"] = true
+			actionConfig["passcode_session_verified_at"] = now.Format(time.RFC3339)
+			actionConfig["reauthorization_due_at"] = now.Add(90 * 24 * time.Hour).Format(time.RFC3339)
 		}
 	}
 

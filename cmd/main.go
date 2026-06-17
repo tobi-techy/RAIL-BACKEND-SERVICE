@@ -115,7 +115,7 @@ func runWalletMigration(dbURL string) error {
 	}
 	defer db.Close()
 
-	logger, err := zap.NewProduction()
+	logger, err := zap.NewProduction(zap.AddStacktrace(zap.ErrorLevel))
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
@@ -153,7 +153,7 @@ func runHealthCheck() error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	db, err := database.NewConnection(cfg.Database)
+	db, err := database.NewConnection(cfg.Database, cfg.Environment)
 	if err != nil {
 		return err
 	}

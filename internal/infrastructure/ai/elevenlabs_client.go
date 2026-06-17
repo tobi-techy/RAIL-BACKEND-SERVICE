@@ -198,6 +198,28 @@ func NewELConversationInit(dynamicVars map[string]interface{}, ttsConfig *ELTTSC
 	return init
 }
 
+// NewELConversationInitWithPrompt creates an init event that also overrides the agent's
+// system prompt for this session, making the Go code the authoritative source of truth.
+func NewELConversationInitWithPrompt(dynamicVars map[string]interface{}, ttsConfig *ELTTSConfig, systemPrompt string) ELConversationInit {
+	init := ELConversationInit{
+		Type:             "conversation_initiation_client_data",
+		DynamicVariables: dynamicVars,
+	}
+	config := &ELConversationConfig{}
+	if ttsConfig != nil {
+		config.TTS = ttsConfig
+	}
+	if systemPrompt != "" {
+		config.Agent = &ELAgentConfig{
+			Prompt: &ELPromptConfig{Prompt: systemPrompt},
+		}
+	}
+	if config.TTS != nil || config.Agent != nil {
+		init.ConversationConfigOverride = config
+	}
+	return init
+}
+
 // NewELAudioChunk creates an audio input event.
 func NewELAudioChunk(base64Audio string) ELAudioChunk {
 	return ELAudioChunk{UserAudioChunk: base64Audio}

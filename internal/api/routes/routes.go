@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,12 +31,14 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
+	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -77,6 +80,17 @@ func (a *SessionValidatorAdapter) ValidateSession(ctx context.Context, token str
 		ID:     sess.ID,
 		UserID: sess.UserID,
 	}, nil
+}
+
+// receiptMemoryAdapter adapts supermemory.Client to the ReceiptMemoryStore interface.
+type receiptMemoryAdapter struct {
+	client interface {
+		CreateMemories(ctx context.Context, containerTag string, memories []supermemoryclient.Memory) error
+	}
+}
+
+func (a *receiptMemoryAdapter) StoreMemory(ctx context.Context, userID string, content string) error {
+	return a.client.CreateMemories(ctx, userID, []supermemoryclient.Memory{{Content: content}})
 }
 
 // SetupRoutes configures all application routes
@@ -148,10 +162,80 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	internal := router.Group("/internal")
 	internal.Use(middleware.RateLimit(5))
 	internal.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
+	// Defense-in-depth: when an internal signing secret is configured, require
+	// a fresh HMAC-SHA256 request signature so a leaked static key alone cannot
+	// drive money-moving internal routes (TM-001). No-op until configured.
+	internal.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
+		internal.POST("/paj-orders/complete-stuck", internalHandlers.CompleteStuckPajOrders)
 	}
+
+	// Internal statement management.
+	//
+	// Order matters: delete child rows (bank_statement_transactions) BEFORE
+	// the parent upload so a partial failure can't leave orphaned transactions
+	// pointing at a deleted upload. Both deletes share a single transaction so
+	// the operation is all-or-nothing.
+	internal.DELETE("/statement/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		tx, err := container.DB.BeginTx(c.Request.Context(), nil)
+		if err != nil {
+			container.ZapLog.Error("internal statement delete: begin tx failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to start transaction"})
+			return
+		}
+		rollback := func() {
+			if rbErr := tx.Rollback(); rbErr != nil && rbErr != sql.ErrTxDone {
+				container.ZapLog.Warn("internal statement delete: rollback failed",
+					zap.String("upload_id", id), zap.Error(rbErr))
+			}
+		}
+		if _, err := tx.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_transactions WHERE upload_id = $1", id); err != nil {
+			rollback()
+			container.ZapLog.Error("internal statement delete: transactions delete failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to delete statement transactions"})
+			return
+		}
+		if _, err := tx.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_uploads WHERE id = $1", id); err != nil {
+			rollback()
+			container.ZapLog.Error("internal statement delete: upload delete failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to delete statement upload"})
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			container.ZapLog.Error("internal statement delete: commit failed",
+				zap.String("upload_id", id), zap.Error(err))
+			c.JSON(500, gin.H{"error": "failed to commit statement delete"})
+			return
+		}
+		c.JSON(200, gin.H{"deleted": true})
+	})
+
+	// Purge all statements for a user (resets dedup)
+	internal.DELETE("/statement/user/:user_id", func(c *gin.Context) {
+		uid := c.Param("user_id")
+		_, err := container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_transactions WHERE upload_id IN (SELECT id FROM bank_statement_uploads WHERE user_id = $1)", uid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		res, err := container.DB.ExecContext(c.Request.Context(),
+			"DELETE FROM bank_statement_uploads WHERE user_id = $1", uid)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		n, _ := res.RowsAffected()
+		c.JSON(200, gin.H{"deleted": true, "count": n})
+	})
 
 	if container.GrowthEngineService != nil {
 		growthHandlers := handlers.NewGrowthEngineHandlers(container.GrowthEngineService, container.ZapLog)
@@ -1329,7 +1413,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
 							container.Config.AI.Kimi.APIKey,
 							kimiBase,
-							container.Config.AI.Kimi.Model,
+							"moonshot-v1-32k-vision-preview",
 							container.GetAIOrchestrator(),
 							container.ReceiptRepo,
 							container.ZapLog,
@@ -1345,6 +1429,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if imageHandler != nil {
 						imageHandler.SetBudgetRepo(container.BudgetRepo)
 						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
+						imageHandler.SetBankStatementRepo(container.BankStatementRepo)
+						if container.SupermemoryClient != nil {
+							imageHandler.SetMemoryStore(&receiptMemoryAdapter{client: container.SupermemoryClient})
+						}
 						if container.GetConversationService() != nil {
 							imageHandler.SetConversationPersister(container.GetConversationService())
 						}
@@ -1357,7 +1445,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 						// Receipt split with friends
 						if container.P2PService != nil {
-							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.P2PService, container.ZapLog)
+							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.ReceiptSplitRepo, container.P2PService, container.ZapLog)
 							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
 						}
 
@@ -1391,11 +1479,23 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 					// Bank statement upload & processing
 					if container.BankStatementRepo != nil {
-						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, container.ZapLog)
+						var progressReporter *statement.RedisProgressReporter
+						if container.RedisClient != nil {
+							progressReporter = statement.NewRedisProgressReporter(container.RedisClient.Client(), container.ZapLog)
+						}
+
+						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, progressReporter, container.ZapLog)
 						aiGroup.POST("/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandler.Upload)
 						aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)
 						aiGroup.GET("/statements", middleware.AuthRateLimit(20), stmtHandler.List)
 						aiGroup.DELETE("/statement/:id", middleware.AuthRateLimit(10), stmtHandler.Delete)
+
+						// V2 statement pipeline: supports images, OCR, real-time progress
+						stmtHandlerV2 := handlers.NewStatementUploadHandlerV2(container.BankStatementRepo, container.JobQueueInstance, nil, progressReporter, container.ZapLog)
+						aiGroup.POST("/v2/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandlerV2.Upload)
+						aiGroup.GET("/v2/statement/:id/progress", middleware.AuthRateLimit(60), stmtHandlerV2.StreamProgress)
+						// V2 reuses V1 status/list/delete/transactions endpoints (same DB)
+						aiGroup.GET("/statement/:id/transactions", middleware.AuthRateLimit(20), stmtHandler.GetTransactions)
 					}
 
 					// Voice session ticket issuance (protected by standard auth).
@@ -1412,9 +1512,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 				}
 
-				// Conversation endpoints
+				// Conversation endpoints. The "gate-on + nil-passcode" invariant
+				// is validated at application startup (Application.validateSecurityConfig),
+				// so the gate is guaranteed wired by the time we reach this route
+				// setup — no mid-route Fatal here.
 				if container.GetConversationService() != nil {
-					convHandlers := handlers.NewConversationHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.ZapLog)
+					convHandlers := handlers.NewConversationHandlers(
+						container.GetAIOrchestrator(),
+						container.GetConversationService(),
+						container.ZapLog,
+						container.GetPasscodeService(),
+						container.Config.Security.AIFundActionsRequirePasscode,
+					)
 					convGroup := protected.Group("/ai/conversations")
 					{
 						convGroup.POST("", convHandlers.CreateConversation)
@@ -1622,6 +1731,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			if circleWebhookHandler := container.GetCircleWebhookHandler(); circleWebhookHandler != nil {
 				circleWebhooks := webhooks.Group("/circle")
 				circleWebhooks.Use(middleware.RateLimit(100))
+				circleWebhooks.Use(middleware.CircleIPAllowlist(container.Config.Environment, container.ZapLog))
 				circleWebhooks.POST("", circleWebhookHandler.HandleWebhook)
 			}
 		}

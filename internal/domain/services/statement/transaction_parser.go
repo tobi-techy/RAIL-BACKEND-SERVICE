@@ -1,6 +1,7 @@
 package statement
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +17,15 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
+
+// streamingHTTPClient is configured for long-running SSE connections (no idle timeout killing streams).
+var streamingHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+	},
+	// No Timeout set — controlled by context.WithTimeout per request
+}
 
 // TransactionParser uses an LLM to extract structured transactions from bank statement text.
 type TransactionParser struct {
@@ -38,7 +48,7 @@ func NewTransactionParser(apiKey string, logger *zap.Logger) *TransactionParser 
 	return &TransactionParser{
 		apiKey:      apiKey,
 		baseURL:     "https://api.moonshot.ai/v1",
-		model:       "kimi-k2.6",
+		model:       "moonshot-v1-32k",
 		logger:      logger,
 		minInterval: 3 * time.Second,
 		cbThreshold: 5,
@@ -52,44 +62,20 @@ func NewTransactionParserWithConfig(apiKey, baseURL, model string, logger *zap.L
 		baseURL = "https://api.moonshot.ai/v1"
 	}
 	if model == "" {
-		model = "kimi-k2.6"
+		model = "moonshot-v1-32k"
 	}
 	return &TransactionParser{apiKey: apiKey, baseURL: baseURL, model: model, logger: logger, minInterval: 3 * time.Second, cbThreshold: 5, cbCooldown: 2 * time.Minute}
 }
 
-const parserSystemPrompt = `You are a bank statement parser. Extract ALL transactions from the provided bank statement text.
-
-You MUST respond with ONLY valid JSON (no markdown, no explanation) in this exact structure:
-{
-  "bank_name": "detected bank name",
-  "currency": "NGN",
-  "period_start": "2025-01-01",
-  "period_end": "2025-06-30",
-  "transactions": [
-    {
-      "date": "2025-01-15",
-      "description": "POS Purchase at Shoprite",
-      "amount": 15000.00,
-      "type": "debit",
-      "category": "groceries",
-      "balance_after": 85000.00
-    }
-  ]
-}
-
+const parserSystemPrompt = `Bank statement parser. Extract ALL transactions. Respond with ONLY compact valid JSON, no markdown.
+Format: {"bank_name":"X","currency":"NGN","period_start":"2025-01-01","period_end":"2025-06-30","transactions":[{"date":"2025-01-15","description":"POS Shoprite","amount":15000,"type":"debit","category":"groceries"}]}
 Rules:
-- date: YYYY-MM-DD format
-- amount: positive number (no currency symbols)
-- type: "credit" for money in, "debit" for money out
-- category: one of: food, groceries, transport, utilities, entertainment, shopping, health, education, rent, transfer_in, transfer_out, salary, airtime, betting, subscription, savings, loan, other
-- balance_after: closing balance after transaction if shown, null otherwise
-- Extract EVERY transaction visible in the text
-- For Nigerian banks (Sterling, OPay, PalmPay, Kuda, GTBank, Access, UBA, Zenith, First Bank): amounts are in NGN unless stated otherwise
-- Parse dates correctly even if format varies (DD/MM/YYYY, DD-Mon-YYYY, etc.)
-- If you cannot determine period_start/period_end from the statement header, infer from first/last transaction dates
-- IMPORTANT: Some transactions have multi-line descriptions (e.g. the narration continues on the next line). Merge these into a single description field. A new transaction always starts with a date — if a line has no date, it is a continuation of the previous transaction's description.
-- Ignore header rows, footer rows, page numbers, and summary lines (e.g. "Total Debit", "Opening Balance", "Closing Balance")
-- If a transaction shows both debit and credit columns, use whichever is non-zero`
+- date: YYYY-MM-DD. amount: positive number. type: credit|debit
+- category: food|groceries|transport|utilities|entertainment|shopping|health|education|rent|transfer_in|transfer_out|salary|airtime|betting|subscription|savings|loan|other
+- Extract EVERY transaction. Skip headers/footers/summaries.
+- Multi-line descriptions: merge (new txn starts with date)
+- Output compact JSON: no whitespace, no balance_after field
+- Nigerian banks: NGN unless stated otherwise`
 
 // ParseResult holds the LLM's structured output.
 type ParseResult struct {
@@ -107,6 +93,62 @@ type ParsedTxn struct {
 	Type         string   `json:"type"`
 	Category     string   `json:"category"`
 	BalanceAfter *float64 `json:"balance_after"`
+}
+
+// detectBank examines the first ~2 pages of text for bank identifiers.
+func detectBank(text string) string {
+	sample := text
+	if len(sample) > 4000 {
+		sample = sample[:4000]
+	}
+	upper := strings.ToUpper(sample)
+
+	checks := []struct {
+		bank     string
+		keywords []string
+	}{
+		{"moniepoint", []string{"MONIEPOINT", "TEAMAPT", "MONIEPOINT.COM"}},
+		{"opay", []string{"OPAY", "OPERA", "OPAY.COM"}},
+		{"sterling", []string{"STERLING BANK", "STERLING", "ONEBANK.STERLING"}},
+		{"kuda", []string{"KUDA", "KUDA.COM", "KUDA MICROFINANCE"}},
+		{"gtbank", []string{"GUARANTY TRUST", "GTBANK", "GTBANK.COM", "GTB"}},
+		{"access", []string{"ACCESS BANK", "DIAMOND BANK", "ACCESS.BANK"}},
+		{"nectarfi", []string{"NECTARFI", "NECTAR FI", "NECTAR FINANCE", "NECTARFI.COM"}},
+		{"autobank", []string{"AUTOBANK", "AUTO BANK", "AUTO FINANCE"}},
+	}
+
+	for _, c := range checks {
+		for _, kw := range c.keywords {
+			if strings.Contains(upper, kw) {
+				return c.bank
+			}
+		}
+	}
+	return "unknown"
+}
+
+// bankParsingHints returns bank-specific format context for the LLM prompt.
+func bankParsingHints(bank string) string {
+	switch bank {
+	case "sterling":
+		return "Sterling Bank statements show Date | Description | Debit | Credit | Balance in columns. Narration field contains transfer details. Watch for 'SMS Alert Charge' and 'VAT' entries."
+	case "opay":
+		return "OPay statements show transactions as Date | Details | Amount | Balance. Credits show as positive, debits as negative or in a separate column. Look for 'Cashback' entries."
+	case "kuda":
+		return "Kuda statements list Date | Narration | Debit | Credit | Balance. Transfers show recipient name in narration."
+	case "gtbank":
+		return "GTBank statements show Post Date | Value Date | Description | Debit | Credit | Balance. Look for 'NIP/' prefix for transfers."
+	case "access":
+		return "Access Bank statements show Trans Date | Value Date | Reference | Debits | Credits | Balance | Remarks. The Remarks field contains transfer details."
+	case "moniepoint":
+		return "Moniepoint statements show Date | Description | Amount | Balance. Transfers include recipient name and bank in description."
+	case "nectarfi":
+		return "NectarFi statements show Date | Description | Debit | Credit | Balance. Digital finance platform; transactions may include wallet top-ups, transfers, and bill payments."
+	case "autobank":
+		return "AutoBank statements show Date | Description | Debit | Credit | Balance. Look for transaction rows with dates and amounts. May contain auto loan/finance entries."
+	default:
+		return ""
+	}
 }
 
 // Parse sends extracted text to the LLM and returns structured transactions.
@@ -167,17 +209,35 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	if bankHint != "" {
 		userPrompt = fmt.Sprintf("Bank: %s\n\n%s", bankHint, text)
 	}
-	// Truncate to ~100k chars to stay within context window
-	if len(userPrompt) > 100000 {
-		userPrompt = userPrompt[:100000]
+	// Kimi handles 256K tokens — 30K chars is well within limits
+	if len(userPrompt) > 30000 {
+		userPrompt = userPrompt[:30000]
+	}
+
+	// Log a preview of the extracted text to debug 0-transaction issues
+	preview := strings.TrimSpace(userPrompt)
+	if len(preview) > 500 {
+		preview = preview[:500]
+	}
+	p.logger.Info("sending text to LLM",
+		zap.String("model", p.model),
+		zap.Int("input_length", len(userPrompt)),
+		zap.String("text_preview", preview),
+	)
+
+	// Build system prompt with bank-specific hints
+	sysPrompt := parserSystemPrompt
+	if hints := bankParsingHints(bankHint); hints != "" {
+		sysPrompt = hints + "\n\n" + sysPrompt
 	}
 
 	body := map[string]interface{}{
 		"model":       p.model,
 		"temperature": 1.0,
 		"max_tokens":  16000,
+		"stream":      true,
 		"messages": []map[string]interface{}{
-			{"role": "system", "content": parserSystemPrompt},
+			{"role": "system", "content": sysPrompt},
 			{"role": "user", "content": userPrompt},
 		},
 	}
@@ -187,7 +247,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, "POST", strings.TrimRight(p.baseURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
@@ -197,7 +257,7 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamingHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("api call: %w", err)
 	}
@@ -215,36 +275,43 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		req2, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(p.baseURL, "/")+"/chat/completions", bytes.NewReader(jsonBody))
 		req2.Header.Set("Content-Type", "application/json")
 		req2.Header.Set("Authorization", "Bearer "+p.apiKey)
-		resp, err = http.DefaultClient.Do(req2)
+		resp, err = streamingHTTPClient.Do(req2)
 		if err != nil {
 			return nil, fmt.Errorf("api retry call: %w", err)
 		}
 		defer resp.Body.Close()
 	}
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("api error %d: %s", resp.StatusCode, string(respBody))
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("api error %d: %s", resp.StatusCode, string(errBody))
 	}
 
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return nil, fmt.Errorf("no choices in response")
+	// Read SSE stream — collect delta content tokens
+	var contentBuilder strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) == nil && len(chunk.Choices) > 0 {
+			contentBuilder.WriteString(chunk.Choices[0].Delta.Content)
+		}
 	}
 
-	content := strings.TrimSpace(result.Choices[0].Message.Content)
+	content := strings.TrimSpace(contentBuilder.String())
 	// Strip markdown fences
 	if strings.HasPrefix(content, "```") {
 		if idx := strings.Index(content, "\n"); idx != -1 {
@@ -253,10 +320,30 @@ func (p *TransactionParser) callKimi(ctx context.Context, text string, bankHint 
 		content = strings.TrimSuffix(strings.TrimSpace(content), "```")
 	}
 
+	if len(content) == 0 {
+		return nil, fmt.Errorf("empty response from model %s", p.model)
+	}
+
+	p.logger.Info("LLM parse response", zap.String("model", p.model), zap.Int("response_length", len(content)), zap.Int("transactions_preview", min(len(content), 200)))
+
 	var parsed ParseResult
 	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
-		return nil, fmt.Errorf("parse LLM output: %w", err)
+		// Log first 500 chars for debugging
+		preview := content
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		return nil, fmt.Errorf("parse LLM output (%s): %w — preview: %s", p.model, err, preview)
 	}
+
+	if len(parsed.Transactions) == 0 {
+		preview := content
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		p.logger.Warn("model returned 0 transactions", zap.String("model", p.model), zap.String("response_preview", preview))
+	}
+
 	return &parsed, nil
 }
 

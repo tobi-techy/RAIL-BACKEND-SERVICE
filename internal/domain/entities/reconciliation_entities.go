@@ -17,6 +17,7 @@ const (
 	ReconciliationCheckDeposits          ReconciliationCheckType = "deposits"
 	ReconciliationCheckConversionJobs    ReconciliationCheckType = "conversion_jobs"
 	ReconciliationCheckWithdrawals       ReconciliationCheckType = "withdrawals"
+	ReconciliationCheckStuckDeposits     ReconciliationCheckType = "stuck_deposits"
 )
 
 // ReconciliationStatus represents the status of a reconciliation run

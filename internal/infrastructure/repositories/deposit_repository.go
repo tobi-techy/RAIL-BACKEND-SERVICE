@@ -326,6 +326,27 @@ func (r *DepositRepository) CountPendingByUserID(ctx context.Context, userID uui
 	return count, nil
 }
 
+// GetStuckDeposits returns deposits that are stuck in pending_allocation or compensation_failed
+// states for longer than the given threshold. These require manual reconciliation or automated recovery.
+func (r *DepositRepository) GetStuckDeposits(ctx context.Context, olderThan time.Duration) ([]*entities.Deposit, error) {
+	cutoff := time.Now().Add(-olderThan)
+	query := `
+		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE status IN ('pending_allocation', 'compensation_failed')
+		  AND created_at < $1
+		ORDER BY created_at ASC
+	`
+	var deposits []*entities.Deposit
+	if err := r.db.SelectContext(ctx, &deposits, query, cutoff); err != nil {
+		return nil, fmt.Errorf("failed to get stuck deposits: %w", err)
+	}
+	return deposits, nil
+}
+
 // DeletePendingDeposit removes a pending deposit by ID (only deposits with "pending" status can be deleted)
 // This maintains audit trail compliance - only pending deposits can be removed
 func (r *DepositRepository) DeletePendingDeposit(ctx context.Context, id uuid.UUID) error {

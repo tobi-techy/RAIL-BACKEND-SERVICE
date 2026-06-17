@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -28,10 +30,10 @@ func VoiceTools() []infraai.Tool {
 						"enum":        voiceLookupToolNames(),
 						"description": "Underlying read-only chat tool to run.",
 					},
-					"period":          map[string]interface{}{"type": "string", "enum": []string{"this_month", "last_month", "last_7_days", "last_30_days", "last_90_days", "last_6_months", "last_12_months"}},
+					"period":          map[string]interface{}{"type": "string", "enum": []string{"this_month", "last_month", "last_7_days", "last_30_days", "last_90_days", "last_6_months", "last_12_months"}, "description": "Preferred time period. Use last_90_days for 3 months, last_6_months for 6 months, last_12_months for a year."},
 					"limit":           map[string]interface{}{"type": "integer"},
-					"days":            map[string]interface{}{"type": "integer"},
-					"months":          map[string]interface{}{"type": "integer"},
+					"days":            map[string]interface{}{"type": "integer", "description": "Alternative to period: number of days to look back."},
+					"months":          map[string]interface{}{"type": "integer", "description": "Alternative to period: number of months to look back."},
 					"year":            map[string]interface{}{"type": "integer"},
 					"query":           map[string]interface{}{"type": "string"},
 					"intent":          map[string]interface{}{"type": "string", "enum": []string{"overview", "transfer", "budget", "goal", "investment", "tax", "legal"}},
@@ -149,6 +151,7 @@ func (o *Orchestrator) executeVoiceMoneyLookup(ctx context.Context, userID uuid.
 	if target == "" {
 		return map[string]interface{}{"error": "tool is required"}, nil
 	}
+	target = normalizeVoiceToolName(target)
 	if !isVoiceLookupTool(target) {
 		return map[string]interface{}{"error": fmt.Sprintf("%s is not available through voice lookup", target)}, nil
 	}
@@ -157,10 +160,35 @@ func (o *Orchestrator) executeVoiceMoneyLookup(ctx context.Context, userID uuid.
 	}
 	fwd := voiceForwardArgs(args, "tool")
 	coerceNumericStrings(fwd)
-	return o.executeToolInner(ctx, userID, infraai.ToolCall{
-		Name:      target,
-		Arguments: fwd,
-	})
+
+	// Run tool execution and supermemory search in parallel
+	type toolResult struct {
+		data map[string]interface{}
+		err  error
+	}
+	toolCh := make(chan toolResult, 1)
+	memoryCh := make(chan string, 1)
+
+	go func() {
+		result, err := o.executeToolInner(ctx, userID, infraai.ToolCall{
+			Name:      target,
+			Arguments: fwd,
+		})
+		toolCh <- toolResult{result, err}
+	}()
+
+	go func() {
+		memoryCh <- o.voiceSupermemoryContext(ctx, userID, target, fwd)
+	}()
+
+	tr := <-toolCh
+	if tr.err != nil {
+		return tr.data, tr.err
+	}
+	if memory := <-memoryCh; memory != "" {
+		tr.data["user_memory_context"] = memory
+	}
+	return tr.data, nil
 }
 
 func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
@@ -192,6 +220,17 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 	}
 	coerceNumericStrings(params)
 	voiceAliasParams(action, params)
+
+	// Enforce daily voice transfer cap for financial actions
+	if o.voiceLimiter != nil && isVoiceFinancialAction(action) {
+		amount := extractAmountFromParams(params)
+		if amount.IsPositive() {
+			if err := o.voiceLimiter.CheckAndRecord(ctx, userID, amount); err != nil {
+				return map[string]interface{}{"error": err.Error()}, nil
+			}
+		}
+	}
+
 	return o.executeActionToolDirect(ctx, userID, infraai.ToolCall{
 		Name:      action,
 		Arguments: params,
@@ -205,6 +244,109 @@ func isVoiceLookupTool(name string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeVoiceToolName maps short/aliased tool names (as configured on the
+// ElevenLabs dashboard) to the canonical Go tool constant names.
+func normalizeVoiceToolName(name string) string {
+	switch name {
+	case "search_knowledge":
+		return ToolSearchKnowledge
+	case "get_savings_goal", "get_savings_goals":
+		return ToolGetSavingsGoals
+	case "list_automations", "get_automations":
+		return ToolListAutomations
+	case "list_memory", "get_memory":
+		return ToolListMemory
+	default:
+		return name
+	}
+}
+
+// voiceSupermemoryContext searches Supermemory for relevant user memory based on
+// the tool being called, enriching voice responses with personal history and context.
+func (o *Orchestrator) voiceSupermemoryContext(ctx context.Context, userID uuid.UUID, tool string, args map[string]interface{}) string {
+	if o.supermemory == nil {
+		return ""
+	}
+	query := voiceMemoryQuery(tool, args)
+	if query == "" {
+		return ""
+	}
+	smCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	results, err := o.supermemory.SearchMemory(smCtx, userID.String(), query, 5)
+	if err != nil || len(results) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, r := range results {
+		if r.Similarity < 0.65 {
+			continue
+		}
+		parts = append(parts, r.Memory)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " | ")
+}
+
+// voiceMemoryQuery generates a supermemory search query relevant to the tool call.
+func voiceMemoryQuery(tool string, args map[string]interface{}) string {
+	// If user passed a specific query, use it directly (most relevant)
+	if q, _ := args["query"].(string); q != "" {
+		return q
+	}
+	switch tool {
+	case ToolGetAccountSummary:
+		return "balance spending saving financial situation"
+	case ToolGetMoneyFlow, ToolGetSpendingSummary, ToolGetSpendingChart:
+		return "spending categories merchants food airtime transport bills"
+	case ToolGetRecentTransactions:
+		return "recent transactions purchases payments transfers recipients"
+	case ToolGetDepositHistory, ToolGetIncomeTrend:
+		return "income salary deposits earnings sources"
+	case ToolGetBudget:
+		return "budget limits spending goals categories"
+	case ToolGetSavingsGoals:
+		return "savings goals targets plans"
+	case ToolGetFinancialHealth, ToolGetFinancialAudit:
+		return "financial health habits patterns concerns spending"
+	case ToolGetFinancialAdvice, ToolGetFinancialPlan:
+		return "financial goals plans advice priorities income expenses"
+	case ToolGetRecurringExpenses, ToolGetSubscriptions:
+		return "subscriptions recurring bills monthly payments airtime"
+	case ToolGetRunway:
+		return "runway expenses upcoming needs bills obligations"
+	case ToolGetMiriamBrief, ToolGetMiriamMoneyState:
+		return "recent financial changes patterns goals spending income"
+	case ToolGetWithdrawalHistory:
+		return "withdrawals transfers recipients sent money"
+	default:
+		return ""
+	}
+}
+
+// isVoiceFinancialAction returns true for actions that move money.
+func isVoiceFinancialAction(action string) bool {
+	return action == ToolTransferFunds
+}
+
+// extractAmountFromParams tries to get the dollar amount from action params.
+func extractAmountFromParams(params map[string]interface{}) decimal.Decimal {
+	// Direct amount field
+	if v, ok := params["amount"].(float64); ok && v > 0 {
+		return decimal.NewFromFloat(v)
+	}
+	// Nested in action_config
+	if ac, ok := params["action_config"].(map[string]interface{}); ok {
+		if v, ok := ac["amount"].(float64); ok && v > 0 {
+			return decimal.NewFromFloat(v)
+		}
+	}
+	return decimal.Zero
 }
 
 func isVoiceActionTool(name string) bool {
@@ -249,7 +391,7 @@ func (o *Orchestrator) voiceLookupUnavailable(tool string) string {
 			return "weekly news is unavailable"
 		}
 	case ToolSearchKnowledge:
-		if o.knowledge == nil {
+		if o.knowledge == nil && o.supermemory == nil {
 			return "knowledge base is unavailable"
 		}
 	case ToolGetSpendingSummary, ToolGetSpendingChart, ToolGetRecentTransactions, ToolGetMoneyFlow:
@@ -399,5 +541,58 @@ func voiceAliasParams(action string, params map[string]interface{}) {
 				delete(params, "target_date")
 			}
 		}
+	case ToolCreateAutomation:
+		// ElevenLabs sends simple params: {amount, frequency, name, note, destination}
+		// Backend expects: {trigger_type, action_type, trigger_config, action_config, name, savings_goal_id}
+		if _, has := params["trigger_type"]; !has {
+			freq, _ := params["frequency"].(string)
+			triggerType := "schedule"
+			triggerConfig := map[string]interface{}{}
+
+			switch strings.ToLower(freq) {
+			case "daily":
+				triggerConfig["frequency"] = "daily"
+			case "weekly":
+				triggerConfig["frequency"] = "weekly"
+				if day, ok := params["day"].(string); ok {
+					triggerConfig["day"] = day
+				}
+			case "biweekly", "every_two_weeks", "every 2 weeks":
+				triggerConfig["frequency"] = "biweekly"
+			case "monthly":
+				triggerConfig["frequency"] = "monthly"
+				if dayOfMonth, ok := params["day_of_month"]; ok {
+					triggerConfig["day_of_month"] = dayOfMonth
+				}
+			case "on_deposit", "every_deposit", "on deposit", "every deposit", "per_deposit", "each_deposit":
+				triggerType = "deposit_received"
+				triggerConfig = map[string]interface{}{}
+			default:
+				triggerConfig["frequency"] = "weekly"
+			}
+
+			params["trigger_type"] = triggerType
+			params["trigger_config"] = triggerConfig
+			params["action_type"] = "transfer_to_stash"
+			params["action_config"] = map[string]interface{}{
+				"amount": params["amount"],
+				"from":   "spend",
+				"to":     "stash",
+			}
+			delete(params, "amount")
+			delete(params, "frequency")
+			delete(params, "day")
+			delete(params, "day_of_month")
+			delete(params, "note")
+		}
+		// If destination looks like a goal reference, set savings_goal_id
+		if dest, ok := params["destination"].(string); ok && dest != "" {
+			if _, err := uuid.Parse(dest); err == nil {
+				params["savings_goal_id"] = dest
+			}
+			delete(params, "destination")
+		}
+		// Mark as voice session to skip passcode check
+		params["_voice_session"] = true
 	}
 }

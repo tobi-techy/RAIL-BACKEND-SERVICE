@@ -95,7 +95,7 @@ func (w *Worker) handleJob(ctx context.Context, job *Job, workerID int) {
 		zap.Int("priority", int(job.Priority)),
 	)
 
-	jobCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	jobCtx, cancel := context.WithTimeout(ctx, 35*time.Minute)
 	defer cancel()
 
 	if err := handler(jobCtx, job); err != nil {

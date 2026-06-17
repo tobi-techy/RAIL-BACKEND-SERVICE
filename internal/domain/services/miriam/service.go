@@ -443,6 +443,7 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		MonthlySpend: monthlySpend.RoundBank(2), MonthlySavings: monthlySavings.RoundBank(2),
 		SpendBalance: spend.RoundBank(2), StashBalance: stash.RoundBank(2),
 		CalibrationScore: decimal.NewFromInt(int64(calibrationScore)),
+		ActiveMonths: activeMonths,
 	}
 	if err := s.repo.UpsertMoneyState(ctx, state); err != nil {
 		return nil, err

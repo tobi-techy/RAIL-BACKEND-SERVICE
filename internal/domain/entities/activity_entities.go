@@ -20,6 +20,7 @@ const (
 	ActivityTypeInvestment     ActivityType = "investment"
 	ActivityTypeCardPayment    ActivityType = "card_payment"
 	ActivityTypeAllocation     ActivityType = "allocation"      // internal 70/30 split
+	ActivityTypeMiriamAction   ActivityType = "miriam_action"   // financial agent moved money
 )
 
 // ActivityStatus is a normalized status across all transaction types.
@@ -63,6 +64,12 @@ type ActivityItem struct {
 	Chain       string               `json:"chain,omitempty"`
 	TxHash      string               `json:"txHash,omitempty"`
 	Destination string               `json:"destination,omitempty"` // address, bank, railtag
+	ReceiverName string              `json:"receiverName,omitempty"`
+	BankName     string              `json:"bankName,omitempty"`
+	AccountNumber string             `json:"accountNumber,omitempty"`
+	Rate          *decimal.Decimal   `json:"rate,omitempty"`
+	TokenAmount   *decimal.Decimal   `json:"tokenAmount,omitempty"`
+	Narration    string              `json:"narration,omitempty"`
 	SourceID    string               `json:"sourceId"`              // original entity ID for detail fetch
 	SourceType  string               `json:"sourceType"`            // "deposit", "withdrawal", "paj_order", "p2p_transfer"
 	GroupID     string               `json:"groupId,omitempty"`     // links related txns (e.g., PAJ order + deposit)
@@ -111,24 +118,29 @@ func NormalizeWithdrawalToActivity(w *Withdrawal) ActivityItem {
 		title = "Fiat withdrawal"
 		subtitle = string(w.Currency)
 	}
+	narration := ""
+	if w.Narration != nil {
+		narration = *w.Narration
+	}
 	fee := w.FeeAmount
 	return ActivityItem{
-		ID:          w.ID.String(),
-		Type:        ActivityTypeWithdrawal,
-		Direction:   ActivityDirectionOut,
-		Status:      status,
-		Title:       title,
-		Subtitle:    subtitle,
-		Amount:      w.Amount,
-		Currency:    ActivityCurrencyPair{Primary: string(w.Currency)},
-		FeeAmount:   &fee,
-		Chain:       w.DestinationChain,
-		TxHash:      derefStr(w.TxHash),
-		Destination: dest,
-		SourceID:    w.ID.String(),
-		SourceType:  "withdrawal",
-		CreatedAt:   w.CreatedAt,
-		CompletedAt: w.CompletedAt,
+		ID:           w.ID.String(),
+		Type:         ActivityTypeWithdrawal,
+		Direction:    ActivityDirectionOut,
+		Status:       status,
+		Title:        title,
+		Subtitle:     subtitle,
+		Amount:       w.Amount,
+		Currency:     ActivityCurrencyPair{Primary: string(w.Currency)},
+		FeeAmount:    &fee,
+		Chain:        w.DestinationChain,
+		TxHash:       derefStr(w.TxHash),
+		Destination:  dest,
+		Narration:    narration,
+		SourceID:     w.ID.String(),
+		SourceType:   "withdrawal",
+		CreatedAt:    w.CreatedAt,
+		CompletedAt:  w.CompletedAt,
 	}
 }
 
@@ -143,6 +155,8 @@ type PajOrderForActivity struct {
 	Rate              float64
 	Fee               float64
 	BankAccountName   *string
+	BankAccountNumber *string
+	BankName          *string
 	CreatedAt         time.Time
 }
 
@@ -173,23 +187,44 @@ func NormalizePajOrderToActivity(o *PajOrderForActivity) ActivityItem {
 	}
 
 	// offramp
-	bankName := ""
+	bankAccountName := ""
 	if o.BankAccountName != nil {
-		bankName = *o.BankAccountName
+		bankAccountName = *o.BankAccountName
 	}
+	resolvedBankName := ""
+	if o.BankName != nil {
+		resolvedBankName = *o.BankName
+	}
+	accountNumber := ""
+	if o.BankAccountNumber != nil {
+		accountNumber = *o.BankAccountNumber
+	}
+	subtitle := formatNaira(o.FiatAmount)
+	if bankAccountName != "" {
+		subtitle += " • " + bankAccountName
+	} else if accountNumber != "" {
+		subtitle += " • " + accountNumber
+	}
+	rate := decimal.NewFromFloat(o.Rate)
+	tokenAmt := decimal.NewFromFloat(o.TokenAmount)
 	return ActivityItem{
-		ID:          o.ID,
-		Type:        ActivityTypeNairaWithdraw,
-		Direction:   ActivityDirectionOut,
-		Status:      status,
-		Title:       "Withdrew to bank",
-		Subtitle:    formatNaira(o.FiatAmount) + " • " + bankName,
-		Amount:      fiatAmount,
-		Currency:    ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
-		FiatAmount:  &fiatAmount,
-		SourceID:    o.ID,
-		SourceType:  "paj_order",
-		CreatedAt:   o.CreatedAt,
+		ID:            o.ID,
+		Type:          ActivityTypeNairaWithdraw,
+		Direction:     ActivityDirectionOut,
+		Status:        status,
+		Title:         "Withdrew to bank",
+		Subtitle:      subtitle,
+		Amount:        fiatAmount,
+		Currency:      ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
+		FiatAmount:    &fiatAmount,
+		ReceiverName:  bankAccountName,
+		BankName:      resolvedBankName,
+		AccountNumber: accountNumber,
+		Rate:          &rate,
+		TokenAmount:   &tokenAmt,
+		SourceID:      o.ID,
+		SourceType:    "paj_order",
+		CreatedAt:     o.CreatedAt,
 	}
 }
 
@@ -237,13 +272,100 @@ func NormalizeP2PToActivity(t *P2PTransferForActivity, viewerID uuid.UUID) Activ
 	}
 }
 
+// MiriamActionForActivity is the minimal Miriam (financial agent) action data
+// needed to render a transaction-feed entry.
+type MiriamActionForActivity struct {
+	ID           uuid.UUID
+	Action       string
+	Status       string // executed, failed, cancelled, expired
+	ErrorMessage string
+	From         string // "spend" or "stash" for transfers
+	To           string
+	Amount       decimal.Decimal
+	Currency     string // defaults to USDC
+	Emergency    bool   // true when params.impact.emergency_withdrawal was set
+	CreatedAt    time.Time
+}
+
+// NormalizeMiriamActionToActivity converts a Miriam fund-moving audit entry
+// into an ActivityItem. Only money-moving actions should be passed here —
+// purely informational actions (set_goal, set_budget) are filtered upstream.
+func NormalizeMiriamActionToActivity(a *MiriamActionForActivity) ActivityItem {
+	status := normalizeMiriamStatus(a.Status)
+	currency := a.Currency
+	if currency == "" {
+		currency = "USDC"
+	}
+
+	title, subtitle, direction := miriamActionLabels(a.Action, a.From, a.To, a.Amount, currency, a.Emergency)
+
+	item := ActivityItem{
+		ID:         a.ID.String(),
+		Type:       ActivityTypeMiriamAction,
+		Direction:  direction,
+		Status:     status,
+		Title:      title,
+		Subtitle:   subtitle,
+		Amount:     a.Amount,
+		Currency:   ActivityCurrencyPair{Primary: currency},
+		SourceID:   a.ID.String(),
+		SourceType: "miriam_action",
+		Narration:  a.ErrorMessage,
+		CreatedAt:  a.CreatedAt,
+	}
+	if status == ActivityStatusCompleted {
+		t := a.CreatedAt
+		item.CompletedAt = &t
+	}
+	return item
+}
+
+// IsMiriamMoneyMovingAction returns true for action types that physically move
+// user funds and should appear in the transaction feed. initiate_withdrawal is
+// intentionally NOT in this set — those actions surface via the withdrawals
+// table (fetchWithdrawals) so emitting them here would double-count.
+func IsMiriamMoneyMovingAction(action string) bool {
+	return action == "transfer_funds"
+}
+
+func miriamActionLabels(action, from, to string, amount decimal.Decimal, currency string, emergency bool) (string, string, ActivityDirection) {
+	amountStr := amount.StringFixed(2)
+	if action == "transfer_funds" {
+		switch {
+		case emergency && from == "stash" && to == "spend":
+			return "Miriam ran an emergency stash withdrawal", "Stash → Spend • $" + amountStr + " (early-withdrawal fee applies)", ActivityDirectionIn
+		case from == "spend" && to == "stash":
+			return "Miriam moved to Stash", "Spend → Stash • $" + amountStr, ActivityDirectionOut
+		case from == "stash" && to == "spend":
+			return "Miriam moved to Spend", "Stash → Spend • $" + amountStr, ActivityDirectionIn
+		default:
+			return "Miriam moved funds", from + " → " + to + " • $" + amountStr, ActivityDirectionOut
+		}
+	}
+	return "Miriam took an action", action, ActivityDirectionOut
+}
+
+func normalizeMiriamStatus(s string) ActivityStatus {
+	switch s {
+	case "executed":
+		return ActivityStatusCompleted
+	case "failed":
+		return ActivityStatusFailed
+	case "cancelled", "expired":
+		return ActivityStatusCancelled
+	}
+	return ActivityStatusPending
+}
+
 // --- helpers ---
 
 func normalizeDepositStatus(s string) ActivityStatus {
 	switch s {
-	case "confirmed":
+	case "confirmed", "off_ramp_completed", "broker_funded":
 		return ActivityStatusCompleted
-	case "failed":
+	case "off_ramp_initiated":
+		return ActivityStatusProcessing
+	case "failed", "expired":
 		return ActivityStatusFailed
 	default:
 		return ActivityStatusPending

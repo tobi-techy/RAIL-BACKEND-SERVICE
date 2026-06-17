@@ -106,6 +106,10 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 					o.logger.Error("failed to track streamed chat usage", zap.Error(trackErr))
 				}
 			}
+			// Extract memorable moments for future callbacks
+			if o.memory != nil {
+				o.memory.ExtractMoment(userID, message, content)
+			}
 		}()
 	}
 
@@ -136,35 +140,11 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	messages := make([]ai.Message, len(history), len(history)+10)
 	copy(messages, history)
 
-	// Inject current balance snapshot so the LLM always knows the user's financial position
-	if balanceCtx := o.buildBalanceContext(ctx, userID); balanceCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: balanceCtx})
-	}
-	if profileCtx := o.buildFinancialProfileContext(ctx, userID); profileCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: profileCtx})
-	}
-	if userProfileCtx := o.buildUserProfileContext(ctx, userID); userProfileCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: userProfileCtx})
-	}
-	if o.bankStatementCtx != nil {
-		if stmtCtx := o.bankStatementCtx.BuildContext(ctx, userID); stmtCtx != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: stmtCtx})
-		}
-	}
-	if o.memory != nil {
-		if memCtx := o.memory.BuildMemoryContextWithSummary(ctx, userID); memCtx != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: memCtx})
-		}
-		if toneCtx := o.memory.BuildToneContext(ctx, userID); toneCtx != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: toneCtx})
-		}
-	}
-	if toneModeCtx := buildToneModeContext(opts.ToneMode); toneModeCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: toneModeCtx})
-	}
-	if timeCtx := o.buildUserTimeContext(ctx, userID); timeCtx != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: timeCtx})
-	}
+	// Assemble all context in parallel (3s ceiling)
+	messages = append(messages, o.assembleContext(ctx, userID, ContextAssemblyOpts{
+		ToneMode: opts.ToneMode,
+		Message:  message,
+	})...)
 
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
@@ -172,12 +152,12 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		Messages:     messages,
 		SystemPrompt: SystemPrompt,
 		MaxTokens:    2048,
-		Temperature:  ai.Float64(0.4),
+		Temperature:  ai.Float64(0.6),
 		ModelHint:    classifyQueryComplexity(message),
 	}
 
 	// Non-streaming tool call rounds (up to 5)
-	tools := o.GetTools()
+	tools := o.RouteTools(message)
 	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 	if err != nil {
 		observeChat("unknown", time.Since(start), 0, err)
@@ -293,6 +273,19 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	if len(resp.ToolCalls) == 0 {
 		if resp.Content != "" {
 			content := o.applySafetyFilter(resp.Content)
+			// Quality gate: retry once if response is flat/boring
+			if verdict := CheckResponseQuality(content); !verdict.Pass {
+				if hint := QualityCorrectionHint(verdict.Failures); hint != "" {
+					retryMsgs := make([]ai.Message, len(req.Messages), len(req.Messages)+2)
+					copy(retryMsgs, req.Messages)
+					retryMsgs = append(retryMsgs, ai.Message{Role: "assistant", Content: content}, ai.Message{Role: "system", Content: hint})
+					retryReq := &ai.ChatRequest{Messages: retryMsgs, SystemPrompt: SystemPrompt, MaxTokens: 2048, Temperature: ai.Float64(0.7), ModelHint: "fast"}
+					if retryResp, err := o.aiProvider.ChatCompletion(ctx, retryReq); err == nil && retryResp.Content != "" {
+						content = o.applySafetyFilter(retryResp.Content)
+						cumulativeTokens += retryResp.TokensUsed
+					}
+				}
+			}
 			emit(StreamEvent{Type: "token", Content: content})
 		}
 		modelName := resp.Model
@@ -423,7 +416,30 @@ func thinkingMessage(toolName string) string {
 		return "Looking at your balance history..."
 	case ToolGetRecurringExpenses:
 		return "Scanning for recurring expenses..."
+	case ToolSendMeme:
+		return "Cooking up a meme..."
 	default:
 		return "Working on it..."
 	}
+}
+
+// looksFinancial returns true if the message likely involves financial data
+// that would benefit from Supermemory context. Avoids wasted API calls for greetings.
+func looksFinancial(msg string) bool {
+	lower := strings.ToLower(msg)
+	keywords := []string{
+		"spend", "spent", "income", "salary", "earn", "money", "transfer",
+		"airtime", "bill", "budget", "category", "month", "week",
+		"how much", "total", "balance", "transaction", "payment",
+		"bank", "statement", "receipt", "expensive", "cost",
+		"who did i", "where did", "what did i", "compare",
+		"recurring", "subscription", "utilities", "food", "transport",
+		"finance", "financial", "overview", "summary",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }

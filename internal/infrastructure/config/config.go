@@ -45,6 +45,18 @@ type Config struct {
 	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
 	TelegramAlerts TelegramConfig       `mapstructure:"telegram_alerts"`
 	Umbra          UmbraConfig          `mapstructure:"umbra"`
+	Statement      StatementConfig      `mapstructure:"statement"`
+}
+
+// StatementConfig holds configuration for the bank statement processing pipeline.
+type StatementConfig struct {
+	S3Bucket       string `mapstructure:"s3_bucket"`        // S3 bucket for statement files (empty = store in DB)
+	S3Prefix       string `mapstructure:"s3_prefix"`        // S3 key prefix (default: "statements/")
+	S3Region       string `mapstructure:"s3_region"`        // AWS region for S3 bucket
+	TextractRegion string `mapstructure:"textract_region"`  // AWS region for Textract (empty = disabled)
+	EnableOCR      bool   `mapstructure:"enable_ocr"`       // Enable OCR fallback for scanned docs
+	EnableVision   bool   `mapstructure:"enable_vision"`    // Enable vision LLM for images
+	MaxFileSizeMB  int    `mapstructure:"max_file_size_mb"` // Max upload size (default: 20)
 }
 
 // TelegramConfig contains Telegram bot alerting configuration
@@ -352,6 +364,18 @@ type SecurityConfig struct {
 
 	// Internal API key for service-to-service auth
 	InternalAPIKey string `mapstructure:"internal_api_key"`
+
+	// InternalRequestSigningSecret, when set, requires HMAC-SHA256 request
+	// signing on /internal/* endpoints in addition to the static API key
+	// (defense-in-depth, TM-001). Empty = signing not enforced.
+	InternalRequestSigningSecret string `mapstructure:"internal_request_signing_secret"`
+
+	// AIFundActionsRequirePasscode requires a verified passcode session
+	// (X-Passcode-Session) before the AI assistant can confirm a money-moving
+	// action (withdrawal / stash transfer), mirroring the step-up the direct
+	// withdrawal routes enforce (TM-004, TM-006). Default false so it can be
+	// enabled once clients send the passcode-session header on AI confirms.
+	AIFundActionsRequirePasscode bool `mapstructure:"ai_fund_actions_require_passcode"`
 
 	// Webhook replay protection
 	WebhookReplay WebhookReplayConfig `mapstructure:"webhook_replay"`
@@ -855,7 +879,7 @@ func setDefaults() {
 	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
-	viper.SetDefault("ai.kimi.model", "kimi-k2.6")
+	viper.SetDefault("ai.kimi.model", "moonshot-v1-32k")
 
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.SetDefault("ai.elevenlabs.stability", 0.5)
@@ -884,7 +908,7 @@ func setDefaults() {
 	viper.BindEnv("ai.bedrock.model_id", "BEDROCK_MODEL_ID")
 	viper.BindEnv("ai.bedrock.guardrail_id", "BEDROCK_GUARDRAIL_ID")
 	viper.BindEnv("ai.bedrock.guardrail_version", "BEDROCK_GUARDRAIL_VERSION")
-	viper.SetDefault("ai.bedrock.model_id", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	viper.SetDefault("ai.bedrock.model_id", "")
 	viper.SetDefault("ai.bedrock.max_tokens", 4096)
 	viper.SetDefault("ai.bedrock.temperature", 0.7)
 	viper.SetDefault("ai.bedrock.top_p", 0.9)
@@ -949,7 +973,7 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.user_limit", 200)
 	viper.SetDefault("rate_limit.user_window", 60) // 1 minute
 	viper.SetDefault("rate_limit.key_prefix", "ratelimit")
-	viper.SetDefault("rate_limit.fail_open", true)
+	viper.SetDefault("rate_limit.fail_open", false)
 	viper.SetDefault("rate_limit.response_headers", true)
 
 	// Endpoint-specific rate limits (per minute)

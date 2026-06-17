@@ -20,6 +20,7 @@ const (
 	// Smart Allocation Mode account types
 	AccountTypeSpendingBalance       AccountType = "spending_balance"        // User's 70% spending balance (available for payments)
 	AccountTypeStashBalance          AccountType = "stash_balance"           // User's 30% stash balance (locked savings)
+	AccountTypeGoalBalance           AccountType = "goal_balance"            // Per-goal earmarked funds (virtual sub-account of stash)
 	AccountTypePendingCardSettlement AccountType = "pending_card_settlement" // Funds held for authorized but unsettled card transactions
 
 	// System account types
@@ -38,6 +39,7 @@ func (a AccountType) IsUserAccountType() bool {
 		a == AccountTypePendingInvestment ||
 		a == AccountTypeSpendingBalance ||
 		a == AccountTypeStashBalance ||
+		a == AccountTypeGoalBalance ||
 		a == AccountTypePendingCardSettlement
 }
 
@@ -65,7 +67,7 @@ func (a AccountType) IsValid() bool {
 func (a AccountType) Validate() error {
 	switch a {
 	case AccountTypeUSDCBalance, AccountTypeFiatExposure, AccountTypePendingInvestment,
-		AccountTypeSpendingBalance, AccountTypeStashBalance, AccountTypePendingCardSettlement,
+		AccountTypeSpendingBalance, AccountTypeStashBalance, AccountTypeGoalBalance, AccountTypePendingCardSettlement,
 		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational,
 		AccountTypeSubscriptionRevenue, AccountTypeWithdrawalFeeRevenue, AccountTypeEmergencyWithdrawalRevenue:
 		return nil
@@ -146,6 +148,7 @@ type LedgerAccount struct {
 	ID          uuid.UUID       `json:"id" db:"id"`
 	UserID      *uuid.UUID      `json:"user_id,omitempty" db:"user_id"`
 	AccountType AccountType     `json:"account_type" db:"account_type"`
+	GoalID      *uuid.UUID      `json:"goal_id,omitempty" db:"goal_id"`
 	Currency    string          `json:"currency" db:"currency"`
 	Balance     decimal.Decimal `json:"balance" db:"balance"`
 	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
@@ -170,6 +173,16 @@ func (a *LedgerAccount) Validate() error {
 	// System accounts must not have a user_id
 	if a.AccountType.IsSystemAccountType() && a.UserID != nil {
 		return fmt.Errorf("system account cannot have user_id")
+	}
+
+	// Goal balance accounts must have a goal_id
+	if a.AccountType == AccountTypeGoalBalance && a.GoalID == nil {
+		return fmt.Errorf("goal_balance account requires goal_id")
+	}
+
+	// Non-goal accounts must not have a goal_id
+	if a.AccountType != AccountTypeGoalBalance && a.GoalID != nil {
+		return fmt.Errorf("non-goal account cannot have goal_id")
 	}
 
 	if a.Currency != "USDC" && a.Currency != "USD" {
@@ -298,6 +311,7 @@ type UserBalances struct {
 	USDCBalance        decimal.Decimal `json:"usdc_balance"`
 	SpendingBalance    decimal.Decimal `json:"spending_balance"`
 	StashBalance       decimal.Decimal `json:"stash_balance"`
+	GoalBalance        decimal.Decimal `json:"goal_balance"`
 	FiatExposure       decimal.Decimal `json:"fiat_exposure"`
 	PendingInvestment  decimal.Decimal `json:"pending_investment"`
 	TotalUSDEquivalent decimal.Decimal `json:"total_usd_equivalent"`
@@ -311,6 +325,7 @@ func (b *UserBalances) TotalValue() decimal.Decimal {
 // CalculateTotalUSD calculates total balance in USD equivalent
 // Assumes 1 USDC = 1 USD for simplicity
 func (b *UserBalances) CalculateTotalUSD() decimal.Decimal {
+	// GoalBalance is a virtual sub-account of StashBalance (not additive).
 	return b.USDCBalance.
 		Add(b.SpendingBalance).
 		Add(b.StashBalance).

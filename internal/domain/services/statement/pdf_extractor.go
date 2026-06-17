@@ -15,6 +15,83 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
+func init() {
+	// pdfcpu requires a writable HOME to create its config directory.
+	// In scratch/distroless containers, /home may not exist or be read-only.
+	// Try HOME first, then /tmp, then current directory.
+	home := os.Getenv("HOME")
+	if home != "" && isWritable(home) {
+		return
+	}
+	if isWritable("/tmp") {
+		os.Setenv("HOME", "/tmp")
+		return
+	}
+	// Last resort: use current working directory
+	if wd, err := os.Getwd(); err == nil && isWritable(wd) {
+		os.Setenv("HOME", wd)
+	}
+}
+
+// IsPDFContentNoise detects when pdfcpu extracted raw PDF content stream data
+// instead of readable text. Returns true if the text contains hex-encoded CID font
+// strings (<hex> Tj) or a high density of PDF operators — indicating pdfcpu couldn't
+// properly decode the text layer and the output is unreadable.
+func IsPDFContentNoise(text string) bool {
+	if len(text) == 0 {
+		return false
+	}
+
+	// Check for hex-encoded CID font strings like <00250044...> Tj
+	hexStringCount := 0
+	operatorCount := 0
+	lines := strings.Split(text, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Hex-encoded strings (CID font data) — strong signal of unreadable extraction
+		if strings.Contains(line, "<00") || strings.Contains(line, "> Tj") || strings.Contains(line, "> TJ") {
+			hexStringCount++
+		}
+
+		// PDF operators (positioning, path construction, rendering)
+		if strings.Contains(line, " Tf") || strings.Contains(line, " Do") || strings.Contains(line, " Td") || strings.Contains(line, " Tm") {
+			operatorCount++
+		}
+
+		// Font/XDObject resource references
+		if strings.HasPrefix(line, "/") && (strings.Contains(line, "Do") || strings.Contains(line, "Tf") || strings.HasPrefix(line, "/F")) {
+			operatorCount++
+		}
+	}
+
+	// If we see hex strings in any significant amount, the text is unreadable
+	if hexStringCount > 0 {
+		return true
+	}
+
+	// If >10% of non-empty lines are PDF operators, it's likely content stream noise
+	if len(lines) > 0 && float64(operatorCount)/float64(len(lines)) > 0.1 {
+		return true
+	}
+
+	return false
+}
+
+func isWritable(path string) bool {
+	f, err := os.CreateTemp(path, ".rail-test-*")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return true
+}
+
 const (
 	MaxFileSize      = 20 * 1024 * 1024 // 20MB
 	MaxPageCount     = 100

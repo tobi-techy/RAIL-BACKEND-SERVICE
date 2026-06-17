@@ -1,10 +1,12 @@
 package ledger
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +14,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/retry"
 	"github.com/shopspring/decimal"
 )
 
@@ -71,13 +74,28 @@ func (s *Service) GetTransactionByIdempotencyKey(ctx context.Context, key string
 	return s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, key)
 }
 
+// ledgerTxRetryConfig governs how many times we replay a ledger transaction
+// after a Postgres serialization failure / deadlock. Ledger work is short and
+// fully rolled back by the server on 40001/40P01, so replaying from scratch is
+// safe and cannot double-apply balances.
+var ledgerTxRetryConfig = retry.RetryConfig{
+	MaxAttempts: 5,
+	BaseDelay:   10 * time.Millisecond,
+	MaxDelay:    250 * time.Millisecond,
+	Multiplier:  2.0,
+}
+
 func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, bool, error) {
 	// Validate request
 	if err := req.Validate(); err != nil {
 		return nil, false, fmt.Errorf("validate request: %w", err)
 	}
 
-	// Check for idempotency
+	// Fast-path idempotency check. This is a best-effort optimization to avoid
+	// opening a transaction for an obvious duplicate; it is NOT the correctness
+	// boundary. The authoritative guarantee is the UNIQUE(idempotency_key)
+	// constraint enforced inside executeTransaction, which closes the
+	// check-then-insert TOCTOU window between concurrent callers.
 	existing, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
 	if err != nil {
 		return nil, false, fmt.Errorf("check idempotency: %w", err)
@@ -89,14 +107,60 @@ func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTra
 		return existing, false, nil
 	}
 
-	// Begin database transaction
-	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return nil, false, fmt.Errorf("begin transaction: %w", err)
+	// If the caller already established a transaction (e.g. ReverseTransaction),
+	// run the body inline on that transaction. We must NOT open a second
+	// transaction on a different connection, and we must NOT retry — the caller
+	// owns the transaction lifecycle and a server-side rollback would already
+	// have poisoned their tx.
+	if repositories.HasTx(ctx) {
+		return s.executeTransaction(ctx, req)
 	}
-	defer tx.Rollback()
 
-	// Create ledger transaction record
+	// Standalone path: own the transaction lifecycle and retry on
+	// serialization/deadlock failures with bounded exponential backoff.
+	var (
+		resultTx *entities.LedgerTransaction
+		created  bool
+	)
+	retryErr := retry.WithExponentialBackoff(ctx, ledgerTxRetryConfig, func() error {
+		var execErr error
+		resultTx, created, execErr = s.executeTransaction(ctx, req)
+		return execErr
+	}, repositories.IsSerializationFailure)
+	if retryErr != nil {
+		return nil, false, retryErr
+	}
+	return resultTx, created, nil
+}
+
+// executeTransaction performs the full double-entry write inside a single
+// database transaction: insert the transaction header, insert each entry, and
+// lock + update each affected account balance. It enforces deterministic lock
+// ordering to prevent deadlocks and treats a unique-key collision on the
+// idempotency key as a successful idempotent replay rather than an error.
+func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, bool, error) {
+	// Reuse the caller's transaction if present; otherwise open our own.
+	var (
+		tx    *sqlx.Tx
+		txCtx context.Context
+		owned bool
+	)
+	if repositories.HasTx(ctx) {
+		txCtx = ctx
+	} else {
+		var err error
+		tx, err = s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+		if err != nil {
+			return nil, false, fmt.Errorf("begin transaction: %w", err)
+		}
+		owned = true
+		defer func() {
+			// Safe no-op if already committed.
+			_ = tx.Rollback()
+		}()
+		txCtx = repositories.WithTx(ctx, tx)
+	}
+
 	now := time.Now()
 	ledgerTx := &entities.LedgerTransaction{
 		ID:              uuid.New(),
@@ -111,15 +175,33 @@ func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTra
 		CreatedAt:       now,
 	}
 
-	// Use transaction context for all operations
-	txCtx := repositories.WithTx(ctx, tx)
-
 	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
+		// Concurrent caller with the same idempotency key already inserted the
+		// transaction. The UNIQUE(idempotency_key) constraint is the real
+		// guard against balance duplication. Resolve to the winning row and
+		// return it idempotently instead of surfacing a hard error.
+		if repositories.IsUniqueViolation(err, "") {
+			if owned {
+				_ = tx.Rollback()
+			}
+			existing, getErr := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
+			if getErr != nil {
+				return nil, false, fmt.Errorf("resolve idempotent transaction: %w", getErr)
+			}
+			if existing != nil {
+				s.logger.Info("Transaction already exists (idempotent, race resolved)",
+					"idempotency_key", req.IdempotencyKey,
+					"transaction_id", existing.ID)
+				return existing, false, nil
+			}
+		}
 		return nil, false, fmt.Errorf("create transaction: %w", err)
 	}
 
-	// Create entries and update account balances
-	for _, entryReq := range req.Entries {
+	// Lock + update each affected account in a deterministic global order
+	// (sorted by account ID) so that two transactions touching the same set of
+	// accounts in different request orders cannot deadlock against each other.
+	for _, entryReq := range orderedEntriesForLocking(req.Entries) {
 		entry := &entities.LedgerEntry{
 			ID:            uuid.New(),
 			TransactionID: ledgerTx.ID,
@@ -136,7 +218,7 @@ func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTra
 			return nil, false, fmt.Errorf("create entry: %w", err)
 		}
 
-		// Update account balance
+		// Update account balance (acquires SELECT ... FOR UPDATE row lock).
 		if err := s.updateAccountBalanceInTx(txCtx, entryReq.AccountID, entryReq.EntryType, entryReq.Amount); err != nil {
 			return nil, false, fmt.Errorf("update account balance: %w", err)
 		}
@@ -148,9 +230,11 @@ func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTra
 		return nil, false, fmt.Errorf("update transaction status: %w", err)
 	}
 
-	// Commit database transaction
-	if err := tx.Commit(); err != nil {
-		return nil, false, fmt.Errorf("commit transaction: %w", err)
+	// Commit only if we own the transaction; otherwise the caller commits.
+	if owned {
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("commit transaction: %w", err)
+		}
 	}
 
 	s.logger.Info("Ledger transaction created successfully",
@@ -159,6 +243,20 @@ func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTra
 		"user_id", ledgerTx.UserID)
 
 	return ledgerTx, true, nil
+}
+
+// orderedEntriesForLocking returns the entries sorted by account ID so that
+// row locks are always acquired in a consistent global order across all
+// callers. This is the standard defense against lock-ordering deadlocks when
+// multiple transactions touch overlapping account sets. Entry rows are written
+// in the same order; ledger entries are order-independent, so this is safe.
+func orderedEntriesForLocking(entries []entities.CreateEntryRequest) []entities.CreateEntryRequest {
+	ordered := make([]entities.CreateEntryRequest, len(entries))
+	copy(ordered, entries)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return bytes.Compare(ordered[i].AccountID[:], ordered[j].AccountID[:]) < 0
+	})
+	return ordered
 }
 
 // updateAccountBalanceInTx updates an account balance within a database transaction
@@ -196,8 +294,12 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 		}
 	}
 
-	// Update balance
-	if err := s.ledgerRepo.UpdateAccountBalance(ctx, accountID, newBalance); err != nil {
+	// Update balance using an optimistic CAS on the balance we just read under
+	// the row lock. This is belt-and-suspenders on top of the FOR UPDATE lock:
+	// if the balance changed between the locked read and this write (which the
+	// lock should make impossible), the guarded update aborts instead of
+	// silently overwriting a concurrent modification.
+	if err := s.ledgerRepo.UpdateAccountBalanceGuarded(ctx, accountID, currentBalance, newBalance); err != nil {
 		return fmt.Errorf("update account balance: %w", err)
 	}
 
@@ -662,8 +764,8 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 		return fmt.Errorf("get stash account: %w", err)
 	}
 
-	desc := fmt.Sprintf("Roundup collection: %s", amount.String())
-	refType := "roundup_collection"
+	desc := fmt.Sprintf("Transfer to stash: $%s", amount.StringFixed(2))
+	refType := "spend_to_stash"
 	req := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeInternalTransfer,
@@ -718,8 +820,8 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 		return fmt.Errorf("get stash account: %w", err)
 	}
 
-	desc := fmt.Sprintf("Transfer stash to spending: %s", amount.String())
-	refType := "miriam_transfer"
+	desc := fmt.Sprintf("Transfer from stash: $%s", amount.StringFixed(2))
+	refType := "stash_to_spend"
 	txReq := &entities.CreateTransactionRequest{
 		UserID:          &userID,
 		TransactionType: entities.TransactionTypeInternalTransfer,
@@ -929,4 +1031,284 @@ func (s *Service) observeStashRaid(userID uuid.UUID, amount decimal.Decimal, ref
 			s.logger.Warn("stash raid observer failed", "user_id", userID.String(), "error", err)
 		}
 	}()
+}
+
+// DistributeYieldToGoals delegates to CreditYieldToSavings for interface compatibility.
+func (s *Service) DistributeYieldToGoals(ctx context.Context, userID uuid.UUID, yieldAmount decimal.Decimal, distributionID string) error {
+	return s.CreditYieldToSavings(ctx, userID, yieldAmount, distributionID)
+}
+
+// CreditYieldToSavings credits yield directly to stash AND each goal account in a single transaction.
+// Each account earns yield independently based on its share of total savings.
+func (s *Service) CreditYieldToSavings(ctx context.Context, userID uuid.UUID, totalYield decimal.Decimal, distributionID string) error {
+	if totalYield.IsZero() || totalYield.IsNegative() {
+		return nil
+	}
+
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+	systemAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return fmt.Errorf("get system buffer account: %w", err)
+	}
+	goalAccounts, err := s.ledgerRepo.GetGoalAccounts(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("get goal accounts: %w", err)
+	}
+
+	// Calculate total savings position
+	totalSavings := stashAccount.Balance
+	for _, ga := range goalAccounts {
+		totalSavings = totalSavings.Add(ga.Balance)
+	}
+
+	// Build batch entries: one debit per account, one credit to system
+	var entries []entities.CreateEntryRequest
+	desc := fmt.Sprintf("Yield distribution %s", distributionID)
+	systemCreditTotal := decimal.Zero
+
+	if totalSavings.IsZero() {
+		// No savings anywhere — credit all to stash as fallback
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: totalYield, Currency: "USDC", Description: &desc,
+		})
+		systemCreditTotal = totalYield
+	} else {
+		distributed := decimal.Zero
+
+		// Stash share
+		stashShare := stashAccount.Balance.Div(totalSavings).Mul(totalYield).Truncate(6)
+		if stashShare.IsPositive() {
+			entries = append(entries, entities.CreateEntryRequest{
+				AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: stashShare, Currency: "USDC", Description: &desc,
+			})
+			distributed = distributed.Add(stashShare)
+		}
+
+		// Each goal's share
+		for _, ga := range goalAccounts {
+			share := ga.Balance.Div(totalSavings).Mul(totalYield).Truncate(6)
+			if share.IsZero() {
+				continue
+			}
+			goalDesc := fmt.Sprintf("Yield on goal %s", ga.GoalID)
+			entries = append(entries, entities.CreateEntryRequest{
+				AccountID: ga.ID, EntryType: entities.EntryTypeDebit, Amount: share, Currency: "USDC", Description: &goalDesc,
+			})
+			distributed = distributed.Add(share)
+		}
+
+		// Rounding dust to stash
+		dust := totalYield.Sub(distributed)
+		if dust.IsPositive() {
+			entries = append(entries, entities.CreateEntryRequest{
+				AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: dust, Currency: "USDC", Description: &desc,
+			})
+			distributed = distributed.Add(dust)
+		}
+		systemCreditTotal = distributed
+	}
+
+	// Single system credit to balance the debits
+	entries = append(entries, entities.CreateEntryRequest{
+		AccountID: systemAccount.ID, EntryType: entities.EntryTypeCredit, Amount: systemCreditTotal, Currency: "USDC", Description: &desc,
+	})
+
+	idempKey := fmt.Sprintf("yield-%s-%s", distributionID, userID)
+	refType := "yield_distribution"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeDeposit,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"distribution_id": distributionID},
+		Entries:         entries,
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// --- Automation Transfer Operations ---
+
+// AutomationTransferSpendToStash moves funds from spend to stash, labeled as an automation transfer
+// so it appears correctly in transaction history.
+func (s *Service) AutomationTransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey, automationName string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Automation: %s — $%s to stash", automationName, amount.StringFixed(2))
+	refType := "automation_transfer"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"source": "automation", "automation_name": automationName},
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: stashAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// --- Goal Sub-Account Operations ---
+
+// GetOrCreateGoalAccount ensures a goal_balance ledger account exists for a user+goal pair.
+func (s *Service) GetOrCreateGoalAccount(ctx context.Context, userID, goalID uuid.UUID) (*entities.LedgerAccount, error) {
+	return s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+}
+
+// TransferSpendToGoal moves funds from the user's spending balance to a goal sub-account.
+func (s *Service) TransferSpendToGoal(ctx context.Context, userID, goalID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+
+	goalAccount, err := s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+	if err != nil {
+		return fmt.Errorf("get goal account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Goal contribution: spend → goal %s", goalID)
+	refType := "goal_contribution"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"goal_id": goalID.String()},
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: goalAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// TransferGoalToSpend moves funds from a goal sub-account back to spending.
+func (s *Service) TransferGoalToSpend(ctx context.Context, userID, goalID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if amount.IsZero() || amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+
+	goalAccount, err := s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+	if err != nil {
+		return fmt.Errorf("get goal account: %w", err)
+	}
+
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+
+	desc := fmt.Sprintf("Goal withdrawal: goal %s → spend", goalID)
+	refType := "goal_withdrawal"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        map[string]any{"goal_id": goalID.String()},
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: goalAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},
+		},
+	}
+
+	_, err = s.CreateTransaction(ctx, req)
+	return err
+}
+
+// GetGoalBalance returns the balance of a specific goal sub-account.
+func (s *Service) GetGoalBalance(ctx context.Context, userID, goalID uuid.UUID) (decimal.Decimal, error) {
+	account, err := s.ledgerRepo.GetOrCreateGoalAccount(ctx, userID, goalID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return account.Balance, nil
+}
+
+// GetTotalGoalAllocated returns the sum of all goal sub-account balances for a user.
+func (s *Service) GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	return s.ledgerRepo.GetTotalGoalAllocated(ctx, userID)
+}
+
+// GetGoalAccounts returns all goal sub-accounts with balances for a user.
+func (s *Service) GetGoalAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error) {
+	return s.ledgerRepo.GetGoalAccounts(ctx, userID)
+}
+
+// GetTotalSavingsBalance returns stash_balance + all goal_balance accounts for a user.
+// This represents the user's total savings position for yield calculation.
+func (s *Service) GetTotalSavingsBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	goalTotal, err := s.ledgerRepo.GetTotalGoalAllocated(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return stashAccount.Balance.Add(goalTotal), nil
+}
+
+// GetUnallocatedStashBalance returns the stash balance minus all goal-allocated funds.
+// This is the amount available for withdrawal without impacting any goals.
+func (s *Service) GetUnallocatedStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	goalTotal, err := s.ledgerRepo.GetTotalGoalAllocated(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	unallocated := stashAccount.Balance.Sub(goalTotal)
+	if unallocated.IsNegative() {
+		return decimal.Zero, nil
+	}
+	return unallocated, nil
+}
+
+// GetWithdrawableStashBalance returns the stash balance minus ONLY protected goal funds.
+// Unprotected goals produce a warning but don't block withdrawals.
+func (s *Service) GetWithdrawableStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	protectedTotal, err := s.ledgerRepo.GetProtectedGoalAllocated(ctx, userID)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	withdrawable := stashAccount.Balance.Sub(protectedTotal)
+	if withdrawable.IsNegative() {
+		return decimal.Zero, nil
+	}
+	return withdrawable, nil
 }

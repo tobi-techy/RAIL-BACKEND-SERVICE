@@ -323,10 +323,6 @@ func (r *InitiateFiatWithdrawalRequest) Validate() error {
 		return fmt.Errorf("account holder name is required")
 	}
 	if r.Currency == WithdrawalCurrencyEUR {
-		minAmountEUR := decimal.NewFromFloat(10.00)
-		if r.Amount.LessThan(minAmountEUR) {
-			return fmt.Errorf("amount must be at least %s EUR", minAmountEUR.String())
-		}
 		iban := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(r.IBAN), " ", ""))
 		if len(iban) < 15 || len(iban) > 34 {
 			return fmt.Errorf("IBAN must be between 15 and 34 characters")

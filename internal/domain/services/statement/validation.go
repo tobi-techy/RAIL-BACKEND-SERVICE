@@ -1,8 +1,19 @@
 package statement
 
 import (
+	"time"
+
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
+)
+
+const (
+	// MinTransactionsForStatement is the minimum number of valid transactions
+	// required to consider a document a bank statement (not a receipt/invoice/random PDF).
+	MinTransactionsForStatement = 3
+
+	// MaxFutureDays is how far in the future a transaction date can be before it's dropped.
+	MaxFutureDays = 7
 )
 
 // ValidationResult holds the outcome of post-parse validation.
@@ -33,9 +44,16 @@ func ValidateTransactions(txns []*entities.BankStatementTransaction) (*Validatio
 	maxNGN := decimal.NewFromInt(100_000_000)
 	maxOther := decimal.NewFromInt(1_000_000)
 
+	maxDate := time.Now().AddDate(0, 0, MaxFutureDays)
 	var prevBalance *decimal.Decimal
 
 	for _, txn := range txns {
+		// Future date check: drop transactions dated too far in the future
+		if txn.TransactionDate.After(maxDate) {
+			result.DroppedCount++
+			continue
+		}
+
 		// Dedup check: same date + amount + first 30 chars of description
 		desc := txn.Description
 		if len(desc) > 30 {
@@ -94,7 +112,7 @@ func ValidateTransactions(txns []*entities.BankStatementTransaction) (*Validatio
 		}
 	}
 
-	result.Valid = result.ValidTransactions > 0 && result.Confidence > 0.3
+	result.Valid = result.ValidTransactions >= MinTransactionsForStatement && result.Confidence > 0.3
 	return result, valid
 }
 

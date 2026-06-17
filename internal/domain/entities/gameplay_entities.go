@@ -239,6 +239,7 @@ type SubscriptionCharge struct {
 	Amount              decimal.Decimal `json:"amount" db:"amount"`
 	LedgerTransactionID *uuid.UUID   `json:"ledger_transaction_id,omitempty" db:"ledger_transaction_id"`
 	Status              ChargeStatus `json:"status" db:"status"`
+	BridgeTransferred   bool         `json:"bridge_transferred" db:"bridge_transferred"`
 	PeriodStart         time.Time    `json:"period_start" db:"period_start"`
 	PeriodEnd           time.Time    `json:"period_end" db:"period_end"`
 	ChargedAt           *time.Time   `json:"charged_at,omitempty" db:"charged_at"`

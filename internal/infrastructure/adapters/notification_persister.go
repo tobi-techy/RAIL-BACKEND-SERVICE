@@ -18,13 +18,14 @@ func NewNotificationPersisterAdapter(repo *repositories.NotificationRepository) 
 }
 
 // Create persists a notification to the database
-func (a *NotificationPersisterAdapter) Create(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
+func (a *NotificationPersisterAdapter) Create(ctx context.Context, userID uuid.UUID, notifType, priority, title, body string, data map[string]interface{}) error {
 	n := &repositories.Notification{
-		UserID: userID,
-		Type:   notifType,
-		Title:  title,
-		Body:   body,
-		Data:   data,
+		UserID:   userID,
+		Type:     notifType,
+		Priority: priority,
+		Title:    title,
+		Body:     body,
+		Data:     data,
 	}
 	return a.repo.Create(ctx, n)
 }

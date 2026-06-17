@@ -31,10 +31,10 @@ func (r *MiriamIntelligenceRepository) UpsertMoneyState(ctx context.Context, sta
 			safe_to_spend_daily, liquidity_runway_days, stash_target,
 			recurring_spend_monthly, anomaly_count, confidence_level,
 			confidence_score, last_evaluated_at, snapshot,
-			monthly_spend, monthly_savings, spend_balance, stash_balance, calibration_score,
+			monthly_spend, monthly_savings, spend_balance, stash_balance, calibration_score, active_months,
 			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), NOW()
 		)
 		ON CONFLICT (user_id) DO UPDATE SET
 			income_cadence = EXCLUDED.income_cadence,
@@ -54,12 +54,13 @@ func (r *MiriamIntelligenceRepository) UpsertMoneyState(ctx context.Context, sta
 			spend_balance = EXCLUDED.spend_balance,
 			stash_balance = EXCLUDED.stash_balance,
 			calibration_score = EXCLUDED.calibration_score,
+			active_months = EXCLUDED.active_months,
 			updated_at = NOW()`,
 		state.UserID, state.IncomeCadence, state.AvgMonthlyIncome, state.UpcomingObligations,
 		state.SafeToSpendDaily, state.LiquidityRunwayDays, state.StashTarget,
 		state.RecurringSpendMonthly, state.AnomalyCount, state.ConfidenceLevel,
 		state.ConfidenceScore, state.LastEvaluatedAt, state.Snapshot,
-		state.MonthlySpend, state.MonthlySavings, state.SpendBalance, state.StashBalance, state.CalibrationScore)
+		state.MonthlySpend, state.MonthlySavings, state.SpendBalance, state.StashBalance, state.CalibrationScore, state.ActiveMonths)
 	if err != nil {
 		return fmt.Errorf("upsert miriam money state: %w", err)
 	}

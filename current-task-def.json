@@ -16,7 +16,7 @@
       "environment": [
         {
           "name": "REDIS_HOST",
-          "value": "rail-prod.q0riyh.0001.use1.cache.amazonaws.com"
+          "value": "172.17.0.1"
         },
         {
           "name": "ASSEMBLYAI_VOICE",
@@ -321,6 +321,10 @@
         {
           "name": "CIRCLE_PUBLIC_KEY_PEM",
           "valueFrom": "/rail/prod/CIRCLE_PUBLIC_KEY_PEM"
+        },
+        {
+          "name": "KIMI_MODEL",
+          "valueFrom": "/rail/prod/KIMI_MODEL"
         }
       ],
       "logConfiguration": {

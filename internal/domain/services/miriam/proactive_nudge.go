@@ -122,8 +122,9 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 		nudges = append(nudges, *n)
 	}
 
-	// Select top 3 by priority, deduplicate by trigger type
-	nudges = selectTopNudges(nudges, 3)
+	// Select top nudges by priority, capped by voice phase frequency limit.
+	phase := ResolvePhase(state)
+	nudges = selectTopNudges(nudges, NudgeFrequencyLimit(phase))
 
 	dedupWindow := 12 * time.Hour
 
@@ -221,19 +222,15 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 			}
 
 			pct := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
-			target := state.StashTarget.StringFixed(0)
-			s := spend.StringFixed(0)
-			st := stash.StringFixed(0)
-			rem := remaining.StringFixed(0)
+			phase := ResolvePhase(state)
+			vars := BuildVarsFromState(state, spend, stash, remaining)
+			vars.Pct = pct
+			vars.Remaining = "$" + remaining.StringFixed(0)
+			vars.Target = "$" + state.StashTarget.StringFixed(0)
 
-			var msg string
-			switch randIntn(3) {
-			case 0:
-				msg = fmt.Sprintf("You're %d%% of the way to your $%s goal with $%s in Spend. Add more?", pct, target, s)
-			case 1:
-				msg = fmt.Sprintf("Need $%s more for your $%s savings goal. Spend has $%s — tap to move it.", rem, target, s)
-			default:
-				msg = fmt.Sprintf("Stash goal: $%s total. Saved $%s, need $%s more. Boost from Spend?", target, st, rem)
+			msg := PhaseMessage(phase, MsgGoalProgress, vars)
+			if msg == "" {
+				msg = fmt.Sprintf("You're %d%% of the way to your $%s goal. Add more?", pct, state.StashTarget.StringFixed(0))
 			}
 
 			return &entities.ProactiveNudge{
@@ -277,19 +274,15 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 			}
 			stash = decimal.Zero
 		}
-		ob := state.UpcomingObligations.StringFixed(0)
-		s := spend.StringFixed(0)
-		st := stash.StringFixed(0)
-		g := gap.StringFixed(0)
 
-		var msg string
-		switch randIntn(3) {
-		case 0:
-			msg = fmt.Sprintf("Bills ($%s) exceed Spend ($%s). Stash has $%s — tap to cover the $%s gap.", ob, s, st, g)
-		case 1:
-			msg = fmt.Sprintf("⚠️ $%s in bills due. Spend has $%s. I can pull $%s from Stash.", ob, s, g)
-		default:
-			msg = fmt.Sprintf("Upcoming bills of $%s will overdraw Spend ($%s). Stash ($%s) can cover — want me to?", ob, s, st)
+		phase := ResolvePhase(state)
+		vars := BuildVarsFromState(state, spend, stash, gap)
+		vars.Gap = "$" + gap.StringFixed(0)
+
+		msg := PhaseMessage(phase, MsgBillWarning, vars)
+		if msg == "" {
+			msg = fmt.Sprintf("Bills ($%s) exceed Spend ($%s). Stash has $%s — tap to cover the $%s gap.",
+				state.UpcomingObligations.StringFixed(0), spend.StringFixed(0), stash.StringFixed(0), gap.StringFixed(0))
 		}
 
 		return &entities.ProactiveNudge{
@@ -327,91 +320,42 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 		stash = decimal.Zero
 	}
 
-	s := spend.StringFixed(0)
-	st := stash.StringFixed(0)
-	pa := p.ProjectedAmount.StringFixed(0)
+	phase := ResolvePhase(state)
+	vars := BuildVarsFromState(state, spend, stash, p.ProjectedAmount)
+	vars.Runway = state.LiquidityRunwayDays
 
+	var msgType MessageType
 	switch p.PredictionType {
 	case entities.PredictionCashShortfall:
-		ob := state.UpcomingObligations.StringFixed(0)
-		switch randIntn(4) {
-		case 0:
-			return fmt.Sprintf("Spend is at $%s with $%s in bills due. You're $%s short — tap to cover from Stash.", s, ob, pa)
-		case 1:
-			return fmt.Sprintf("Heads up: $%s in Spend, $%s in bills. I can move $%s from Stash.", s, ob, pa)
-		case 2:
-			return fmt.Sprintf("$%s in bills coming, Spend at $%s. Want me to pull $%s from Stash?", ob, s, pa)
-		default:
-			return fmt.Sprintf("Paycheck's not here yet. Spend ($%s) won't cover $%s in bills. I can fill the $%s gap.", s, ob, pa)
-		}
-
+		msgType = MsgPredictionCashShortfall
 	case entities.PredictionBillPressure:
-		ob := state.UpcomingObligations.StringFixed(0)
-		switch randIntn(4) {
-		case 0:
-			return fmt.Sprintf("$%s in bills this week vs $%s in Spend. Auto-cover from Stash?", ob, s)
-		case 1:
-			return fmt.Sprintf("Your $%s in obligations are crowding Spend ($%s). Stash has $%s — let me top up.", ob, s, st)
-		case 2:
-			return fmt.Sprintf("$%s due soon, Spend at $%s. Stash has $%s — move enough to cover?", ob, s, st)
-		default:
-			return fmt.Sprintf("Bill cluster: $%s in obligations, $%s in Spend. Stash ($%s) can smooth it out.", ob, s, st)
-		}
-
+		msgType = MsgPredictionBillPressure
 	case entities.PredictionIncomeGap:
-		inc := state.AvgMonthlyIncome.StringFixed(0)
-		switch randIntn(3) {
-		case 0:
-			return fmt.Sprintf("Income this month ($%s) is $%s short of expenses. Pull from Stash?", inc, pa)
-		case 1:
-			return fmt.Sprintf("Your $%s/mo income won't cover this month. Stash can bridge the $%s gap.", inc, pa)
-		default:
-			return fmt.Sprintf("Spending $%s more than you earn this month. Move from Stash to cover?", pa)
-		}
-
+		msgType = MsgPredictionIncomeGap
 	case entities.PredictionSpendingAnomaly:
-		safe := state.SafeToSpendDaily.StringFixed(0)
-		runway := state.LiquidityRunwayDays
-		switch randIntn(3) {
-		case 0:
-			return fmt.Sprintf("You've spent $%s more this month. Daily safe-to-spend is $%s — try easing up.", pa, safe)
-		case 1:
-			return fmt.Sprintf("Spending is up $%s vs normal. At this pace your runway is %d days.", pa, runway)
-		default:
-			return fmt.Sprintf("Unusual spending this month: $%s above normal. I'm watching it.", pa)
-		}
-
+		msgType = MsgPredictionSpendingAnomaly
 	case entities.PredictionIdleSurplus:
-		switch randIntn(3) {
-		case 0:
-			return fmt.Sprintf("$%s sitting idle in Spend. Move it to Stash and put it to work.", pa)
-		case 1:
-			return fmt.Sprintf("$%s in Spend isn't earning anything. Tap to stash it.", pa)
-		default:
-			return fmt.Sprintf("Your Spend has $%s extra. Want to move it to Stash?", pa)
-		}
-
+		msgType = MsgPredictionIdleSurplus
 	case entities.PredictionStashOpportunity:
-		target := state.StashTarget.StringFixed(0)
-		switch randIntn(3) {
-		case 0:
-			return fmt.Sprintf("Stash ($%s) is $%s short of $%s target. Add from Spend?", st, pa, target)
-		case 1:
-			if state.StashTarget.IsPositive() {
-				pct := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
-				return fmt.Sprintf("You're at %d%% of your Stash goal. Add $%s from Spend to stay on track.", pct, pa)
-			}
-			return fmt.Sprintf("Add $%s to your Stash from Spend to stay on target.", pa)
-		default:
-			return fmt.Sprintf("Stash opportunity: move $%s from Spend to keep your savings growing.", pa)
+		msgType = MsgPredictionStashOpportunity
+		if state.StashTarget.IsPositive() {
+			vars.Pct = int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
 		}
-
 	default:
 		if p.Reasoning != "" {
 			return p.Reasoning
 		}
-		return "Miriam noticed something about your money — tap to see."
+		return "I noticed something about your money. Come talk to me."
 	}
+
+	msg := PhaseMessage(phase, msgType, vars)
+	if msg == "" {
+		if p.Reasoning != "" {
+			return p.Reasoning
+		}
+		return "Something's up with your money. Let's look at it together."
+	}
+	return msg
 }
 
 func predictionPriority(p entities.MiriamPrediction) int {

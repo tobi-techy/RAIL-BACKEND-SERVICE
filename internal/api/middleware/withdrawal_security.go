@@ -135,6 +135,10 @@ func WithdrawalSecurityMiddleware(store WithdrawalSecurityStore, cfg WithdrawalS
 			}
 		}
 
+		// Expose config and store in context for handler-level defense-in-depth checks
+		c.Set("withdrawal_security_config", cfg)
+		c.Set("withdrawal_security_store", store)
+
 		c.Next()
 	}
 }

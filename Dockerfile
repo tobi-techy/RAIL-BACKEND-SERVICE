@@ -44,6 +44,9 @@ COPY --from=builder /etc/group /etc/group
 # Copy binary from builder stage
 COPY --from=builder /app/main /main
 
+# Create writable tmp directory for pdfcpu and other libs
+COPY --from=builder --chown=builduser:builduser /tmp /tmp
+
 # Copy config files
 COPY --from=builder /app/configs /configs
 
@@ -57,7 +60,7 @@ COPY --from=builder /app/static /static
 USER builduser
 
 # Expose port
-EXPOSE 8080
+EXPOSE 3000
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
@@ -66,6 +69,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 # Set environment variables for security
 ENV GIN_MODE=release
 ENV CGO_ENABLED=0
+ENV HOME=/tmp
 
 # Run the binary
 ENTRYPOINT ["/main"]

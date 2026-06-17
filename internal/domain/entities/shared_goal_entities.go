@@ -52,6 +52,7 @@ type SharedGoal struct {
 	Visibility          string          `json:"visibility" db:"visibility"`
 	CoverEmoji          string          `json:"icon_name" db:"icon_name"`
 	CelebrationMessage  *string         `json:"celebration_message,omitempty" db:"celebration_message"`
+	Protected           bool            `json:"protected" db:"protected"`
 	CreatedAt           time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt           time.Time       `json:"updated_at" db:"updated_at"`
 

@@ -71,16 +71,25 @@ type SimilarFact struct {
 // ToneProfile controls how Miriam speaks to a specific user.
 // All dimension values range from 0.0 to 1.0.
 type MiriamToneProfile struct {
-	UserID        uuid.UUID       `json:"user_id" db:"user_id"`
-	Formality     decimal.Decimal `json:"formality" db:"formality"`
-	Directness    decimal.Decimal `json:"directness" db:"directness"`
-	Warmth        decimal.Decimal `json:"warmth" db:"warmth"`
-	Humor         decimal.Decimal `json:"humor" db:"humor"`
-	Brevity       decimal.Decimal `json:"brevity" db:"brevity"`
-	PreferredName string          `json:"preferred_name" db:"preferred_name"`
-	LanguageStyle string          `json:"language_style" db:"language_style"`
-	LocaleStyle   string          `json:"locale_style" db:"locale_style"`
-	SampleCount   int             `json:"sample_count" db:"sample_count"`
-	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at" db:"updated_at"`
+	UserID          uuid.UUID       `json:"user_id" db:"user_id"`
+	Formality       decimal.Decimal `json:"formality" db:"formality"`
+	Directness      decimal.Decimal `json:"directness" db:"directness"`
+	Warmth          decimal.Decimal `json:"warmth" db:"warmth"`
+	Humor           decimal.Decimal `json:"humor" db:"humor"`
+	Brevity         decimal.Decimal `json:"brevity" db:"brevity"`
+	PreferredName   string          `json:"preferred_name" db:"preferred_name"`
+	LanguageStyle   string          `json:"language_style" db:"language_style"`
+	LocaleStyle     string          `json:"locale_style" db:"locale_style"`
+	PersonalityMode string          `json:"personality_mode" db:"personality_mode"` // "default", "hype", "savage", "big_sister"
+	SampleCount     int             `json:"sample_count" db:"sample_count"`
+	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`
 }
+
+// Personality mode constants
+const (
+	PersonalityModeDefault   = "default"
+	PersonalityModeHype      = "hype"
+	PersonalityModeSavage    = "savage"
+	PersonalityModeBigSister = "big_sister"
+)

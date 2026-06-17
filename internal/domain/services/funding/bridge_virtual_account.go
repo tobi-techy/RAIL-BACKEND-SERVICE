@@ -392,7 +392,7 @@ func (s *BridgeVirtualAccountService) CreateVirtualAccount(ctx context.Context, 
 }
 
 // ProcessFiatDeposit processes an incoming fiat deposit from Bridge webhook
-// Implements the automatic 70/30 split
+// Implements the automatic 70/30 split atomically to prevent race conditions
 func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, event *BridgeFiatDepositEvent) error {
 	s.logger.Info("Processing Bridge fiat deposit",
 		"bridge_account_id", event.VirtualAccountID,
@@ -443,8 +443,9 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		return fmt.Errorf("virtual account not found: %s", virtualAccountID)
 	}
 
-	// Generate UUID-based idempotency key
-	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount.String())
+	// Fix #5: Idempotency key uses only transaction_ref + virtual_account_id (not amount)
+	// This prevents double-crediting if Bridge sends the same transaction_ref with different amounts
+	idempotencyKey := generateFiatIdempotencyKey(transactionRef, virtualAccountID, "")
 
 	// Validate daily deposit limit
 	if s.validationService != nil {
@@ -452,12 +453,6 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 			return fmt.Errorf("fiat deposit limit exceeded: %w", err)
 		}
 	}
-
-	// Create deposit record FIRST with "pending" status to establish idempotency lock
-	// This prevents race conditions - the unique constraint on idempotency_key will reject duplicates
-	now := time.Now()
-	depositID := uuid.New()
-	virtAccountUUID := virtualAccount.ID
 
 	// Compliance screening — submit to Didit for AML/sanctions monitoring
 	if s.complianceScreener != nil {
@@ -474,6 +469,10 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		}
 	}
 
+	// Create deposit record with "pending" status to establish idempotency lock
+	depositID := uuid.New()
+	virtAccountUUID := virtualAccount.ID
+
 	deposit := &entities.Deposit{
 		ID:               depositID,
 		IdempotencyKey:   idempotencyKey,
@@ -484,12 +483,11 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		Token:            entities.StablecoinUSDC,
 		Amount:           amount,
 		Status:           "pending",
-		CreatedAt:        now,
+		CreatedAt:        time.Now(),
 	}
 
 	if s.depositRepo != nil {
 		if err := s.depositRepo.Create(ctx, deposit); err != nil {
-			// Check for duplicate key violation - this is expected for idempotent requests
 			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 				s.logger.Info("Fiat deposit already processed (idempotent duplicate key)",
 					"idempotency_key", idempotencyKey)
@@ -503,30 +501,38 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		}
 	}
 
-	// Record deposit to ledger after deposit record is created
-	if err := s.ledgerIntegration.RecordDeposit(ctx, virtualAccount.UserID, amount, depositID, "fiat", transactionRef); err != nil {
-		s.logger.Error("Failed to record deposit in ledger, deleting deposit record",
+	// Fix #1 + #6: Atomically record deposit AND allocate to spending/stash in one ledger transaction.
+	// This prevents the race where funds sit in usdc_balance and are spendable before allocation.
+	// Calculate the 70/30 split amounts upfront.
+	spendingRatio := decimal.NewFromFloat(0.70)
+	spendingAmount := amount.Mul(spendingRatio)
+	stashAmount := amount.Sub(spendingAmount) // remainder avoids precision drift
+
+	if err := s.ledgerIntegration.RecordDepositWithAllocation(
+		ctx, virtualAccount.UserID, amount, depositID, "fiat", transactionRef,
+		spendingAmount, stashAmount,
+	); err != nil {
+		s.logger.Error("Failed to record deposit with allocation in ledger",
 			"user_id", virtualAccount.UserID,
 			"amount", amount,
 			"error", err)
-		// Compensation: delete the deposit record since ledger failed
-		if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
-			s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure, marking as compensation_failed",
-				"deposit_id", depositID,
-				"deletion_error", delErr)
-			// Mark as compensation_failed so it can be identified for manual reconciliation
-			if statusErr := s.depositRepo.UpdateStatus(ctx, depositID, "compensation_failed", nil); statusErr != nil {
-				s.logger.Error("CRITICAL: Failed to mark deposit as compensation_failed",
-					"deposit_id", depositID,
-					"status_error", statusErr)
+		// Fix #2: Clean up deposit record since the atomic ledger op failed
+		if s.depositRepo != nil {
+			if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
+				s.logger.Error("CRITICAL: Failed to delete deposit after ledger failure",
+					"deposit_id", depositID, "deletion_error", delErr)
+				if statusErr := s.depositRepo.UpdateStatus(ctx, depositID, "compensation_failed", nil); statusErr != nil {
+					s.logger.Error("CRITICAL: Failed to mark deposit as compensation_failed",
+						"deposit_id", depositID, "status_error", statusErr)
+				}
 			}
 		}
-		return fmt.Errorf("record deposit: %w", err)
+		return fmt.Errorf("record deposit with allocation: %w", err)
 	}
 
-	// Update deposit status to "confirmed" after ledger success
+	// Fix #7: Use current time as confirmedAt, reflecting actual confirmation moment
 	if s.depositRepo != nil {
-		confirmedAt := now
+		confirmedAt := time.Now()
 		if err := s.depositRepo.UpdateStatus(ctx, depositID, "confirmed", &confirmedAt); err != nil {
 			s.logger.Warn("Failed to update deposit status to confirmed",
 				"deposit_id", depositID,
@@ -539,7 +545,10 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		metrics.Business.DepositAmount.WithLabelValues("fiat").Observe(amount.InexactFloat64())
 	}
 
-	// Process 70/30 allocation split
+	// The allocation already happened atomically in the ledger transaction above.
+	// Now call ProcessIncomingFunds for the side-effects only (event recording, yield routing,
+	// auto-invest, notifications). The allocation service detects the ledger transaction already
+	// exists via its idempotency key and skips the ledger transfer.
 	sourceTxID := transactionRef
 	allocationReq := &entities.IncomingFundsRequest{
 		UserID:     virtualAccount.UserID,
@@ -552,49 +561,17 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 			"bridge_account_id": virtualAccountID,
 			"original_currency": event.Currency,
 			"transaction_ref":   transactionRef,
+			"atomic_split":      true, // signal that ledger split already done
 		},
 	}
 
 	if err := s.allocationService.ProcessIncomingFunds(ctx, allocationReq); err != nil {
-		s.logger.Error("Failed to process allocation split - marking as pending_allocation",
-			"user_id", virtualAccount.UserID,
-			"amount", amount,
-			"error", err)
-
-		// Update deposit status to pending_allocation to track incomplete allocation
-		if s.depositRepo != nil {
-			if updateErr := s.depositRepo.UpdateStatus(ctx, depositID, "pending_allocation", nil); updateErr != nil {
-				s.logger.Error("Failed to update deposit status to pending_allocation",
-					"deposit_id", depositID,
-					"error", updateErr)
-			}
-		}
-
-		// Log detailed error for internal debugging (not exposed to user)
-		s.logger.Error("Allocation failure details for operations team",
+		// Non-fatal: the ledger split already happened atomically.
+		// Allocation side-effects (yield routing, auto-invest) will be retried by recovery worker.
+		s.logger.Warn("Allocation side-effects failed (ledger split already committed)",
 			"user_id", virtualAccount.UserID,
 			"deposit_id", depositID,
-			"error_message", err.Error(),
-			"error_type", fmt.Sprintf("%T", err))
-
-		// Notify user with generic message (don't expose internal error details)
-		if s.notificationService != nil {
-			if notifyErr := s.notificationService.NotifyAllocationFailed(
-				ctx,
-				virtualAccount.UserID,
-				amount,
-				depositID,
-				"allocation_failed",
-			); notifyErr != nil {
-				s.logger.Error("Failed to send allocation failure notification",
-					"user_id", virtualAccount.UserID,
-					"deposit_id", depositID,
-					"error", notifyErr)
-			}
-		}
-
-		// Return error to trigger webhook retry for transient failures
-		return fmt.Errorf("allocation processing failed: %w", err)
+			"error", err)
 	}
 
 	// Send fiat deposit confirmation notification
@@ -686,6 +663,7 @@ func (s *BridgeVirtualAccountService) GetDepositInstructions(ctx context.Context
 // BridgeFiatDepositEvent represents a fiat deposit event from Bridge webhook
 type BridgeFiatDepositEvent struct {
 	VirtualAccountID string `json:"virtual_account_id"`
+	CustomerID       string `json:"customer_id"` // Bridge customer ID (for logging/audit)
 	Amount           string `json:"amount"`
 	Currency         string `json:"currency"`
 	TransactionRef   string `json:"transaction_ref"`
@@ -729,8 +707,12 @@ func mapBridgeChain(chain string) entities.Chain {
 	}
 }
 
-func generateFiatIdempotencyKey(transactionRef, virtualAccountID, amount string) string {
-	input := fmt.Sprintf("fiat-deposit:%s:%s:%s", strings.ToLower(transactionRef), strings.ToLower(virtualAccountID), strings.ToLower(amount))
+func generateFiatIdempotencyKey(transactionRef, virtualAccountID, _ string) string {
+	// Fix #5: Idempotency key uses only transaction_ref + virtual_account_id.
+	// Amount is excluded so that if Bridge sends the same transaction_ref with a different
+	// amount (e.g., adjustment), it's still detected as a duplicate rather than creating
+	// a second credit.
+	input := fmt.Sprintf("fiat-deposit:%s:%s", strings.ToLower(transactionRef), strings.ToLower(virtualAccountID))
 	hash := sha256.Sum256([]byte(input))
 	hashStr := fmt.Sprintf("%x", hash[:])
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(hashStr)).String()

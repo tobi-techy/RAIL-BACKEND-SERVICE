@@ -193,6 +193,39 @@ func SpendingTools() []infraai.Tool {
 	}
 }
 
+// resolvePeriodFromArgs extracts the period from tool args, falling back to the
+// months parameter when ElevenLabs voice sends months instead of a period enum value.
+func resolvePeriodFromArgs(args map[string]interface{}) string {
+	if p, _ := args["period"].(string); p != "" {
+		return p
+	}
+	if m, ok := args["months"].(float64); ok && m > 0 {
+		switch {
+		case m <= 1:
+			return "last_30_days"
+		case m <= 3:
+			return "last_90_days"
+		case m <= 6:
+			return "last_6_months"
+		default:
+			return "last_12_months"
+		}
+	}
+	if d, ok := args["days"].(float64); ok && d > 0 {
+		switch {
+		case d <= 7:
+			return "last_7_days"
+		case d <= 30:
+			return "last_30_days"
+		case d <= 90:
+			return "last_90_days"
+		default:
+			return "last_6_months"
+		}
+	}
+	return "this_month"
+}
+
 // parsePeriod converts a period string to start/end times.
 func parsePeriod(period string) (time.Time, time.Time) {
 	now := time.Now().UTC()
@@ -243,10 +276,7 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
 
-	period, _ := args["period"].(string)
-	if period == "" {
-		period = "this_month"
-	}
+	period := resolvePeriodFromArgs(args)
 	start, end := parsePeriod(period)
 
 	summary, err := o.spending.GetSummary(ctx, userID, start, end)
@@ -282,7 +312,7 @@ func (o *Orchestrator) executeSpendingChart(ctx context.Context, userID uuid.UUI
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
 
-	period, _ := args["period"].(string)
+	period := resolvePeriodFromArgs(args)
 	start, end := parsePeriod(period)
 
 	summary, err := o.spending.GetSummary(ctx, userID, start, end)
@@ -309,10 +339,7 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
 
-	period, _ := args["period"].(string)
-	if period == "" {
-		period = "this_month"
-	}
+	period := resolvePeriodFromArgs(args)
 	start, end := parsePeriod(period)
 
 	limit := 15
@@ -350,10 +377,7 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
 
-	period, _ := args["period"].(string)
-	if period == "" {
-		period = "this_month"
-	}
+	period := resolvePeriodFromArgs(args)
 	start, end := parsePeriod(period)
 
 	flow, err := o.spending.GetMoneyFlow(ctx, userID, start, end)
@@ -437,6 +461,6 @@ func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, a
 			"spending_breakdown": chartBreakdown,
 			"daily_trend":        dailyTrend,
 		},
-		"note": "All amounts are USDC except NGN withdrawals which show the naira amount. Only completed transactions. Failed/reversed excluded.",
+		"note": "All amounts are in US Dollars (USD). Read as dollars and cents. Only completed transactions included.",
 	}, nil
 }

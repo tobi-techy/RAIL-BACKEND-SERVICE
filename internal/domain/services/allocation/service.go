@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,6 +70,11 @@ type UmbraShielder interface {
 	ShieldFunds(ctx context.Context, userID uuid.UUID, mint string, amount string) error
 }
 
+// DepositAutomationEvaluator triggers deposit-based automations after allocation.
+type DepositAutomationEvaluator interface {
+	EvaluateDepositReceived(ctx context.Context, userID uuid.UUID, depositAmount decimal.Decimal)
+}
+
 // AllocationNotificationService defines notification operations for allocation failures.
 type AllocationNotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
@@ -85,7 +91,10 @@ type Service struct {
 	yieldRouter         YieldRouter
 	notificationService AllocationNotificationService
 	umbraShielder       UmbraShielder
+	depositAutomation   DepositAutomationEvaluator
 	logger              *logger.Logger
+	wg                  sync.WaitGroup // tracks in-flight async goroutines for graceful shutdown
+	shuttingDown        atomic.Bool    // prevents new async work after Shutdown begins
 }
 
 // NewService creates a new allocation service
@@ -101,9 +110,37 @@ func NewService(
 	}
 }
 
+// Shutdown waits for all in-flight async goroutines to complete.
+// Call this during graceful shutdown to avoid killing yield routing, auto-invest,
+// or notification goroutines mid-operation.
+func (s *Service) Shutdown(timeout time.Duration) {
+	s.shuttingDown.Store(true)
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		s.logger.Info("All allocation goroutines completed")
+	case <-time.After(timeout):
+		s.logger.Warn("Allocation service shutdown timed out, some goroutines may still be running",
+			"timeout", timeout)
+	}
+}
+
 // SetAutoInvestService sets the auto-invest service (to avoid circular dependency)
 func (s *Service) SetAutoInvestService(autoInvestService AutoInvestService) {
 	s.autoInvestService = autoInvestService
+}
+
+// tryStartAsync returns false if shutdown is in progress, preventing new async work.
+func (s *Service) tryStartAsync() bool {
+	if s.shuttingDown.Load() {
+		return false
+	}
+	s.wg.Add(1)
+	return true
 }
 
 // SetYieldSnapshotter sets the yield snapshot recorder.
@@ -129,6 +166,11 @@ func (s *Service) SetNotificationService(ns AllocationNotificationService) {
 // SetUmbraShielder sets the Umbra privacy shielder for post-allocation shielding.
 func (s *Service) SetUmbraShielder(u UmbraShielder) {
 	s.umbraShielder = u
+}
+
+// SetDepositAutomationEvaluator sets the evaluator for deposit-triggered automations.
+func (s *Service) SetDepositAutomationEvaluator(e DepositAutomationEvaluator) {
+	s.depositAutomation = e
 }
 
 // notifyAutoInvestFailure sends a user-facing notification when auto-invest fails silently in a goroutine.
@@ -417,32 +459,50 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 
 	// Create a single atomic ledger transaction for both spending and stash allocations.
 	// This eliminates the need for compensating transactions if one leg fails.
-	if err := s.createAtomicAllocationTransfer(
-		ctx,
-		req,
-		spendingAccount.ID,
-		stashAccount.ID,
-		usdcAccount.ID,
-		spendingAmount,
-		stashAmount,
-		allocationBaseKey,
-		desc,
-		metadata,
-	); err != nil {
-		span.RecordError(err)
-		if metrics.Business != nil {
-			metrics.Business.AllocationExecutedTotal.WithLabelValues("failed").Inc()
+	// Skip if the deposit was already atomically split at the ledger level (atomic_split flag).
+	alreadySplit := metadataHasValue(req.Metadata, "atomic_split")
+	if !alreadySplit {
+		if err := s.createAtomicAllocationTransfer(
+			ctx,
+			req,
+			spendingAccount.ID,
+			stashAccount.ID,
+			usdcAccount.ID,
+			spendingAmount,
+			stashAmount,
+			allocationBaseKey,
+			desc,
+			metadata,
+		); err != nil {
+			span.RecordError(err)
+			if metrics.Business != nil {
+				metrics.Business.AllocationExecutedTotal.WithLabelValues("failed").Inc()
+			}
+			return fmt.Errorf("failed to create allocation transfer: %w", err)
 		}
-		return fmt.Errorf("failed to create allocation transfer: %w", err)
+	} else {
+		s.logger.Info("Skipping ledger transfer — deposit already atomically split",
+			"user_id", req.UserID,
+			"amount", req.Amount)
 	}
 
 	// Record yield snapshot after stash balance changes.
+	// Captures total savings position (stash + goal sub-accounts) so goal funds earn yield.
 	if s.yieldSnapshotter != nil {
 		newStashBalance, err := s.ledgerService.GetAccountBalance(ctx, req.UserID, entities.AccountTypeStashBalance)
 		if err != nil {
 			s.logger.Error("Failed to get stash balance for yield snapshot", "user_id", req.UserID, "error", err)
-		} else if err := s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance); err != nil {
-			s.logger.Error("Failed to record yield snapshot", "user_id", req.UserID, "error", err)
+		} else {
+			// Include goal balances in the snapshot for yield TWB calculation
+			goalTotal, goalErr := s.ledgerService.GetTotalGoalAllocated(ctx, req.UserID)
+			if goalErr != nil {
+				s.logger.Error("Failed to get goal balances for yield snapshot", "user_id", req.UserID, "error", goalErr)
+			} else {
+				newStashBalance = newStashBalance.Add(goalTotal)
+			}
+			if err := s.yieldSnapshotter.RecordSnapshot(ctx, req.UserID, newStashBalance); err != nil {
+				s.logger.Error("Failed to record yield snapshot", "user_id", req.UserID, "error", err)
+			}
 		}
 	}
 
@@ -536,7 +596,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	if routeYield {
 		userID := req.UserID
 		depositID := routeDepositID
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					s.logger.Error("Panic in yield routing goroutine",
@@ -560,7 +622,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 
 	// Shield allocated funds through Umbra privacy layer (async, non-blocking)
 	if s.umbraShielder != nil {
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					s.logger.Error("Panic in Umbra shielding goroutine",
@@ -587,7 +651,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 
 	// Notify user that the split completed
 	if s.notificationService != nil {
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = s.notificationService.NotifyAllocationComplete(bgCtx, req.UserID,
@@ -608,7 +674,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		userID := req.UserID
 		stashID := stashAccount.ID
 
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			// Panic recovery to prevent goroutine crashes from affecting the system
 			defer func() {
 				if r := recover(); r != nil {
@@ -636,6 +704,26 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 				s.notifyAutoInvestFailure(userID, err.Error())
 			}
 		}()
+	}
+
+	// Trigger deposit-based automations (e.g., "on every deposit, move $10 to goal")
+	if s.depositAutomation != nil {
+		depositUserID := req.UserID
+		depositAmount := req.Amount
+		if s.tryStartAsync() {
+			go func() {
+				defer s.wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error("Panic in deposit automation goroutine",
+							"user_id", depositUserID,
+							"panic", r,
+							"stack", string(debug.Stack()))
+					}
+				}()
+				s.depositAutomation.EvaluateDepositReceived(context.Background(), depositUserID, depositAmount)
+			}()
+		}
 	}
 
 	return nil
@@ -1172,7 +1260,11 @@ func metadataHasValue(metadata map[string]any, key string) bool {
 	if !ok || value == nil {
 		return false
 	}
-	return strings.TrimSpace(fmt.Sprintf("%v", value)) != ""
+	s := strings.TrimSpace(fmt.Sprintf("%v", value))
+	if s == "" || s == "false" || s == "0" {
+		return false
+	}
+	return true
 }
 
 func copyMetadata(metadata map[string]any) map[string]any {

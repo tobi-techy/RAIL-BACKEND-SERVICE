@@ -673,9 +673,14 @@ const (
 // ExternalAccountBankDetails holds ACH bank account details
 type ExternalAccountBankDetails struct {
 	AccountOwnerName string                     `json:"account_owner_name"`
-	AccountType      ExternalAccountAccountType `json:"account_type"`
-	RoutingNumber    string                     `json:"routing_number"`
-	AccountNumber    string                     `json:"account_number"`
+	AccountType      ExternalAccountAccountType `json:"account_type,omitempty"`
+	RoutingNumber    string                     `json:"routing_number,omitempty"`
+	AccountNumber    string                     `json:"account_number,omitempty"`
+	// EUR (SEPA)
+	IBAN string `json:"iban,omitempty"`
+	BIC  string `json:"bic,omitempty"`
+	// GBP (Faster Payments)
+	SortCode string `json:"sort_code,omitempty"`
 }
 
 // CreateExternalAccountRequest represents a request to register a bank account

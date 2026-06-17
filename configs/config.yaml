@@ -289,7 +289,7 @@ ai:
   kimi:
     api_key: ""
     # base_url: "https://api.moonshot.cn/v1"  # Uncomment for China-registered keys; default is https://api.moonshot.ai/v1
-    model: "kimi-k2.6"
+    model: "moonshot-v1-32k"
     max_tokens: 2048
     temperature: 0.15
     top_p: 0.9
@@ -306,6 +306,8 @@ ai:
   prompts:
     wrapped_template: "prompts/wrapped.txt"
     chat_template: "prompts/chat.txt"
+  supermemory:
+    api_key: ""  # or set via SUPERMEMORY_API_KEY env var
 # News Configuration
 news:
   provider: "alpaca"  # or "finnhub"
@@ -358,3 +360,14 @@ reflect:
   # Source: @reflectmoney/stable.ts v4.0.2 REFLECT_MAIN_PROGRAM_ADDRESS.
   allowed_program_ids:
     - "rFLctqnUuxLmYsW5r9zNujfJx9hGpnP1csXr9PYwVgX"
+
+# Statement Processing Pipeline
+statement:
+  enable_ocr: true          # Enable AWS Textract OCR for scanned PDFs and images
+  enable_vision: true       # Enable GPT-4o Vision for complex document layouts
+  textract_region: "eu-west-1"  # AWS region for Textract (uses instance profile/env creds)
+  # S3 file storage (optional — if empty, files stored in PostgreSQL as before)
+  s3_bucket: ""
+  s3_prefix: "statements/"
+  s3_region: "eu-west-1"
+  max_file_size_mb: 20

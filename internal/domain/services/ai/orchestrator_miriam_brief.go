@@ -335,7 +335,58 @@ func (o *Orchestrator) executeMiriamBrief(ctx context.Context, userID uuid.UUID,
 		actions = actions[:3]
 	}
 
-	return miriamBriefResponse(localNow, monthStartLocal, localNow, timezone, country, spend, stash, monthFlow, insights, actions), nil
+	resp := miriamBriefResponse(localNow, monthStartLocal, localNow, timezone, country, spend, stash, monthFlow, insights, actions)
+
+	// Proactively search SuperMemory for external bank statement transaction data.
+	// Runs in parallel-safe isolation with its own timeout so it never blocks or panics the brief.
+	if o.supermemory != nil && userID != uuid.Nil {
+		smCtx, smCancel := context.WithTimeout(ctx, 5*time.Second)
+		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), "financial transactions spending income last 3 months", 20)
+		smCancel()
+		if smErr == nil && len(memories) > 0 {
+			var sb strings.Builder
+			const maxMemoryBytes = 6000 // cap total size to avoid blowing LLM context
+			for _, m := range memories {
+				if m.Similarity < 0.5 {
+					continue
+				}
+				text := strings.TrimSpace(m.Memory)
+				if text == "" {
+					continue
+				}
+				if sb.Len()+len(text) > maxMemoryBytes {
+					break
+				}
+				if sb.Len() > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString(text)
+			}
+			if sb.Len() > 0 {
+				resp["external_transactions"] = sb.String()
+			}
+		}
+	}
+
+	// Include spending chart data for visualization (3-month window).
+	if o.spending != nil {
+		threeMonthsAgo := now.AddDate(0, -3, 0)
+		if summary, chartErr := o.spending.GetSummary(ctx, userID, threeMonthsAgo, now); chartErr == nil && summary != nil && len(summary.DailyTrend) > 0 {
+			points := make([]map[string]interface{}, 0, len(summary.DailyTrend))
+			for _, d := range summary.DailyTrend {
+				points = append(points, map[string]interface{}{"date": d.Period, "amount": d.Total.String(), "count": d.Count})
+			}
+			resp["chart_data"] = map[string]interface{}{
+				"type":          "spending_trend",
+				"data_points":   points,
+				"total":         summary.Total.String(),
+				"daily_average": summary.DailyAvg.StringFixed(2),
+				"period_days":   summary.PeriodDays,
+			}
+		}
+	}
+
+	return resp, nil
 }
 
 func buildNetFlowInsight(flow *entities.MoneyFlowSummary, monthOut, netFlow decimal.Decimal) miriamInsight {
@@ -550,3 +601,5 @@ func (o *Orchestrator) moneyFlowForMiriamBrief(ctx context.Context, userID uuid.
 	}
 	return flow, nil
 }
+
+
