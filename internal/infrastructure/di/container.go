@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -2076,6 +2077,12 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Info("Revenue sweep worker started",
 			zap.String("treasury_address", c.Config.Circle.TreasuryWalletAddress))
 	} else {
+		// #region agent log
+		writeFeeDebugLog("container.go:initializeServices", "revenue sweep worker disabled", "H1", map[string]interface{}{
+			"treasury_configured": c.Config.Circle.TreasuryWalletAddress != "",
+			"circle_configured":   c.CircleAdapter != nil,
+		})
+		// #endregion
 		c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
 	}
 
@@ -5199,16 +5206,62 @@ type revenueSweepTransferAdapter struct {
 }
 
 func (a *revenueSweepTransferAdapter) TransferToTreasury(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
+	// #region agent log
+	writeFeeDebugLog("container.go:TransferToTreasury", "treasury transfer attempt", "H4", map[string]interface{}{
+		"user_id": userID.String(), "amount": amount.StringFixed(2), "reference": reference,
+		"treasury_address_set": a.treasuryAddress != "",
+	})
+	// #endregion
 	walletID, tokenID, _, _, err := a.circle.FindWalletWithUSDC(ctx, userID.String())
 	if err != nil {
+		// #region agent log
+		writeFeeDebugLog("container.go:TransferToTreasury", "find user wallet failed", "H4", map[string]interface{}{
+			"user_id": userID.String(), "error": err.Error(),
+		})
+		// #endregion
 		return fmt.Errorf("find user wallet: %w", err)
 	}
 	tx, err := a.circle.TransferUSDCWithIdempotency(ctx, walletID, tokenID, a.treasuryAddress, amount.StringFixed(2), reference)
 	if err != nil {
+		// #region agent log
+		writeFeeDebugLog("container.go:TransferToTreasury", "circle transfer failed", "H4", map[string]interface{}{
+			"user_id": userID.String(), "wallet_id": walletID, "error": err.Error(),
+		})
+		// #endregion
 		return err
 	}
 	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
+		// #region agent log
+		writeFeeDebugLog("container.go:TransferToTreasury", "circle transfer rejected", "H4", map[string]interface{}{
+			"user_id": userID.String(), "tx_id": tx.ID, "state": tx.State,
+		})
+		// #endregion
 		return fmt.Errorf("transfer %s: %s", tx.State, tx.ID)
 	}
+	// #region agent log
+	writeFeeDebugLog("container.go:TransferToTreasury", "circle transfer accepted", "H4", map[string]interface{}{
+		"user_id": userID.String(), "tx_id": tx.ID, "state": tx.State,
+	})
+	// #endregion
 	return nil
 }
+
+// #region agent log
+func writeFeeDebugLog(location, message, hypothesisID string, data map[string]interface{}) {
+	payload := map[string]interface{}{
+		"sessionId": "b38437", "location": location, "message": message,
+		"hypothesisId": hypothesisID, "data": data, "timestamp": time.Now().UnixMilli(),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile("/Users/tobi/Development/RAIL_BACKEND/.cursor/debug-b38437.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(b, '\n'))
+	_ = f.Close()
+}
+
+// #endregion

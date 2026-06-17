@@ -191,9 +191,10 @@ func filterToolsByCategory(tools []ai.Tool, category ToolCategory) []ai.Tool {
 	}
 	filtered := make([]ai.Tool, 0, len(allowed)+1)
 	for _, t := range tools {
-		// send_meme is intent-agnostic: Miriam can react with a meme in any
-		// conversation, so it bypasses category filtering.
-		if allowed[t.Name] || t.Name == ToolSendMeme {
+		// Expressive/engagement tools are intent-agnostic: Miriam can use them in
+		// any conversation, so they bypass category filtering.
+		if allowed[t.Name] || t.Name == ToolSendMeme || t.Name == ToolSendVoiceMessage ||
+			t.Name == ToolCelebrate || t.Name == ToolSendPoll {
 			filtered = append(filtered, t)
 		}
 	}

@@ -65,6 +65,12 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, BuildComparisonCard(tr.Result))
 		case ToolSendMeme:
 			cards = append(cards, buildMemeCard(tr.Result))
+		case ToolSendVoiceMessage:
+			cards = append(cards, buildVoiceMessageCard(tr.Result))
+		case ToolCelebrate:
+			cards = append(cards, buildCelebrationCard(tr.Result))
+		case ToolSendPoll:
+			cards = append(cards, buildPollCard(tr.Result))
 		}
 	}
 	return cards
@@ -72,6 +78,57 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 
 // buildMemeCard turns a send_meme tool result into a "meme" card. The app renders
 // this as an image/sticker bubble rather than a stat card.
+func buildCelebrationCard(data map[string]interface{}) entities.InsightCard {
+	title := str(data, "title")
+	return entities.InsightCard{
+		Type:      "celebration",
+		Title:     title,
+		Subtitle:  str(data, "subtitle"),
+		Sentiment: "positive",
+		Data: map[string]interface{}{
+			"level":    str(data, "level"),
+			"title":    title,
+			"subtitle": str(data, "subtitle"),
+		},
+	}
+}
+
+func buildPollCard(data map[string]interface{}) entities.InsightCard {
+	options := make([]string, 0, 4)
+	switch raw := data["options"].(type) {
+	case []string:
+		options = raw
+	case []interface{}:
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				options = append(options, s)
+			}
+		}
+	}
+	return entities.InsightCard{
+		Type:  "poll",
+		Title: str(data, "question"),
+		Data: map[string]interface{}{
+			"question": str(data, "question"),
+			"options":  options,
+		},
+	}
+}
+
+func buildVoiceMessageCard(data map[string]interface{}) entities.InsightCard {
+	caption := str(data, "text")
+	return entities.InsightCard{
+		Type:      "voice_message",
+		Title:     caption,
+		Sentiment: "positive",
+		Data: map[string]interface{}{
+			"audio_url":        str(data, "audio_url"),
+			"caption":          caption,
+			"duration_seconds": data["duration_seconds"],
+		},
+	}
+}
+
 func buildMemeCard(data map[string]interface{}) entities.InsightCard {
 	caption := str(data, "caption")
 	sentiment := str(data, "sentiment")

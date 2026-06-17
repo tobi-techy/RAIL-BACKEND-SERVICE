@@ -3,10 +3,12 @@ package withdrawal
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/big"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -2495,6 +2497,13 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 		return fmt.Errorf("failed to complete withdrawal: %w", err)
 	}
+	// #region agent log
+	writeWithdrawalDebugLog("withdrawal/service.go:settleCompletedCryptoWithdrawal", "withdrawal completed; fee awaits revenue sweep", "H3", map[string]interface{}{
+		"withdrawal_id": withdrawal.ID.String(), "user_id": withdrawal.UserID.String(),
+		"fee_amount": withdrawal.FeeAmount.String(), "provider": withdrawal.ProviderWalletType,
+		"fee_swept_immediate": false,
+	})
+	// #endregion
 	withdrawal.Status = entities.WithdrawalStatusCompleted
 	withdrawal.CompletedAt = &now
 	withdrawal.UpdatedAt = now
@@ -2871,3 +2880,23 @@ func (s *WithdrawalService) VerifyBankAccount(ctx context.Context, userID, bankA
 		"bank_account_id", bankAccountID.String())
 	return nil
 }
+
+// #region agent log
+func writeWithdrawalDebugLog(location, message, hypothesisID string, data map[string]interface{}) {
+	payload := map[string]interface{}{
+		"sessionId": "b38437", "location": location, "message": message,
+		"hypothesisId": hypothesisID, "data": data, "timestamp": time.Now().UnixMilli(),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile("/Users/tobi/Development/RAIL_BACKEND/.cursor/debug-b38437.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(b, '\n'))
+	_ = f.Close()
+}
+
+// #endregion
