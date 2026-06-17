@@ -3,8 +3,8 @@ log_level: info
 
 # ChainRails cross-chain deposit integration
 chainrails:
-  api_key: "${CHAINRAILS_API_KEY}"
-  webhook_secret: "${CHAINRAILS_WEBHOOK_SECRET}"
+  api_key: ""
+  webhook_secret: ""
   base_url: "https://api.chainrails.io/api/v1"
   destination_chain: "SOLANA_MAINNET"
   settlement_token: "USDC"
@@ -68,13 +68,14 @@ rate_limit:
       window: 60               # 1 minute
 
 database:
-  url: "${DATABASE_URL}"
-  host: "${DATABASE_HOST}"
+  # Override via DATABASE_URL, DATABASE_HOST, DATABASE_NAME, DATABASE_USER, DATABASE_PASSWORD, DATABASE_SSL_MODE env vars
+  url: ""
+  host: "localhost"
   port: 5432
-  name: "${DATABASE_NAME}"
-  user: "${DATABASE_USER}"
-  password: "${DATABASE_PASSWORD}"
-  ssl_mode: "${DATABASE_SSL_MODE}"  # PRODUCTION: Use 'require' or 'verify-full'
+  name: "rail"
+  user: "postgres"
+  password: ""
+  ssl_mode: "disable"
   max_open_conns: 25
   max_idle_conns: 10
   conn_max_lifetime: 300
@@ -83,8 +84,8 @@ database:
   read_replicas: []
 
 redis:
-  # Single node mode (development/staging)
-  host: "${REDIS_HOST}"
+  # Single node mode — override via REDIS_HOST, REDIS_PORT, REDIS_PASSWORD env vars
+  host: "localhost"
   port: 6379
   password: ""
   db: 0
@@ -105,7 +106,7 @@ jwt:
   # CRITICAL SECURITY WARNING: This secret must be generated securely and never committed to version control
   # Generate with: openssl rand -base64 32
   # Minimum 32 characters required for HMAC-SHA256
-  secret: "${JWT_SECRET}"  # REQUIRED: set JWT_SECRET env var or the application will not start
+  secret: ""  # REQUIRED: set JWT_SECRET env var
   access_token_ttl: 3600      # 1 hour
   refresh_token_ttl: 2592000  # 30 days
   issuer: "rail_service"
@@ -123,7 +124,7 @@ security:
   # CRITICAL SECURITY WARNING: This key must be exactly 32 bytes for AES-256-GCM encryption
   # Generate with: openssl rand -base64 32 | head -c 32
   # NEVER commit this to version control or use default values in production
-  encryption_key: "${ENCRYPTION_KEY}"  # REQUIRED: set ENCRYPTION_KEY env var or the application will not start
+  encryption_key: ""  # REQUIRED: set ENCRYPTION_KEY env var
   max_login_attempts: 5
   lockout_duration: 900
   require_mfa: false
@@ -200,28 +201,28 @@ verification:
   rate_limit_per_hour: 3
 
 alpaca:
-  client_id: "${ALPACA_API_KEY}"
-  secret_key: "${ALPACA_API_SECRET}"
-  base_url: "${ALPACA_BASE_URL:-https://broker-api.sandbox.alpaca.markets}"
-  data_base_url: "${ALPACA_DATA_BASE_URL:-https://data.sandbox.alpaca.markets}"
-  environment: "${ALPACA_ENVIRONMENT:-sandbox}"
+  client_id: ""
+  secret_key: ""
+  base_url: "https://broker-api.sandbox.alpaca.markets"
+  data_base_url: "https://data.sandbox.alpaca.markets"
+  environment: "sandbox"
   timeout: 30
   auth_method: "oauth2"  # oauth2 or legacy
   # Webhook signature verification secret (generate with: openssl rand -base64 32)
-  webhook_secret: "${ALPACA_WEBHOOK_SECRET:-}"
+  webhook_secret: ""
   # Firm/omnibus account ID used as the source for JNLC cash journals into user accounts.
   # Find this in your Alpaca Broker dashboard under Accounts → Firm Account.
-  firm_account_no: "${ALPACA_FIRM_ACCOUNT_NO:-}"
+  firm_account_no: ""
 
 bridge:
-  api_key: "${BRIDGE_API_KEY}"
-  base_url: "${BRIDGE_BASE_URL:-https://api.sandbox.bridge.xyz}"
+  api_key: ""
+  base_url: "https://api.sandbox.bridge.xyz"
   environment: "sandbox"
   timeout: 30
   max_retries: 3
-  webhook_secret: "${BRIDGE_WEBHOOK_SECRET}"
-  rail_customer_id: "${BRIDGE_RAIL_CUSTOMER_ID}"
-  rail_usdb_wallet_id: "${BRIDGE_RAIL_USDB_WALLET_ID}"
+  webhook_secret: ""
+  rail_customer_id: ""
+  rail_usdb_wallet_id: ""
   supported_chains:
     - "solana"
     - "ethereum"
@@ -296,7 +297,7 @@ ai:
     timeout_seconds: 30
     rate_limit_rpm: 60
   groq:
-    api_key: "${GROQ_API_KEY}"
+    api_key: ""
     model: "llama-3.3-70b-versatile"
     max_tokens: 2048
     temperature: 0.15
@@ -311,7 +312,7 @@ ai:
 # News Configuration
 news:
   provider: "alpaca"  # or "finnhub"
-  api_key: "${NEWS_API_KEY}"
+  api_key: ""
   fetch_interval: "1h"
   articles_per_user: 5
   relevance_threshold: 0.6

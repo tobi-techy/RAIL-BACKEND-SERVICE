@@ -148,6 +148,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	)
 
 	// Health checks (no auth required)
+	router.GET("/", coreHandlers.Health)
 	router.GET("/health", coreHandlers.Health)
 	router.GET("/ready", coreHandlers.Ready)
 	router.GET("/live", coreHandlers.Live)
