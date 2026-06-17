@@ -2,6 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -104,6 +108,100 @@ func SendMemeTool() infraai.Tool {
 			"additionalProperties": false,
 		},
 	}
+}
+
+// ─── Voice Message Tool ──────────────────────────────────────────────────────
+
+// ToolSendVoiceMessage lets Miriam occasionally send a short voice message
+// (< 15 words) for genuinely special moments: first savings milestone, a big
+// win, or a warm check-in. The audio is generated via ElevenLabs TTS on the
+// backend and surfaced as a "voice_message" InsightCard.
+//
+// Requires env vars: ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID.
+// When not configured the tool still fires but the card's audio_url will be
+// empty, causing the frontend VoiceMessageBubble to render the caption as text.
+const ToolSendVoiceMessage = "send_voice_message"
+
+func SendVoiceMessageTool() infraai.Tool {
+	return infraai.Tool{
+		Name:        ToolSendVoiceMessage,
+		Description: `Send Miriam's voice as a short audio message for very special moments ONLY — a savings milestone, a first big win, a heartfelt check-in. Maximum 15 words. Never use for routine info. Never use more than once per conversation. The audio is generated from the text and plays inline in the chat.`,
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"text": map[string]interface{}{
+					"type":        "string",
+					"description": "The words Miriam will say. Maximum 15 words. Warm, personal, spoken — not written.",
+				},
+			},
+			"required":             []string{"text"},
+			"additionalProperties": false,
+		},
+	}
+}
+
+func (o *Orchestrator) executeSendVoiceMessage(ctx context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	text := strings.TrimSpace(stringArg(args, "text"))
+	if text == "" {
+		return map[string]interface{}{"error": "empty text"}, nil
+	}
+	// Truncate to a safe spoken length
+	words := strings.Fields(text)
+	if len(words) > 15 {
+		words = words[:15]
+		text = strings.Join(words, " ")
+	}
+
+	result := map[string]interface{}{
+		"text":             text,
+		"caption":          text,
+		"duration_seconds": nil,
+		"audio_url":        "",
+	}
+
+	// ElevenLabs TTS — graceful no-op when not configured.
+	// When ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID are set the audio is fetched
+	// and stored; set the audio_url field so the frontend can play it.
+	// TODO: integrate R2 upload for persistent audio hosting.
+	apiKey := strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY"))
+	voiceID := strings.TrimSpace(os.Getenv("ELEVENLABS_VOICE_ID"))
+	if apiKey != "" && voiceID != "" {
+		if audioURL, err := generateElevenLabsTTS(ctx, apiKey, voiceID, text); err == nil {
+			result["audio_url"] = audioURL
+		}
+	}
+
+	return result, nil
+}
+
+// generateElevenLabsTTS calls the ElevenLabs streaming TTS API and returns
+// a data URL (base64 mp3) suitable for immediate playback via expo-audio.
+func generateElevenLabsTTS(ctx context.Context, apiKey, voiceID, text string) (string, error) {
+	body := fmt.Sprintf(`{"text":%q,"model_id":"eleven_multilingual_v2","voice_settings":{"stability":0.5,"similarity_boost":0.75}}`, text)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.elevenlabs.io/v1/text-to-speech/"+voiceID,
+		strings.NewReader(body),
+	)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("xi-api-key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "audio/mpeg")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("elevenlabs tts: status %d", resp.StatusCode)
+	}
+	audio, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(audio), nil
 }
 
 func (o *Orchestrator) executeSendMeme(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {

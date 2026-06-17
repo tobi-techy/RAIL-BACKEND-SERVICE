@@ -418,6 +418,12 @@ func thinkingMessage(toolName string) string {
 		return "Scanning for recurring expenses..."
 	case ToolSendMeme:
 		return "Cooking up a meme..."
+	case ToolSendVoiceMessage:
+		return "Recording a voice message..."
+	case ToolCelebrate:
+		return "..."
+	case ToolSendPoll:
+		return "..."
 	default:
 		return "Working on it..."
 	}

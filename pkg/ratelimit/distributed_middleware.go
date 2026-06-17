@@ -52,7 +52,7 @@ func (rl *DistributedRateLimiter) Middleware() gin.HandlerFunc {
 		var err error
 
 		if rl.limiter != nil {
-			checkCtx := c.Request.Context()
+			checkCtx := context.WithoutCancel(c.Request.Context())
 			cancel := func() {}
 			if rl.failOpen {
 				checkCtx, cancel = context.WithTimeout(checkCtx, failOpenCheckTimeout)
@@ -156,7 +156,7 @@ func (rl *DistributedRateLimiter) StrictMiddleware() gin.HandlerFunc {
 		var err error
 
 		if rl.limiter != nil {
-			result, err = rl.limiter.Check(c.Request.Context(), ip, userID, endpoint)
+			result, err = rl.limiter.Check(context.WithoutCancel(c.Request.Context()), ip, userID, endpoint)
 			if err != nil {
 				rl.logger.Error("Rate limit check failed",
 					zap.Error(err),
