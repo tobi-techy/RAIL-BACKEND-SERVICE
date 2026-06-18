@@ -20,13 +20,13 @@ type BridgeWallet interface {
 
 // DistributedYieldReader returns the total yield ever distributed to users.
 // Used to reconcile ledger stash (which includes distributed yield) against
-// the Reflect position (which holds only the original principal).
+// the yield-provider position (which holds only the original principal).
 type DistributedYieldReader interface {
 	GetTotalDistributedYield(ctx context.Context) (decimal.Decimal, error)
 }
 
 // Worker performs a daily reconciliation between the internal ledger stash total
-// and the actual balance held in the yield provider (Reflect).
+// and the actual balance held in the yield provider (Blend).
 type Worker struct {
 	ledger           LedgerReader
 	bridge           BridgeWallet
@@ -55,7 +55,7 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 
 	// Ledger stash includes yield already credited to users.
-	// Reflect position holds only the original principal.
+	// The yield-provider position holds only the original principal.
 	// Subtract distributed yield to make them comparable.
 	ledgerPrincipal := ledgerTotal.Sub(totalDistributed)
 

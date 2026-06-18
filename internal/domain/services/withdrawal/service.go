@@ -152,7 +152,7 @@ type EmergencyLedger interface {
 	EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error
 }
 
-// StashYieldRedeemer converts user-wallet Reflect receipt tokens back to USDC before stash exits.
+// StashYieldRedeemer redeems a user's yield position back to USDC before stash funds exit.
 type StashYieldRedeemer interface {
 	RedeemStashYield(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
@@ -255,7 +255,7 @@ func (s *WithdrawalService) SetCircleTransferAdapter(a CircleCryptoTransferAdapt
 	s.circleTransfer = a
 }
 
-// SetStashYieldRedeemer wires the Reflect user-wallet redeem path for stash withdrawals.
+// SetStashYieldRedeemer wires the yield-provider redeem path for stash withdrawals.
 func (s *WithdrawalService) SetStashYieldRedeemer(r StashYieldRedeemer) {
 	s.stashYieldRedeemer = r
 }
@@ -1153,7 +1153,7 @@ func (s *WithdrawalService) prepareStashYieldForCryptoWithdrawal(ctx context.Con
 		return nil
 	}
 	if s.stashYieldRedeemer == nil {
-		return fmt.Errorf("stash withdrawal requires Reflect redemption but no redeemer is configured")
+		return fmt.Errorf("stash withdrawal requires yield redemption but no redeemer is configured")
 	}
 	redeemAmount := withdrawal.Amount.Add(withdrawal.FeeAmount)
 	if !redeemAmount.GreaterThan(decimal.Zero) {

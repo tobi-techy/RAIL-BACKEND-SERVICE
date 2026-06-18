@@ -220,3 +220,21 @@ type FeeEstimate struct {
 type EntityPublicKeyData struct {
 	PublicKey string `json:"publicKey"`
 }
+
+// --- Contract Execution (arbitrary EVM contract calls) ---
+
+// CreateContractExecutionRequest signs and broadcasts an EVM contract call from a Circle wallet.
+// Used for non-transfer operations (e.g. ERC20 approve, DeFi protocol calls).
+type CreateContractExecutionRequest struct {
+	IdempotencyKey         string     `json:"idempotencyKey"`
+	EntitySecretCiphertext string     `json:"entitySecretCiphertext"`
+	WalletID               string     `json:"walletId"`
+	ContractAddress        string     `json:"contractAddress"`
+	AbiFunctionSignature   string     `json:"abiFunctionSignature,omitempty"`
+	AbiParameters          []any      `json:"abiParameters,omitempty"`
+	CallData               string     `json:"callData,omitempty"`
+	Amount                 string     `json:"amount,omitempty"`
+	FeeLevel               string     `json:"feeLevel,omitempty"`
+	Fee                    *FeeConfig `json:"fee,omitempty"`
+	RefID                  string     `json:"refId,omitempty"`
+}

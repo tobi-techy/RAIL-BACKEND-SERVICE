@@ -296,6 +296,12 @@ func (a *Adapter) SignTransaction(ctx context.Context, walletID, rawTransaction,
 	})
 }
 
+// ExecuteContract submits an EVM contract call from a Circle wallet. Use for ERC20 approve,
+// DeFi protocol deposits/withdrawals, etc. Provide CallData (hex) OR AbiFunctionSignature + AbiParameters.
+func (a *Adapter) ExecuteContract(ctx context.Context, req *CreateContractExecutionRequest) (*Transaction, error) {
+	return a.client.CreateContractExecution(ctx, req)
+}
+
 // FindWalletWithUSDC searches all wallets for a user (by refId) and returns the first
 // wallet+tokenId that holds USDC. Prefers Solana (primary custody chain), then EVM fallback.
 func (a *Adapter) FindWalletWithUSDC(ctx context.Context, userRefID string) (string, string, string, string, error) {

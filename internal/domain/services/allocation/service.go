@@ -591,8 +591,8 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	})
 
 	// Route the stash principal into the yield provider as soon as a Circle-backed
-	// deposit has been split. This is async because Circle transfer settlement and
-	// Reflect minting can outlive the deposit webhook request.
+	// deposit has been split. This is async because cross-chain settlement and
+	// Blend deposit execution can outlive the deposit webhook request.
 	if routeYield {
 		userID := req.UserID
 		depositID := routeDepositID

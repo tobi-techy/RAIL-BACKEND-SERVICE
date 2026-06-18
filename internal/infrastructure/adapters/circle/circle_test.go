@@ -341,7 +341,7 @@ func TestSignTransaction(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, "w-sol", body.WalletID)
 		assert.Equal(t, "raw-base64", body.RawTransaction)
-		assert.Equal(t, "Deposit USDC into Reflect yield", body.Memo)
+		assert.Equal(t, "Deposit USDC into yield", body.Memo)
 		assert.NotEmpty(t, body.EntitySecretCiphertext)
 
 		json.NewEncoder(w).Encode(apiResponse[SignedTransactionData]{
@@ -365,7 +365,7 @@ func TestSignTransaction(t *testing.T) {
 	signed, err := client.SignTransaction(context.Background(), &SignTransactionRequest{
 		WalletID:       "w-sol",
 		RawTransaction: "raw-base64",
-		Memo:           "Deposit USDC into Reflect yield",
+		Memo:           "Deposit USDC into yield",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "signed-base64", signed.SignedTransaction)

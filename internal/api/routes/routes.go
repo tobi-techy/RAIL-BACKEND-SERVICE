@@ -1086,6 +1086,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					yieldHandlers := handlers.NewYieldHandlers(container.YieldService, container.AllocationService, container.ZapLog)
 					account.GET("/yield/estimate", yieldHandlers.GetDailyYieldEstimate)
 				}
+
+				// Blend yield read endpoints (frontend)
+				if container.BlendDepositRouter != nil {
+					blendHandlers := handlers.NewBlendHandlers(container.BlendDepositRouter, container.ZapLog)
+					account.GET("/yield/blend/overview", blendHandlers.GetYieldOverview)
+				}
 			}
 
 			// Limits routes - deposit/withdrawal limits based on KYC tier
@@ -1620,7 +1626,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				admin.POST("/yield/distribute", handlers.TriggerYieldDistribution(container.YieldDistributionWorker, container.ZapLog))
 			}
 
-			// Stash reconciliation — manually trigger a check of ledger vs Reflect balance
+			// Stash reconciliation — manually trigger a check of ledger vs yield-provider balance
 			if container.StashReconciliation != nil {
 				admin.POST("/stash/reconcile", handlers.TriggerStashReconciliation(container.StashReconciliation, container.ZapLog))
 			}

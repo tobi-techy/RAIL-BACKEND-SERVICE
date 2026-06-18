@@ -21,8 +21,8 @@ type RewardsProvider interface {
 // ExchangeRateFetcher returns the current yield provider exchange rate.
 type ExchangeRateFetcher func(ctx context.Context) (decimal.Decimal, error)
 
-// ExchangeRateAdvancer persists the new exchange rate high-water mark and adds
-// the distributed yield to reflect_deposited_usdc so reconciliation stays accurate.
+// ExchangeRateAdvancer persists the new exchange rate high-water mark and records
+// the distributed yield so reconciliation stays accurate.
 type ExchangeRateAdvancer func(ctx context.Context, db *sqlx.DB, rate decimal.Decimal, distributedYield decimal.Decimal) error
 
 // Worker runs the monthly yield distribution.

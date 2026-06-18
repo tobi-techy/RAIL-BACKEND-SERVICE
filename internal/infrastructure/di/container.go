@@ -84,7 +84,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/reflect"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -93,7 +93,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
-	treasury_sweep "github.com/rail-service/rail_service/internal/workers/treasury_sweep"
 	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
@@ -1308,9 +1307,9 @@ type Container struct {
 	ReconciliationService          *reconciliation.Service
 	ReconciliationScheduler        *reconciliation.Scheduler
 	StashReconciliation            *recon.Worker
-	TreasurySweepWorker            *treasury_sweep.Worker
 	RevenueSweepWorker             *revenue_sweep.Worker
-	ReflectDepositRouter           *reflect.CircleDepositRouter
+	BlendClient                    *blend.Client
+	BlendDepositRouter             *blend.DepositRouter
 	YieldDistributionWorker        *yield_distribution.Worker
 	AllocationService              *allocation.Service
 	AutoInvestService              *autoinvest.Service
@@ -2043,102 +2042,21 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 
-	// Initialize yield service (Reflect-backed). A private key is only needed for
-	// treasury-owned sweeps; Circle-backed deposit routes use user Circle wallets
-	// to sign Reflect mint transactions.
-	var reflectClient *reflect.Client
-	if c.Config.Reflect.SolanaRPC != "" {
-		var err error
-		reflectClient, err = reflect.NewClient(
-			c.Config.Reflect.BaseURL,
-			c.Config.Reflect.APIKey,
-			c.Config.Reflect.SolanaRPC,
-			c.Config.Reflect.OwnerWallet,
-			c.Config.Reflect.PrivateKey,
-			c.Config.Reflect.StablecoinIndex,
-			c.ZapLog,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create reflect client: %w", err)
-		}
-		reflectClient.SetAllowedProgramIDs(c.Config.Reflect.AllowedProgramIDs)
-		rewardsAdapter := &reflectRewardsAdapter{client: reflectClient, db: sqlxDB}
+	// Yield service (provider-agnostic). Backs balance/estimate reads. Blend is the
+	// yield provider; per-user yield accrues in each user's Safe and is surfaced via
+	// the Blend overview endpoint rather than a shared exchange-rate distribution.
+	c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
 
-		if c.Config.Reflect.EnableTreasurySweep {
-			minSweep, err := decimal.NewFromString(c.Config.Reflect.MinSweepAmount)
-			if err != nil {
-				return fmt.Errorf("invalid reflect.min_sweep_amount %q: %w", c.Config.Reflect.MinSweepAmount, err)
-			}
-			if minSweep.IsZero() {
-				minSweep = decimal.NewFromFloat(0.01)
-			}
-			interval := time.Duration(c.Config.Reflect.SweepInterval) * time.Minute
-			if interval == 0 {
-				interval = 10 * time.Minute
-			}
-			if c.CircleAdapter == nil || c.Config.Reflect.CircleSourceWalletID == "" || c.Config.Reflect.PrivateKey == "" || c.Config.Reflect.OwnerWallet == "" {
-				c.ZapLog.Warn("Circle treasury sweep enabled but not fully configured; user-wallet Reflect routing remains primary",
-					zap.Bool("circle_adapter_configured", c.CircleAdapter != nil),
-					zap.Bool("circle_source_wallet_configured", c.Config.Reflect.CircleSourceWalletID != ""),
-					zap.Bool("reflect_owner_wallet_configured", c.Config.Reflect.OwnerWallet != ""),
-					zap.Bool("reflect_private_key_configured", c.Config.Reflect.PrivateKey != ""))
-			} else {
-				sweepWorker := treasury_sweep.NewWorker(
-					reflectClient,
-					c.CircleAdapter,
-					c.LedgerRepo,
-					c.yieldRepo,
-					sqlxDB,
-					c.Config.Reflect.CircleSourceWalletID,
-					c.Config.Reflect.OwnerWallet,
-					minSweep,
-					interval,
-					c.ZapLog,
-				)
-				sweepWorker.Start()
-				c.TreasurySweepWorker = sweepWorker
-				c.ZapLog.Info("Circle treasury sweep started",
-					zap.String("min_sweep_amount", minSweep.String()),
-					zap.Duration("interval", interval),
-					zap.String("circle_source_wallet_id", c.Config.Reflect.CircleSourceWalletID),
-					zap.String("reflect_owner_wallet", c.Config.Reflect.OwnerWallet))
-			}
-		} else {
-			c.ZapLog.Info("Reflect treasury sweep disabled; user Circle wallet mint/burn routing is primary")
-		}
-
-		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
-
-		// Stash reconciliation: daily check that ledger stash total matches Reflect deposited value.
-		if c.Config.Reflect.OwnerWallet != "" {
-			reconAdapter := &reflectReconciliationAdapter{db: sqlxDB}
-			c.StashReconciliation = recon.NewWorker(
-				c.LedgerRepo,
-				reconAdapter,
-				c.yieldRepo,
-				c.Config.Reflect.OwnerWallet,
-				c.Config.Reflect.OwnerWallet,
-				c.ZapLog,
-			)
-		}
-
-		// Yield distribution worker — wired with injected rate functions to avoid di→worker circular dep.
-		c.YieldDistributionWorker = yield_distribution.NewWorker(
-			c.YieldService,
-			rewardsAdapter,
-			func(ctx context.Context) (decimal.Decimal, error) {
-				return reflectClient.GetExchangeRate(ctx)
-			},
-			func(ctx context.Context, db *sqlx.DB, rate decimal.Decimal, distributedYield decimal.Decimal) error {
-				return AdvanceExchangeRateMark(ctx, db, rate, distributedYield)
-			},
-			sqlxDB,
-			c.ZapLog,
-		)
-	} else {
-		c.ZapLog.Warn("Reflect Solana RPC not configured; yield routing disabled")
-		c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
-	}
+	// Stash reconciliation: daily check that ledger stash principal matches the Blend
+	// principal held for users (settled positions + in-flight routes).
+	c.StashReconciliation = recon.NewWorker(
+		c.LedgerRepo,
+		&blendReconciliationAdapter{db: sqlxDB},
+		c.yieldRepo,
+		"blend",
+		"blend",
+		c.ZapLog,
+	)
 
 	// Revenue sweep: periodically transfer accumulated fee revenue to treasury wallet.
 	// Independent of Reflect — only requires Circle + treasury address.
@@ -2212,33 +2130,53 @@ func (c *Container) initializeDomainServices() error {
 		c.LedgerService,
 		c.Logger,
 	)
-	if reflectClient != nil && c.CircleAdapter != nil {
-		c.ReflectDepositRouter = reflect.NewCircleDepositRouter(
-			sqlxDB,
-			c.CircleAdapter,
-			reflectClient,
-			c.Config.Reflect.OwnerWallet,
-			c.Config.Reflect.AllowedProgramIDs,
-			c.ZapLog,
-		)
-		c.ReflectDepositRouter.SetYieldLedger(&reflectFeeLedgerAdapter{ledger: c.LedgerService})
-		c.ReflectDepositRouter.SetSolanaFeeFunding(c.Config.Circle.DefaultWalletSetID, c.Config.Circle.TreasuryWalletAddress)
-		schemaReady, schemaErr := c.ReflectDepositRouter.RequiredSchemaAvailable(context.Background())
-		if schemaErr != nil {
-			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because schema check failed", zap.Error(schemaErr))
-		} else if !schemaReady {
-			c.ZapLog.Warn("Circle-backed user-wallet Reflect deposit router disabled because required tables are missing; apply migration 189 before enabling it")
+	// Initialize Blend.money yield router — the sole yield provider. Stash deposits
+	// route into each user's Blend Safe on Base.
+	if c.Config.Blend.Enabled {
+		if c.CircleAdapter == nil {
+			c.ZapLog.Error("Blend enabled but Circle adapter is not configured; Blend yield disabled")
 		} else {
-			if err := c.ReflectDepositRouter.Start(); err != nil {
-				c.ZapLog.Error("Failed to start Circle-backed user-wallet Reflect deposit router", zap.Error(err))
+			blendClient, blendErr := blend.NewClient(blend.Config{
+				BaseURL:       c.Config.Blend.BaseURL,
+				APIKey:        c.Config.Blend.APIKey,
+				AccountTypeID: c.Config.Blend.AccountTypeID,
+			}, c.ZapLog)
+			if blendErr != nil {
+				c.ZapLog.Error("Failed to construct Blend client; Blend yield disabled", zap.Error(blendErr))
 			} else {
-				c.AllocationService.SetYieldRouter(c.ReflectDepositRouter)
-				c.ZapLog.Info("Circle-backed user-wallet Reflect deposit router started")
+				c.BlendClient = blendClient
+				allowlist := blend.NewAllowlist(c.Config.Blend.AllowedContracts)
+				executor := blend.NewPlanExecutor(c.CircleAdapter, allowlist, c.ZapLog)
+				router := blend.NewDepositRouter(
+					sqlxDB,
+					blendClient,
+					c.CircleAdapter,
+					executor,
+					c.Config.Blend.ChainID,
+					c.Config.Blend.USDCAddress,
+					c.ZapLog,
+				)
+				if c.Config.Blend.RedeemTimeoutSecs > 0 {
+					router.SetRedeemTimeout(time.Duration(c.Config.Blend.RedeemTimeoutSecs) * time.Second)
+				}
+				if c.Config.Blend.WorkerIntervalSecs > 0 {
+					router.SetWorkerInterval(time.Duration(c.Config.Blend.WorkerIntervalSecs) * time.Second)
+				}
+				if c.Config.Blend.WorkerBatchSize > 0 {
+					router.SetWorkerBatchSize(c.Config.Blend.WorkerBatchSize)
+				}
+				if startErr := router.Start(); startErr != nil {
+					c.ZapLog.Error("Failed to start Blend reconciliation worker", zap.Error(startErr))
+				} else {
+					c.BlendDepositRouter = router
+					// Blend wins over Reflect for new deposits.
+					c.AllocationService.SetYieldRouter(router)
+					c.ZapLog.Info("Blend yield router started; routing new stash deposits to Blend",
+						zap.Int64("chain_id", c.Config.Blend.ChainID),
+						zap.Int("allowlisted_contracts", len(c.Config.Blend.AllowedContracts)))
+				}
 			}
 		}
-	} else if reflectClient != nil {
-		c.ZapLog.Warn("Circle-backed Reflect deposit router disabled",
-			zap.Bool("circle_configured", c.CircleAdapter != nil))
 	}
 
 	// Initialize Bridge virtual account service now that allocation + ledger are available.
@@ -2736,8 +2674,10 @@ func (c *Container) initializeDomainServices() error {
 	if c.CircleAdapter != nil {
 		c.WithdrawalService.SetCircleTransferAdapter(c.CircleAdapter)
 	}
-	if c.ReflectDepositRouter != nil {
-		c.WithdrawalService.SetStashYieldRedeemer(c.ReflectDepositRouter)
+	// Wire stash yield redemption to Blend (the sole yield provider). A withdrawal
+	// from stash redeems the user's Blend position back to USDC before it exits.
+	if c.BlendDepositRouter != nil {
+		c.WithdrawalService.SetStashYieldRedeemer(c.BlendDepositRouter)
 	}
 
 	// Initialize compliance screening (Didit transaction monitoring + AML) — wired below after DiditClient creation
@@ -4861,10 +4801,10 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		c.ChainRailsHandlers.SetSweepService(c.DepositSweepRepo)
 
-		if c.ReflectDepositRouter != nil {
-			c.ReflectDepositRouter.SetChainRailsBridge(c.ChainRailsClient, c.Config.ChainRails.DestinationChain)
-			c.ZapLog.Info("ChainRails wired into Reflect deposit router",
-				zap.String("destination_chain", c.Config.ChainRails.DestinationChain))
+		if c.BlendDepositRouter != nil {
+			// Empty destination => router derives BASE_MAINNET/BASE_TESTNET from chain_id.
+			c.BlendDepositRouter.SetChainRailsBridge(c.ChainRailsClient, "")
+			c.ZapLog.Info("ChainRails wired into Blend deposit router (bridging stash USDC to Base)")
 		}
 		c.ZapLog.Info("ChainRails deposit funnel initialized")
 	} else {
