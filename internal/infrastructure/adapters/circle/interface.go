@@ -22,6 +22,9 @@ type Client interface {
 	SignTransaction(ctx context.Context, req *SignTransactionRequest) (*SignedTransaction, error)
 	EstimateTransferFee(ctx context.Context, req *EstimateFeeRequest) (*FeeEstimate, error)
 
+	// Contract execution (arbitrary EVM contract calls — e.g. ERC20 approve, DeFi deposits).
+	CreateContractExecution(ctx context.Context, req *CreateContractExecutionRequest) (*Transaction, error)
+
 	// Config
 	GetEntityPublicKey(ctx context.Context) (string, error)
 

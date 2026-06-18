@@ -32,7 +32,7 @@ type Config struct {
 	Verification   VerificationConfig   `mapstructure:"verification"`
 	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
 	Bridge         BridgeConfig         `mapstructure:"bridge"`
-	Reflect        ReflectConfig        `mapstructure:"reflect"`
+	Blend          BlendConfig          `mapstructure:"blend"`
 	Grid           GridConfig           `mapstructure:"grid"`
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
 	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
@@ -503,20 +503,19 @@ type BridgeConfig struct {
 	RailCustomerID string `mapstructure:"rail_customer_id"`
 }
 
-// ReflectConfig contains Reflect Money API configuration for yield-bearing stablecoin treasury management.
-type ReflectConfig struct {
-	APIKey               string   `mapstructure:"api_key"`                 // Optional; only needed for whitelisted Reflect endpoints
-	BaseURL              string   `mapstructure:"base_url"`                // default: https://prod.api.reflect.money
-	SolanaRPC            string   `mapstructure:"solana_rpc"`              // Solana RPC endpoint
-	OwnerWallet          string   `mapstructure:"owner_wallet"`            // Optional Rail treasury Solana wallet pubkey (legacy treasury sweep only)
-	PrivateKey           string   `mapstructure:"private_key"`             // Optional Rail treasury private key (legacy treasury sweep only)
-	StablecoinIndex      int      `mapstructure:"stablecoin_index"`        // 0 = USDC+, 2 = LST Delta-Neutral
-	EnableTreasurySweep  bool     `mapstructure:"enable_treasury_sweep"`   // Legacy treasury-owned sweep; user Circle wallet routing is primary
-	MinSweepAmount       string   `mapstructure:"min_sweep_amount"`        // Minimum USDC to sweep (e.g. "1")
-	SweepInterval        int      `mapstructure:"sweep_interval"`          // Sweep interval in minutes
-	CircleSourceWalletID string   `mapstructure:"circle_source_wallet_id"` // Optional Circle treasury wallet for legacy treasury sweep only
-	BridgeSourceWalletID string   `mapstructure:"bridge_source_wallet_id"` // Legacy Bridge custody wallet
-	AllowedProgramIDs    []string `mapstructure:"allowed_program_ids"`     // Reflect/Solana programs Circle may sign for user yield routes
+// BlendConfig contains Blend.money non-custodial yield configuration.
+// Blend deploys a per-user Gnosis Safe on Base and routes USDC through DeFi vaults.
+type BlendConfig struct {
+	Enabled            bool     `mapstructure:"enabled"`              // Master switch: route stash deposits into Blend yield
+	APIKey             string   `mapstructure:"api_key"`              // Server-to-server X-API-Key
+	BaseURL            string   `mapstructure:"base_url"`             // default: https://api.portal.blend.money
+	AccountTypeID      string   `mapstructure:"account_type_id"`      // Blend account type slug (e.g. "savings-usd")
+	ChainID            int64    `mapstructure:"chain_id"`             // 8453 = Base mainnet, 84532 = Base Sepolia
+	USDCAddress        string   `mapstructure:"usdc_address"`         // USDC contract on the configured chain
+	AllowedContracts   []string `mapstructure:"allowed_contracts"`    // EVM contracts Circle may sign calls to (REQUIRED in prod)
+	RedeemTimeoutSecs  int      `mapstructure:"redeem_timeout_secs"`  // Max seconds to wait for a withdrawal to settle before failing
+	WorkerIntervalSecs int      `mapstructure:"worker_interval_secs"` // Reconciliation worker tick interval
+	WorkerBatchSize    int      `mapstructure:"worker_batch_size"`    // Routes processed per tick
 }
 
 // ChainRailsConfig contains ChainRails cross-chain deposit configuration.
@@ -928,21 +927,15 @@ func setDefaults() {
 	viper.SetDefault("bridge.base_url", "https://api.bridge.xyz")
 	viper.SetDefault("bridge.timeout", 30)
 
-	// Reflect defaults
-	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
-	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
-	viper.SetDefault("reflect.enable_treasury_sweep", false)
-	viper.SetDefault("reflect.min_sweep_amount", "1")
-	viper.SetDefault("reflect.sweep_interval", 10) // minutes
-	viper.SetDefault("reflect.allowed_program_ids", []string{"rFLctqnUuxLmYsW5r9zNujfJx9hGpnP1csXr9PYwVgX"})
+	// Blend.money defaults
+	viper.SetDefault("blend.enabled", false)
+	viper.SetDefault("blend.base_url", "https://api.portal.blend.money")
+	viper.SetDefault("blend.chain_id", 8453) // Base mainnet
+	viper.SetDefault("blend.usdc_address", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+	viper.SetDefault("blend.redeem_timeout_secs", 180)
+	viper.SetDefault("blend.worker_interval_secs", 30)
+	viper.SetDefault("blend.worker_batch_size", 25)
 
-	// Reflect defaults
-	viper.SetDefault("reflect.base_url", "https://prod.api.reflect.money")
-	viper.SetDefault("reflect.stablecoin_index", 0) // 0 = USDC+
-	viper.SetDefault("reflect.enable_treasury_sweep", false)
-	viper.SetDefault("reflect.min_sweep_amount", "1")
-	viper.SetDefault("reflect.sweep_interval", 10) // minutes
-	viper.SetDefault("reflect.allowed_program_ids", []string{"rFLctqnUuxLmYsW5r9zNujfJx9hGpnP1csXr9PYwVgX"})
 	viper.SetDefault("bridge.max_retries", 3)
 	viper.SetDefault("bridge.supported_chains", []string{"SOL", "MATIC", "CELO", "TRON", "BASE", "AVAX"})
 
@@ -1419,39 +1412,36 @@ func overrideFromEnv() {
 		viper.Set("social_auth.apple.private_key", v)
 	}
 
-	// Reflect Money yield
-	if v := os.Getenv("REFLECT_API_KEY"); v != "" {
-		viper.Set("reflect.api_key", v)
+	// Blend.money yield
+	if v := os.Getenv("BLEND_ENABLED"); v != "" {
+		viper.Set("blend.enabled", v)
 	}
-	if v := os.Getenv("REFLECT_BASE_URL"); v != "" {
-		viper.Set("reflect.base_url", v)
+	if v := os.Getenv("BLEND_API_KEY"); v != "" {
+		viper.Set("blend.api_key", v)
 	}
-	if v := os.Getenv("REFLECT_SOLANA_RPC"); v != "" {
-		viper.Set("reflect.solana_rpc", v)
+	if v := os.Getenv("BLEND_BASE_URL"); v != "" {
+		viper.Set("blend.base_url", v)
 	}
-	if v := os.Getenv("REFLECT_OWNER_WALLET"); v != "" {
-		viper.Set("reflect.owner_wallet", v)
+	if v := os.Getenv("BLEND_ACCOUNT_TYPE_ID"); v != "" {
+		viper.Set("blend.account_type_id", v)
 	}
-	if v := os.Getenv("REFLECT_PRIVATE_KEY"); v != "" {
-		viper.Set("reflect.private_key", v)
+	if v := os.Getenv("BLEND_CHAIN_ID"); v != "" {
+		viper.Set("blend.chain_id", v)
 	}
-	if v := os.Getenv("REFLECT_BRIDGE_SOURCE_WALLET_ID"); v != "" {
-		viper.Set("reflect.bridge_source_wallet_id", v)
+	if v := os.Getenv("BLEND_USDC_ADDRESS"); v != "" {
+		viper.Set("blend.usdc_address", v)
 	}
-	if v := os.Getenv("REFLECT_CIRCLE_SOURCE_WALLET_ID"); v != "" {
-		viper.Set("reflect.circle_source_wallet_id", v)
+	if v := os.Getenv("BLEND_ALLOWED_CONTRACTS"); v != "" {
+		viper.Set("blend.allowed_contracts", splitCommaSeparated(v))
 	}
-	if v := os.Getenv("REFLECT_ENABLE_TREASURY_SWEEP"); v != "" {
-		viper.Set("reflect.enable_treasury_sweep", v)
+	if v := os.Getenv("BLEND_REDEEM_TIMEOUT_SECS"); v != "" {
+		viper.Set("blend.redeem_timeout_secs", v)
 	}
-	if v := os.Getenv("REFLECT_MIN_SWEEP_AMOUNT"); v != "" {
-		viper.Set("reflect.min_sweep_amount", v)
+	if v := os.Getenv("BLEND_WORKER_INTERVAL_SECS"); v != "" {
+		viper.Set("blend.worker_interval_secs", v)
 	}
-	if v := os.Getenv("REFLECT_ALLOWED_PROGRAM_IDS"); v != "" {
-		viper.Set("reflect.allowed_program_ids", splitCommaSeparated(v))
-	}
-	if v := os.Getenv("REFLECT_STABLECOIN_INDEX"); v != "" {
-		viper.Set("reflect.stablecoin_index", v)
+	if v := os.Getenv("BLEND_WORKER_BATCH_SIZE"); v != "" {
+		viper.Set("blend.worker_batch_size", v)
 	}
 
 	// Admin security settings
@@ -1511,7 +1501,7 @@ func validate(config *Config) error {
 		return fmt.Errorf("bridge supported chains configuration is required")
 	}
 
-	if err := validateReflectConfig(config); err != nil {
+	if err := validateBlendConfig(config); err != nil {
 		return err
 	}
 
@@ -1554,23 +1544,27 @@ func validate(config *Config) error {
 	return nil
 }
 
-func validateReflectConfig(config *Config) error {
-	reflectEnabled := strings.TrimSpace(config.Reflect.SolanaRPC) != ""
-	if reflectEnabled && config.Reflect.EnableTreasurySweep && !isDevEnvironment(config.Environment) {
-		privateKey := strings.TrimSpace(config.Reflect.PrivateKey)
-		if privateKey == "" {
-			return fmt.Errorf("reflect private_key must be configured when reflect.enable_treasury_sweep is true in %s environment", config.Environment)
-		}
-		upperPrivateKey := strings.ToUpper(privateKey)
-		if strings.Contains(upperPrivateKey, "REPLACE") || strings.Contains(upperPrivateKey, "PLACEHOLDER") {
-			return fmt.Errorf("reflect private_key contains placeholder text in %s environment", config.Environment)
-		}
-		if strings.TrimSpace(config.Reflect.OwnerWallet) == "" {
-			return fmt.Errorf("reflect owner_wallet must be configured when reflect.enable_treasury_sweep is true in %s environment", config.Environment)
-		}
-		if strings.TrimSpace(config.Reflect.CircleSourceWalletID) == "" {
-			return fmt.Errorf("reflect circle_source_wallet_id must be configured when reflect.enable_treasury_sweep is true in %s environment", config.Environment)
-		}
+func validateBlendConfig(config *Config) error {
+	if !config.Blend.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(config.Blend.APIKey) == "" {
+		return fmt.Errorf("blend api_key is required when blend.enabled is true")
+	}
+	if strings.TrimSpace(config.Blend.AccountTypeID) == "" {
+		return fmt.Errorf("blend account_type_id is required when blend.enabled is true")
+	}
+	if config.Blend.ChainID == 0 {
+		return fmt.Errorf("blend chain_id is required when blend.enabled is true")
+	}
+	if strings.TrimSpace(config.Blend.USDCAddress) == "" {
+		return fmt.Errorf("blend usdc_address is required when blend.enabled is true")
+	}
+	// In production the contract allowlist is mandatory: signing arbitrary
+	// Blend-supplied calldata without it would let a compromised session
+	// route user funds to an attacker contract.
+	if !isDevEnvironment(config.Environment) && len(config.Blend.AllowedContracts) == 0 {
+		return fmt.Errorf("blend allowed_contracts must be configured in %s environment when blend.enabled is true", config.Environment)
 	}
 	return nil
 }

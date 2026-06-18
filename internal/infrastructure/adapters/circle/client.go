@@ -460,5 +460,36 @@ func (c *HTTPClient) EstimateTransferFee(ctx context.Context, req *EstimateFeeRe
 	return &resp.Data, nil
 }
 
+// CreateContractExecution signs and broadcasts an arbitrary EVM contract call.
+// Provide either CallData (hex) or AbiFunctionSignature + AbiParameters.
+func (c *HTTPClient) CreateContractExecution(ctx context.Context, req *CreateContractExecutionRequest) (*Transaction, error) {
+	if req == nil {
+		return nil, fmt.Errorf("circle: contract execution request is nil")
+	}
+	c.logger.Info("Circle CreateContractExecution request",
+		zap.String("walletId", req.WalletID),
+		zap.String("contractAddress", req.ContractAddress),
+		zap.String("abiSignature", req.AbiFunctionSignature),
+		zap.Bool("hasCallData", req.CallData != ""))
+
+	ciphertext, err := c.encryptEntitySecret()
+	if err != nil {
+		return nil, err
+	}
+	outReq := *req
+	outReq.EntitySecretCiphertext = ciphertext
+	if outReq.IdempotencyKey == "" {
+		outReq.IdempotencyKey = uuid.New().String()
+	}
+	if outReq.FeeLevel == "" && outReq.Fee == nil {
+		outReq.FeeLevel = "MEDIUM"
+	}
+	var resp apiResponse[TransactionData]
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/w3s/developer/transactions/contractExecution", outReq, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Data.Transaction, nil
+}
+
 // Ensure HTTPClient implements Client.
 var _ Client = (*HTTPClient)(nil)
