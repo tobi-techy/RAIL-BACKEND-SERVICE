@@ -18,6 +18,9 @@ import (
 // sign produces the wire-format HMAC over the canonical payload the middleware
 // expects. rawQuery is the raw URL query string (no leading '?'), or "" if none.
 func sign(secret, ts, method, path, rawQuery, body string) string {
+	if rawQuery == "" {
+		rawQuery = "-"
+	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(fmt.Appendf(nil, "%s.%s.%s.%s.%s", ts, method, path, rawQuery, body))
 	return hex.EncodeToString(mac.Sum(nil))
@@ -151,15 +154,26 @@ func TestInternalRequestSignature_RejectsTamperedQueryParams(t *testing.T) {
 	r := newSignedRouter(secret)
 	r.GET("/internal/test", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 
-	w := httptest.NewRecorder()
-	// Signature computed for ?account=A, request sent with ?account=B.
-	req := httptest.NewRequest(http.MethodGet, "/internal/test?account=B", strings.NewReader(body))
-	req.Header.Set("X-Internal-Timestamp", ts)
-	req.Header.Set("X-Internal-Signature", sign(secret, ts, http.MethodGet, "/internal/test", "account=A", body))
-	r.ServeHTTP(w, req)
+	// First: prove the signature is valid for ?account=A
+	sig := sign(secret, ts, http.MethodGet, "/internal/test", "account=A", body)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for tampered query string, got %d", w.Code)
+	w1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodGet, "/internal/test?account=A", strings.NewReader(body))
+	req1.Header.Set("X-Internal-Timestamp", ts)
+	req1.Header.Set("X-Internal-Signature", sig)
+	r.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 for correctly signed request with ?account=A, got %d", w1.Code)
+	}
+
+	// Second: reuse the same signature but send ?account=B — must be rejected
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/internal/test?account=B", strings.NewReader(body))
+	req2.Header.Set("X-Internal-Timestamp", ts)
+	req2.Header.Set("X-Internal-Signature", sig)
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for tampered query string, got %d", w2.Code)
 	}
 }
 

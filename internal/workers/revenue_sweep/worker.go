@@ -239,10 +239,14 @@ func (w *Worker) sweepPajOfframpFees(ctx context.Context) (int, int, error) {
 		if _, err := w.db.ExecContext(ctx,
 			`UPDATE paj_orders SET fee_swept = TRUE, fee_swept_at = NOW() WHERE paj_order_id = $1`,
 			f.PajOrderID); err != nil {
+			// CRITICAL: Fee transfer succeeded but DB mark failed. Money moved but fee
+			// will be selected again since fee_swept is still FALSE. This requires manual
+			// reconciliation to prevent double-counting in metrics.
 			w.logger.Error("CRITICAL: paj offramp fee transfer succeeded but failed to mark as swept — requires manual reconciliation",
 				zap.String("paj_order_id", f.PajOrderID),
 				zap.String("user_id", f.UserID.String()),
 				zap.Error(err))
+			// Count as swept because the on-chain transfer already happened.
 			swept++
 			continue
 		}

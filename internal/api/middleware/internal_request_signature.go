@@ -49,6 +49,9 @@ const internalSignatureMaxBody = 5 * 1024 * 1024
 //	X-Internal-Timestamp: unix seconds (must be within ±300s of server time)
 //	X-Internal-Signature: hex(HMAC_SHA256(secret, timestamp + "." + METHOD + "." + path + "." + rawQuery + "." + body))
 //
+// Empty query strings are represented as "-" in the signature payload to avoid
+// ambiguity from double dots.
+//
 // The raw query string is included so an attacker who captures a signed
 // request cannot mutate ?param=… values without invalidating the signature.
 func InternalRequestSignature(signingSecret string, logger *zap.Logger) gin.HandlerFunc {
@@ -93,8 +96,12 @@ func InternalRequestSignature(signingSecret string, logger *zap.Logger) gin.Hand
 			c.Request.Body = io.NopCloser(bytes.NewReader(body))
 		}
 
+		query := c.Request.URL.RawQuery
+		if query == "" {
+			query = "-"
+		}
 		payload := fmt.Sprintf("%s.%s.%s.%s.%s",
-			tsHeader, c.Request.Method, c.Request.URL.Path, c.Request.URL.RawQuery, string(body))
+			tsHeader, c.Request.Method, c.Request.URL.Path, query, string(body))
 		mac := hmac.New(sha256.New, []byte(signingSecret))
 		mac.Write([]byte(payload))
 		expected := hex.EncodeToString(mac.Sum(nil))

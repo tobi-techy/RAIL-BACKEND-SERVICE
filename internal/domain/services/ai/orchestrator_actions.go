@@ -915,7 +915,14 @@ func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.
 			go func(succeeded bool, em string) {
 				nctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
-				_ = o.moneyMoveNotifier.NotifyMiriamMovedFunds(nctx, userID, ToolTransferFunds, from, to, amount, false, succeeded, em)
+				if err := o.moneyMoveNotifier.NotifyMiriamMovedFunds(nctx, userID, ToolTransferFunds, from, to, amount, false, succeeded, em); err != nil {
+					o.logger.Warn("voice direct transfer notification failed",
+						zap.String("user_id", userID.String()),
+						zap.String("from", from),
+						zap.String("to", to),
+						zap.String("amount", amount.String()),
+						zap.Error(err))
+				}
 			}(err == nil, errMsg)
 		}
 		if err != nil {
