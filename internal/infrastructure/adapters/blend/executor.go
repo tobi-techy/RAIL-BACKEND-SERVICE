@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/google/uuid"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"go.uber.org/zap"
 )
@@ -182,7 +183,7 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 			return results, fmt.Errorf("blend plan step %d: invalid value: %w", i, err)
 		}
 
-		idemKey := fmt.Sprintf("%s:%d:%s", idempotencyPrefix, i, txDigest(step))
+		idemKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s:%d:%s", idempotencyPrefix, i, txDigest(step)))).String()
 		req := &circlepkg.CreateContractExecutionRequest{
 			IdempotencyKey:  idemKey,
 			WalletID:        walletID,
