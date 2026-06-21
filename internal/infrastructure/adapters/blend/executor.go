@@ -94,9 +94,14 @@ type ExecutedTx struct {
 // Execute runs each step of a plan via Circle, returning the resulting tx hashes
 // in submission order. The caller is responsible for handing these to /intent/submit.
 //
+// dynamicAllowed lists addresses that are trusted for THIS call in addition to the
+// static allowlist — used for the route's own Safe address, which is per-user and
+// resolved from Blend's authenticated API (a deposit/withdraw action plan legitimately
+// targets the user's own Safe, e.g. the withdraw liquidityReset delegatecall).
+//
 // Idempotency: idempotencyPrefix is combined with the step index to produce a stable
 // Circle idempotency key per step. Re-runs with the same prefix are safe.
-func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string) ([]ExecutedTx, error) {
+func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string, dynamicAllowed ...string) ([]ExecutedTx, error) {
 	if e == nil || e.circle == nil {
 		return nil, errors.New("blend executor not configured")
 	}
@@ -110,13 +115,20 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 	if e.allowlist.Empty() {
 		e.logger.Warn("Blend executor running without contract allowlist — DEV ONLY")
 	}
+	dynamic := make(map[string]struct{}, len(dynamicAllowed))
+	for _, a := range dynamicAllowed {
+		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+			dynamic[a] = struct{}{}
+		}
+	}
 
 	results := make([]ExecutedTx, 0, len(plan.Steps))
 	for i, step := range plan.Steps {
 		if !isHexAddress(step.To) {
 			return results, fmt.Errorf("blend plan step %d: invalid `to` address %q", i, step.To)
 		}
-		if !e.allowlist.Allows(step.To) {
+		_, isDynamic := dynamic[strings.ToLower(step.To)]
+		if !isDynamic && !e.allowlist.Allows(step.To) {
 			return results, fmt.Errorf("blend plan step %d: contract %s not in allowlist", i, step.To)
 		}
 		callData, err := normalizeHex(step.Data)

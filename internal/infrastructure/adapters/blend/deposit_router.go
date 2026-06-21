@@ -586,7 +586,7 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 		return fmt.Errorf("blend: mark executing: %w", err)
 	}
 
-	executed, err := r.executor.Execute(ctx, route.CircleWalletID, plan, fmt.Sprintf("blend-deposit-%s", route.ID.String()))
+	executed, err := r.executor.Execute(ctx, route.CircleWalletID, plan, fmt.Sprintf("blend-deposit-%s", route.ID.String()), route.SafeAddress)
 	if err != nil {
 		return fmt.Errorf("blend: execute action plan: %w", err)
 	}
