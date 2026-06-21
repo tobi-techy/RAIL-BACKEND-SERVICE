@@ -2151,7 +2151,7 @@ func (c *Container) initializeDomainServices() error {
 				// production (config validation enforces base_rpc_url there).
 				if rpc := c.Config.Blend.BaseRPCURL; rpc != "" {
 					executor.SetSafeVerifier(blend.NewEVMSafeVerifier(rpc, c.ZapLog))
-					c.ZapLog.Info("Blend Safe verifier enabled", zap.String("base_rpc_url", rpc))
+					c.ZapLog.Info("Blend Safe verifier enabled")
 				} else {
 					c.ZapLog.Warn("Blend Safe verifier DISABLED (no blend.base_rpc_url) — dynamic Safe trust is unverified; dev only")
 				}
