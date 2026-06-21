@@ -176,7 +176,7 @@ func (h *InternalHandlers) CompleteStuckPajOrders(c *gin.Context) {
 		targetStatus = "failed"
 	}
 
-	webhookStatus := "admin:" + targetStatus[:4]
+	webhookStatus := fmt.Sprintf("manual-%s:admin-api", targetStatus)
 	res, err := h.db.ExecContext(c.Request.Context(), `
 		UPDATE paj_orders
 		SET status = $1,
