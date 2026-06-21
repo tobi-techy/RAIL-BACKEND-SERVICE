@@ -149,13 +149,21 @@ func (c *mp) enrichProfiles(ctx context.Context, db *sql.DB) {
 		profiles = append(profiles, mixpanel.NewPeopleProperties(id, props))
 		count++
 		if len(profiles) >= batch {
-			_ = c.api.PeopleSet(ctx, profiles)
+			if err := c.api.PeopleSet(ctx, profiles); err != nil {
+				log.Printf("[profiles-geo] PeopleSet error: %v", err)
+			}
 			profiles = nil
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[profiles-geo] iteration error: %v", err)
+		return
+	}
 	if len(profiles) > 0 {
-		_ = c.api.PeopleSet(ctx, profiles)
+		if err := c.api.PeopleSet(ctx, profiles); err != nil {
+			log.Printf("[profiles-geo] PeopleSet error: %v", err)
+		}
 	}
 	log.Printf("[profiles-geo] enriched %d profiles", count)
 }
@@ -211,6 +219,10 @@ func (c *mp) backfillSessions(ctx context.Context, db *sql.DB) {
 			events = nil
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[sessions] iteration error: %v", err)
+		return
+	}
 	if len(events) > 0 {
 		c.flush(ctx, events)
 	}
@@ -257,6 +269,10 @@ func (c *mp) backfillRepeatDeposits(ctx context.Context, db *sql.DB) {
 			events = nil
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[repeat-deposits] iteration error: %v", err)
+		return
+	}
 	if len(events) > 0 {
 		c.flush(ctx, events)
 	}
@@ -300,6 +316,10 @@ func (c *mp) backfillFirstDeposits(ctx context.Context, db *sql.DB) {
 			c.flush(ctx, events)
 			events = nil
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[first-deposits] iteration error: %v", err)
+		return
 	}
 	if len(events) > 0 {
 		c.flush(ctx, events)

@@ -196,8 +196,20 @@ func (r *DepositRouter) EnsureDepositYieldRoute(ctx context.Context, userID, dep
 
 	// Capture the funding source (the deposit wallet) so the funding step can bridge
 	// the stash USDC from wherever it landed to the user's Base EOA.
+	// If not provided in metadata (e.g. fiat deposits), resolve from the user's SOL wallet.
 	sourceWalletID := metadataString(metadata, "circle_wallet_id")
 	sourceChain := metadataString(metadata, "chain")
+	if sourceWalletID == "" {
+		solWallet, solErr := r.resolveUserSolanaWallet(ctx, userID)
+		if solErr != nil {
+			return fmt.Errorf("blend: cannot resolve funding source wallet for user %s: %w", userID, solErr)
+		}
+		if solWallet.CircleWalletID == "" {
+			return fmt.Errorf("blend: resolved Solana wallet for user %s has empty CircleWalletID", userID)
+		}
+		sourceWalletID = solWallet.CircleWalletID
+		sourceChain = "SOL"
+	}
 
 	micro := USDCMicroUnits(amount)
 	_, err = r.db.ExecContext(ctx, `

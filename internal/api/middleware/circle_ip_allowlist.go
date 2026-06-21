@@ -13,13 +13,21 @@ import (
 // Source: https://developers.circle.com/developer/docs/webhook-notifications
 // Update this list when Circle publishes new ranges.
 var circleIPRanges = []string{
-	// Circle production IP ranges
+	// Circle production IP ranges (us-west-2)
 	"54.187.174.169/32",
 	"54.187.205.235/32",
 	"54.187.216.72/32",
+	// Circle production IP ranges (us-west-1)
 	"54.241.91.89/32",
 	"54.241.91.90/32",
 	"54.241.91.91/32",
+	// Circle production IP ranges (us-east-1) — observed in webhook traffic June 2026
+	"54.165.52.248/32",
+	"54.87.106.46/32",
+	"54.243.112.156/32",
+	"100.24.191.35/32",
+	"35.83.138.210/32",
+	"35.83.210.96/32",
 }
 
 // CircleIPAllowlist returns a Gin middleware that restricts the /webhooks/circle
