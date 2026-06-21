@@ -24,6 +24,8 @@ var circleIPRanges = []string{
 	// Circle production IP ranges (us-east-1) — observed in webhook traffic June 2026
 	"54.165.52.248/32",
 	"54.87.106.46/32",
+	"54.243.112.156/32",
+	"100.24.191.35/32",
 	"35.83.138.210/32",
 	"35.83.210.96/32",
 }
