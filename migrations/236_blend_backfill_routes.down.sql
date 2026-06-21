@@ -9,9 +9,12 @@ BEGIN
     SELECT 1 FROM pg_stat_activity
     WHERE pid <> pg_backend_pid()
       AND state = 'active'
-      AND (query ILIKE '%blend_deposit_routes%' OR query ILIKE '%blend_yield_positions%')
+      AND (
+        (query ~* '(INSERT|UPDATE|DELETE).*blend_deposit_routes')
+        OR (query ~* '(INSERT|UPDATE|DELETE).*blend_yield_positions')
+      )
   ) THEN
-    RAISE EXCEPTION 'Active queries detected on blend tables. Stop backfill operations before running this rollback.';
+    RAISE EXCEPTION 'Active write operations detected on blend tables. Stop backfill operations before running this rollback.';
   END IF;
 END $$;
 
