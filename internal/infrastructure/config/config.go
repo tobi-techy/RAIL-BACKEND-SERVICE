@@ -1580,6 +1580,9 @@ func validateBlendConfig(config *Config) error {
 	// In production the contract allowlist is mandatory: signing arbitrary
 	// Blend-supplied calldata without it would let a compromised session
 	// route user funds to an attacker contract.
+	if strings.TrimSpace(config.Blend.BaseRPCURL) == "" {
+		return fmt.Errorf("BLEND_BASE_RPC_URL is required but not set")
+	}
 	if !isDevEnvironment(config.Environment) && len(config.Blend.AllowedContracts) == 0 {
 		return fmt.Errorf("blend allowed_contracts must be configured in %s environment when blend.enabled is true", config.Environment)
 	}

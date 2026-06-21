@@ -110,7 +110,7 @@ func (r *DepositRouter) BackfillUserStash(ctx context.Context, userID uuid.UUID,
 	// Amount to backfill = current stash minus whatever is already in the Blend pipeline
 	// for this user (non-terminal or settled routes), so we never double-route.
 	// Use a transaction to prevent race conditions between reading and inserting.
-	tx, err := r.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	tx, err := r.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return false, fmt.Errorf("blend backfill: begin tx: %w", err)
 	}

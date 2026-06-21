@@ -62,7 +62,7 @@ func (h *BlendHandlers) TriggerStashBackfill(c *gin.Context) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				h.logger.Error("Blend stash backfill panicked", zap.Any("panic", r))
+				h.logger.Error("Blend stash backfill panicked", zap.Any("panic", r), zap.Stack("stack"))
 			}
 		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)

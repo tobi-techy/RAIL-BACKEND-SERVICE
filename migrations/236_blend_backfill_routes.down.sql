@@ -2,14 +2,30 @@
 -- Stop any running backfill operations before executing.
 -- Requires explicit approval; review carefully before running in production.
 
+-- Fail fast if any active queries are touching blend tables concurrently.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_stat_activity
+    WHERE pid <> pg_backend_pid()
+      AND state = 'active'
+      AND (query ILIKE '%blend_deposit_routes%' OR query ILIKE '%blend_yield_positions%')
+  ) THEN
+    RAISE EXCEPTION 'Active queries detected on blend tables. Stop backfill operations before running this rollback.';
+  END IF;
+END $$;
+
 BEGIN;
 
--- Archive backfill rows before deletion
-CREATE TABLE IF NOT EXISTS blend_deposit_routes_archive (LIKE blend_deposit_routes INCLUDING ALL);
-CREATE TABLE IF NOT EXISTS blend_yield_positions_archive (LIKE blend_yield_positions INCLUDING ALL);
+-- Archive backfill rows before deletion (fresh tables per rollback attempt)
+DROP TABLE IF EXISTS blend_deposit_routes_archive;
+DROP TABLE IF EXISTS blend_yield_positions_archive;
 
-INSERT INTO blend_deposit_routes_archive SELECT * FROM blend_deposit_routes WHERE deposit_id IS NULL ON CONFLICT DO NOTHING;
-INSERT INTO blend_yield_positions_archive SELECT * FROM blend_yield_positions WHERE deposit_id IS NULL ON CONFLICT DO NOTHING;
+CREATE TABLE blend_deposit_routes_archive (LIKE blend_deposit_routes INCLUDING ALL);
+CREATE TABLE blend_yield_positions_archive (LIKE blend_yield_positions INCLUDING ALL);
+
+INSERT INTO blend_deposit_routes_archive SELECT * FROM blend_deposit_routes WHERE deposit_id IS NULL;
+INSERT INTO blend_yield_positions_archive SELECT * FROM blend_yield_positions WHERE deposit_id IS NULL;
 
 DROP INDEX IF EXISTS idx_blend_deposit_routes_source;
 
