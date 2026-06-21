@@ -235,19 +235,18 @@ func (m *mpClient) backfillWithdrawals(ctx context.Context, db *sql.DB) {
 func (m *mpClient) backfillAllocations(ctx context.Context, db *sql.DB) {
 	log.Println("[allocations] starting...")
 	count := m.backfillSimpleQuery(ctx, db,
-		`SELECT user_id, event_type, deposit_amount, spend_amount, invest_amount, save_amount, created_at
+		`SELECT user_id, event_type, total_amount, spending_amount, stash_amount, created_at
 		 FROM allocation_events ORDER BY created_at`,
 		"allocation_executed", func(rows *sql.Rows) (string, time.Time, map[string]any, error) {
 			var uid, eventType string
-			var deposit, spend, invest, save decimal.Decimal
+			var total, spending, stash decimal.Decimal
 			var ts time.Time
-			err := rows.Scan(&uid, &eventType, &deposit, &spend, &invest, &save, &ts)
+			err := rows.Scan(&uid, &eventType, &total, &spending, &stash, &ts)
 			return uid, ts, map[string]any{
-				"event_type":    eventType,
-				"deposit_amount": deposit.InexactFloat64(),
-				"spend_amount":  spend.InexactFloat64(),
-				"invest_amount": invest.InexactFloat64(),
-				"save_amount":   save.InexactFloat64(),
+				"event_type":      eventType,
+				"total_amount":    total.InexactFloat64(),
+				"spending_amount": spending.InexactFloat64(),
+				"stash_amount":    stash.InexactFloat64(),
 			}, err
 		})
 	log.Printf("[allocations] sent %d events", count)
@@ -279,7 +278,7 @@ func (m *mpClient) backfillOrders(ctx context.Context, db *sql.DB) {
 func (m *mpClient) backfillP2PTransfers(ctx context.Context, db *sql.DB) {
 	log.Println("[p2p] starting...")
 	count := m.backfillSimpleQuery(ctx, db,
-		`SELECT sender_id, amount, status, transfer_method, created_at FROM p2p_transfers ORDER BY created_at`,
+		`SELECT sender_id, amount, status, identifier_type, created_at FROM p2p_transfers ORDER BY created_at`,
 		"p2p_transfer", func(rows *sql.Rows) (string, time.Time, map[string]any, error) {
 			var uid, status, method string
 			var amount decimal.Decimal
