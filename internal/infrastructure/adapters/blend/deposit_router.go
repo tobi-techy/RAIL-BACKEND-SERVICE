@@ -589,7 +589,19 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 		// Deposit already settled on a prior attempt; record and exit.
 		return r.recordSettlement(ctx, route, current)
 	case IntentStatusFailed, IntentStatusCancelled:
-		return fmt.Errorf("blend: session %s is %s before execution; cannot proceed", route.IntentID.String, current.Status)
+		// Session expired or was cancelled — create a fresh session and re-quote.
+		r.logger.Warn("Blend session expired/cancelled, resetting to re-quote",
+			zap.String("route_id", route.ID.String()),
+			zap.String("intent_id", route.IntentID.String),
+			zap.String("session_status", current.Status))
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE blend_deposit_routes SET status = $2, intent_id = NULL, intent_status = NULL,
+				quote_payload = NULL, next_retry_at = NOW(), updated_at = NOW()
+			WHERE id = $1
+		`, route.ID, routeStatusSafeReady); err != nil {
+			return fmt.Errorf("blend: reset cancelled session: %w", err)
+		}
+		return nil
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
@@ -607,20 +619,30 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 	hashes := make([]TxHashRef, 0, len(executed))
 	for _, ex := range executed {
 		if ex.TxHash == "" {
-			// Circle accepts tx but hasn't broadcast yet; resolve via GetTransaction.
-			tx, err := r.circle.GetTransaction(ctx, ex.TransactionID)
-			if err != nil {
-				return fmt.Errorf("blend: get circle tx %s: %w", ex.TransactionID, err)
+			// Circle accepts tx but hasn't broadcast yet; poll until hash appears.
+			for attempts := 0; attempts < 10 && ex.TxHash == ""; attempts++ {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("blend: context expired waiting for circle tx hash %s: %w", ex.TransactionID, ctx.Err())
+				case <-time.After(3 * time.Second):
+				}
+				tx, err := r.circle.GetTransaction(ctx, ex.TransactionID)
+				if err != nil {
+					return fmt.Errorf("blend: get circle tx %s: %w", ex.TransactionID, err)
+				}
+				ex.TxHash = tx.TxHash
 			}
-			ex.TxHash = tx.TxHash
 		}
 		if ex.TxHash == "" {
-			// Tx still pending on Circle side — re-enter this step shortly.
+			// Still no hash after polling — schedule a short retry rather than looping.
 			if _, err := r.db.ExecContext(ctx, `
-				UPDATE blend_deposit_routes SET next_retry_at = NOW() + INTERVAL '10 seconds', updated_at = NOW() WHERE id = $1
+				UPDATE blend_deposit_routes SET next_retry_at = NOW() + INTERVAL '15 seconds', updated_at = NOW() WHERE id = $1
 			`, route.ID); err != nil {
 				return fmt.Errorf("blend: reschedule for circle tx hash: %w", err)
 			}
+			r.logger.Warn("Blend: Circle tx has no hash after polling, will retry",
+				zap.String("route_id", route.ID.String()),
+				zap.String("circle_tx_id", ex.TransactionID))
 			return nil
 		}
 		hashes = append(hashes, TxHashRef{Hash: ex.TxHash, ChainID: ex.ChainID})
