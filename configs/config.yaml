@@ -334,32 +334,29 @@ chat:
   enable_safety_filter: true
   rate_limit_per_hour: 50
 
-# Reflect Money Yield Configuration
-reflect:
-  # API key is optional for public Reflect endpoints. Only set it for whitelisted endpoints.
+# Blend.money Yield Configuration
+# Non-custodial yield via a per-user Gnosis Safe on Base. Set blend.enabled=true and
+# supply api_key + account_type_id (and allowed_contracts in production) to activate.
+blend:
+  enabled: false
   api_key: ""
-  base_url: "https://prod.api.reflect.money"
-  solana_rpc: "https://api.mainnet-beta.solana.com"
-  # API key is optional for public Reflect endpoints; only set it for whitelisted endpoints.
-  owner_wallet: ""
-  private_key: ""
-  stablecoin_index: 0
-  # User Circle wallet mint/burn routing is primary. Leave treasury sweep disabled unless explicitly doing legacy backfill.
-  enable_treasury_sweep: false
-  # Only used when enable_treasury_sweep is true.
-  min_sweep_amount: "1"
-  sweep_interval: 10
-  # Only used when enable_treasury_sweep is true.
-  circle_source_wallet_id: ""
-  # Legacy Bridge fallback.
-  bridge_source_wallet_id: ""
-  # Reflect program IDs Circle may sign for user-wallet yield transactions.
-  # Default Solana system/token/ATA/compute/memo programs are allowed in code;
-  # this list should contain Reflect protocol programs only.
-  # SECURITY: only use program IDs from official Reflect documentation/support. Wrong IDs may block legitimate transactions or permit unsafe signing.
-  # Source: @reflectmoney/stable.ts v4.0.2 REFLECT_MAIN_PROGRAM_ADDRESS.
-  allowed_program_ids:
-    - "rFLctqnUuxLmYsW5r9zNujfJx9hGpnP1csXr9PYwVgX"
+  base_url: "https://api.portal.blend.money"
+  account_type_id: "rail-stash"
+  chain_id: 8453 # Base mainnet (84532 = Base Sepolia)
+  usdc_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  # REQUIRED in production: EVM contracts Circle may sign calls to. The per-user Safe
+  # is trusted dynamically in code; this list is Blend's Base protocol contracts + USDC.
+  # Confirm/extend by capturing the `to` addresses from a sandbox deposit action plan.
+  allowed_contracts:
+    - "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" # USDC (Base)
+    - "0x6f94AC2C4129A7f1435532F39913dFD23d061263" # Broadcaster (Base v1.5)
+    - "0xE4E0f5EB706084f4d598049dDD0aBFD2f8431360" # RolesReceiver (Base v1.5)
+    - "0x26C1f82b901B12FF2A1b11f4Aa35a28369b4677C" # MorphoVaultController (Base v1.5)
+    - "0x2207189bAB0f177df87d77b7575102f2dF925754" # SwapAdapter (Base v1.5)
+    - "0x0A55aa9881b64bF370738F088154f997B975f718" # Guard (Base v1.5)
+  redeem_timeout_secs: 180
+  worker_interval_secs: 30
+  worker_batch_size: 25
 
 # Statement Processing Pipeline
 statement:
