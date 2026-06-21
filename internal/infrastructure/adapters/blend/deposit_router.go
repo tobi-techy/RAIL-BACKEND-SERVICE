@@ -201,13 +201,14 @@ func (r *DepositRouter) EnsureDepositYieldRoute(ctx context.Context, userID, dep
 	sourceChain := metadataString(metadata, "chain")
 	if sourceWalletID == "" {
 		solWallet, solErr := r.resolveUserSolanaWallet(ctx, userID)
-		if solErr == nil {
-			sourceWalletID = solWallet.CircleWalletID
-			sourceChain = "SOL"
-		} else {
-			r.logger.Warn("blend: failed to resolve source wallet for fiat deposit, route will have empty source",
-				zap.String("user_id", userID.String()), zap.Error(solErr))
+		if solErr != nil {
+			return fmt.Errorf("blend: cannot resolve funding source wallet for user %s: %w", userID, solErr)
 		}
+		if solWallet.CircleWalletID == "" {
+			return fmt.Errorf("blend: resolved Solana wallet for user %s has empty CircleWalletID", userID)
+		}
+		sourceWalletID = solWallet.CircleWalletID
+		sourceChain = "SOL"
 	}
 
 	micro := USDCMicroUnits(amount)
