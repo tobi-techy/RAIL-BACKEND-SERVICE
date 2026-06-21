@@ -157,7 +157,7 @@ func (r *DepositRouter) fundSameChain(ctx context.Context, route *depositRoute, 
 	}
 	transfer, err := r.circle.TransferUSDCWithIdempotency(
 		ctx, sourceWalletID, tokenID, route.EOAAddress, need.StringFixed(6),
-		"blend-fund-"+route.ID.String(),
+		uuid.NewSHA1(uuid.NameSpaceOID, []byte("blend-fund-"+route.ID.String())).String(),
 	)
 	if err != nil {
 		return fmt.Errorf("blend: same-chain fund transfer: %w", err)
@@ -252,7 +252,7 @@ func (r *DepositRouter) ensureBridgeFunded(ctx context.Context, route *depositRo
 	}
 	transfer, err := r.circle.TransferUSDCWithIdempotency(
 		ctx, sourceWalletID, tokenID, intentAddr, route.BridgeFundAmount.Decimal.StringFixed(6),
-		"blend-bridge-"+route.ID.String(),
+		uuid.NewSHA1(uuid.NameSpaceOID, []byte("blend-bridge-"+route.ID.String())).String(),
 	)
 	if err != nil {
 		return fmt.Errorf("blend: fund ChainRails intent: %w", err)
