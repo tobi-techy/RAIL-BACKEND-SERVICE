@@ -13,6 +13,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
@@ -287,6 +288,11 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 		span.RecordError(err)
 		return fmt.Errorf("failed to execute auto-investment: %w", err)
 	}
+
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventAutoInvestEnabled, map[string]any{
+		"amount":    investableAmount.InexactFloat64(),
+		"threshold": threshold.InexactFloat64(),
+	})
 
 	return nil
 }

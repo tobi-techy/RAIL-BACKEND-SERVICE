@@ -20,6 +20,7 @@ import (
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -353,11 +354,20 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 	if !bridgeResult.Success && !alpacaResult.Success {
 		response.Status = "failed"
 		response.Message = "KYC submission failed for both providers. Please try again."
+		analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventKYCFailed, map[string]any{
+			"bridge_status": bridgeResult.Status, "alpaca_status": alpacaResult.Status,
+		})
 	} else if !bridgeResult.Success || !alpacaResult.Success {
 		response.Status = "partial_failure"
 		response.Message = "KYC partially submitted. Our team will review and contact you if needed."
+		analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventKYCStarted, map[string]any{
+			"status": "partial_failure",
+		})
 	} else {
 		response.Message = "KYC submitted successfully. You will be notified when verification is complete."
+		analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventKYCStarted, map[string]any{
+			"status": "submitted",
+		})
 	}
 
 	return response, nil

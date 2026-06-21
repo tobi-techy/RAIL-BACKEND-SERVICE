@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/analytics"
 )
 
 // UserLookup provides user lookup methods
@@ -475,6 +476,12 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 	if transfer.Status == entities.P2PStatusPending {
 		message = fmt.Sprintf("Sent! %s will be notified to claim.", normalized)
 	}
+
+	analytics.TrackEvent(ctx, senderID.String(), analytics.EventP2PTransfer, map[string]any{
+		"amount": amount.InexactFloat64(),
+		"method": req.Identifier,
+		"status": string(transfer.Status),
+	})
 
 	return &entities.P2PTransferResponse{
 		Transfer: transfer,

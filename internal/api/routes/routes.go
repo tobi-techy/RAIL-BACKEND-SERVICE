@@ -1655,6 +1655,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Analytics admin routes
 			// Analytics routes moved to /api/v1/dashboard/analytics (JWT-only auth)
+			mixpanelBackfill := admin_handlers.NewMixpanelBackfillHandler(container.DB, container.ZapLog)
+			admin.POST("/analytics/backfill", mixpanelBackfill.TriggerBackfill)
 
 			// Security admin routes
 			adminMFAHandlers := handlers.NewMFAHandlers(

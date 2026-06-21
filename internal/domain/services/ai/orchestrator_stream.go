@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -118,6 +119,12 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 
 func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	start := time.Now()
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventAIQuestionAsked, map[string]any{
+		"message_length":    len(message),
+		"conversation_id":   convID.String(),
+		"history_count":     len(history),
+	})
 
 	streamer, ok := o.aiProvider.(ai.StreamProvider)
 	if !ok {
