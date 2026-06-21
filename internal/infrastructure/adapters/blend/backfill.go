@@ -109,8 +109,15 @@ func (r *DepositRouter) BackfillUserStash(ctx context.Context, userID uuid.UUID,
 
 	// Amount to backfill = current stash minus whatever is already in the Blend pipeline
 	// for this user (non-terminal or settled routes), so we never double-route.
+	// Use a transaction to prevent race conditions between reading and inserting.
+	tx, err := r.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return false, fmt.Errorf("blend backfill: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	var alreadyRouted decimal.Decimal
-	if err := r.db.GetContext(ctx, &alreadyRouted, `
+	if err := tx.GetContext(ctx, &alreadyRouted, `
 		SELECT COALESCE(SUM(amount), 0)
 		FROM blend_deposit_routes
 		WHERE user_id = $1 AND status NOT IN ('error_terminal', 'error_payload')
@@ -132,7 +139,7 @@ func (r *DepositRouter) BackfillUserStash(ctx context.Context, userID uuid.UUID,
 	}
 
 	micro := USDCMicroUnits(amount)
-	res, err := r.db.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		INSERT INTO blend_deposit_routes (
 			id, deposit_id, user_id, blend_account_id, eoa_address,
 			circle_wallet_id, chain_id, input_asset, amount, amount_units,
@@ -153,6 +160,10 @@ func (r *DepositRouter) BackfillUserStash(ctx context.Context, userID uuid.UUID,
 			return false, r.processRoute(ctx, existing)
 		}
 		return false, nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("blend backfill: commit tx: %w", err)
 	}
 
 	route, err := r.getRouteByExternalRef(ctx, externalRef)
@@ -187,16 +198,33 @@ func (r *DepositRouter) resolveUserSolanaWallet(ctx context.Context, userID uuid
 		Address        sql.NullString `db:"address"`
 	}
 	for _, table := range []string{"managed_wallets", "wallets"} {
-		query := fmt.Sprintf(`
+		var query string
+		switch table {
+		case "managed_wallets":
+			query = `
 			SELECT circle_wallet_id, address
-			FROM %s
+			FROM managed_wallets
 			WHERE user_id = $1
 				AND UPPER(chain) = ANY($2)
 				AND COALESCE(circle_wallet_id, '') <> ''
 				AND COALESCE(address, '') <> ''
 			ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC
 			LIMIT 1
-		`, table)
+		`
+		case "wallets":
+			query = `
+			SELECT circle_wallet_id, address
+			FROM wallets
+			WHERE user_id = $1
+				AND UPPER(chain) = ANY($2)
+				AND COALESCE(circle_wallet_id, '') <> ''
+				AND COALESCE(address, '') <> ''
+			ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC
+			LIMIT 1
+		`
+		default:
+			continue
+		}
 		if err := r.db.GetContext(ctx, &dbWallet, query, userID.String(), pq.Array(solChains)); err == nil {
 			return baseWallet{
 				CircleWalletID: strings.TrimSpace(dbWallet.CircleWalletID.String),

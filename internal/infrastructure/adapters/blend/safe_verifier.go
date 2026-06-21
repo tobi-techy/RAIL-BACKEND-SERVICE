@@ -155,6 +155,9 @@ func (v *EVMSafeVerifier) call(ctx context.Context, method string, params []any)
 	if err != nil {
 		return "", err
 	}
+	if len(raw) >= 1<<20 {
+		return "", fmt.Errorf("rpc %s response too large (>1MB), possible attack or malformed response", method)
+	}
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("rpc %s HTTP %d: %s", method, resp.StatusCode, truncate(string(raw), 256))
 	}

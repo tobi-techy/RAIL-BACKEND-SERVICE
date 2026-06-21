@@ -158,9 +158,8 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 			}
 			e.logger.Info("Blend: dynamic Safe trust granted (on-chain verified)", auditFields...)
 		} else {
-			// No verifier configured. Config validation requires one in production, so
-			// this path is dev/sandbox only.
-			e.logger.Warn("Blend: dynamic Safe trust granted WITHOUT on-chain verification — set blend.base_rpc_url (DEV ONLY)", auditFields...)
+			// No verifier configured — refuse to trust without on-chain verification.
+			return nil, fmt.Errorf("blend plan: refusing to trust Safe %s without on-chain verification (verifier not configured)", safeAddr)
 		}
 		dynamic[strings.ToLower(safeAddr)] = struct{}{}
 	}

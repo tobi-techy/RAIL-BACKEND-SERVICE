@@ -945,7 +945,7 @@ func setDefaults() {
 	viper.SetDefault("blend.base_url", "https://api.portal.blend.money")
 	viper.SetDefault("blend.chain_id", 8453) // Base mainnet
 	viper.SetDefault("blend.usdc_address", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
-	viper.SetDefault("blend.base_rpc_url", "https://mainnet.base.org")
+	viper.SetDefault("blend.base_rpc_url", "")
 	viper.SetDefault("blend.redeem_timeout_secs", 180)
 	viper.SetDefault("blend.worker_interval_secs", 30)
 	viper.SetDefault("blend.worker_batch_size", 25)
@@ -1588,6 +1588,14 @@ func validateBlendConfig(config *Config) error {
 	// call to it is signed. Without it the dynamic allow would be unverified.
 	if !isDevEnvironment(config.Environment) && strings.TrimSpace(config.Blend.BaseRPCURL) == "" {
 		return fmt.Errorf("blend base_rpc_url must be configured in %s environment when blend.enabled is true (e.g. https://mainnet.base.org)", config.Environment)
+	}
+	if !isDevEnvironment(config.Environment) {
+		rpc := strings.TrimRight(strings.TrimSpace(config.Blend.BaseRPCURL), "/")
+		for _, pub := range []string{"https://mainnet.base.org", "https://base.org"} {
+			if strings.EqualFold(rpc, pub) {
+				return fmt.Errorf("blend base_rpc_url cannot use public RPC endpoint %q in %s environment - use a dedicated provider (Alchemy, Infura, etc.)", rpc, config.Environment)
+			}
+		}
 	}
 	return nil
 }

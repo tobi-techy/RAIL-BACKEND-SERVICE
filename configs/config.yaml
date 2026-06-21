@@ -348,7 +348,7 @@ blend:
   # Base JSON-RPC endpoint. Used to verify each per-user Safe on-chain (contract bytecode
   # + ownership) before the executor trusts it. REQUIRED in production. Public default below;
   # use a dedicated provider (Alchemy/Infura/QuickNode) for production reliability.
-  base_rpc_url: "https://mainnet.base.org"
+  base_rpc_url: "" # REQUIRED in production — set via BLEND_BASE_RPC_URL env var (Alchemy/Infura/QuickNode)
   # ───────────────────────────────────────────────────────────────────────────────────
   # ALLOWED CONTRACTS — Blend.money protocol contracts the executor may sign calls to.
   #
