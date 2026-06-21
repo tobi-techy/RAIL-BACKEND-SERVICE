@@ -204,6 +204,12 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 		if err != nil {
 			return results, fmt.Errorf("blend plan step %d: circle execute: %w", i, err)
 		}
+		e.logger.Info("Blend executor step result",
+			zap.Int("step", i),
+			zap.String("tx_id", tx.ID),
+			zap.String("tx_hash", tx.TxHash),
+			zap.String("state", string(tx.State)),
+		)
 		results = append(results, ExecutedTx{
 			ChainID:       step.ChainID,
 			TxHash:        tx.TxHash,
