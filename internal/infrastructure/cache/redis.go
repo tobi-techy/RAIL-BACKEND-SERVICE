@@ -37,8 +37,9 @@ type redisClient struct {
 // NewRedisClient creates a new Redis client
 func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, error) {
 	opts := &redis.Options{
-		Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		DB:   cfg.DB,
+		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		DB:       cfg.DB,
+		PoolSize: 5, // Keep low for serverless Redis (Upstash)
 	}
 	if cfg.Password != "" {
 		opts.Password = cfg.Password

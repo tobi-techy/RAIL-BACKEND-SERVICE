@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	sessionCacheTTL    = 30 * time.Second
+	sessionCacheTTL    = 5 * time.Minute
 	sessionCachePrefix = "session:"
 )
 
