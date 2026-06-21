@@ -135,6 +135,8 @@ func (c *HTTPClient) encryptEntitySecret() (string, error) {
 }
 
 func parseRSAPublicKey(pemBytes []byte) (*rsa.PublicKey, error) {
+	// Environment variables often store PEM keys with literal "\n" instead of actual newlines.
+	pemBytes = []byte(strings.ReplaceAll(string(pemBytes), `\n`, "\n"))
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
 		return nil, fmt.Errorf("failed to parse PEM block")
