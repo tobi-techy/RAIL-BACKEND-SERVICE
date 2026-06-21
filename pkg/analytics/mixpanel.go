@@ -66,6 +66,33 @@ func (c *Client) Increment(ctx context.Context, userID string, props map[string]
 	}()
 }
 
+// Import sends historical events with explicit timestamps (for backfill).
+// Uses the /import endpoint which accepts events with $time set in the past.
+func (c *Client) Import(ctx context.Context, events []*mixpanel.Event) error {
+	if c.mp == nil {
+		return nil
+	}
+	_, err := c.mp.Import(ctx, events, mixpanel.ImportOptions{Strict: false})
+	return err
+}
+
+// NewEventWithTime creates an event with a historical timestamp.
+func (c *Client) NewEventWithTime(event, userID string, ts time.Time, props map[string]any) *mixpanel.Event {
+	if props == nil {
+		props = map[string]any{}
+	}
+	props["time"] = ts.Unix()
+	return c.mp.NewEvent(event, userID, props)
+}
+
+// PeopleSetBatch sets profile properties for multiple users.
+func (c *Client) PeopleSetBatch(ctx context.Context, profiles []*mixpanel.PeopleProperties) error {
+	if c.mp == nil {
+		return nil
+	}
+	return c.mp.PeopleSet(ctx, profiles)
+}
+
 // TrackRevenue tracks a revenue event via $transaction append.
 func (c *Client) TrackRevenue(ctx context.Context, userID string, amount float64, props map[string]any) {
 	if c.mp == nil {

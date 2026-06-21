@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -118,6 +119,15 @@ func (s *Service) Subscribe(ctx context.Context, userID uuid.UUID, plan string) 
 	}
 
 	s.invalidateCache(ctx, userID)
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventPremiumConverted, map[string]any{
+		"plan":   sub.Plan,
+		"status": string(sub.Status),
+	})
+	analytics.IdentifyUser(ctx, userID.String(), map[string]any{
+		analytics.PropPlan: sub.Plan,
+	})
+
 	return sub, nil
 }
 
