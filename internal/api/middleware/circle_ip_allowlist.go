@@ -3,6 +3,7 @@ package middleware
 import (
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -48,26 +49,38 @@ func CircleIPAllowlist(environment string, logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		clientIP := net.ParseIP(c.ClientIP())
-		if clientIP == nil {
-			logger.Warn("Circle webhook: could not parse client IP",
-				zap.String("raw_ip", c.ClientIP()))
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error":   "IP_NOT_ALLOWED",
-				"message": "Request origin not authorized",
-			})
-			return
+		// Behind reverse proxies (Atlasflow/Cloudflare), c.ClientIP() returns the
+		// proxy's internal IP. Check forwarding headers for the real origin IP.
+		candidates := []string{c.ClientIP()}
+		if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+			for _, part := range strings.Split(xff, ",") {
+				candidates = append(candidates, strings.TrimSpace(part))
+			}
+		}
+		if realIP := c.GetHeader("X-Real-IP"); realIP != "" {
+			candidates = append(candidates, strings.TrimSpace(realIP))
+		}
+		if cfIP := c.GetHeader("CF-Connecting-IP"); cfIP != "" {
+			candidates = append(candidates, strings.TrimSpace(cfIP))
 		}
 
-		for _, ipNet := range nets {
-			if ipNet.Contains(clientIP) {
-				c.Next()
-				return
+		for _, raw := range candidates {
+			ip := net.ParseIP(raw)
+			if ip == nil {
+				continue
+			}
+			for _, ipNet := range nets {
+				if ipNet.Contains(ip) {
+					c.Next()
+					return
+				}
 			}
 		}
 
 		logger.Warn("Circle webhook request from non-allowlisted IP — rejected",
-			zap.String("client_ip", clientIP.String()))
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("x_forwarded_for", c.GetHeader("X-Forwarded-For")),
+			zap.String("cf_connecting_ip", c.GetHeader("CF-Connecting-IP")))
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"error":   "IP_NOT_ALLOWED",
 			"message": "Request origin not authorized",
