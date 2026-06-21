@@ -1123,7 +1123,10 @@ func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdr
 				if s.tieredLimits != nil {
 					_ = s.tieredLimits.RecordWithdrawal(ctx, req.UserID, req.Amount)
 				}
-				_ = s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
+				if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+					s.logger.Error("async: ChainRails withdrawal confirmed but failed to settle in database",
+						"withdrawal_id", withdrawal.ID.String(), "tx_hash", status.TxHash, "error", err)
+				}
 				if s.notificationService != nil {
 					_ = s.notificationService.NotifyWithdrawalCompleted(ctx, req.UserID, req.Amount, req.DestinationAddress)
 				}
