@@ -11,7 +11,7 @@ import (
 // depositRoute mirrors a row in blend_deposit_routes.
 type depositRoute struct {
 	ID             uuid.UUID       `db:"id"`
-	DepositID      uuid.UUID       `db:"deposit_id"`
+	DepositID      uuid.NullUUID   `db:"deposit_id"`
 	UserID         uuid.UUID       `db:"user_id"`
 	BlendAccountID string          `db:"blend_account_id"`
 	EOAAddress     string          `db:"eoa_address"`
@@ -44,6 +44,14 @@ type depositRoute struct {
 	LastError       sql.NullString `db:"last_error"`
 	NextRetryAt     sql.NullTime   `db:"next_retry_at"`
 	ExternalRef     sql.NullString `db:"external_ref"`
+	Source          string         `db:"source"`
+}
+
+func nullUUIDString(n uuid.NullUUID) string {
+	if !n.Valid {
+		return ""
+	}
+	return n.UUID.String()
 }
 
 const depositRouteSelect = `
@@ -54,7 +62,7 @@ const depositRouteSelect = `
 		bridge_source_chain, bridge_fund_amount, bridge_tx_hash, funded_at,
 		intent_id, intent_status, intent_expires_at,
 		quote_payload, quote_summary, tx_hash, submitted_at, settled_at,
-		status, attempts, last_error, next_retry_at, external_ref
+		status, attempts, last_error, next_retry_at, external_ref, source
 	FROM blend_deposit_routes`
 
 // blendUserAccount mirrors a row in blend_user_accounts.

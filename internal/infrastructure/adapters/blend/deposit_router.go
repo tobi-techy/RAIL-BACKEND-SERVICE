@@ -586,7 +586,8 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 		return fmt.Errorf("blend: mark executing: %w", err)
 	}
 
-	executed, err := r.executor.Execute(ctx, route.CircleWalletID, plan, fmt.Sprintf("blend-deposit-%s", route.ID.String()), route.SafeAddress)
+	executed, err := r.executor.Execute(ctx, route.CircleWalletID, plan, fmt.Sprintf("blend-deposit-%s", route.ID.String()),
+		&TrustedSafe{Address: route.SafeAddress, OwnerEOA: route.EOAAddress, ChainID: route.ChainID})
 	if err != nil {
 		return fmt.Errorf("blend: execute action plan: %w", err)
 	}
@@ -710,7 +711,8 @@ func (r *DepositRouter) recordSettlement(ctx context.Context, route *depositRout
 	r.logger.Info("Blend deposit settled",
 		zap.String("route_id", route.ID.String()),
 		zap.String("user_id", route.UserID.String()),
-		zap.String("deposit_id", route.DepositID.String()),
+		zap.String("deposit_id", nullUUIDString(route.DepositID)),
+		zap.String("source", route.Source),
 		zap.String("amount", route.Amount.StringFixed(6)),
 		zap.String("tx_hash", primaryHash),
 	)

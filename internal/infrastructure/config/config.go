@@ -94,15 +94,15 @@ type CCTPConfig struct {
 
 // AIConfig contains AI provider configuration
 type AIConfig struct {
-	OpenAI     OpenAIConfig     `mapstructure:"openai"`
-	Gemini     GeminiConfig     `mapstructure:"gemini"`
-	Kimi       KimiConfig       `mapstructure:"kimi"`
-	Groq       GroqConfig       `mapstructure:"groq"`
-	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
-	AssemblyAI AssemblyAIConfig `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
-	ElevenLabs ElevenLabsConfig `mapstructure:"elevenlabs"`
+	OpenAI      OpenAIConfig      `mapstructure:"openai"`
+	Gemini      GeminiConfig      `mapstructure:"gemini"`
+	Kimi        KimiConfig        `mapstructure:"kimi"`
+	Groq        GroqConfig        `mapstructure:"groq"`
+	Bedrock     BedrockConfig     `mapstructure:"bedrock"`
+	AssemblyAI  AssemblyAIConfig  `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
+	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
-	Primary    string           `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 }
 
 // SupermemoryConfig contains Supermemory API configuration.
@@ -118,15 +118,15 @@ type AssemblyAIConfig struct {
 
 // ElevenLabsConfig contains ElevenLabs Conversational AI configuration
 type ElevenLabsConfig struct {
-	APIKey           string  `mapstructure:"api_key"`
-	AgentID          string  `mapstructure:"agent_id"`           // ElevenLabs Conversational AI agent ID
-	WebhookSecret    string  `mapstructure:"webhook_secret"`     // Secret for authenticating server tool webhook calls
-	VoiceID          string  `mapstructure:"voice_id"`           // Optional: override agent's default voice
-	PidginVoiceID    string  `mapstructure:"pidgin_voice_id"`    // Voice ID for Nigerian Pidgin speakers
-	Stability        float64 `mapstructure:"stability"`          // 0-1: lower = more expressive but less stable
-	SimilarityBoost  float64 `mapstructure:"similarity_boost"`   // 0-1: how closely to match original voice
-	Style            float64 `mapstructure:"style"`              // 0-1: style exaggeration
-	UseSpeakerBoost  bool    `mapstructure:"use_speaker_boost"`  // enhance speaker clarity
+	APIKey          string  `mapstructure:"api_key"`
+	AgentID         string  `mapstructure:"agent_id"`          // ElevenLabs Conversational AI agent ID
+	WebhookSecret   string  `mapstructure:"webhook_secret"`    // Secret for authenticating server tool webhook calls
+	VoiceID         string  `mapstructure:"voice_id"`          // Optional: override agent's default voice
+	PidginVoiceID   string  `mapstructure:"pidgin_voice_id"`   // Voice ID for Nigerian Pidgin speakers
+	Stability       float64 `mapstructure:"stability"`         // 0-1: lower = more expressive but less stable
+	SimilarityBoost float64 `mapstructure:"similarity_boost"`  // 0-1: how closely to match original voice
+	Style           float64 `mapstructure:"style"`             // 0-1: style exaggeration
+	UseSpeakerBoost bool    `mapstructure:"use_speaker_boost"` // enhance speaker clarity
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -513,6 +513,7 @@ type BlendConfig struct {
 	ChainID            int64    `mapstructure:"chain_id"`             // 8453 = Base mainnet, 84532 = Base Sepolia
 	USDCAddress        string   `mapstructure:"usdc_address"`         // USDC contract on the configured chain
 	AllowedContracts   []string `mapstructure:"allowed_contracts"`    // EVM contracts Circle may sign calls to (REQUIRED in prod)
+	BaseRPCURL         string   `mapstructure:"base_rpc_url"`         // Base JSON-RPC endpoint for on-chain Safe verification (REQUIRED in prod)
 	RedeemTimeoutSecs  int      `mapstructure:"redeem_timeout_secs"`  // Max seconds to wait for a withdrawal to settle before failing
 	WorkerIntervalSecs int      `mapstructure:"worker_interval_secs"` // Reconciliation worker tick interval
 	WorkerBatchSize    int      `mapstructure:"worker_batch_size"`    // Routes processed per tick
@@ -932,6 +933,7 @@ func setDefaults() {
 	viper.SetDefault("blend.base_url", "https://api.portal.blend.money")
 	viper.SetDefault("blend.chain_id", 8453) // Base mainnet
 	viper.SetDefault("blend.usdc_address", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+	viper.SetDefault("blend.base_rpc_url", "https://mainnet.base.org")
 	viper.SetDefault("blend.redeem_timeout_secs", 180)
 	viper.SetDefault("blend.worker_interval_secs", 30)
 	viper.SetDefault("blend.worker_batch_size", 25)
@@ -1431,6 +1433,9 @@ func overrideFromEnv() {
 	if v := os.Getenv("BLEND_USDC_ADDRESS"); v != "" {
 		viper.Set("blend.usdc_address", v)
 	}
+	if v := os.Getenv("BLEND_BASE_RPC_URL"); v != "" {
+		viper.Set("blend.base_rpc_url", v)
+	}
 	if v := os.Getenv("BLEND_ALLOWED_CONTRACTS"); v != "" {
 		viper.Set("blend.allowed_contracts", splitCommaSeparated(v))
 	}
@@ -1565,6 +1570,12 @@ func validateBlendConfig(config *Config) error {
 	// route user funds to an attacker contract.
 	if !isDevEnvironment(config.Environment) && len(config.Blend.AllowedContracts) == 0 {
 		return fmt.Errorf("blend allowed_contracts must be configured in %s environment when blend.enabled is true", config.Environment)
+	}
+	// In production a Base RPC endpoint is mandatory so the per-user Safe (dynamically
+	// trusted by the executor) is verified on-chain (contract + ownership) before any
+	// call to it is signed. Without it the dynamic allow would be unverified.
+	if !isDevEnvironment(config.Environment) && strings.TrimSpace(config.Blend.BaseRPCURL) == "" {
+		return fmt.Errorf("blend base_rpc_url must be configured in %s environment when blend.enabled is true (e.g. https://mainnet.base.org)", config.Environment)
 	}
 	return nil
 }
