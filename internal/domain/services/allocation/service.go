@@ -513,7 +513,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		}
 	}
 
-	routeYield := s.yieldRouter != nil && req.DepositID != nil && stashAmount.GreaterThan(decimal.Zero) && metadataHasValue(req.Metadata, "circle_wallet_id")
+	routeYield := s.yieldRouter != nil && req.DepositID != nil && stashAmount.GreaterThan(decimal.Zero)
 	var routeDepositID uuid.UUID
 	routeAmount := stashAmount
 	routeMetadata := copyMetadata(req.Metadata)
