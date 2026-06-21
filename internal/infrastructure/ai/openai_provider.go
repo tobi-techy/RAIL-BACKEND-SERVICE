@@ -149,6 +149,11 @@ func (p *OpenAIProvider) ChatCompletionWithTools(ctx context.Context, req *ChatR
 		}
 	}
 
+	// Truncate messages if provider has a context token limit
+	if p.config.MaxContextTokens > 0 {
+		req.Messages = truncateMessages(req.Messages, req.SystemPrompt, tools, p.config.MaxContextTokens)
+	}
+
 	// Build OpenAI request
 	openAIReq := p.buildOpenAIRequest(req, tools)
 
@@ -548,7 +553,7 @@ func (p *OpenAIProvider) handleHTTPError(statusCode int, body []byte, headers ..
 		provErr.RetryAfter = retryAfterDuration(message, headers...)
 	case http.StatusUnauthorized, http.StatusForbidden:
 		provErr.Code = ErrorCodeAuthentication
-	case http.StatusBadRequest:
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
 		provErr.Code = ErrorCodeInvalidRequest
 	case http.StatusInternalServerError, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		provErr.Code = ErrorCodeServerError
