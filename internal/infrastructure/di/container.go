@@ -32,7 +32,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
-	"github.com/rail-service/rail_service/internal/domain/services/sharedgoal"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
@@ -44,7 +43,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
-	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
@@ -63,6 +61,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
+	"github.com/rail-service/rail_service/internal/domain/services/sharedgoal"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
@@ -78,19 +77,20 @@ import (
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
 	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
@@ -2147,6 +2147,14 @@ func (c *Container) initializeDomainServices() error {
 				c.BlendClient = blendClient
 				allowlist := blend.NewAllowlist(c.Config.Blend.AllowedContracts)
 				executor := blend.NewPlanExecutor(c.CircleAdapter, allowlist, c.ZapLog)
+				// On-chain Safe verification for the executor's dynamic allow. Required in
+				// production (config validation enforces base_rpc_url there).
+				if rpc := c.Config.Blend.BaseRPCURL; rpc != "" {
+					executor.SetSafeVerifier(blend.NewEVMSafeVerifier(rpc, c.ZapLog))
+					c.ZapLog.Info("Blend Safe verifier enabled", zap.String("base_rpc_url", rpc))
+				} else {
+					c.ZapLog.Warn("Blend Safe verifier DISABLED (no blend.base_rpc_url) — dynamic Safe trust is unverified; dev only")
+				}
 				router := blend.NewDepositRouter(
 					sqlxDB,
 					blendClient,

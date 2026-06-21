@@ -213,7 +213,8 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 		return fmt.Errorf("blend: mark redemption executing: %w", err)
 	}
 
-	executed, err := r.executor.Execute(ctx, acct.CircleWalletID, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()), acct.SafeAddress)
+	executed, err := r.executor.Execute(ctx, acct.CircleWalletID, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
+		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: acct.EOAAddress, ChainID: acct.ChainID})
 	if err != nil {
 		return fmt.Errorf("blend: execute withdraw plan: %w", err)
 	}

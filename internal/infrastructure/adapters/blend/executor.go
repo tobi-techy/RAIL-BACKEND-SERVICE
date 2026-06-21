@@ -71,10 +71,21 @@ func (a *Allowlist) Empty() bool {
 	return a == nil || len(a.addresses) == 0
 }
 
+// TrustedSafe is a per-call dynamically-trusted target: the route's own Gnosis Safe.
+// A deposit/withdraw action plan legitimately targets the user's Safe (e.g. the withdraw
+// liquidityReset delegatecall), but the Safe address is per-user so it can't sit in the
+// static allowlist. It is verified on-chain (contract + ownership) before being trusted.
+type TrustedSafe struct {
+	Address  string
+	OwnerEOA string
+	ChainID  int64
+}
+
 // PlanExecutor walks a Blend action plan and executes each step through Circle.
 type PlanExecutor struct {
 	circle    ContractExecutor
 	allowlist *Allowlist
+	verifier  SafeVerifier
 	logger    *zap.Logger
 }
 
@@ -82,6 +93,16 @@ type PlanExecutor struct {
 // allowlist is permitted only for sandbox bring-up and emits warnings.
 func NewPlanExecutor(circle ContractExecutor, allowlist *Allowlist, logger *zap.Logger) *PlanExecutor {
 	return &PlanExecutor{circle: circle, allowlist: allowlist, logger: logger}
+}
+
+// SetSafeVerifier wires on-chain verification of dynamically-trusted Safe addresses.
+// When set, a TrustedSafe is only honored after confirming it is a real Safe contract
+// owned by the expected EOA. Required in production.
+func (e *PlanExecutor) SetSafeVerifier(v SafeVerifier) {
+	if e == nil {
+		return
+	}
+	e.verifier = v
 }
 
 // ExecutedTx is the result of a single executed step.
@@ -94,14 +115,14 @@ type ExecutedTx struct {
 // Execute runs each step of a plan via Circle, returning the resulting tx hashes
 // in submission order. The caller is responsible for handing these to /intent/submit.
 //
-// dynamicAllowed lists addresses that are trusted for THIS call in addition to the
-// static allowlist — used for the route's own Safe address, which is per-user and
-// resolved from Blend's authenticated API (a deposit/withdraw action plan legitimately
-// targets the user's own Safe, e.g. the withdraw liquidityReset delegatecall).
+// trustedSafe (optional) is the route's own Safe, dynamically trusted for THIS call in
+// addition to the static allowlist. It is verified on-chain (contract bytecode + owner)
+// before being trusted when a SafeVerifier is configured; without a verifier it is
+// allowed with a loud warning (dev only).
 //
 // Idempotency: idempotencyPrefix is combined with the step index to produce a stable
 // Circle idempotency key per step. Re-runs with the same prefix are safe.
-func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string, dynamicAllowed ...string) ([]ExecutedTx, error) {
+func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string, trustedSafe *TrustedSafe) ([]ExecutedTx, error) {
 	if e == nil || e.circle == nil {
 		return nil, errors.New("blend executor not configured")
 	}
@@ -115,11 +136,33 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 	if e.allowlist.Empty() {
 		e.logger.Warn("Blend executor running without contract allowlist — DEV ONLY")
 	}
-	dynamic := make(map[string]struct{}, len(dynamicAllowed))
-	for _, a := range dynamicAllowed {
-		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
-			dynamic[a] = struct{}{}
+
+	dynamic := make(map[string]struct{}, 1)
+	if trustedSafe != nil && strings.TrimSpace(trustedSafe.Address) != "" {
+		safeAddr := strings.TrimSpace(trustedSafe.Address)
+		if !isHexAddress(safeAddr) {
+			return nil, fmt.Errorf("blend plan: invalid trusted safe address %q", safeAddr)
 		}
+		auditFields := []zap.Field{
+			zap.String("safe_address", safeAddr),
+			zap.String("owner_eoa", trustedSafe.OwnerEOA),
+			zap.String("wallet_id", walletID),
+			zap.String("idempotency_prefix", idempotencyPrefix),
+			zap.Int64("chain_id", trustedSafe.ChainID),
+		}
+		if e.verifier != nil {
+			if err := e.verifier.VerifySafe(ctx, trustedSafe.ChainID, safeAddr, trustedSafe.OwnerEOA); err != nil {
+				e.logger.Error("Blend: dynamic Safe trust REJECTED — on-chain verification failed",
+					append(auditFields, zap.Error(err))...)
+				return nil, fmt.Errorf("blend plan: refusing to trust Safe %s: %w", safeAddr, err)
+			}
+			e.logger.Info("Blend: dynamic Safe trust granted (on-chain verified)", auditFields...)
+		} else {
+			// No verifier configured. Config validation requires one in production, so
+			// this path is dev/sandbox only.
+			e.logger.Warn("Blend: dynamic Safe trust granted WITHOUT on-chain verification — set blend.base_rpc_url (DEV ONLY)", auditFields...)
+		}
+		dynamic[strings.ToLower(safeAddr)] = struct{}{}
 	}
 
 	results := make([]ExecutedTx, 0, len(plan.Steps))

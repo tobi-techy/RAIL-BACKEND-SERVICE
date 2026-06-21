@@ -345,9 +345,37 @@ blend:
   account_type_id: "rail-stash"
   chain_id: 8453 # Base mainnet (84532 = Base Sepolia)
   usdc_address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-  # REQUIRED in production: EVM contracts Circle may sign calls to. The per-user Safe
-  # is trusted dynamically in code; this list is Blend's Base protocol contracts + USDC.
-  # Confirm/extend by capturing the `to` addresses from a sandbox deposit action plan.
+  # Base JSON-RPC endpoint. Used to verify each per-user Safe on-chain (contract bytecode
+  # + ownership) before the executor trusts it. REQUIRED in production. Public default below;
+  # use a dedicated provider (Alchemy/Infura/QuickNode) for production reliability.
+  base_rpc_url: "https://mainnet.base.org"
+  # ───────────────────────────────────────────────────────────────────────────────────
+  # ALLOWED CONTRACTS — Blend.money protocol contracts the executor may sign calls to.
+  #
+  #   Last verified : 2026-06-21
+  #   Protocol ver. : Blend.money v1.5 (Base mainnet, chainId 8453)
+  #   Source        : https://docs.blend.money/resources/deployments
+  #                   (cross-check each address on https://basescan.org before trusting)
+  #
+  # The per-user Gnosis Safe is NOT listed here — it is trusted dynamically at runtime and
+  # verified on-chain via base_rpc_url (see internal/infrastructure/adapters/blend/executor.go
+  # + safe_verifier.go). This list is only the fixed protocol contracts + USDC.
+  #
+  # HOW TO UPDATE WHEN BLEND UPGRADES THEIR PROTOCOL:
+  #   1. Open https://docs.blend.money/resources/deployments and read the new Base addresses
+  #      for the version your account type runs (Account Types → your type → Strategy/version).
+  #   2. Replace the addresses below; bump the "Last verified" date and "Protocol ver." above.
+  #   3. Verify each address is a deployed contract on BaseScan (not an EOA).
+  #   4. Confirm completeness by capturing the `to` addresses from a real deposit/withdraw
+  #      action plan (stored in blend_deposit_routes.quote_payload) and ensure every non-Safe
+  #      target is present here. A missing address fails safe: the deposit parks with
+  #      "contract <addr> not in allowlist" in last_error and auto-recovers once added.
+  #
+  # TODO(blend): implement runtime validation of these addresses against Blend.money's API
+  #   at application startup (e.g. fetch the account-type's deployment manifest and diff
+  #   against this list, logging/refusing to start on drift) so manual upkeep isn't the only
+  #   safeguard against stale addresses after a protocol upgrade.
+  # ───────────────────────────────────────────────────────────────────────────────────
   allowed_contracts:
     - "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" # USDC (Base)
     - "0x6f94AC2C4129A7f1435532F39913dFD23d061263" # Broadcaster (Base v1.5)

@@ -199,7 +199,7 @@ func (r *DepositRouter) createBridgeIntent(ctx context.Context, route *depositRo
 		Recipient:        route.EOAAddress,
 		RefundAddress:    sourceWallet.Address,
 		Metadata: map[string]interface{}{
-			"deposit_id": route.DepositID.String(),
+			"deposit_id": nullUUIDString(route.DepositID),
 			"user_id":    route.UserID.String(),
 			"route_id":   route.ID.String(),
 			"type":       "blend_deposit_funding",

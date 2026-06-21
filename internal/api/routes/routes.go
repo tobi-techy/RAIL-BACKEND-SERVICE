@@ -1329,15 +1329,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// AI Chat endpoints (AI Financial Manager)
 			if container.GetAIOrchestrator() != nil {
 				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
-			var voiceHandler interface {
-				HandleSession(*gin.Context)
-				IssueSessionToken(*gin.Context)
-				CheckELHealth(*gin.Context)
-				IssueSignedURL(*gin.Context)
-				HandleToolExecution(*gin.Context)
-				GetProactiveInsight(*gin.Context)
-				HandleServerTool(*gin.Context)
-			}
+				var voiceHandler interface {
+					HandleSession(*gin.Context)
+					IssueSessionToken(*gin.Context)
+					CheckELHealth(*gin.Context)
+					IssueSignedURL(*gin.Context)
+					HandleToolExecution(*gin.Context)
+					GetProactiveInsight(*gin.Context)
+					HandleServerTool(*gin.Context)
+				}
 				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
 					el := container.Config.AI.ElevenLabs
 					ttsCfg := &infraai.ELTTSConfig{
@@ -1629,6 +1629,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Stash reconciliation — manually trigger a check of ledger vs yield-provider balance
 			if container.StashReconciliation != nil {
 				admin.POST("/stash/reconcile", handlers.TriggerStashReconciliation(container.StashReconciliation, container.ZapLog))
+			}
+
+			// Blend stash backfill — one-time: route every user's current stash balance into Blend
+			if container.BlendDepositRouter != nil {
+				blendAdminHandlers := handlers.NewBlendHandlers(container.BlendDepositRouter, container.ZapLog)
+				admin.POST("/blend/backfill-stash", blendAdminHandlers.TriggerStashBackfill)
 			}
 
 			// KYC admin routes

@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
@@ -47,4 +49,29 @@ func (h *BlendHandlers) GetYieldOverview(c *gin.Context) {
 		"returns_pct":    overview.ReturnsPct,
 		"pending_amount": overview.PendingAmount.StringFixed(6),
 	})
+}
+
+// TriggerStashBackfill kicks off the one-time backfill that routes every user's current
+// stash balance into Blend. Runs asynchronously; returns 202 immediately. Admin-only.
+// POST /admin/blend/backfill-stash
+func (h *BlendHandlers) TriggerStashBackfill(c *gin.Context) {
+	if h.router == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "blend yield is not enabled"})
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		res, err := h.router.BackfillAllStash(ctx)
+		if err != nil {
+			h.logger.Error("Blend stash backfill failed", zap.Error(err))
+			return
+		}
+		h.logger.Info("Blend stash backfill finished",
+			zap.Int("users_scanned", res.UsersScanned),
+			zap.Int("routes_created", res.RoutesCreated),
+			zap.Int("skipped", res.Skipped),
+			zap.Int("errors", res.Errors))
+	}()
+	c.JSON(http.StatusAccepted, gin.H{"status": "accepted", "message": "stash backfill started; check logs for completion"})
 }
