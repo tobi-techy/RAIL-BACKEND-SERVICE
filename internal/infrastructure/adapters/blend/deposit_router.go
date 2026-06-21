@@ -204,6 +204,9 @@ func (r *DepositRouter) EnsureDepositYieldRoute(ctx context.Context, userID, dep
 		if solErr == nil {
 			sourceWalletID = solWallet.CircleWalletID
 			sourceChain = "SOL"
+		} else {
+			r.logger.Warn("blend: failed to resolve source wallet for fiat deposit, route will have empty source",
+				zap.String("user_id", userID.String()), zap.Error(solErr))
 		}
 	}
 
