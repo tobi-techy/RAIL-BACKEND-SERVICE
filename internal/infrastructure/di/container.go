@@ -3484,15 +3484,16 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Groq — OpenAI-compatible provider
 	if strings.TrimSpace(c.Config.AI.Groq.APIKey) != "" {
 		groqConfig := &ai.ProviderConfig{
-			APIKey:       strings.TrimSpace(c.Config.AI.Groq.APIKey),
-			BaseURL:      "https://api.groq.com/openai/v1",
-			Model:        c.Config.AI.Groq.Model,
-			MaxTokens:    c.Config.AI.Groq.MaxTokens,
-			Temperature:  c.Config.AI.Groq.Temperature,
-			TopP:         c.Config.AI.Groq.TopP,
-			Timeout:      resolveTimeout(c.Config.AI.Groq.TimeoutSeconds),
-			RateLimitRPM: c.Config.AI.Groq.RateLimitRPM,
-			ProviderName: "groq",
+			APIKey:           strings.TrimSpace(c.Config.AI.Groq.APIKey),
+			BaseURL:          "https://api.groq.com/openai/v1",
+			Model:            c.Config.AI.Groq.Model,
+			MaxTokens:        c.Config.AI.Groq.MaxTokens,
+			MaxContextTokens: 10000, // Groq free tier TPM limit is 12k; leave headroom
+			Temperature:      c.Config.AI.Groq.Temperature,
+			TopP:             c.Config.AI.Groq.TopP,
+			Timeout:          resolveTimeout(c.Config.AI.Groq.TimeoutSeconds),
+			RateLimitRPM:     c.Config.AI.Groq.RateLimitRPM,
+			ProviderName:     "groq",
 		}
 		groqProvider := ai.NewOpenAIProvider(groqConfig, c.ZapLog)
 		providers = append(providers, groqProvider)

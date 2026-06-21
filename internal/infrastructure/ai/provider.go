@@ -72,15 +72,16 @@ type ToolCall struct {
 
 // ProviderConfig holds configuration for AI providers
 type ProviderConfig struct {
-	APIKey       string
-	BaseURL      string // Custom API base URL (for OpenAI-compatible providers like Kimi)
-	Model        string
-	MaxTokens    int
-	Temperature  float64
-	TopP         float64
-	Timeout      time.Duration
-	RateLimitRPM int    // Requests per minute
-	ProviderName string // Override provider name (e.g. "kimi" instead of "openai")
+	APIKey           string
+	BaseURL          string // Custom API base URL (for OpenAI-compatible providers like Kimi)
+	Model            string
+	MaxTokens        int
+	MaxContextTokens int // Max input tokens before truncation (0 = no limit)
+	Temperature      float64
+	TopP             float64
+	Timeout          time.Duration
+	RateLimitRPM     int    // Requests per minute
+	ProviderName     string // Override provider name (e.g. "kimi" instead of "openai")
 }
 
 // ProviderError represents an error from an AI provider
