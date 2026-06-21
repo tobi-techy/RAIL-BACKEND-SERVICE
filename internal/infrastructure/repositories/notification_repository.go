@@ -48,6 +48,9 @@ func (r *NotificationRepository) Create(ctx context.Context, n *Notification) er
 	if n.Priority == "" {
 		n.Priority = "medium"
 	}
+	if n.Body == "" {
+		n.Body = n.Title
+	}
 	n.CreatedAt = time.Now()
 
 	dataJSON, _ := json.Marshal(n.Data)

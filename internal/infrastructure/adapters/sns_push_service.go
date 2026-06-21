@@ -38,6 +38,11 @@ func NewSNSPushService(ctx context.Context, cfg SNSPushConfig, tokenRepo *reposi
 	if err != nil {
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
+	// Verify credentials are actually available (fails fast on non-AWS environments).
+	creds, err := awsCfg.Credentials.Retrieve(ctx)
+	if err != nil || creds.AccessKeyID == "" {
+		return nil, fmt.Errorf("no AWS credentials available for SNS: %w", err)
+	}
 	return &SNSPushService{
 		client:    sns.NewFromConfig(awsCfg),
 		tokenRepo: tokenRepo,
