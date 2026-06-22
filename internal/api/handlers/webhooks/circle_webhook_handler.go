@@ -239,6 +239,13 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 
 	tokenSymbol, err := h.circleTokenSymbol(ctx, tx.WalletID, tx.TokenID)
 	if err != nil {
+		// On Base wallets used for Blend yield, USDC arrives and leaves immediately
+		// (sent to Safe). Token won't be in balance list — skip silently.
+		if chain == "BASE" {
+			h.logger.Debug("Skipping inbound deposit on Base wallet (likely Blend intermediary)",
+				zap.String("walletId", tx.WalletID), zap.String("tokenId", tx.TokenID))
+			return nil
+		}
 		return fmt.Errorf("circle token validation failed for wallet %s token %s: %w", tx.WalletID, tx.TokenID, err)
 	}
 	token := entities.Stablecoin(tokenSymbol)
