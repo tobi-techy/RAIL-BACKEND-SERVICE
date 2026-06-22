@@ -79,6 +79,7 @@ type CircleWebhookHandler struct {
 	logger              *zap.Logger
 	webhookSecret       string
 	redis               CircleWebhookRedis
+	isBlendWallet       func(ctx context.Context, walletID string) (bool, error)
 }
 
 // CircleWebhookRedis is the subset of Redis needed for webhook idempotency.
@@ -115,6 +116,11 @@ func (h *CircleWebhookHandler) SetUnsupportedAssetService(s CircleUnsupportedAss
 // SetWithdrawalCompleter wires the withdrawal completion handler for outbound transactions.
 func (h *CircleWebhookHandler) SetWithdrawalCompleter(w CircleWithdrawalCompleter) {
 	h.withdrawalCompleter = w
+}
+
+// SetBlendWalletChecker wires a function that checks if a wallet ID belongs to a Blend intermediary.
+func (h *CircleWebhookHandler) SetBlendWalletChecker(fn func(ctx context.Context, walletID string) (bool, error)) {
+	h.isBlendWallet = fn
 }
 
 // HandleWebhook is the Gin handler for POST /webhooks/circle.
@@ -216,13 +222,19 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event *CircleWebhookEvent) error {
 	tx := event.Notification
 
-	// Skip inbound deposits on Base wallets entirely — these are Blend intermediary
-	// wallets (ChainRails bridge delivers USDC here before it's sent to the Safe).
+	// Skip inbound deposits on Blend intermediary wallets. These wallets receive
+	// USDC from ChainRails bridge then immediately forward to the Blend Safe.
 	// Processing them as user deposits would double-count funds.
+	// Blend wallets are on Base chain and registered in blend_user_accounts.
 	if strings.EqualFold(tx.Blockchain, "BASE") || strings.EqualFold(tx.Blockchain, "BASE-SEPOLIA") {
-		h.logger.Info("Skipping inbound on Base wallet (Blend intermediary, not a user deposit)",
-			zap.String("walletId", tx.WalletID), zap.String("txId", tx.ID))
-		return nil
+		if h.isBlendWallet != nil {
+			isBlend, _ := h.isBlendWallet(ctx, tx.WalletID)
+			if isBlend {
+				h.logger.Info("Skipping inbound on Blend intermediary wallet",
+					zap.String("walletId", tx.WalletID), zap.String("txId", tx.ID))
+				return nil
+			}
+		}
 	}
 
 	// Parse amount

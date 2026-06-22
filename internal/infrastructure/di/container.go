@@ -89,6 +89,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/enrichment"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
@@ -2258,6 +2259,12 @@ func (c *Container) initializeDomainServices() error {
 		if c.CircleAdapter != nil {
 			c.CircleWebhookHandler.SetUnsupportedAssetService(c.CircleAdapter)
 		}
+		// Wire Blend wallet checker to prevent double-counting bridge transfers as deposits.
+		c.CircleWebhookHandler.SetBlendWalletChecker(func(ctx context.Context, walletID string) (bool, error) {
+			var exists bool
+			err := sqlxDB.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM blend_user_accounts WHERE circle_wallet_id = $1)`, walletID)
+			return exists, err
+		})
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
@@ -3590,6 +3597,15 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	if c.MiriamIntelligenceOrchestrator != nil {
 		c.MiriamIntelligenceOrchestrator.SetMemory(memorySvc)
+	}
+
+	// Wire transaction enrichment sidecar into Miriam
+	if c.Config.Enrichment.Enabled && c.Config.Enrichment.ServiceURL != "" && c.MiriamIntelligenceOrchestrator != nil {
+		enrichClient := enrichment.NewClient(c.Config.Enrichment.ServiceURL)
+		txnRepo := repositories.NewTransactionRepository(sqlxDB)
+		txnProvider := repositories.NewTransactionProviderAdapter(txnRepo)
+		enricher := miriamservice.NewTransactionEnricher(enrichClient, c.AIProviderManager, nil, txnProvider, c.ZapLog)
+		c.MiriamIntelligenceOrchestrator.SetEnricher(enricher)
 	}
 
 	// Initialize usage tracking
