@@ -228,7 +228,26 @@ func (r *DepositRouter) EnsureDepositYieldRoute(ctx context.Context, userID, dep
 		fmt.Sprintf("dep-%s", depositID.String()),
 	)
 	if err != nil {
-		return fmt.Errorf("blend: insert deposit route: %w", err)
+		// FK violation: deposit_id not in deposits table (e.g. Paj direct credit path).
+		// Retry with NULL deposit_id, using external_ref for idempotency.
+		if strings.Contains(err.Error(), "foreign key") {
+			_, err = r.db.ExecContext(ctx, `
+				INSERT INTO blend_deposit_routes (
+					id, deposit_id, user_id, blend_account_id, eoa_address,
+					circle_wallet_id, chain_id, input_asset, amount, amount_units,
+					source_circle_wallet_id, source_chain,
+					status, next_retry_at, external_ref
+				) VALUES ($1, NULL, $2, '', $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), $11, NOW(), $12)
+				ON CONFLICT (external_ref) DO NOTHING
+			`,
+				uuid.New(), userID, baseWallet.Address, baseWallet.CircleWalletID, r.chainID,
+				r.usdcAddr, amount, micro.String(), sourceWalletID, sourceChain, routeStatusPending,
+				fmt.Sprintf("dep-%s", depositID.String()),
+			)
+		}
+		if err != nil {
+			return fmt.Errorf("blend: insert deposit route: %w", err)
+		}
 	}
 	return nil
 }
@@ -625,8 +644,8 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 
 	hashes := make([]TxHashRef, 0, len(executed))
 	for _, ex := range executed {
-		if ex.TxHash == "" {
-			// Circle accepts tx but hasn't broadcast yet; poll until hash appears.
+		if ex.TxHash == "" && ex.TransactionID != "" {
+			// Circle accepted tx but hasn't broadcast yet; poll until hash appears.
 			for attempts := 0; attempts < 10 && ex.TxHash == ""; attempts++ {
 				select {
 				case <-ctx.Done():
@@ -640,8 +659,20 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 				ex.TxHash = tx.TxHash
 			}
 		}
+		if ex.TxHash == "" && ex.TransactionID == "" {
+			// Circle returned empty — async execution. Mark as submitted and let
+			// Blend session polling detect settlement via on-chain state.
+			r.logger.Warn("Blend: Circle returned empty tx (async execution), advancing to submitted",
+				zap.String("route_id", route.ID.String()))
+			if _, err := r.db.ExecContext(ctx, `
+				UPDATE blend_deposit_routes SET status = $2, submitted_at = NOW(), updated_at = NOW() WHERE id = $1
+			`, route.ID, routeStatusSubmitted); err != nil {
+				return fmt.Errorf("blend: mark submitted (async): %w", err)
+			}
+			route.Status = routeStatusSubmitted
+			return nil
+		}
 		if ex.TxHash == "" {
-			// Still no hash after polling — schedule a short retry rather than looping.
 			if _, err := r.db.ExecContext(ctx, `
 				UPDATE blend_deposit_routes SET next_retry_at = NOW() + INTERVAL '15 seconds', updated_at = NOW() WHERE id = $1
 			`, route.ID); err != nil {
