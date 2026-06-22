@@ -216,6 +216,15 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event *CircleWebhookEvent) error {
 	tx := event.Notification
 
+	// Skip inbound deposits on Base wallets entirely — these are Blend intermediary
+	// wallets (ChainRails bridge delivers USDC here before it's sent to the Safe).
+	// Processing them as user deposits would double-count funds.
+	if strings.EqualFold(tx.Blockchain, "BASE") || strings.EqualFold(tx.Blockchain, "BASE-SEPOLIA") {
+		h.logger.Info("Skipping inbound on Base wallet (Blend intermediary, not a user deposit)",
+			zap.String("walletId", tx.WalletID), zap.String("txId", tx.ID))
+		return nil
+	}
+
 	// Parse amount
 	if len(tx.Amounts) == 0 {
 		return fmt.Errorf("no amounts in transaction")
@@ -239,13 +248,6 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 
 	tokenSymbol, err := h.circleTokenSymbol(ctx, tx.WalletID, tx.TokenID)
 	if err != nil {
-		// On Base wallets used for Blend yield, USDC arrives and leaves immediately
-		// (sent to Safe). Token won't be in balance list — skip silently.
-		if chain == "BASE" {
-			h.logger.Debug("Skipping inbound deposit on Base wallet (likely Blend intermediary)",
-				zap.String("walletId", tx.WalletID), zap.String("tokenId", tx.TokenID))
-			return nil
-		}
 		return fmt.Errorf("circle token validation failed for wallet %s token %s: %w", tx.WalletID, tx.TokenID, err)
 	}
 	token := entities.Stablecoin(tokenSymbol)
