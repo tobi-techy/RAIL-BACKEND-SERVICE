@@ -89,7 +89,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
-	"github.com/rail-service/rail_service/internal/infrastructure/enrichment"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
@@ -3599,14 +3598,14 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.MiriamIntelligenceOrchestrator.SetMemory(memorySvc)
 	}
 
-	// Wire transaction enrichment sidecar into Miriam
-	if c.Config.Enrichment.Enabled && c.Config.Enrichment.ServiceURL != "" && c.MiriamIntelligenceOrchestrator != nil {
-		enrichClient := enrichment.NewClient(c.Config.Enrichment.ServiceURL)
-		txnRepo := repositories.NewTransactionRepository(sqlxDB)
-		txnProvider := repositories.NewTransactionProviderAdapter(txnRepo)
-		enricher := miriamservice.NewTransactionEnricher(enrichClient, c.AIProviderManager, nil, txnProvider, c.ZapLog)
-		c.MiriamIntelligenceOrchestrator.SetEnricher(enricher)
-	}
+	// Wire transaction enrichment sidecar into Miriam (WIP — uncomment when config + service methods are ready)
+	// if c.Config.Enrichment.Enabled && c.Config.Enrichment.ServiceURL != "" && c.MiriamIntelligenceOrchestrator != nil {
+	// 	enrichClient := enrichment.NewClient(c.Config.Enrichment.ServiceURL)
+	// 	txnRepo := repositories.NewTransactionRepository(sqlxDB)
+	// 	txnProvider := repositories.NewTransactionProviderAdapter(txnRepo)
+	// 	enricher := miriamservice.NewTransactionEnricher(enrichClient, c.AIProviderManager, nil, txnProvider, c.ZapLog)
+	// 	c.MiriamIntelligenceOrchestrator.SetEnricher(enricher)
+	// }
 
 	// Initialize usage tracking
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
