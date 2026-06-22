@@ -58,6 +58,7 @@ func (w *Worker) processJobs(ctx context.Context, workerID int) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+	var consecutiveErrors int
 	for {
 		select {
 		case <-ctx.Done():
@@ -67,9 +68,19 @@ func (w *Worker) processJobs(ctx context.Context, workerID int) {
 		case <-ticker.C:
 			job, err := w.queue.Dequeue(ctx, w.priorities)
 			if err != nil {
-				w.logger.Error("Failed to dequeue job", zap.Int("worker", workerID), zap.Error(err))
+				consecutiveErrors++
+				if consecutiveErrors <= 3 {
+					w.logger.Error("Failed to dequeue job", zap.Int("worker", workerID), zap.Error(err))
+				}
+				// Exponential backoff: 1s, 2s, 4s, ... capped at 30s
+				backoff := time.Duration(1<<min(consecutiveErrors, 5)) * time.Second
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+				time.Sleep(backoff)
 				continue
 			}
+			consecutiveErrors = 0
 
 			if job == nil {
 				continue
