@@ -30,12 +30,13 @@ const isOwnerSelector = "2f54bf6e"
 
 // EVMSafeVerifier verifies Safes over a Base JSON-RPC endpoint using eth_getCode
 // (contract bytecode presence) and eth_call to isOwner(address) (ownership).
-// Successful (safe, owner) pairs are cached to avoid re-checking on every deposit.
+// Successful (safe, owner) pairs are cached with a 1-hour TTL.
 type EVMSafeVerifier struct {
 	rpcURL     string
 	httpClient *http.Client
 	logger     *zap.Logger
-	verified   sync.Map // "safe|owner" -> struct{}
+	mu         sync.Mutex
+	verified   map[string]time.Time // "safe|owner" -> verification time
 }
 
 // NewEVMSafeVerifier builds a verifier against the given Base RPC URL.
@@ -44,6 +45,7 @@ func NewEVMSafeVerifier(rpcURL string, logger *zap.Logger) *EVMSafeVerifier {
 		rpcURL:     strings.TrimSpace(rpcURL),
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		logger:     logger,
+		verified:   make(map[string]time.Time),
 	}
 }
 
@@ -59,16 +61,21 @@ func (v *EVMSafeVerifier) VerifySafe(ctx context.Context, chainID int64, safeAdd
 		return fmt.Errorf("blend: invalid owner address %q", ownerEOA)
 	}
 	key := strings.ToLower(safeAddr) + "|" + strings.ToLower(ownerEOA)
-	if _, ok := v.verified.Load(key); ok {
+	v.mu.Lock()
+	if t, ok := v.verified[key]; ok && time.Since(t) < time.Hour {
+		v.mu.Unlock()
 		return nil
 	}
+	v.mu.Unlock()
 	if err := v.verifySafeContract(ctx, safeAddr); err != nil {
 		return err
 	}
 	if err := v.verifySafeOwnership(ctx, safeAddr, ownerEOA); err != nil {
 		return err
 	}
-	v.verified.Store(key, struct{}{})
+	v.mu.Lock()
+	v.verified[key] = time.Now()
+	v.mu.Unlock()
 	return nil
 }
 

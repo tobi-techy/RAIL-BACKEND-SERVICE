@@ -219,7 +219,9 @@ func (r *DepositRouter) EnsureDepositYieldRoute(ctx context.Context, userID, dep
 			source_circle_wallet_id, source_chain,
 			status, next_retry_at, external_ref
 		) VALUES ($1, $2, $3, '', $4, $5, $6, $7, $8, $9, NULLIF($10,''), NULLIF($11,''), $12, NOW(), $13)
-		ON CONFLICT (deposit_id) DO NOTHING
+		ON CONFLICT (deposit_id) DO UPDATE SET
+			amount = EXCLUDED.amount, amount_units = EXCLUDED.amount_units, updated_at = NOW()
+			WHERE blend_deposit_routes.status = 'pending'
 	`,
 		uuid.New(), depositID, userID, baseWallet.Address, baseWallet.CircleWalletID, r.chainID,
 		r.usdcAddr, amount, micro.String(), sourceWalletID, sourceChain, routeStatusPending,
@@ -257,69 +259,67 @@ func (r *DepositRouter) ProcessRouteByID(ctx context.Context, routeID uuid.UUID)
 }
 
 func (r *DepositRouter) processRoute(ctx context.Context, route *depositRoute) error {
-	if route.Status == routeStatusComplete {
-		return nil
-	}
-	entryStatus := route.Status
-	if _, err := r.db.ExecContext(ctx, `
+	const maxContinuations = 5
+	for depth := 0; depth <= maxContinuations; depth++ {
+		if route.Status == routeStatusComplete {
+			return nil
+		}
+		entryStatus := route.Status
+		if _, err := r.db.ExecContext(ctx, `
 		UPDATE blend_deposit_routes
 		SET attempts = attempts + 1, last_error = NULL, updated_at = NOW()
 		WHERE id = $1
 	`, route.ID); err != nil {
-		return fmt.Errorf("blend: bump attempts: %w", err)
-	}
+			return fmt.Errorf("blend: bump attempts: %w", err)
+		}
 
-	switch route.Status {
-	case routeStatusPending:
-		if err := r.stepEnsureAccount(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
+		switch route.Status {
+		case routeStatusPending:
+			if err := r.stepEnsureAccount(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+			fallthrough
+		case routeStatusAccountReady:
+			if err := r.stepEnsureSafe(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+		case routeStatusSafeRequested:
+			if err := r.stepPollSafe(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+		case routeStatusSafeReady, routeStatusAwaitingFunding:
+			if err := r.stepFundAndQuote(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+		case routeStatusQuoted:
+			if err := r.stepExecuteAndSubmit(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+		case routeStatusSubmitted, routeStatusSettling:
+			if err := r.stepPollSettlement(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+		case routeStatusExecuting:
+			if err := r.stepExecuteAndSubmit(ctx, route); err != nil {
+				return r.markErr(ctx, route, err)
+			}
+		case routeStatusErrorPayload, routeStatusErrorTerminal:
+			return fmt.Errorf("blend route %s in terminal error state %s; operator review required", route.ID, route.Status)
 		}
-		fallthrough
-	case routeStatusAccountReady:
-		if err := r.stepEnsureSafe(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
-		}
-	case routeStatusSafeRequested:
-		if err := r.stepPollSafe(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
-		}
-	case routeStatusSafeReady, routeStatusAwaitingFunding:
-		if err := r.stepFundAndQuote(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
-		}
-	case routeStatusQuoted:
-		if err := r.stepExecuteAndSubmit(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
-		}
-	case routeStatusSubmitted, routeStatusSettling:
-		if err := r.stepPollSettlement(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
-		}
-	case routeStatusExecuting:
-		// Re-entrancy: tx submitted to Circle but we crashed before recording the hash.
-		// Resume via Blend's idempotent session — re-quoting an open session returns
-		// the same intentId.
-		if err := r.stepExecuteAndSubmit(ctx, route); err != nil {
-			return r.markErr(ctx, route, err)
-		}
-	case routeStatusErrorPayload, routeStatusErrorTerminal:
-		return fmt.Errorf("blend route %s in terminal error state %s; operator review required", route.ID, route.Status)
-	}
 
-	// Fetch the latest state and check if we're done.
-	updated, err := r.getRouteByID(ctx, route.ID)
-	if err != nil {
-		return err
-	}
-	if updated.Status == routeStatusComplete {
+		// Fetch the latest state and check if we're done or should continue.
+		updated, err := r.getRouteByID(ctx, route.ID)
+		if err != nil {
+			return err
+		}
+		if updated.Status == routeStatusComplete {
+			return nil
+		}
+		if updated.Status != entryStatus && shouldContinueImmediately(updated.Status) {
+			route = updated
+			continue
+		}
 		return nil
-	}
-	// If we made forward progress, re-enter the state machine so back-to-back
-	// transitions (e.g. safe_ready -> quoted -> submitted) all happen in one
-	// synchronous call instead of waiting for the next worker tick. Compared
-	// against the status at ENTRY (steps mutate route.Status as they advance).
-	if updated.Status != entryStatus && shouldContinueImmediately(updated.Status) {
-		return r.processRoute(ctx, updated)
 	}
 	return nil
 }
@@ -527,6 +527,13 @@ func (r *DepositRouter) stepQuoteDeposit(ctx context.Context, route *depositRout
 	if err != nil {
 		return fmt.Errorf("blend: get/create session: %w", err)
 	}
+	// If the session is terminal (expired/cancelled), force a new one.
+	if session.Status == IntentStatusFailed || session.Status == IntentStatusCancelled {
+		session, err = r.blend.GetOrCreateSession(ctx, route.BlendAccountID, route.ExternalRef.String, true)
+		if err != nil {
+			return fmt.Errorf("blend: force-reset session: %w", err)
+		}
+	}
 
 	micro, ok := parseBig(route.AmountUnits.String)
 	if !ok || micro.Sign() <= 0 {
@@ -589,7 +596,19 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 		// Deposit already settled on a prior attempt; record and exit.
 		return r.recordSettlement(ctx, route, current)
 	case IntentStatusFailed, IntentStatusCancelled:
-		return fmt.Errorf("blend: session %s is %s before execution; cannot proceed", route.IntentID.String, current.Status)
+		// Session expired or was cancelled — create a fresh session and re-quote.
+		r.logger.Warn("Blend session expired/cancelled, resetting to re-quote",
+			zap.String("route_id", route.ID.String()),
+			zap.String("intent_id", route.IntentID.String),
+			zap.String("session_status", current.Status))
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE blend_deposit_routes SET status = $2, intent_id = NULL, intent_status = NULL,
+				quote_payload = NULL, next_retry_at = NOW(), updated_at = NOW()
+			WHERE id = $1
+		`, route.ID, routeStatusSafeReady); err != nil {
+			return fmt.Errorf("blend: reset cancelled session: %w", err)
+		}
+		return nil
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
@@ -607,20 +626,30 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 	hashes := make([]TxHashRef, 0, len(executed))
 	for _, ex := range executed {
 		if ex.TxHash == "" {
-			// Circle accepts tx but hasn't broadcast yet; resolve via GetTransaction.
-			tx, err := r.circle.GetTransaction(ctx, ex.TransactionID)
-			if err != nil {
-				return fmt.Errorf("blend: get circle tx %s: %w", ex.TransactionID, err)
+			// Circle accepts tx but hasn't broadcast yet; poll until hash appears.
+			for attempts := 0; attempts < 10 && ex.TxHash == ""; attempts++ {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("blend: context expired waiting for circle tx hash %s: %w", ex.TransactionID, ctx.Err())
+				case <-time.After(3 * time.Second):
+				}
+				tx, err := r.circle.GetTransaction(ctx, ex.TransactionID)
+				if err != nil {
+					return fmt.Errorf("blend: get circle tx %s: %w", ex.TransactionID, err)
+				}
+				ex.TxHash = tx.TxHash
 			}
-			ex.TxHash = tx.TxHash
 		}
 		if ex.TxHash == "" {
-			// Tx still pending on Circle side — re-enter this step shortly.
+			// Still no hash after polling — schedule a short retry rather than looping.
 			if _, err := r.db.ExecContext(ctx, `
-				UPDATE blend_deposit_routes SET next_retry_at = NOW() + INTERVAL '10 seconds', updated_at = NOW() WHERE id = $1
+				UPDATE blend_deposit_routes SET next_retry_at = NOW() + INTERVAL '15 seconds', updated_at = NOW() WHERE id = $1
 			`, route.ID); err != nil {
 				return fmt.Errorf("blend: reschedule for circle tx hash: %w", err)
 			}
+			r.logger.Warn("Blend: Circle tx has no hash after polling, will retry",
+				zap.String("route_id", route.ID.String()),
+				zap.String("circle_tx_id", ex.TransactionID))
 			return nil
 		}
 		hashes = append(hashes, TxHashRef{Hash: ex.TxHash, ChainID: ex.ChainID})
@@ -739,7 +768,7 @@ func (r *DepositRouter) markErr(ctx context.Context, route *depositRoute, srcErr
 	// account creation after a settlement-poll failure would re-quote and
 	// re-execute an already-submitted deposit — a double-deposit.
 	preserveStatus := true
-	terminalStatus := ""
+	terminalStatus := routeStatusErrorTerminal
 	retryDelay := r.retryInterval
 
 	var apiErr *APIError

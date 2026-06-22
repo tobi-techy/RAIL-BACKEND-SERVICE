@@ -55,6 +55,11 @@ func (h *BlendHandlers) GetYieldOverview(c *gin.Context) {
 // stash balance into Blend. Runs asynchronously; returns 202 immediately. Admin-only.
 // POST /admin/blend/backfill-stash
 func (h *BlendHandlers) TriggerStashBackfill(c *gin.Context) {
+	// Defense-in-depth: verify admin role even though route middleware should enforce it.
+	if role, _ := c.Get("user_role"); role != "admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "admin access required"})
+		return
+	}
 	if h.router == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "blend yield is not enabled"})
 		return
