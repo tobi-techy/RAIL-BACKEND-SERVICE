@@ -204,7 +204,15 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 	case IntentStatusLocked, IntentStatusSubmitted, IntentStatusSettled:
 		// Already progressed by a prior attempt — continue.
 	case IntentStatusFailed, IntentStatusCancelled:
-		return fmt.Errorf("blend: withdraw session %s is %s; cannot execute", intentID, current.Status)
+		// Session expired — reset and let caller retry with a fresh session.
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE blend_yield_redemptions SET intent_id = NULL, intent_status = NULL,
+				quote_payload = NULL, status = $2, updated_at = NOW()
+			WHERE id = $1
+		`, red.ID, redemptionStatusPending); err != nil {
+			return fmt.Errorf("blend: reset cancelled withdraw session: %w", err)
+		}
+		return fmt.Errorf("blend: withdraw session %s is %s; reset to retry", intentID, current.Status)
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
@@ -221,12 +229,22 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 
 	hashes := make([]TxHashRef, 0, len(executed))
 	for _, ex := range executed {
-		if ex.TxHash == "" {
+		if ex.TxHash == "" && ex.TransactionID != "" {
 			tx, err := r.circle.GetTransaction(ctx, ex.TransactionID)
 			if err != nil {
 				return fmt.Errorf("blend: resolve circle withdraw tx %s: %w", ex.TransactionID, err)
 			}
 			ex.TxHash = tx.TxHash
+		}
+		if ex.TxHash == "" && ex.TransactionID == "" {
+			// Circle async execution — advance to submitted, let settlement polling handle it.
+			if _, err := r.db.ExecContext(ctx, `
+				UPDATE blend_yield_redemptions SET status = $2, submitted_at = NOW(), updated_at = NOW() WHERE id = $1
+			`, red.ID, redemptionStatusSubmitted); err != nil {
+				return fmt.Errorf("blend: mark redemption submitted (async): %w", err)
+			}
+			red.Status = redemptionStatusSubmitted
+			return nil
 		}
 		if ex.TxHash == "" {
 			return fmt.Errorf("blend: circle withdraw tx %s has no hash yet", ex.TransactionID)
