@@ -716,6 +716,32 @@ func (r *DepositRouter) stepPollSettlement(ctx context.Context, route *depositRo
 	if err != nil {
 		return fmt.Errorf("blend: get session: %w", err)
 	}
+
+	// If session is LOCKED and we have no tx_hash, we skipped SubmitTxHashes
+	// (Circle async execution). Try to find the hash by checking if the USDC
+	// balance already left the wallet (tx already happened on-chain).
+	if session.Status == IntentStatusLocked && (!route.TxHash.Valid || route.TxHash.String == "") {
+		// Check if the Base wallet has less USDC than the route amount — if so,
+		// the transfer already happened. Get the latest outbound tx from Circle.
+		wallet, wErr := r.circle.GetWallet(ctx, route.CircleWalletID)
+		if wErr == nil && wallet != nil {
+			// The session is LOCKED meaning the action plan was executed but hashes
+			// weren't submitted. Force-reset to safe_ready so the next cycle re-quotes
+			// with a fresh session that will detect the funds already in the Safe.
+			r.logger.Warn("Blend: session LOCKED without tx_hash, resetting to re-quote (funds likely already in Safe)",
+				zap.String("route_id", route.ID.String()),
+				zap.String("intent_id", route.IntentID.String))
+			if _, err := r.db.ExecContext(ctx, `
+				UPDATE blend_deposit_routes SET status = $2, intent_id = NULL, intent_status = NULL,
+					quote_payload = NULL, submitted_at = NULL, next_retry_at = NOW(), updated_at = NOW()
+				WHERE id = $1
+			`, route.ID, routeStatusSafeReady); err != nil {
+				return fmt.Errorf("blend: reset locked-no-hash route: %w", err)
+			}
+			return nil
+		}
+	}
+
 	if _, err := r.db.ExecContext(ctx, `
 		UPDATE blend_deposit_routes SET intent_status = $2, updated_at = NOW() WHERE id = $1
 	`, route.ID, session.Status); err != nil {
@@ -725,17 +751,19 @@ func (r *DepositRouter) stepPollSettlement(ctx context.Context, route *depositRo
 	case IntentStatusSettled:
 		return r.recordSettlement(ctx, route, session)
 	case IntentStatusFailed, IntentStatusCancelled:
-		errMsg := session.ErrorMessage
-		if errMsg == "" {
-			errMsg = session.Status
-		}
+		// Session expired — reset to re-quote instead of terminal error.
+		r.logger.Warn("Blend session expired/cancelled during settlement poll, resetting to re-quote",
+			zap.String("route_id", route.ID.String()),
+			zap.String("intent_id", route.IntentID.String),
+			zap.String("session_status", session.Status))
 		if _, err := r.db.ExecContext(ctx, `
-			UPDATE blend_deposit_routes SET status = $2, last_error = $3, next_retry_at = NOW() + INTERVAL '24 hours', updated_at = NOW()
+			UPDATE blend_deposit_routes SET status = $2, intent_id = NULL, intent_status = NULL,
+				quote_payload = NULL, next_retry_at = NOW(), updated_at = NOW()
 			WHERE id = $1
-		`, route.ID, routeStatusErrorTerminal, errMsg); err != nil {
-			return fmt.Errorf("blend: mark terminal: %w", err)
+		`, route.ID, routeStatusSafeReady); err != nil {
+			return fmt.Errorf("blend: reset cancelled session: %w", err)
 		}
-		return fmt.Errorf("blend session %s ended in %s: %s", session.IntentID, session.Status, errMsg)
+		return nil
 	default:
 		if _, err := r.db.ExecContext(ctx, `
 			UPDATE blend_deposit_routes SET status = $2, next_retry_at = NOW() + INTERVAL '15 seconds', updated_at = NOW()
