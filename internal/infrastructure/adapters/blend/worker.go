@@ -70,7 +70,7 @@ func (r *DepositRouter) Stop() error {
 func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			r.logger.Error("Blend reconcile panic recovered", zap.Any("panic", rec))
+			r.logger.Error("Blend reconcile panic recovered", zap.Any("panic", rec), zap.Stack("stacktrace"))
 		}
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
@@ -78,6 +78,20 @@ func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 
 	r.reconcileDepositRoutes(ctx)
 	r.reconcileRedemptions(ctx)
+	r.detectStaleRoutes(ctx)
+}
+
+// detectStaleRoutes logs a warning for routes stuck in non-terminal states for >6 hours.
+func (r *DepositRouter) detectStaleRoutes(ctx context.Context) {
+	var count int
+	if err := r.db.GetContext(ctx, &count, `
+		SELECT COUNT(*) FROM blend_deposit_routes
+		WHERE status NOT IN ('complete', 'error_terminal', 'error_payload')
+			AND updated_at < NOW() - INTERVAL '6 hours'
+	`); err != nil || count == 0 {
+		return
+	}
+	r.logger.Warn("Blend: stale routes detected (stuck >6h, may need operator review)", zap.Int("count", count))
 }
 
 func (r *DepositRouter) reconcileDepositRoutes(ctx context.Context) {
@@ -92,10 +106,12 @@ func (r *DepositRouter) reconcileDepositRoutes(ctx context.Context) {
 			return
 		default:
 		}
-		if err := r.ProcessRouteByID(ctx, id); err != nil {
+		routeCtx, routeCancel := context.WithTimeout(ctx, 45*time.Second)
+		if err := r.ProcessRouteByID(routeCtx, id); err != nil {
 			r.logger.Warn("Blend: deposit route processing failed (will retry)",
 				zap.String("route_id", id.String()), zap.Error(err))
 		}
+		routeCancel()
 	}
 }
 
@@ -110,6 +126,7 @@ func (r *DepositRouter) claimDepositRoutes(ctx context.Context, limit int) ([]uu
 			SELECT id FROM blend_deposit_routes
 			WHERE status NOT IN ('complete', 'error_terminal', 'error_payload')
 				AND next_retry_at <= NOW()
+				AND attempts < 100
 			ORDER BY next_retry_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED

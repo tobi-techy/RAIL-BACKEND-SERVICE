@@ -91,11 +91,11 @@ func pickCurrency(m map[string]float64) decimal.Decimal {
 	// Prefer USDC/USD, else first value.
 	for _, k := range []string{"USDC", "USD", "usd", "usdc"} {
 		if v, ok := m[k]; ok {
-			return decimal.NewFromFloat(v)
+			return decimal.NewFromFloat(v).Truncate(6)
 		}
 	}
 	for _, v := range m {
-		return decimal.NewFromFloat(v)
+		return decimal.NewFromFloat(v).Truncate(6)
 	}
 	return decimal.Zero
 }

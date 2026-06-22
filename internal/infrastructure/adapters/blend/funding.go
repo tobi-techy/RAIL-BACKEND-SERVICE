@@ -54,47 +54,51 @@ var circleBlockchainToChainRails = map[string]chainRailsSource{
 // resolveUserBaseWallet finds the user's Base Circle wallet (the Safe owner). Prefers
 // the managed_wallets/wallets tables, then falls back to Circle's ref-id lookup.
 func (r *DepositRouter) resolveUserBaseWallet(ctx context.Context, userID uuid.UUID) (baseWallet, error) {
-	baseChains := r.baseCircleChains()
+	return r.resolveUserWalletByChains(ctx, userID, r.baseCircleChains(), "Base")
+}
 
+// resolveUserWalletByChains is the shared wallet resolution logic for any chain filter.
+func (r *DepositRouter) resolveUserWalletByChains(ctx context.Context, userID uuid.UUID, chains []string, label string) (baseWallet, error) {
 	var dbWallet struct {
 		CircleWalletID sql.NullString `db:"circle_wallet_id"`
 		Address        sql.NullString `db:"address"`
 	}
 	for _, table := range []string{"managed_wallets", "wallets"} {
-		query := fmt.Sprintf(`
-			SELECT circle_wallet_id, address
-			FROM %s
-			WHERE user_id = $1
-				AND UPPER(chain) = ANY($2)
-				AND COALESCE(circle_wallet_id, '') <> ''
-				AND COALESCE(address, '') <> ''
-			ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC
-			LIMIT 1
-		`, table)
-		err := r.db.GetContext(ctx, &dbWallet, query, userID.String(), pq.Array(baseChains))
-		if err == nil {
+		var query string
+		switch table {
+		case "managed_wallets":
+			query = `SELECT circle_wallet_id, address FROM managed_wallets
+				WHERE user_id = $1 AND UPPER(chain) = ANY($2)
+				AND COALESCE(circle_wallet_id, '') <> '' AND COALESCE(address, '') <> ''
+				ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC LIMIT 1`
+		case "wallets":
+			query = `SELECT circle_wallet_id, address FROM wallets
+				WHERE user_id = $1 AND UPPER(chain) = ANY($2)
+				AND COALESCE(circle_wallet_id, '') <> '' AND COALESCE(address, '') <> ''
+				ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC LIMIT 1`
+		default:
+			continue
+		}
+		if err := r.db.GetContext(ctx, &dbWallet, query, userID.String(), pq.Array(chains)); err == nil {
 			return baseWallet{
 				CircleWalletID: strings.TrimSpace(dbWallet.CircleWalletID.String),
 				Address:        strings.TrimSpace(dbWallet.Address.String),
 			}, nil
 		}
-		if err != sql.ErrNoRows {
-			// Table may not exist or other error; fall through to next source.
-			r.logger.Debug("blend: base wallet lookup miss", zap.String("table", table), zap.Error(err))
-		}
 	}
-
 	wallets, err := r.circle.ListCircleWalletsByRefID(ctx, userID.String())
 	if err != nil {
-		return baseWallet{}, fmt.Errorf("blend: list circle wallets for user %s: %w", userID.String(), err)
+		return baseWallet{}, fmt.Errorf("blend: list circle wallets for user %s: %w", userID, err)
 	}
 	for _, w := range wallets {
 		bc := strings.ToUpper(strings.TrimSpace(string(w.Blockchain)))
-		if (bc == "BASE" || bc == "BASE-SEPOLIA") && strings.TrimSpace(w.ID) != "" && strings.TrimSpace(w.Address) != "" {
-			return baseWallet{CircleWalletID: w.ID, Address: w.Address}, nil
+		for _, c := range chains {
+			if bc == c && strings.TrimSpace(w.ID) != "" && strings.TrimSpace(w.Address) != "" {
+				return baseWallet{CircleWalletID: w.ID, Address: w.Address}, nil
+			}
 		}
 	}
-	return baseWallet{}, fmt.Errorf("blend: user %s has no Base Circle wallet for Blend yield", userID.String())
+	return baseWallet{}, fmt.Errorf("blend: user %s has no %s Circle wallet", userID, label)
 }
 
 func (r *DepositRouter) baseCircleChains() []string {
@@ -308,7 +312,8 @@ func (r *DepositRouter) waitCircleTransfer(ctx context.Context, initial *circlep
 	}
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
-	for {
+	const maxPolls = 40 // 40 × 3s = 2 minutes max
+	for i := 0; i < maxPolls; i++ {
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("blend: circle transfer %s did not complete before timeout: %w", initial.ID, ctx.Err())
@@ -326,6 +331,7 @@ func (r *DepositRouter) waitCircleTransfer(ctx context.Context, initial *circlep
 			}
 		}
 	}
+	return nil, fmt.Errorf("blend: circle transfer %s still pending after %d polls", initial.ID, maxPolls)
 }
 
 func (r *DepositRouter) baseChainRailsDestination(sourceChain, configured string) string {

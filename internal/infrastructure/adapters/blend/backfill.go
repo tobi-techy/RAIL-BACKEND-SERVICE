@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -155,26 +153,19 @@ func (r *DepositRouter) BackfillUserStash(ctx context.Context, userID uuid.UUID,
 		return false, fmt.Errorf("blend backfill: insert route: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		// Lost a race; fetch and advance.
-		if existing, gerr := r.getRouteByExternalRef(ctx, externalRef); gerr == nil && existing != nil {
-			return false, r.processRoute(ctx, existing)
-		}
-		return false, nil
+		return false, nil // route already exists, worker will process it
 	}
 
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("blend backfill: commit tx: %w", err)
 	}
 
-	route, err := r.getRouteByExternalRef(ctx, externalRef)
-	if err != nil {
-		return true, err
-	}
 	r.logger.Info("Blend backfill route created",
 		zap.String("user_id", userID.String()),
 		zap.String("amount", amount.StringFixed(6)),
 		zap.String("source_wallet", solWallet.CircleWalletID))
-	return true, r.processRoute(ctx, route)
+	// Don't call processRoute here — let the reconciliation worker pick it up.
+	return true, nil
 }
 
 func (r *DepositRouter) getRouteByExternalRef(ctx context.Context, externalRef string) (*depositRoute, error) {
@@ -192,57 +183,5 @@ func (r *DepositRouter) getRouteByExternalRef(ctx context.Context, externalRef s
 // resolveUserSolanaWallet finds the user's Solana Circle wallet (their primary USDC custody,
 // the sweep target) to use as the bridge funding source for a backfill.
 func (r *DepositRouter) resolveUserSolanaWallet(ctx context.Context, userID uuid.UUID) (baseWallet, error) {
-	solChains := []string{"SOL", "SOL-DEVNET", "SOLANA"}
-	var dbWallet struct {
-		CircleWalletID sql.NullString `db:"circle_wallet_id"`
-		Address        sql.NullString `db:"address"`
-	}
-	for _, table := range []string{"managed_wallets", "wallets"} {
-		var query string
-		switch table {
-		case "managed_wallets":
-			query = `
-			SELECT circle_wallet_id, address
-			FROM managed_wallets
-			WHERE user_id = $1
-				AND UPPER(chain) = ANY($2)
-				AND COALESCE(circle_wallet_id, '') <> ''
-				AND COALESCE(address, '') <> ''
-			ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC
-			LIMIT 1
-		`
-		case "wallets":
-			query = `
-			SELECT circle_wallet_id, address
-			FROM wallets
-			WHERE user_id = $1
-				AND UPPER(chain) = ANY($2)
-				AND COALESCE(circle_wallet_id, '') <> ''
-				AND COALESCE(address, '') <> ''
-			ORDER BY CASE WHEN status = 'live' THEN 0 ELSE 1 END, created_at ASC
-			LIMIT 1
-		`
-		default:
-			continue
-		}
-		if err := r.db.GetContext(ctx, &dbWallet, query, userID.String(), pq.Array(solChains)); err == nil {
-			return baseWallet{
-				CircleWalletID: strings.TrimSpace(dbWallet.CircleWalletID.String),
-				Address:        strings.TrimSpace(dbWallet.Address.String),
-			}, nil
-		} else if err != sql.ErrNoRows {
-			r.logger.Debug("blend backfill: solana wallet lookup miss", zap.String("table", table), zap.Error(err))
-		}
-	}
-	wallets, err := r.circle.ListCircleWalletsByRefID(ctx, userID.String())
-	if err != nil {
-		return baseWallet{}, fmt.Errorf("list circle wallets for user %s: %w", userID, err)
-	}
-	for _, w := range wallets {
-		bc := strings.ToUpper(strings.TrimSpace(string(w.Blockchain)))
-		if (bc == "SOL" || bc == "SOL-DEVNET") && strings.TrimSpace(w.ID) != "" && strings.TrimSpace(w.Address) != "" {
-			return baseWallet{CircleWalletID: w.ID, Address: w.Address}, nil
-		}
-	}
-	return baseWallet{}, fmt.Errorf("user %s has no Solana Circle wallet to fund backfill from", userID)
+	return r.resolveUserWalletByChains(ctx, userID, []string{"SOL", "SOL-DEVNET", "SOLANA"}, "Solana")
 }

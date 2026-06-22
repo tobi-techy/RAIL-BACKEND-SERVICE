@@ -366,6 +366,13 @@ func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID,
 }
 
 func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currentRedemptionID uuid.UUID) error {
+	// Use advisory lock on user to serialize concurrent redemption checks.
+	// This prevents two concurrent RedeemStashYield calls from both passing.
+	lockKey := int64(userID[0])<<56 | int64(userID[1])<<48 | int64(userID[2])<<40 | int64(userID[3])<<32 |
+		int64(userID[4])<<24 | int64(userID[5])<<16 | int64(userID[6])<<8 | int64(userID[7])
+	if _, err := r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
+		return fmt.Errorf("blend: advisory lock for redemption check: %w", err)
+	}
 	var available decimal.Decimal
 	if err := r.db.GetContext(ctx, &available, `
 		SELECT COALESCE(SUM(principal_amount - redeemed_amount), 0)
@@ -374,8 +381,6 @@ func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uui
 	`, userID); err != nil {
 		return fmt.Errorf("blend: read user position: %w", err)
 	}
-	// Subtract amounts reserved by OTHER in-flight (non-terminal) redemptions so two
-	// concurrent withdrawals can't both pass the check against the same balance.
 	var reserved decimal.Decimal
 	if err := r.db.GetContext(ctx, &reserved, `
 		SELECT COALESCE(SUM(amount), 0)
