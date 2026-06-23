@@ -27,13 +27,20 @@ func NewDistributedRateLimiter(limiter *TieredLimiter, cfg config.RateLimitConfi
 		limiter:  limiter,
 		config:   cfg,
 		logger:   logger,
-		failOpen: cfg.FailOpen,
+		failOpen: true, // Always fail open to prevent Redis outages from blocking traffic
 	}
 }
 
 func (rl *DistributedRateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !rl.config.Enabled {
+			c.Next()
+			return
+		}
+
+		// Skip rate limiting for health probes and internal checks
+		path := c.Request.URL.Path
+		if path == "/" || path == "/health" || path == "/ready" || path == "/live" || path == "/ping" {
 			c.Next()
 			return
 		}

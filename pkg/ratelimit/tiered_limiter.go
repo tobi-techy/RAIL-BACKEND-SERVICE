@@ -54,18 +54,8 @@ type CheckResult struct {
 
 // Check performs tiered rate limit check
 func (l *TieredLimiter) Check(ctx context.Context, ip, userID, endpoint string) (*CheckResult, error) {
-	// Check global limit
-	if l.config.GlobalLimit > 0 {
-		allowed, remaining, err := l.checkLimit(ctx, "global", "global", l.config.GlobalLimit, l.config.GlobalWindow)
-		if err != nil {
-			return nil, err
-		}
-		if !allowed {
-			return &CheckResult{Allowed: false, Remaining: remaining, ResetAt: time.Now().Add(l.config.GlobalWindow), RetryAfter: l.config.GlobalWindow, LimitedBy: "global"}, nil
-		}
-	}
-
-	// Check IP limit
+	// Only check IP limit to minimize Redis calls.
+	// At low traffic, global/user/endpoint tiers add cost without value.
 	if l.config.IPLimit > 0 && ip != "" {
 		allowed, remaining, err := l.checkLimit(ctx, "ip", ip, l.config.IPLimit, l.config.IPWindow)
 		if err != nil {
@@ -76,18 +66,7 @@ func (l *TieredLimiter) Check(ctx context.Context, ip, userID, endpoint string) 
 		}
 	}
 
-	// Check user limit
-	if l.config.UserLimit > 0 && userID != "" {
-		allowed, remaining, err := l.checkLimit(ctx, "user", userID, l.config.UserLimit, l.config.UserWindow)
-		if err != nil {
-			return nil, err
-		}
-		if !allowed {
-			return &CheckResult{Allowed: false, Remaining: remaining, ResetAt: time.Now().Add(l.config.UserWindow), RetryAfter: l.config.UserWindow, LimitedBy: "user"}, nil
-		}
-	}
-
-	// Check endpoint limit
+	// Check endpoint limit for auth-sensitive routes only
 	if endpointLimit, ok := l.config.EndpointLimits[endpoint]; ok {
 		key := fmt.Sprintf("%s:%s", endpoint, ip)
 		if userID != "" {
