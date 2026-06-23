@@ -674,12 +674,14 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 			}
 		}
 		if ex.TxHash == "" && ex.TransactionID == "" {
-			// Circle returned empty — async execution. Mark as submitted and let
-			// Blend session polling detect settlement via on-chain state.
-			r.logger.Warn("Blend: Circle returned empty tx (async execution), advancing to submitted",
+			// Circle returned empty — async execution. Mark as submitted with a
+			// cooldown so the poll step gives Circle time to settle or fail.
+			r.logger.Warn("Blend: Circle returned empty tx (async execution), advancing to submitted with cooldown",
 				zap.String("route_id", route.ID.String()))
 			if _, err := r.db.ExecContext(ctx, `
-				UPDATE blend_deposit_routes SET status = $2, submitted_at = NOW(), updated_at = NOW() WHERE id = $1
+				UPDATE blend_deposit_routes SET status = $2, submitted_at = NOW(),
+					next_retry_at = NOW() + INTERVAL '60 seconds', updated_at = NOW()
+				WHERE id = $1
 			`, route.ID, routeStatusSubmitted); err != nil {
 				return fmt.Errorf("blend: mark submitted (async): %w", err)
 			}
@@ -731,29 +733,36 @@ func (r *DepositRouter) stepPollSettlement(ctx context.Context, route *depositRo
 		return fmt.Errorf("blend: get session: %w", err)
 	}
 
-	// If session is LOCKED and we have no tx_hash, we skipped SubmitTxHashes
-	// (Circle async execution). Try to find the hash by checking if the USDC
-	// balance already left the wallet (tx already happened on-chain).
+	// If session is LOCKED and we have no tx_hash, the execution returned empty
+	// but Circle may have failed it. Limit re-quote cycles to 3 max to prevent loops.
 	if session.Status == IntentStatusLocked && (!route.TxHash.Valid || route.TxHash.String == "") {
-		// Check if the Base wallet has less USDC than the route amount — if so,
-		// the transfer already happened. Get the latest outbound tx from Circle.
-		wallet, wErr := r.circle.GetWallet(ctx, route.CircleWalletID)
-		if wErr == nil && wallet != nil {
-			// The session is LOCKED meaning the action plan was executed but hashes
-			// weren't submitted. Force-reset to safe_ready so the next cycle re-quotes
-			// with a fresh session that will detect the funds already in the Safe.
-			r.logger.Warn("Blend: session LOCKED without tx_hash, resetting to re-quote (funds likely already in Safe)",
-				zap.String("route_id", route.ID.String()),
-				zap.String("intent_id", route.IntentID.String))
+		// Count how many times we've been through this cycle by checking attempts.
+		// If we've already reset 3+ times from this state, mark terminal.
+		if route.Attempts > 15 {
+			r.logger.Error("Blend: route stuck in LOCKED-no-hash loop, marking terminal",
+				zap.String("route_id", route.ID.String()))
 			if _, err := r.db.ExecContext(ctx, `
-				UPDATE blend_deposit_routes SET status = $2, intent_id = NULL, intent_status = NULL,
-					quote_payload = NULL, submitted_at = NULL, next_retry_at = NOW(), updated_at = NOW()
+				UPDATE blend_deposit_routes SET status = $2, last_error = $3,
+					next_retry_at = NOW() + INTERVAL '24 hours', updated_at = NOW()
 				WHERE id = $1
-			`, route.ID, routeStatusSafeReady); err != nil {
-				return fmt.Errorf("blend: reset locked-no-hash route: %w", err)
+			`, route.ID, routeStatusErrorTerminal, "stuck: Circle executions failing silently (LOCKED without tx_hash after 15 attempts)"); err != nil {
+				return fmt.Errorf("blend: mark stuck route terminal: %w", err)
 			}
 			return nil
 		}
+		r.logger.Warn("Blend: session LOCKED without tx_hash, resetting to re-quote with cooldown",
+			zap.String("route_id", route.ID.String()),
+			zap.String("intent_id", route.IntentID.String),
+			zap.Int("attempts", route.Attempts))
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE blend_deposit_routes SET status = $2, intent_id = NULL, intent_status = NULL,
+				quote_payload = NULL, submitted_at = NULL,
+				next_retry_at = NOW() + INTERVAL '60 seconds', updated_at = NOW()
+			WHERE id = $1
+		`, route.ID, routeStatusSafeReady); err != nil {
+			return fmt.Errorf("blend: reset locked-no-hash route: %w", err)
+		}
+		return nil
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
