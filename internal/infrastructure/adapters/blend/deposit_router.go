@@ -480,14 +480,17 @@ func (r *DepositRouter) markSafeReady(ctx context.Context, route *depositRoute, 
 func (r *DepositRouter) stepFundAndQuote(ctx context.Context, route *depositRoute) error {
 	need := route.Amount.Truncate(6)
 
+	// If already marked as funded (e.g. bridge settled but Circle API lags), skip balance check.
+	if route.FundedAt.Valid {
+		return r.stepQuoteDeposit(ctx, route)
+	}
+
 	have, err := r.usdcBalance(ctx, route.CircleWalletID)
 	if err != nil {
 		return err
 	}
 	if have.GreaterThanOrEqual(need) {
-		if !route.FundedAt.Valid {
-			_, _ = r.db.ExecContext(ctx, `UPDATE blend_deposit_routes SET funded_at = NOW(), updated_at = NOW() WHERE id = $1`, route.ID)
-		}
+		_, _ = r.db.ExecContext(ctx, `UPDATE blend_deposit_routes SET funded_at = NOW(), updated_at = NOW() WHERE id = $1`, route.ID)
 		return r.stepQuoteDeposit(ctx, route)
 	}
 
@@ -509,6 +512,17 @@ func (r *DepositRouter) stepFundAndQuote(ctx context.Context, route *depositRout
 	}
 
 	// Funding not yet reflected (bridge still settling, or no source). Park and retry.
+	// If we've been waiting >5 min with a bridge intent, assume settled (Circle API lag).
+	if route.BridgeIntentAddress.Valid && route.Status == routeStatusAwaitingFunding && route.Attempts > 10 {
+		r.logger.Warn("Blend: bridge likely settled but Circle balance API lagging, marking funded",
+			zap.String("route_id", route.ID.String()),
+			zap.String("have", have.StringFixed(6)),
+			zap.String("need", need.StringFixed(6)))
+		if _, uerr := r.db.ExecContext(ctx, `UPDATE blend_deposit_routes SET funded_at = NOW(), updated_at = NOW() WHERE id = $1`, route.ID); uerr != nil {
+			return fmt.Errorf("blend: force-mark funded: %w", uerr)
+		}
+		return r.stepQuoteDeposit(ctx, route)
+	}
 	if _, uerr := r.db.ExecContext(ctx, `
 		UPDATE blend_deposit_routes
 		SET status = $2, last_error = $3, next_retry_at = NOW() + INTERVAL '30 seconds', updated_at = NOW()
