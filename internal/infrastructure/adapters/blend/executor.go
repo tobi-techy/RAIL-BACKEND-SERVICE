@@ -183,7 +183,7 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 			return results, fmt.Errorf("blend plan step %d: invalid value: %w", i, err)
 		}
 
-		idemKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s:%d:%s", idempotencyPrefix, i, txDigest(step)))).String()
+		idemKey := uuid.New().String()
 		req := &circlepkg.CreateContractExecutionRequest{
 			IdempotencyKey:  idemKey,
 			WalletID:        walletID,
