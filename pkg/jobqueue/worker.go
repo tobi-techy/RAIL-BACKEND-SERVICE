@@ -55,7 +55,7 @@ func (w *Worker) Start(ctx context.Context) {
 func (w *Worker) processJobs(ctx context.Context, workerID int) {
 	defer w.wg.Done()
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	var consecutiveErrors int
