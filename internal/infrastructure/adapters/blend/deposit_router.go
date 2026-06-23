@@ -560,8 +560,8 @@ func (r *DepositRouter) stepQuoteDeposit(ctx context.Context, route *depositRout
 	if err != nil {
 		return fmt.Errorf("blend: get/create session: %w", err)
 	}
-	// If the session is terminal (expired/cancelled), force a new one.
-	if session.Status == IntentStatusFailed || session.Status == IntentStatusCancelled {
+	// If the session is not OPEN (locked/submitted/cancelled/failed), force a new one.
+	if session.Status != IntentStatusOpen && session.Status != IntentStatusSettled {
 		session, err = r.blend.GetOrCreateSession(ctx, route.BlendAccountID, route.ExternalRef.String, true)
 		if err != nil {
 			return fmt.Errorf("blend: force-reset session: %w", err)
