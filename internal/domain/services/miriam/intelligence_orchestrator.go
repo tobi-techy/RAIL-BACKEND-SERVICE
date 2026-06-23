@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -62,6 +63,7 @@ type IntelligenceOrchestrator struct {
 	signals      *SignalDetector
 	suggestions  *MandateSuggestionEngine
 	obDetector   *ObligationAutoDetector
+	enricher     *TransactionEnricher
 	dispatcher   *NotificationDispatcher
 	memory       MemoryReader
 	notifier     Notifier
@@ -103,6 +105,11 @@ func (o *IntelligenceOrchestrator) SetMemory(m MemoryReader) {
 // SetNotifier injects a Notifier after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetNotifier(n Notifier) {
 	o.notifier = n
+}
+
+// SetEnricher injects a TransactionEnricher after construction (deferred wiring).
+func (o *IntelligenceOrchestrator) SetEnricher(e *TransactionEnricher) {
+	o.enricher = e
 }
 
 // HealthScoreTracker returns the health score tracker for maintenance operations.
@@ -254,7 +261,16 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		result.SuggestionsMade = len(suggestions)
 	}
 
-	// 8. Detect recurring obligations from transactions (weekly check)
+	// 8. Enrich transactions for improved categorization
+	if o.enricher != nil && o.enricher.transactions != nil && eventType == EventWorkerSweep {
+		if txns, err := o.enricher.transactions.GetUserTransactions(ctx, userID, 50, 0); err == nil && len(txns) > 0 {
+			if _, err := o.enricher.EnrichBatch(ctx, txns); err != nil && o.logger != nil {
+				o.logger.Debug("transaction enrichment batch failed", zap.String("user_id", userID.String()), zap.Error(err))
+			}
+		}
+	}
+
+	// 9. Detect recurring obligations from transactions (weekly check)
 	if o.obDetector != nil && eventType == EventWorkerSweep {
 		detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
 		if err == nil && len(detected) > 0 && o.logger != nil {
@@ -264,7 +280,7 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 9. Flush notification batches (dispatcher handles batching/digest)
+	// 10. Flush notification batches (dispatcher handles batching/digest)
 	if o.dispatcher != nil {
 		_ = o.dispatcher.FlushBatches(ctx)
 	}
@@ -279,6 +295,48 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		miriamPredictions.Add(float64(len(result.Predictions.ActivePredictions)))
 	}
 	miriamNudgesDelivered.Add(float64(result.NudgesGenerated))
+
+	// Mixpanel: track the evaluation pass
+	healthScore := computeOverall(state)
+	analyticsProps := map[string]any{
+		"event_type":       eventType,
+		"decisions_made":   result.DecisionsMade,
+		"actions_executed": result.ActionsExecuted,
+		"nudges_generated": result.NudgesGenerated,
+		"suggestions_made": result.SuggestionsMade,
+		"duration_ms":      result.Duration.Milliseconds(),
+		"health_score":     healthScore,
+		"runway_days":      state.LiquidityRunwayDays,
+		"confidence":       state.ConfidenceLevel,
+	}
+	if result.Predictions != nil {
+		analyticsProps["risk_score"] = result.Predictions.RiskScore
+		analyticsProps["active_predictions"] = len(result.Predictions.ActivePredictions)
+	}
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventMiriamEvaluationRun, analyticsProps)
+
+	// Update user profile with financial health snapshot
+	analytics.IdentifyUser(ctx, userID.String(), map[string]any{
+		analytics.PropFinancialHealthScore: healthScore,
+		analytics.PropLiquidityRunwayDays:  state.LiquidityRunwayDays,
+		analytics.PropIncomeCadence:        state.IncomeCadence,
+		analytics.PropAvgMonthlyIncome:     state.AvgMonthlyIncome.InexactFloat64(),
+		analytics.PropConfidenceLevel:      state.ConfidenceLevel,
+	})
+
+	if result.NudgesGenerated > 0 {
+		analytics.TrackEvent(ctx, userID.String(), analytics.EventMiriamNudgeSent, map[string]any{
+			"nudge_count": result.NudgesGenerated,
+			"event_type":  eventType,
+			"risk_score":  func() int { if result.Predictions != nil { return result.Predictions.RiskScore }; return 0 }(),
+		})
+	}
+	if result.SuggestionsMade > 0 {
+		analytics.TrackEvent(ctx, userID.String(), analytics.EventMiriamMandateSuggested, map[string]any{
+			"suggestion_count": result.SuggestionsMade,
+			"health_score":     healthScore,
+		})
+	}
 
 	return result, nil
 }
@@ -300,25 +358,41 @@ func (o *IntelligenceOrchestrator) EvaluateBatch(ctx context.Context, userIDs []
 }
 
 func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, userID uuid.UUID, mandate entities.MiriamAutopilotMandate, amount decimal.Decimal) error {
+	var err error
 	switch mandate.ActionType {
 	case entities.MiriamMandateTransferToStash:
-		return o.executeTransferToStash(ctx, userID, amount, mandate.ID)
+		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
 	case MiriamMandateTransferToSpend:
-		return o.executeTransferToSpend(ctx, userID, amount, mandate.ID)
+		err = o.executeTransferToSpend(ctx, userID, amount, mandate.ID)
 	case MiriamMandateStashTopUp, MiriamMandateIdleSweep:
-		return o.executeTransferToStash(ctx, userID, amount, mandate.ID)
+		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
 	case MiriamMandateBillReservation:
-		// For bill reservation, we just record the intent — actual transfer happens via transfer_to_spend
-		return o.recordBillReservation(ctx, userID, amount, mandate)
+		err = o.recordBillReservation(ctx, userID, amount, mandate)
 	case MiriamMandateSpendCooldown:
-		// Spend cooldown is advisory — record the receipt, no money movement
-		return o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
+		err = o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
 	case MiriamMandateGoalContribution:
-		// Goal contributions route to stash (goals are stash sub-allocations)
-		return o.executeTransferToStash(ctx, userID, amount, mandate.ID)
+		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
 	default:
 		return fmt.Errorf("unknown mandate action type: %s", mandate.ActionType)
 	}
+
+	status := "success"
+	if err != nil {
+		status = "failed"
+	}
+	miriamMandatesExecuted.WithLabelValues(mandate.ActionType, status).Inc()
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventMiriamActionExecuted, map[string]any{
+		"action_type": mandate.ActionType,
+		"amount":      amount.InexactFloat64(),
+		"mandate_id":  mandate.ID.String(),
+		"status":      status,
+	})
+	if err == nil {
+		analytics.G().Increment(ctx, userID.String(), map[string]int{
+			analytics.PropMiriamActionsTotal: 1,
+		})
+	}
+	return err
 }
 
 func (o *IntelligenceOrchestrator) executeTransferToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandateID uuid.UUID) error {

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
@@ -433,6 +434,19 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 		s.logger.Warn("Failed to set non_kyc status", zap.Error(err), zap.String("user_id", req.UserID.String()))
 	}
 
+	// Identify user in Mixpanel now that we have their name
+	analytics.IdentifyUser(ctx, req.UserID.String(), map[string]any{
+		"$first_name": req.FirstName,
+		"$last_name":  req.LastName,
+		"$name":       req.FirstName + " " + req.LastName,
+		"$email":      user.Email,
+		"$created":    user.CreatedAt.UTC().Format(time.RFC3339),
+	})
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventSignupCompleted, map[string]any{
+		"first_name": req.FirstName,
+		"last_name":  req.LastName,
+	})
+
 	// Create Circle wallets for the user (async — don't block onboarding)
 	if s.walletService != nil {
 		go func() {
@@ -546,6 +560,24 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	user.AddressPostalCode = stringPtrOrNil(req.Address.PostalCode)
 	user.AddressCountry = stringPtrOrNil(strings.ToUpper(strings.TrimSpace(req.Address.Country)))
 	user.UpdatedAt = time.Now()
+
+	// Identify user in Mixpanel with full profile data
+	identifyProps := map[string]any{
+		"$first_name":    req.FirstName,
+		"$last_name":     req.LastName,
+		"$name":          req.FirstName + " " + req.LastName,
+		"$email":         user.Email,
+		"$created":       user.CreatedAt.UTC().Format(time.RFC3339),
+		"$country_code":  strings.ToUpper(strings.TrimSpace(req.Country)),
+		"country":        strings.ToUpper(strings.TrimSpace(req.Country)),
+	}
+	if req.Address.City != "" {
+		identifyProps["$city"] = req.Address.City
+	}
+	if req.Address.State != "" {
+		identifyProps["$region"] = req.Address.State
+	}
+	analytics.IdentifyUser(ctx, req.UserID.String(), identifyProps)
 
 	// Create Bridge customer with minimal data (no KYC yet)
 	if user.BridgeCustomerID == nil || *user.BridgeCustomerID == "" {

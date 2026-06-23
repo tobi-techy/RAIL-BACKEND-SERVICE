@@ -286,7 +286,7 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 	}()
 	go func() { localeCh <- o.resolveLocaleStyle(ctx, userID) }()
 
-	parts := []string{SystemPrompt}
+	parts := []string{SystemPromptV2}
 	for i := 0; i < 7; i++ {
 		if s := <-ch; s != "" {
 			parts = append(parts, s)
@@ -1053,6 +1053,12 @@ func (o *Orchestrator) buildVoicePhaseContext(ctx context.Context, userID uuid.U
 	if o.miriamIntelligence == nil {
 		return ""
 	}
+
+	// Check cache first
+	if cached := globalContextCache.GetMoneyState(userID); cached != nil {
+		return miriam.PhaseContext(cached)
+	}
+
 	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -1060,5 +1066,6 @@ func (o *Orchestrator) buildVoicePhaseContext(ctx context.Context, userID uuid.U
 	if err != nil || state == nil {
 		return ""
 	}
+	globalContextCache.SetMoneyState(userID, state)
 	return miriam.PhaseContext(state)
 }

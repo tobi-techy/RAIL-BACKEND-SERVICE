@@ -3,16 +3,16 @@ package analytics
 // ── Growth Metrics ──────────────────────────────────────
 
 const (
-	EventSignupStarted       = "signup_started"
-	EventSignupCompleted     = "signup_completed"
-	EventKYCStarted          = "kyc_started"
-	EventKYCCompleted        = "kyc_completed"
-	EventKYCFailed           = "kyc_failed"
-	EventFirstDeposit        = "first_deposit"
-	EventReferralSent        = "referral_sent"
-	EventReferralConverted   = "referral_converted"
-	EventWaitlistJoined      = "waitlist_joined"
-	EventWaitlistConverted   = "waitlist_converted"
+	EventSignupStarted     = "signup_started"
+	EventSignupCompleted   = "signup_completed"
+	EventKYCStarted        = "kyc_started"
+	EventKYCCompleted      = "kyc_completed"
+	EventKYCFailed         = "kyc_failed"
+	EventFirstDeposit      = "first_deposit"
+	EventReferralSent      = "referral_sent"
+	EventReferralConverted = "referral_converted"
+	EventWaitlistJoined    = "waitlist_joined"
+	EventWaitlistConverted = "waitlist_converted"
 )
 
 // ── Activation Metrics ──────────────────────────────────
@@ -22,8 +22,10 @@ const (
 	EventDepositCompleted       = "deposit_completed"
 	EventAllocationExecuted     = "allocation_executed"
 	EventFirstAllocation        = "first_allocation"
-	EventAutoInvestEnabled      = "auto_invest_enabled"
+	EventAutoInvestEnabled      = "auto_invest_enabled"  // user toggles the feature on
+	EventAutoInvestTriggered    = "autoinvest_triggered" // auto-invest actually fires
 	EventFirstInvestment        = "first_investment"
+	EventInvestmentOrderPlaced  = "investment_order_placed"
 )
 
 // ── Retention Metrics ───────────────────────────────────
@@ -38,10 +40,12 @@ const (
 // ── Money Movement Metrics ──────────────────────────────
 
 const (
-	EventDepositReceived    = "deposit_received"
+	EventDepositReceived     = "deposit_received"
 	EventWithdrawalInitiated = "withdrawal_initiated"
 	EventWithdrawalCompleted = "withdrawal_completed"
-	EventCardTransaction     = "card_transaction"
+	EventCardCreated         = "card_created"
+	EventCardTransaction     = "card_transaction" // approved authorization
+	EventCardTransactionDeclined = "card_transaction_declined"
 	EventP2PTransfer         = "p2p_transfer"
 	EventStashTransfer       = "stash_transfer"
 	EventRoundUpTriggered    = "round_up_triggered"
@@ -50,28 +54,40 @@ const (
 // ── Financial Behavior Metrics ──────────────────────────
 
 const (
-	EventSavingsStreakUpdated   = "savings_streak_updated"
-	EventGoalCreated            = "goal_created"
-	EventGoalCompleted          = "goal_completed"
-	EventOverspendingAlert      = "overspending_alert"
-	EventImpulseWithdrawal      = "impulse_withdrawal"
-	EventBudgetSet              = "budget_set"
-	EventBudgetExceeded         = "budget_exceeded"
-	EventYieldDistributed       = "yield_distributed"
-	EventAUMUpdated             = "aum_updated"
-	EventNetInflowRecorded      = "net_inflow_recorded"
-	EventPaycheckDetected       = "paycheck_detected"
+	EventSavingsStreakUpdated = "savings_streak_updated"
+	EventGoalCreated         = "goal_created"
+	EventGoalCompleted       = "goal_completed"
+	EventOverspendingAlert   = "overspending_alert"
+	EventImpulseWithdrawal   = "impulse_withdrawal"
+	EventBudgetSet           = "budget_set"
+	EventBudgetExceeded      = "budget_exceeded"
+	EventYieldDistributed    = "yield_distributed"
+	EventAUMUpdated          = "aum_updated"
+	EventNetInflowRecorded   = "net_inflow_recorded"
+	EventPaycheckDetected    = "paycheck_detected"
+	EventFinancialHealthUpdated = "financial_health_updated"
 )
 
-// ── AI Agent Metrics ────────────────────────────────────
+// ── AI (Miriam) Metrics ─────────────────────────────────
 
 const (
-	EventAIConversationStarted = "ai_conversation_started"
-	EventAIQuestionAsked       = "ai_question_asked"
-	EventAIRecommendationGiven = "ai_recommendation_given"
+	EventAIConversationStarted    = "ai_conversation_started"
+	EventAIQuestionAsked          = "ai_question_asked"
+	EventAIConversationCompleted  = "ai_conversation_completed"
+	EventAIToolUsed               = "ai_tool_used"
+	EventAIRecommendationGiven    = "ai_recommendation_given"
 	EventAIRecommendationAccepted = "ai_recommendation_accepted"
-	EventAIActionTriggered     = "ai_action_triggered"
-	EventAISummaryViewed       = "ai_summary_viewed"
+	EventAIActionTriggered        = "ai_action_triggered"
+	EventAISummaryViewed          = "ai_summary_viewed"
+)
+
+// ── Miriam Autonomous Intelligence Metrics ──────────────
+
+const (
+	EventMiriamEvaluationRun   = "miriam_evaluation_run"   // intelligence pass completed
+	EventMiriamActionExecuted  = "miriam_action_executed"  // autonomous money move
+	EventMiriamNudgeSent       = "miriam_nudge_sent"       // proactive alert delivered
+	EventMiriamMandateSuggested = "miriam_mandate_suggested" // new automation suggested
 )
 
 // ── Revenue Metrics ─────────────────────────────────────
@@ -97,18 +113,30 @@ const (
 // ── User Profile Properties ─────────────────────────────
 
 const (
-	PropFirstDepositAt     = "first_deposit_at"
-	PropTotalDeposits      = "total_deposits"
-	PropTotalWithdrawals   = "total_withdrawals"
-	PropNetInflow          = "net_inflow"
-	PropAUM                = "aum"
-	PropAutoInvestEnabled  = "auto_invest_enabled"
-	PropKYCStatus          = "kyc_status"
-	PropAccountCurrency    = "account_currency"
-	PropCountry            = "country"
-	PropSignupSource       = "signup_source"
-	PropDepositCount       = "deposit_count"
-	PropLastDepositAt      = "last_deposit_at"
-	PropConsecutiveMonths  = "consecutive_deposit_months"
-	PropPlan               = "plan"
+	PropFirstDepositAt    = "first_deposit_at"
+	PropTotalDeposits     = "total_deposits"
+	PropTotalWithdrawals  = "total_withdrawals"
+	PropNetInflow         = "net_inflow"
+	PropAUM               = "aum"
+	PropAutoInvestEnabled = "auto_invest_enabled"
+	PropKYCStatus         = "kyc_status"
+	PropAccountCurrency   = "account_currency"
+	PropCountry           = "country"
+	PropSignupSource      = "signup_source"
+	PropDepositCount      = "deposit_count"
+	PropLastDepositAt     = "last_deposit_at"
+	PropConsecutiveMonths = "consecutive_deposit_months"
+	PropPlan              = "plan"
+
+	// Financial health (populated by Miriam on each evaluation pass)
+	PropFinancialHealthScore = "financial_health_score"
+	PropLiquidityRunwayDays  = "liquidity_runway_days"
+	PropIncomeCadence        = "income_cadence"
+	PropAvgMonthlyIncome     = "avg_monthly_income"
+	PropConfidenceLevel      = "confidence_level"
+
+	// Product engagement
+	PropHasCard             = "has_card"
+	PropMiriamActionsTotal  = "miriam_actions_total"
+	PropWithdrawalCount     = "withdrawal_count"
 )

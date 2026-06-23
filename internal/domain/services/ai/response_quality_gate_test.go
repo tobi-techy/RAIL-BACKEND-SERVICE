@@ -84,9 +84,8 @@ func TestQualityGateAcceptsDataAfterReaction(t *testing.T) {
 
 func TestQualityCorrectionHint(t *testing.T) {
 	hint := QualityCorrectionHint([]string{"starts_with_slop", "opens_with_raw_data"})
-	assert.Contains(t, hint, "PERSONALITY FIX")
-	assert.Contains(t, hint, "React naturally")
-	assert.Contains(t, hint, "React to what the number MEANS")
+	assert.NotEmpty(t, hint)
+	assert.Contains(t, hint, "greeting")
 
 	empty := QualityCorrectionHint(nil)
 	assert.Empty(t, empty)

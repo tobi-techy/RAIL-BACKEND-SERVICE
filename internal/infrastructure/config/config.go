@@ -45,6 +45,7 @@ type Config struct {
 	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
 	TelegramAlerts TelegramConfig       `mapstructure:"telegram_alerts"`
 	Umbra          UmbraConfig          `mapstructure:"umbra"`
+	Enrichment     EnrichmentConfig     `mapstructure:"enrichment"`
 	Statement      StatementConfig      `mapstructure:"statement"`
 }
 
@@ -71,6 +72,12 @@ type UmbraConfig struct {
 	Enabled    bool   `mapstructure:"enabled"`     // Enable Umbra privacy shielding in allocation flow
 	Network    string `mapstructure:"network"`     // mainnet or devnet
 	AuthToken  string `mapstructure:"auth_token"`  // Shared secret for sidecar authentication
+}
+
+// EnrichmentConfig contains transaction enrichment sidecar configuration.
+type EnrichmentConfig struct {
+	ServiceURL string `mapstructure:"service_url"` // URL of the enrichment sidecar (e.g. http://enrichment:8090)
+	Enabled    bool   `mapstructure:"enabled"`     // Enable transaction enrichment pipeline
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration

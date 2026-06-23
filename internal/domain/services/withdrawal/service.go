@@ -714,6 +714,16 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
 	}
 
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventWithdrawalInitiated, map[string]any{
+		"withdrawal_id":     withdrawal.ID.String(),
+		"type":              "crypto",
+		"amount":            req.Amount.InexactFloat64(),
+		"currency":          string(req.Currency),
+		"source_account":    string(req.SourceAccount),
+		"destination_chain": req.DestinationChain,
+		"fee_amount":        withdrawal.FeeAmount.InexactFloat64(),
+	})
+
 	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
 	// Must re-fetch balance since the old balance is stale after creating the withdrawal record.
 	if err := s.ensureWithdrawalExposure(ctx, withdrawal); err != nil {
@@ -1359,6 +1369,15 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		s.logger.Error("Failed to create withdrawal", "error", err)
 		return nil, fmt.Errorf("failed to create withdrawal: %w", err)
 	}
+
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventWithdrawalInitiated, map[string]any{
+		"withdrawal_id":  withdrawal.ID.String(),
+		"type":           "fiat",
+		"amount":         req.Amount.InexactFloat64(),
+		"currency":       string(req.Currency),
+		"source_account": string(req.SourceAccount),
+		"fee_amount":     fee.InexactFloat64(),
+	})
 
 	// Re-check pending exposure after creating the record to protect against near-simultaneous requests.
 	// Must re-fetch balance since the old balance is stale after creating the withdrawal record.
@@ -2516,6 +2535,17 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 		metrics.Business.WithdrawalAmount.WithLabelValues("crypto").Observe(withdrawal.Amount.InexactFloat64())
 	}
 
+	analytics.TrackEvent(context.Background(), withdrawal.UserID.String(), analytics.EventWithdrawalCompleted, map[string]any{
+		"withdrawal_id": withdrawal.ID.String(),
+		"type":          "crypto",
+		"amount":        withdrawal.Amount.InexactFloat64(),
+		"currency":      string(withdrawal.Currency),
+		"fee_amount":    withdrawal.FeeAmount.InexactFloat64(),
+	})
+	analytics.G().Increment(context.Background(), withdrawal.UserID.String(), map[string]int{
+		analytics.PropWithdrawalCount: 1,
+	})
+
 	return nil
 }
 
@@ -2578,6 +2608,17 @@ func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, w
 		_ = s.notificationService.NotifyWithdrawalCompleted(ctx, withdrawal.UserID, withdrawal.Amount, destination)
 	}
 
+	analytics.TrackEvent(ctx, withdrawal.UserID.String(), analytics.EventWithdrawalCompleted, map[string]any{
+		"withdrawal_id": withdrawal.ID.String(),
+		"type":          "fiat",
+		"amount":        withdrawal.Amount.InexactFloat64(),
+		"currency":      string(withdrawal.Currency),
+		"fee_amount":    withdrawal.FeeAmount.InexactFloat64(),
+	})
+	analytics.G().Increment(ctx, withdrawal.UserID.String(), map[string]int{
+		analytics.PropWithdrawalCount: 1,
+	})
+
 	return nil
 }
 
@@ -2622,6 +2663,14 @@ func (s *WithdrawalService) failWithdrawal(ctx context.Context, withdrawal *enti
 	if s.notificationService != nil {
 		_ = s.notificationService.NotifyWithdrawalFailed(ctx, withdrawal.UserID, withdrawal.Amount, reason)
 	}
+
+	analytics.TrackEvent(ctx, withdrawal.UserID.String(), analytics.EventWithdrawalFailed, map[string]any{
+		"withdrawal_id":   withdrawal.ID.String(),
+		"type":            string(withdrawal.WithdrawalType),
+		"amount":          withdrawal.Amount.InexactFloat64(),
+		"currency":        string(withdrawal.Currency),
+		"failure_reason":  reason,
+	})
 
 	return nil
 }

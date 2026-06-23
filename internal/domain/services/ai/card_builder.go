@@ -43,6 +43,8 @@ func buildCardsFromToolResults(results []ToolResult) []entities.InsightCard {
 			cards = append(cards, buildFinancialAuditCard(tr.Result))
 		case ToolGetCashFlowForecast:
 			cards = append(cards, buildCashFlowForecastCard(tr.Result))
+		case ToolWebSearch:
+			cards = append(cards, buildDiscoveryCards(tr.Result)...)
 		case ToolGetFinancialPlan:
 			cards = append(cards, buildFinancialPlanCard(tr.Result))
 		case ToolGetActionReceipts:

@@ -289,7 +289,7 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 		return fmt.Errorf("failed to execute auto-investment: %w", err)
 	}
 
-	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventAutoInvestEnabled, map[string]any{
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventAutoInvestTriggered, map[string]any{
 		"amount":    investableAmount.InexactFloat64(),
 		"threshold": threshold.InexactFloat64(),
 	})
@@ -687,6 +687,13 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 		"symbol", symbol,
 		"amount", amount,
 		"status", order.Status)
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventInvestmentOrderPlaced, map[string]any{
+		"symbol":     symbol,
+		"amount":     amount.InexactFloat64(),
+		"order_id":   order.ID,
+		"order_status": order.Status,
+	})
 
 	if s.notificationService != nil {
 		go func() {

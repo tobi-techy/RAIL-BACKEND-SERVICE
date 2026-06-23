@@ -228,6 +228,16 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 		zap.String("card_id", card.ID.String()),
 		zap.String("bridge_card_id", card.BridgeCardID))
 
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventCardCreated, map[string]any{
+		"card_id":   card.ID.String(),
+		"card_type": string(card.Type),
+		"currency":  card.Currency,
+		"chain":     card.Chain,
+	})
+	analytics.IdentifyUser(ctx, userID.String(), map[string]any{
+		analytics.PropHasCard: true,
+	})
+
 	return card, nil
 }
 
@@ -368,6 +378,12 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 		if metrics.Business != nil {
 			metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
 		}
+		analytics.TrackEvent(ctx, card.UserID.String(), analytics.EventCardTransactionDeclined, map[string]any{
+			"decline_reason":    "insufficient_funds",
+			"amount":            amount.InexactFloat64(),
+			"merchant_name":     merchantName,
+			"merchant_category": merchantCategory,
+		})
 		return false, "insufficient_funds", nil
 	}
 
@@ -392,22 +408,27 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 				zap.String("bridge_card_id", bridgeCardID))
 			return false, "money_guard_no_decision", ErrMoneyGuardNoDecision
 		}
+		declineReason := ""
 		switch {
 		case !decision.Allowed:
-			if metrics.Business != nil {
-				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
-			}
-			return false, "money_guard_declined", nil
+			declineReason = "money_guard_declined"
 		case decision.Action == entities.CapActionRequirePin:
-			if metrics.Business != nil {
-				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
-			}
-			return false, "money_guard_passcode_required", nil
+			declineReason = "money_guard_passcode_required"
 		case decision.Mode == entities.GuardianModeStrict && decision.Action == entities.CapActionPauseCard:
+			declineReason = "money_guard_card_paused"
+		}
+		if declineReason != "" {
 			if metrics.Business != nil {
 				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
 			}
-			return false, "money_guard_card_paused", nil
+			analytics.TrackEvent(ctx, card.UserID.String(), analytics.EventCardTransactionDeclined, map[string]any{
+				"decline_reason":    declineReason,
+				"amount":            amount.InexactFloat64(),
+				"merchant_name":     merchantName,
+				"merchant_category": merchantCategory,
+				"money_guard_mode":  string(decision.Mode),
+			})
+			return false, declineReason, nil
 		}
 		// No Money Guard decline condition matched; continue with the approved authorization flow.
 	}

@@ -32,6 +32,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/crypto"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -449,6 +450,14 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 	}
 
 	h.logger.Info("User created and verified", zap.String("user_id", user.ID.String()))
+
+	analytics.IdentifyUser(ctx, user.ID.String(), map[string]any{
+		"$email":   user.Email,
+		"$created": user.CreatedAt.UTC().Format(time.RFC3339),
+	})
+	analytics.TrackEvent(ctx, user.ID.String(), analytics.EventSignupStarted, map[string]any{
+		"signup_method": identifierType,
+	})
 
 	response := gin.H{
 		"user":              &entities.UserInfo{ID: user.ID, Email: user.Email, Phone: user.Phone, EmailVerified: user.EmailVerified, PhoneVerified: user.PhoneVerified, OnboardingStatus: user.OnboardingStatus, KYCStatus: user.KYCStatus, CreatedAt: user.CreatedAt},
@@ -903,6 +912,27 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
 	}
 
+	analytics.TrackEvent(ctx, user.ID.String(), analytics.EventSessionStarted, map[string]any{
+		"login_method": "password",
+	})
+	geoProps := map[string]any{}
+	if city := strings.TrimSpace(c.GetHeader("X-Geo-City")); city != "" {
+		geoProps["$city"] = city
+	}
+	if region := strings.TrimSpace(c.GetHeader("X-Geo-Region")); region != "" {
+		geoProps["$region"] = region
+	}
+	if country := strings.TrimSpace(c.GetHeader("CF-IPCountry")); country != "" && country != "XX" {
+		geoProps["$country_code"] = country
+		geoProps["country"] = country
+	} else if country := strings.TrimSpace(c.GetHeader("X-Geo-Country")); country != "" {
+		geoProps["$country_code"] = country
+		geoProps["country"] = country
+	}
+	if len(geoProps) > 0 {
+		analytics.IdentifyUser(ctx, user.ID.String(), geoProps)
+	}
+
 	h.logger.Info("User logged in successfully", zap.String("user_id", user.ID.String()), zap.String("email", pkgsecurity.MaskString(user.Email)))
 	c.JSON(http.StatusOK, response)
 }
@@ -1081,6 +1111,10 @@ func (h *AuthHandlers) PasscodeLogin(c *gin.Context) {
 	}
 
 	h.recordLoginSuccess(c, identifier)
+
+	analytics.TrackEvent(ctx, userProfile.ID.String(), analytics.EventSessionStarted, map[string]any{
+		"login_method": "passcode",
+	})
 
 	c.JSON(http.StatusOK, entities.PasscodeVerificationResponse{
 		Verified:                 true,

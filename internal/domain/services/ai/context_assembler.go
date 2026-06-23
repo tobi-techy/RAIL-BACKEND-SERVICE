@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,19 +20,19 @@ type ContextAssemblyOpts struct {
 // to prepend to the conversation. Used by both streaming and non-streaming chat paths.
 // All lookups have a 3s hard ceiling so total assembly never exceeds ~3s.
 func (o *Orchestrator) assembleContext(ctx context.Context, userID uuid.UUID, opts ContextAssemblyOpts) []ai.Message {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 
-	// 8 parallel slots — one per context source.
+	// 9 parallel slots — one per context source.
 	// Results are indexed to maintain consistent ordering.
-	const numSlots = 8
+	const numSlots = 9
 	results := make([]string, numSlots)
 
 	g, gCtx := errgroup.WithContext(ctx)
 
 	slotNames := [numSlots]string{
 		"balance", "stash_lock", "financial_profile", "user_profile",
-		"bank_statement", "memory", "personality", "user_time",
+		"bank_statement", "memory", "personality", "user_time", "naira_context",
 	}
 
 	buildSlot := func(slot int, name string, fn func() string) func() error {
@@ -68,6 +67,7 @@ func (o *Orchestrator) assembleContext(ctx context.Context, userID uuid.UUID, op
 		return o.buildConsolidatedPersonalityContext(gCtx, userID, opts.ToneMode)
 	}))
 	g.Go(buildSlot(7, slotNames[7], func() string { return o.buildUserTimeContext(gCtx, userID) }))
+	g.Go(buildSlot(8, slotNames[8], func() string { return o.buildNairaContext(gCtx, userID) }))
 
 	_ = g.Wait()
 
@@ -76,38 +76,24 @@ func (o *Orchestrator) assembleContext(ctx context.Context, userID uuid.UUID, op
 	}
 
 	// Assemble in stable order
-	messages := make([]ai.Message, 0, numSlots+1)
+	messages := make([]ai.Message, 0, numSlots+2)
 	for _, s := range results {
 		if s != "" {
 			messages = append(messages, ai.Message{Role: "system", Content: s})
 		}
 	}
 
-	// Supermemory: query-dependent, runs after the parallel batch.
-	// Only for financial messages longer than a greeting.
-	if o.supermemory != nil && userID != uuid.Nil && len(opts.Message) > 15 && looksFinancial(opts.Message) {
-		smCtx, smCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		memories, smErr := o.supermemory.SearchMemory(smCtx, userID.String(), opts.Message, 8)
-		smCancel()
-		if smErr == nil && len(memories) > 0 {
-			var sb strings.Builder
-			sb.WriteString("[Personal financial memory (from uploaded bank statements, may be in NGN/local currency — do NOT conflate with USD Rail balances):\n")
-			count := 0
-			for _, m := range memories {
-				if m.Similarity < 0.6 || count >= 6 {
-					break
-				}
-				sb.WriteString("• ")
-				sb.WriteString(m.Memory)
-				sb.WriteString("\n")
-				count++
-			}
-			sb.WriteString("]")
-			if count > 0 {
-				messages = append(messages, ai.Message{Role: "system", Content: sb.String()})
-			}
-		}
+	// Emotion detection: inject tone hint if user sounds non-neutral
+	if hint := detectEmotion(opts.Message); hint != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: hint})
 	}
+
+	// Energy matching: tell Miriam how long/short to be based on user's message style
+	if hint := detectEnergy(opts.Message); hint != "" {
+		messages = append(messages, ai.Message{Role: "system", Content: hint})
+	}
+
+	// Supermemory moved to tool-call phase (V2) — no longer blocks context assembly.
 
 	return messages
 }

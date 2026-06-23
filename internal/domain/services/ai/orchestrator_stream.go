@@ -80,7 +80,35 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 		emit(event)
 	}
 
+	toolsUsed := make([]string, 0)
+	originalEmit := wrappedEmit
+	wrappedEmit = func(event StreamEvent) {
+		if event.Type == "tool_result" {
+			if m, ok := event.Data.(map[string]interface{}); ok {
+				if toolName, ok := m["tool"].(string); ok {
+					toolsUsed = append(toolsUsed, toolName)
+				}
+			}
+		}
+		originalEmit(event)
+	}
+
 	err := o.chatStreamInternal(ctx, userID, conv.ID, message, history, opts, wrappedEmit)
+
+	// Track conversation completion
+	if err == nil {
+		analytics.TrackEvent(ctx, userID.String(), analytics.EventAIConversationCompleted, map[string]any{
+			"conversation_id": conv.ID.String(),
+			"tokens_used":     totalTokens,
+			"tools_used":      toolsUsed,
+			"tools_count":     len(toolsUsed),
+			"model":           modelUsed,
+			"message_length":  len(message),
+			"response_length": len(accumulated.String()),
+			"had_tool_calls":  len(toolsUsed) > 0,
+			"had_cards":       len(streamCards) > 0,
+		})
+	}
 
 	// Persist exchange in background (best-effort, mirrors ChatWithConversation)
 	content := accumulated.String()
@@ -118,6 +146,13 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 }
 
 func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
+	// Trivial message bypass — skip LLM entirely for greetings/acknowledgements
+	if reply := trivialReply(message); reply != "" {
+		emitWithBubbleBreaks(reply, emit)
+		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": 0, "provider": "bypass", "model": "bypass"}})
+		return nil
+	}
+
 	start := time.Now()
 
 	analytics.TrackEvent(ctx, userID.String(), analytics.EventAIQuestionAsked, map[string]any{
@@ -153,11 +188,15 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		Message:  message,
 	})...)
 
+	// Tool usage rules — skip for very short casual messages to save tokens
+	if len(message) > 15 || classifyMessage(message) != CategoryFull {
+		messages = append(messages, ai.Message{Role: "system", Content: SystemPromptTools})
+	}
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
 	req := &ai.ChatRequest{
 		Messages:     messages,
-		SystemPrompt: SystemPrompt,
+		SystemPrompt: SystemPromptV2,
 		MaxTokens:    2048,
 		Temperature:  ai.Float64(0.6),
 		ModelHint:    classifyQueryComplexity(message),
@@ -286,14 +325,14 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 					retryMsgs := make([]ai.Message, len(req.Messages), len(req.Messages)+2)
 					copy(retryMsgs, req.Messages)
 					retryMsgs = append(retryMsgs, ai.Message{Role: "assistant", Content: content}, ai.Message{Role: "system", Content: hint})
-					retryReq := &ai.ChatRequest{Messages: retryMsgs, SystemPrompt: SystemPrompt, MaxTokens: 2048, Temperature: ai.Float64(0.7), ModelHint: "fast"}
+					retryReq := &ai.ChatRequest{Messages: retryMsgs, SystemPrompt: SystemPromptV2, MaxTokens: 2048, Temperature: ai.Float64(0.7), ModelHint: "fast"}
 					if retryResp, err := o.aiProvider.ChatCompletion(ctx, retryReq); err == nil && retryResp.Content != "" {
 						content = o.applySafetyFilter(retryResp.Content)
 						cumulativeTokens += retryResp.TokensUsed
 					}
 				}
 			}
-			emit(StreamEvent{Type: "token", Content: content})
+			emitWithBubbleBreaks(content, emit)
 		}
 		modelName := resp.Model
 		if modelName == "" {
@@ -318,15 +357,17 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	if model == "" {
 		model = provider
 	}
+	bb := &bubbleBreakBuffer{emit: emit}
 	for chunk := range ch {
 		if chunk.Content != "" {
 			streamedContent.WriteString(chunk.Content)
-			emit(StreamEvent{Type: "token", Content: chunk.Content})
+			bb.Write(chunk.Content)
 		}
 		if chunk.Done {
 			streamTokens = chunk.TokensUsed
 		}
 	}
+	bb.Flush()
 
 	// Apply safety filter to the fully assembled streamed content.
 	// If triggered, emit the disclaimer as a final token.

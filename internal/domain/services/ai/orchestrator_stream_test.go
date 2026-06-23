@@ -60,7 +60,7 @@ func TestChatStreamInConversationDoesNotPersistFailedEmptyResponse(t *testing.T)
 		context.Background(),
 		uuid.New(),
 		&entities.AIConversation{ID: uuid.New(), UserID: uuid.New()},
-		"hello",
+		"show me my spending breakdown",
 		ChatOptions{},
 		func(StreamEvent) {},
 	)

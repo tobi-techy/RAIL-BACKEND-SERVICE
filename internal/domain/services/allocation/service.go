@@ -377,6 +377,12 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 				span.RecordError(err)
 				return fmt.Errorf("failed to initialize allocation accounts: %w", err)
 			}
+			analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventFirstDeposit, map[string]any{
+				"amount": req.Amount.InexactFloat64(),
+			})
+			analytics.G().Identify(ctx, req.UserID.String(), map[string]any{
+				analytics.PropFirstDepositAt: time.Now().UTC().Format(time.RFC3339),
+			})
 			s.logger.Info("Auto-enabled allocation mode for deposit",
 				"user_id", req.UserID,
 				"spending_ratio", mode.RatioSpending,
@@ -575,7 +581,11 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
 	}
 
-	// Track net inflow and AUM for Mixpanel
+	// Track deposit and net inflow for Mixpanel
+	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventDepositCompleted, map[string]any{
+		"amount":      req.Amount.InexactFloat64(),
+		"event_type":  string(req.EventType),
+	})
 	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventNetInflowRecorded, map[string]any{
 		"amount":         req.Amount.InexactFloat64(),
 		"spend_amount":   spendingAmount.InexactFloat64(),

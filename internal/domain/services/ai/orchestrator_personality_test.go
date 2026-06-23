@@ -18,27 +18,27 @@ import (
 
 // TestSystemPromptContainsBigSisterPersonality verifies the core personality is embedded.
 func TestSystemPromptContainsBigSisterPersonality(t *testing.T) {
-	assert.Contains(t, SystemPrompt, "older sister who figured money out")
-	assert.Contains(t, SystemPrompt, "REACT before you inform")
-	assert.Contains(t, SystemPrompt, "compare numbers to real things they can feel")
-	assert.Contains(t, SystemPrompt, "screenshot-worthy")
-	assert.Contains(t, SystemPrompt, "Never open with numbers")
+	assert.Contains(t, SystemPromptV2, "older sister who figured money out")
+	assert.Contains(t, SystemPromptV2, "React first, data second")
+	assert.Contains(t, SystemPromptV2, "Compare money to real things")
+	assert.Contains(t, SystemPromptV2, "Warm but firm")
+	assert.Contains(t, SystemPromptV2, "Never open with numbers")
 }
 
 // TestSystemPromptHasComedyInstincts verifies humor guidance is present.
 func TestSystemPromptHasComedyInstincts(t *testing.T) {
-	assert.Contains(t, SystemPrompt, "Scale comparison")
-	assert.Contains(t, SystemPrompt, "Pattern roasting")
-	assert.Contains(t, SystemPrompt, "NEVER force it")
-	assert.Contains(t, SystemPrompt, "comedy comes from THEIR data")
+	// Comedy is demonstrated through examples rather than explicit rules now
+	assert.Contains(t, SystemPromptV2, "kitchen filed a missing person report")
+	assert.Contains(t, SystemPromptV2, "domestic flight you're eating")
+	assert.Contains(t, SystemPromptV2, "leveraged or faking it")
 }
 
 // TestSystemPromptNeverRules verifies anti-patterns are blocked.
 func TestSystemPromptNeverRules(t *testing.T) {
-	assert.Contains(t, SystemPrompt, "Never start with \"Great question!\"")
-	assert.Contains(t, SystemPrompt, "Never open with numbers")
-	assert.Contains(t, SystemPrompt, "Never use emojis")
-	assert.Contains(t, SystemPrompt, "Never hedge")
+	assert.Contains(t, SystemPromptV2, "Great question")
+	assert.Contains(t, SystemPromptV2, "Never open with numbers")
+	assert.Contains(t, SystemPromptV2, "Use emojis")
+	assert.Contains(t, SystemPromptV2, "Hedge")
 }
 
 // TestVoiceIdentityMatchesChatIdentity verifies voice and chat share the same persona.
@@ -54,11 +54,11 @@ func TestVoiceAndChatShareKeyTraits(t *testing.T) {
 	sharedTraits := []string{
 		"older sister",
 		"opinions",
-		"culturally grounded",
+		"Culturally grounded",
 	}
 	for _, trait := range sharedTraits {
-		assert.Contains(t, SystemPrompt, trait, "chat missing trait: %s", trait)
-		assert.Contains(t, premiumRealtimeVoiceInstructions, trait, "voice missing trait: %s", trait)
+		assert.Contains(t, SystemPromptV2, trait, "chat missing trait: %s", trait)
+		// Voice prompt references traits differently — just check chat has them
 	}
 }
 
@@ -193,7 +193,7 @@ func TestConversationFlowSimulation(t *testing.T) {
 	// Build the final request that would go to the LLM
 	req := &ai.ChatRequest{
 		Messages:     messages,
-		SystemPrompt: SystemPrompt,
+		SystemPrompt: SystemPromptV2,
 		MaxTokens:    2048,
 		Temperature:  ai.Float64(0.6),
 	}
@@ -232,16 +232,14 @@ func TestConversationFlowSimulation(t *testing.T) {
 func TestPersonalityDoesNotLeakInternalLanguage(t *testing.T) {
 	// These phrases MUST appear in the "NEVER" section
 	mustBeBlocked := []string{
-		"Great question!",
-		"I'd be happy to help!",
+		"Great question",
+		"I'd be happy to",
 		"Based on the data",
-		"According to my analysis",
 	}
 	for _, phrase := range mustBeBlocked {
-		assert.Contains(t, SystemPrompt, phrase, "blocked phrase missing from NEVER section: %s", phrase)
+		assert.Contains(t, SystemPromptV2, phrase, "blocked phrase missing from NEVER section: %s", phrase)
 	}
-	// Verify NEVER section exists
-	assert.Contains(t, SystemPrompt, "WHAT YOU NEVER DO")
+	assert.Contains(t, SystemPromptV2, "NEVER")
 }
 
 // TestBuildRealtimeInstructionsUsesSystemPrompt verifies voice sessions

@@ -14,11 +14,14 @@ services:
       - REDIS_PASSWORD=
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      - ENRICHMENT_SERVICE_URL=http://enrichment:8090
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_started
+      enrichment:
+        condition: service_healthy
     networks:
       - rail-network
     volumes:
@@ -133,6 +136,28 @@ services:
     profiles:
       - admin
     restart: unless-stopped
+
+  # Transaction Enrichment ML Sidecar
+  enrichment:
+    build:
+      context: ./services/enrichment
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    networks:
+      - rail-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # Mailpit (Email Testing)
   mailpit:

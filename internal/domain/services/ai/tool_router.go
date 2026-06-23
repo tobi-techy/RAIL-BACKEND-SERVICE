@@ -88,6 +88,7 @@ var planningPatterns = []string{
 	"advice", "audit", "roast", "plan", "forecast", "predict",
 	"health score", "what should i do", "reality check", "hard mode",
 	"operating plan", "tax", "how can i save", "suggestions",
+	"invest", "investment", "where to put", "grow my money",
 }
 
 var spendingPatterns = []string{
@@ -157,6 +158,8 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolGetAccountSummary:      true,
 		ToolGetMiriamBrief:         true,
 		ToolSearchKnowledge:        true,
+		ToolGetInvestmentProducts:  true,
+		ToolWebSearch:             true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,

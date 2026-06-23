@@ -42,32 +42,60 @@ func CheckResponseQuality(response string) QualityVerdict {
 		failures = append(failures, "emotionally_flat")
 	}
 
+	// 5. Mono-bubble: >200 chars with no paragraph break
+	if isMonoBubble(response) {
+		failures = append(failures, "mono_bubble")
+	}
+
+	// 6. No hook: >150 chars with no question mark
+	if hasNoHook(response) {
+		failures = append(failures, "no_hook")
+	}
+
+	// 7. Currency confusion: mixes $ and ₦ without labeling which is which
+	if hasCurrencyConfusion(response) {
+		failures = append(failures, "currency_confusion")
+	}
+
+	// 8. Contains markdown formatting or numbered lists
+	if hasMarkdownOrLists(response) {
+		failures = append(failures, "has_markdown")
+	}
+
 	return QualityVerdict{
 		Pass:     len(failures) == 0,
 		Failures: failures,
 	}
 }
 
-// QualityCorrectionHint returns a short instruction to prepend to a retry
-// based on what failed. Used as an additional system message for the retry call.
+// QualityCorrectionHint returns a short re-prompt instruction for the retry.
+// Kept conversational — not adversarial — so the model doesn't overcorrect.
 func QualityCorrectionHint(failures []string) string {
-	var hints []string
+	if len(failures) == 0 {
+		return ""
+	}
+	// Only retry for the most impactful issues — don't stack corrections
 	for _, f := range failures {
 		switch f {
 		case "starts_with_slop":
-			hints = append(hints, "Do NOT start with filler phrases. React naturally first — one word or a short observation.")
+			return "Rewrite. Skip the greeting/filler — just react and answer directly like you're mid-conversation."
 		case "contains_banned_phrase":
-			hints = append(hints, "Remove AI-sounding language. Talk like a real person who knows their money.")
+			return "Rewrite without AI-speak. Talk like a real person texting."
 		case "opens_with_raw_data":
-			hints = append(hints, "Don't open with the number. React to what the number MEANS first, then drop the data.")
+			return "Rewrite. React to what the number means before saying the number."
+		case "mono_bubble":
+			return "Rewrite as short separate texts (blank line between each). One thought per bubble."
+		case "currency_confusion":
+			return "Rewrite. Label which amounts are USD and which are naira — don't mix $ and ₦ without saying which is which."
 		case "emotionally_flat":
-			hints = append(hints, "This response is flat. Add personality: a vivid comparison, a callback, a question hook, or an opinion about what the numbers mean. Make the user FEEL something.")
+			return "Rewrite with more personality — a reaction, a comparison, or a question. Make it feel like a real person said it."
+		case "no_hook":
+			return "Add a question or follow-up at the end so the conversation keeps going."
+		case "has_markdown":
+			return "Rewrite in plain text only. No bold, no italics, no numbered lists, no markdown. You're texting, not writing a document."
 		}
 	}
-	if len(hints) == 0 {
-		return ""
-	}
-	return "[PERSONALITY FIX — your last response failed quality check: " + strings.Join(hints, " ") + "]"
+	return ""
 }
 
 // --- Check implementations ---
@@ -95,6 +123,17 @@ var slopPrefixes = []string{
 	"to answer your question",
 	"thanks for asking",
 	"good question",
+	"hey there",
+	"hey!",
+	"hi there",
+	"hello!",
+	"hey,",
+	"let's break it down",
+	"let me break",
+	"just thinking about",
+	"good to see you",
+	"nice to hear from",
+	"what's up",
 }
 
 func startsWithSlop(response string) bool {
@@ -220,4 +259,73 @@ func isEmotionallyFlat(response string) bool {
 
 	// A response with 0-1 personality signals out of 5 categories is flat.
 	return personalitySignals <= 1
+}
+
+
+// isMonoBubble detects responses >200 chars with no paragraph break (\n\n).
+// Long single blocks don't feel like texting.
+func isMonoBubble(response string) bool {
+	if len(response) <= 200 {
+		return false
+	}
+	// Skip action confirmations
+	lower := strings.ToLower(response)
+	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed"} {
+		if strings.Contains(lower, m) {
+			return false
+		}
+	}
+	return !strings.Contains(response, "\n\n")
+}
+
+// hasNoHook detects responses >150 chars that don't end with a question or conversational hook.
+func hasNoHook(response string) bool {
+	if len(response) <= 150 {
+		return false
+	}
+	// Skip action confirmations
+	lower := strings.ToLower(response)
+	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed"} {
+		if strings.Contains(lower, m) {
+			return false
+		}
+	}
+	return !strings.Contains(response, "?")
+}
+
+// hasCurrencyConfusion detects when both $ and ₦ appear without clear labels.
+func hasCurrencyConfusion(response string) bool {
+	hasDollar := strings.Contains(response, "$")
+	hasNaira := strings.Contains(response, "₦")
+	if !hasDollar || !hasNaira {
+		return false
+	}
+	// If it has explicit labels, it's fine
+	lower := strings.ToLower(response)
+	for _, label := range []string{"usd", "ngn", "naira", "dollars", "spend balance", "stash balance"} {
+		if strings.Contains(lower, label) {
+			return false
+		}
+	}
+	return true
+}
+
+
+// hasMarkdownOrLists detects markdown formatting or numbered lists in the response.
+var numberedListPattern = regexp.MustCompile(`(?m)^\s*\d+[\.\)]\s`)
+
+func hasMarkdownOrLists(response string) bool {
+	// Bold/italic markdown
+	if strings.Contains(response, "**") || strings.Contains(response, "__") {
+		return true
+	}
+	// Headers
+	if strings.Contains(response, "### ") || strings.Contains(response, "## ") {
+		return true
+	}
+	// Numbered lists (1. or 1) at start of line)
+	if numberedListPattern.MatchString(response) {
+		return true
+	}
+	return false
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -1516,6 +1517,12 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 			s.logger.Error("Failed to complete onboarding on Bridge active",
 				zap.Error(err), zap.String("user_id", user.ID.String()))
 		}
+		analytics.TrackEvent(ctx, user.ID.String(), analytics.EventKYCCompleted, map[string]any{
+			"provider": "bridge",
+		})
+		analytics.IdentifyUser(ctx, user.ID.String(), map[string]any{
+			analytics.PropKYCStatus: string(entities.KYCStatusApproved),
+		})
 		s.logger.Info("KYC approved — Bridge active",
 			zap.String("user_id", user.ID.String()))
 	}
