@@ -388,13 +388,21 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 			tokenHash := fmt.Sprintf("%x", h)
 			revoked, err := bl.IsBlacklisted(c.Request.Context(), tokenHash)
 			if err != nil {
-				log.Errorw("Token blacklist check failed — rejecting request", "error", err)
-				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"error":      "Security check unavailable",
-					"request_id": c.GetString("request_id"),
-				})
-				c.Abort()
-				return
+				// Redis unreachable AND no recent local cache for this token.
+				// Default is strict (deny). Set AUTH_BLACKLIST_FAIL_OPEN=true to
+				// prioritize availability over revocation during a Redis outage —
+				// active sessions ride through via the local negative cache either way.
+				if cfg.Security.AuthBlacklistFailOpen {
+					log.Warnw("Token blacklist check failed — failing open (Redis unavailable)", "error", err)
+				} else {
+					log.Errorw("Token blacklist check failed — rejecting request", "error", err)
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"error":      "Security check unavailable",
+						"request_id": c.GetString("request_id"),
+					})
+					c.Abort()
+					return
+				}
 			}
 			if revoked {
 				c.JSON(http.StatusUnauthorized, gin.H{

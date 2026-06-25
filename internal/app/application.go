@@ -30,6 +30,7 @@ import (
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
@@ -206,6 +207,25 @@ func (app *Application) initializeTracing() error {
 
 // initializeWorkers initializes all background workers
 func (app *Application) initializeWorkers() error {
+	// Redis health monitor — alerts on Redis down/recovered (e.g. Upstash budget
+	// suspension) so it pages us instead of becoming user-facing 503s.
+	if app.container != nil && app.container.RedisClient != nil {
+		alerter := alerting.NewTelegramAlerter(app.cfg.TelegramAlerts.BotToken, app.cfg.TelegramAlerts.ChatID)
+		monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 30*time.Second, func(up bool, err error) {
+			if up {
+				if alerter != nil {
+					alerter.SendFatal("✅ Redis recovered", nil)
+				}
+				return
+			}
+			app.log.Error("Redis is DOWN — auth blacklist failing closed, rate limiting degraded", "error", err)
+			if alerter != nil {
+				alerter.SendFatal("🚨 Redis DOWN (check Upstash budget/suspension)", err)
+			}
+		})
+		monitor.Start(context.Background())
+	}
+
 	// Wallet provisioning scheduler
 	if err := app.initializeWalletProvisioning(); err != nil {
 		return fmt.Errorf("failed to initialize wallet provisioning: %w", err)

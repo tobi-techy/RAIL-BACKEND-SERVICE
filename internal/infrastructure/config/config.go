@@ -376,6 +376,7 @@ type SecurityConfig struct {
 	AccessTokenTTL         int    `mapstructure:"access_token_ttl"`         // short-lived access token TTL in seconds
 	RefreshTokenTTL        int    `mapstructure:"refresh_token_ttl"`        // refresh token TTL in seconds
 	EnableTokenBlacklist   bool   `mapstructure:"enable_token_blacklist"`   // enable token revocation
+	AuthBlacklistFailOpen  bool   `mapstructure:"auth_blacklist_fail_open"` // on Redis error, allow (true) vs 503 (false, default). Recently-seen tokens are served from the local cache regardless.
 	CheckPasswordBreaches  bool   `mapstructure:"check_password_breaches"`  // check HaveIBeenPwned
 	CaptchaThreshold       int    `mapstructure:"captcha_threshold"`        // failed attempts before CAPTCHA
 	CaptchaSecretKey       string `mapstructure:"captcha_secret_key"`       // CAPTCHA provider secret key (e.g. reCAPTCHA)
@@ -813,6 +814,13 @@ func setDefaults() {
 	viper.SetDefault("security.lockout_duration", 900) // 15 minutes
 	viper.SetDefault("security.require_mfa", false)
 	viper.SetDefault("security.password_min_length", 8)
+	// Token-blacklist policy on Redis errors. Default STRICT (deny / 503) — the
+	// secure choice for a fintech. Active sessions still ride through brief Redis
+	// blips via the in-process negative cache; only cold tokens are denied during
+	// a Redis outage. Set AUTH_BLACKLIST_FAIL_OPEN=true to prioritize
+	// availability over revocation during an incident.
+	viper.SetDefault("security.auth_blacklist_fail_open", false)
+	viper.BindEnv("security.auth_blacklist_fail_open", "AUTH_BLACKLIST_FAIL_OPEN")
 
 	// Payment/webhook defaults
 	viper.SetDefault("payment.webhook_secret", "")
