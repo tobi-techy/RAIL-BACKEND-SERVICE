@@ -6,14 +6,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	blend "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // fundsTransfererAdapter adapts the ledger service to the FundsTransferer interface.
 type fundsTransfererAdapter struct {
-	ledger *ledger.Service
+	ledger        *ledger.Service
+	blendRouter   *blend.DepositRouter
+	logger        *zap.Logger
 }
 
 func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
@@ -21,7 +25,25 @@ func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userI
 }
 
 func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
-	return a.ledger.TransferStashToSpending(ctx, userID, amount, idempotencyKey)
+	if err := a.ledger.TransferStashToSpending(ctx, userID, amount, idempotencyKey); err != nil {
+		return err
+	}
+	// Async: redeem from Blend so on-chain state reconciles with ledger.
+	// Non-blocking — the user already has their spending balance.
+	if a.blendRouter != nil {
+		go func() {
+			redeemKey := "redeem-" + idempotencyKey
+			if err := a.blendRouter.RedeemStashYield(context.Background(), userID, amount, redeemKey); err != nil {
+				if a.logger != nil {
+					a.logger.Warn("async Blend redemption failed (will retry via worker)",
+						zap.String("user_id", userID.String()),
+						zap.String("amount", amount.StringFixed(6)),
+						zap.Error(err))
+				}
+			}
+		}()
+	}
+	return nil
 }
 
 func (a *fundsTransfererAdapter) TransferBetweenStashes(ctx context.Context, userID uuid.UUID, from, to string, amount decimal.Decimal) error {
