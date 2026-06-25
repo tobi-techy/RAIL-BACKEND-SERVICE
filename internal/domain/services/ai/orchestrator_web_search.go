@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,15 @@ import (
 )
 
 const ToolWebSearch = "web_search"
+
+// descriptionMaxLen caps the snippet length carried into card items.
+const descriptionMaxLen = 160
+
+// priceRegex matches simple money strings like "$240" or "$1,200".
+var priceRegex = regexp.MustCompile(`\$\d[\d,]*(?:\.\d{2})?`)
+
+// ratingRegex matches ratings like "4.6 stars", "4.6/5", or "4.6★".
+var ratingRegex = regexp.MustCompile(`(\d(?:\.\d)?)\s*(?:stars?|/\s*5|★)`)
 
 // searchResultCache is a TTL cache for search results (1hr, global across users).
 type searchResultCache struct {
@@ -77,6 +87,11 @@ func WebSearchTool() infraai.Tool {
 					"type":        "string",
 					"description": "The search query. Be specific: include location, budget, or preferences the user mentioned.",
 				},
+				"category": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"places", "flights", "products", "general"},
+					"description": "Set this when the user is looking for: 'places' (restaurants, cafes, bars, hotels, spots near them), 'flights' (airfare, flying somewhere), or 'products' (buying something, prices, deals). Use 'general' otherwise. This controls how results are rendered for the user.",
+				},
 			},
 			"required":             []string{"query"},
 			"additionalProperties": false,
@@ -84,17 +99,35 @@ func WebSearchTool() infraai.Tool {
 	}
 }
 
-// executeWebSearch runs a Tavily search and returns results with budget context.
+// executeWebSearch runs a Tavily search and returns results with budget context
+// plus a card-ready "display" directive for the Miriam Canvas frontend.
 func (o *Orchestrator) executeWebSearch(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+	if o.webSearcher == nil {
+		return map[string]interface{}{"error": "web search is not available right now"}, nil
+	}
 	query, _ := args["query"].(string)
 	if query == "" {
 		return map[string]interface{}{"error": "query is required"}, nil
 	}
 
-	// Check cache first
+	category, _ := args["category"].(string)
+	category = classifyCategory(query, category)
+
+	// Resolve per-user budget context up front (used for both result + display).
+	var budget string
+	if o.aggregateStats != nil {
+		spend, err := o.aggregateStats.GetAccountBalance(ctx, userID, "spending_balance")
+		if err == nil {
+			budget = "$" + spend.StringFixed(2)
+		}
+	}
+	const budgetNote = "Tell the user which options fit their budget. Flag anything that might be expensive relative to their balance."
+
+	// Check cache first. Cached value omits per-user budget fields, so we
+	// re-attach them (result map + display.data) on a hit.
 	cacheKey := normalizeSearchQuery(query)
 	if cached, ok := searchCache.Get(cacheKey); ok {
-		return cached, nil
+		return withBudget(cached, budget, budgetNote), nil
 	}
 
 	resp, err := o.webSearcher.Search(ctx, infraai.TavilySearchRequest{
@@ -106,7 +139,7 @@ func (o *Orchestrator) executeWebSearch(ctx context.Context, userID uuid.UUID, a
 		return map[string]interface{}{"error": "search failed, try again"}, nil
 	}
 
-	// Build results for the LLM to reference
+	// Build results for the LLM to reference (existing behavior, unchanged).
 	results := make([]map[string]interface{}, 0, len(resp.Results))
 	for _, r := range resp.Results {
 		results = append(results, map[string]interface{}{
@@ -116,7 +149,7 @@ func (o *Orchestrator) executeWebSearch(ctx context.Context, userID uuid.UUID, a
 		})
 	}
 
-	// Attach images if available
+	// Attach images if available (existing behavior, unchanged).
 	images := make([]map[string]interface{}, 0, len(resp.Images))
 	for _, img := range resp.Images {
 		images = append(images, map[string]interface{}{
@@ -125,32 +158,170 @@ func (o *Orchestrator) executeWebSearch(ctx context.Context, userID uuid.UUID, a
 		})
 	}
 
-	// Get user's spend balance for budget context
-	var budget string
-	if o.aggregateStats != nil {
-		spend, err := o.aggregateStats.GetAccountBalance(ctx, userID, "spending_balance")
-		if err == nil {
-			budget = "$" + spend.StringFixed(2)
-		}
+	// Build the card-ready display directive.
+	display := UIDirective{
+		Card:     cardForCategory(category),
+		Intent:   "choose",
+		Title:    titleForCategory(category),
+		Subtitle: query,
+		Data: DisplayData{
+			Query: query,
+			Items: buildDisplayItems(resp, category),
+		},
 	}
 
-	result := map[string]interface{}{
-		"results": results,
-		"images":  images,
-		"count":   len(results),
-	}
-	if budget != "" {
-		result["user_spend_balance"] = budget
-		result["budget_note"] = "Tell the user which options fit their budget. Flag anything that might be expensive relative to their balance."
-	}
-
-	// Cache the result (without budget since that's per-user)
+	// Cache the result WITHOUT per-user budget fields.
 	cacheResult := map[string]interface{}{
 		"results": results,
 		"images":  images,
 		"count":   len(results),
+		"display": display,
 	}
 	searchCache.Set(cacheKey, cacheResult)
 
-	return result, nil
+	// Return a fresh copy with budget re-attached.
+	return withBudget(cacheResult, budget, budgetNote), nil
 }
+
+// withBudget returns a shallow copy of the cached result with per-user budget
+// fields attached to both the result map and the display directive's data.
+func withBudget(cached map[string]interface{}, budget, budgetNote string) map[string]interface{} {
+	out := make(map[string]interface{}, len(cached)+2)
+	for k, v := range cached {
+		out[k] = v
+	}
+	if budget == "" {
+		return out
+	}
+	out["user_spend_balance"] = budget
+	out["budget_note"] = budgetNote
+	if d, ok := out["display"].(UIDirective); ok {
+		d.Data.UserSpendBalance = budget
+		d.Data.BudgetNote = budgetNote
+		out["display"] = d
+	}
+	return out
+}
+
+// classifyCategory normalizes an explicit category or infers one from the query.
+// Returns one of: "places", "flights", "products", "recommendations".
+func classifyCategory(query, explicit string) string {
+	switch strings.ToLower(strings.TrimSpace(explicit)) {
+	case "places":
+		return "places"
+	case "flights":
+		return "flights"
+	case "products":
+		return "products"
+	case "general":
+		return "recommendations"
+	}
+
+	q := strings.ToLower(query)
+	switch {
+	case containsAny(q, "flight", "fly ", "flying", "airfare", "airline", "plane ticket"):
+		return "flights"
+	case containsAny(q, "restaurant", "cafe", "coffee", "bar ", "hotel", "near me", "place to", "spot", "brunch", "dinner", "lunch", "eat"):
+		return "places"
+	case containsAny(q, "buy ", "price", "product", "cheapest", "deal", "discount", "shop"):
+		return "products"
+	default:
+		return "recommendations"
+	}
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// cardForCategory maps a normalized category to a frontend card type.
+func cardForCategory(category string) string {
+	switch category {
+	case "places":
+		return "places"
+	case "flights":
+		return "flights"
+	default: // products, recommendations, general
+		return "recommendations"
+	}
+}
+
+// titleForCategory returns a short headline for the card.
+func titleForCategory(category string) string {
+	switch category {
+	case "places":
+		return "Places near you"
+	case "flights":
+		return "Flight options"
+	case "products":
+		return "Top picks"
+	default:
+		return "Top picks"
+	}
+}
+
+// buildDisplayItems converts Tavily results into card items, matching images by
+// index order and doing best-effort extraction of price/rating/location.
+func buildDisplayItems(resp *infraai.TavilySearchResponse, category string) []DisplayItem {
+	if resp == nil {
+		return []DisplayItem{}
+	}
+	items := make([]DisplayItem, 0, len(resp.Results))
+	for i, r := range resp.Results {
+		item := DisplayItem{
+			Title:       r.Title,
+			URL:         r.URL,
+			Description: trimDescription(r.Content),
+			Price:       extractPrice(r.Content),
+			Rating:      extractRating(r.Content),
+		}
+		if i < len(resp.Images) {
+			item.ImageURL = resp.Images[i].URL
+		}
+		if category == "places" {
+			item.Location = extractLocation(r.Content)
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// trimDescription collapses whitespace and trims a snippet to descriptionMaxLen.
+func trimDescription(content string) string {
+	s := strings.Join(strings.Fields(content), " ")
+	if len(s) <= descriptionMaxLen {
+		return s
+	}
+	return strings.TrimSpace(s[:descriptionMaxLen]) + "…"
+}
+
+// extractPrice does a best-effort scan for a money string; "" if none found.
+func extractPrice(content string) string {
+	return priceRegex.FindString(content)
+}
+
+// extractRating does a best-effort scan for a numeric rating; "" if none found.
+func extractRating(content string) string {
+	m := ratingRegex.FindStringSubmatch(content)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
+}
+
+// extractLocation does a light best-effort scan for an address/area mention.
+// Currently conservative: returns "" unless a clearly address-like pattern is
+// present. Kept simple by design (no external geocoding).
+func extractLocation(content string) string {
+	// Match patterns like "123 Main St" / "45 Broadway Ave".
+	m := locationRegex.FindString(content)
+	return strings.TrimSpace(m)
+}
+
+// locationRegex matches a simple street-address-like fragment.
+var locationRegex = regexp.MustCompile(`\d{1,5}\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Ln|Lane|Dr|Drive)\b`)

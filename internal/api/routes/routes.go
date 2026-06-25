@@ -29,6 +29,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
@@ -1335,6 +1336,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					CheckELHealth(*gin.Context)
 					IssueSignedURL(*gin.Context)
 					HandleToolExecution(*gin.Context)
+					PrepareVoiceAction(*gin.Context)
 					GetProactiveInsight(*gin.Context)
 					HandleServerTool(*gin.Context)
 				}
@@ -1349,6 +1351,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					if el.VoiceID != "" {
 						ttsCfg.VoiceID = el.VoiceID
 					}
+					// Redis-backed voice session rate limiter (holds across replicas).
+					// 10 sessions/user/hour. Nil-safe: if Redis is unavailable the
+					// handler skips the check (fail-open).
+					var voiceSessionLimiter *aiservice.VoiceSessionRateLimiter
+					if container.RedisClient != nil {
+						voiceSessionLimiter = aiservice.NewVoiceSessionRateLimiter(container.RedisClient, 10, container.ZapLog)
+					}
 					voiceHandler = handlers.NewVoiceHandler(
 						el.APIKey,
 						el.AgentID,
@@ -1358,6 +1367,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						container.GetAIOrchestrator(),
 						container.GetUsageService(),
 						container.GetConversationService(),
+						voiceSessionLimiter,
 						container.Config.Server.AllowedOrigins,
 						container.ZapLog,
 						ttsCfg,
@@ -1511,6 +1521,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSessionToken)
 						aiGroup.POST("/voice/signed-url", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSignedURL)
 						aiGroup.POST("/voice/execute-tool", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.HandleToolExecution)
+						aiGroup.POST("/voice/prepare-action", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.PrepareVoiceAction)
 						aiGroup.GET("/voice/proactive-insight", middleware.PerUserRateLimit(30), voiceHandler.GetProactiveInsight)
 						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
 						v1.GET("/ai/voice/session", voiceHandler.HandleSession)

@@ -121,10 +121,10 @@ func (m *mockVoiceUsageTracker) TrackVoice(ctx context.Context, userID uuid.UUID
 }
 
 type mockConvService struct {
-	createFn  func(ctx context.Context, userID uuid.UUID, title string) (*entities.AIConversation, error)
-	recordFn  func(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error
-	updateFn  func(ctx context.Context, convID uuid.UUID, title string) error
-	deleteFn  func(ctx context.Context, userID, convID uuid.UUID) error
+	createFn func(ctx context.Context, userID uuid.UUID, title string) (*entities.AIConversation, error)
+	recordFn func(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error
+	updateFn func(ctx context.Context, convID uuid.UUID, title string) error
+	deleteFn func(ctx context.Context, userID, convID uuid.UUID) error
 }
 
 func (m *mockConvService) CreateConversation(ctx context.Context, userID uuid.UUID, title string) (*entities.AIConversation, error) {
@@ -400,7 +400,7 @@ func TestVoiceIntegration_SessionConstants(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, idleTimeout)
 	assert.Equal(t, 12*time.Second, voiceToolTimeout)
 	assert.Equal(t, 24000, voiceSampleRateHz)
-	assert.Equal(t, 60*time.Second, voiceSessionTicketTTL)
+	assert.Equal(t, 120*time.Second, voiceSessionTicketTTL)
 	assert.Equal(t, 256*1024, maxVoiceFrameBytes)
 	assert.Equal(t, 128*1024, maxVoiceAudioFrameBytes)
 	assert.Equal(t, 128*1024, maxVoiceAudioBytesPerSecond)

@@ -156,9 +156,9 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	start := time.Now()
 
 	analytics.TrackEvent(ctx, userID.String(), analytics.EventAIQuestionAsked, map[string]any{
-		"message_length":    len(message),
-		"conversation_id":   convID.String(),
-		"history_count":     len(history),
+		"message_length":  len(message),
+		"conversation_id": convID.String(),
+		"history_count":   len(history),
 	})
 
 	streamer, ok := o.aiProvider.(ai.StreamProvider)
@@ -256,6 +256,11 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			roundResults = append(roundResults, ToolResult{Name: tc.Name, Result: result})
 			allToolResults = append(allToolResults, ToolResult{Name: tc.Name, Result: result})
 			emit(StreamEvent{Type: "tool_result", Data: map[string]interface{}{"tool": tc.Name}})
+			// Surface any card-ready directive (e.g. web_search places/flights)
+			// so the chat client can render it on the Miriam Canvas, same as voice.
+			if disp, ok := result["display"]; ok && disp != nil {
+				emit(StreamEvent{Type: "ui_directive", Data: disp})
+			}
 		}
 
 		// Build assistant message with tool_calls preserved

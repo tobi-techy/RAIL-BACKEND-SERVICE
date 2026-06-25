@@ -11,6 +11,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // FullUserProfileProvider extends UserProfileProvider with full profile access.
@@ -766,10 +767,35 @@ func (o *Orchestrator) GetProactiveVoiceInsight(ctx context.Context, userID uuid
 	return o.realtimeProactiveInsight(ctx, userID)
 }
 
+const voiceDynVarsKeyPrefix = "voice_dynvars:"
+const voiceDynVarsTTL = 90 * time.Second
+
 // BuildRealtimeDynamicVars returns variables injected into the ElevenLabs agent
 // system prompt via {{variable_name}} placeholders.
 // Also returns locale_style so the voice handler can switch voices per session.
+//
+// The assembled map is cached per-user in Redis for a short TTL to avoid
+// re-running the full parallel fan-out on every signed-URL / session init.
+// Caching is best-effort: any Redis/marshal error falls back to a fresh build.
 func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
+	if o.redis != nil {
+		key := voiceDynVarsKeyPrefix + userID.String()
+		var cached map[string]interface{}
+		if err := o.redis.Get(ctx, key, &cached); err == nil && len(cached) > 0 {
+			return cached
+		}
+		vars := o.buildRealtimeDynamicVars(ctx, userID)
+		// Best-effort store; never fail the call on cache write error.
+		if err := o.redis.Set(ctx, key, vars, voiceDynVarsTTL); err != nil {
+			o.logger.Debug("voice_dynvars: cache store failed", zap.Error(err))
+		}
+		return vars
+	}
+	return o.buildRealtimeDynamicVars(ctx, userID)
+}
+
+// buildRealtimeDynamicVars performs the uncached assembly of dynamic variables.
+func (o *Orchestrator) buildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
 	vars := map[string]interface{}{
 		"user_id":              userID.String(),
 		"user_name":            "there",

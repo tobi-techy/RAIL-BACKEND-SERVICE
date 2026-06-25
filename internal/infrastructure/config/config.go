@@ -109,11 +109,18 @@ type AIConfig struct {
 	AssemblyAI  AssemblyAIConfig  `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
 	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
+	Tavily      TavilyConfig      `mapstructure:"tavily"`
 	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 }
 
 // SupermemoryConfig contains Supermemory API configuration.
 type SupermemoryConfig struct {
+	APIKey string `mapstructure:"api_key"`
+}
+
+// TavilyConfig contains Tavily web search API configuration (powers web_search:
+// places, flights, products, recommendations).
+type TavilyConfig struct {
 	APIKey string `mapstructure:"api_key"`
 }
 
@@ -905,6 +912,7 @@ func setDefaults() {
 	viper.BindEnv("ai.elevenlabs.similarity_boost", "ELEVENLABS_SIMILARITY_BOOST")
 	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")
 	viper.BindEnv("ai.elevenlabs.use_speaker_boost", "ELEVENLABS_USE_SPEAKER_BOOST")
+	viper.BindEnv("ai.tavily.api_key", "TAVILY_API_KEY")
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")

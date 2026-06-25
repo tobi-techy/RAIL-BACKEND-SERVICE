@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -219,6 +220,13 @@ func (o *Orchestrator) SetVoiceDailyLimiter(l *VoiceDailyLimiter) {
 	o.voiceLimiter = l
 }
 
+// SetRedisCache wires a Redis client used for short-TTL caching of voice
+// hot-path reads (realtime dynamic vars, cost-ceiling). Best-effort only —
+// every cached call falls back to direct computation if Redis is unavailable.
+func (o *Orchestrator) SetRedisCache(redis cache.RedisClient) {
+	o.redis = redis
+}
+
 // checkUserCanTransact verifies the user is active and not frozen before financial actions.
 func (o *Orchestrator) checkUserCanTransact(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.accountChecker == nil {
@@ -351,12 +359,10 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 	if amountF > 500 {
 		return map[string]interface{}{"error": "For safety, single transfers are capped at $500. Want me to move $500 now and you can do the rest from the app? Or I can split it into multiple moves."}, nil
 	}
-	if amountF > 100 {
-		return map[string]interface{}{
-			"requires_passcode": true,
-			"message":           "Transfers over $100 need extra verification. I can split this into smaller moves, or you can do it in one go from the app with biometric confirmation. What works?",
-		}, nil
-	}
+	// Transfers up to the $500 cap stage a confirm card; the confirm endpoint
+	// enforces the passcode/biometric step-up for all fund-moving actions
+	// (see ConfirmAction + IsFundMovingAction), so the card itself is the
+	// verification — no separate >$100 refusal needed.
 
 	amount := decimal.NewFromFloat(amountF)
 
