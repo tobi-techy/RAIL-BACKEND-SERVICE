@@ -22,8 +22,8 @@ import (
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
+	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
@@ -185,10 +185,13 @@ func (app *Application) initializeTracing() error {
 	collectorURL := getEnvOrDefault("OTEL_COLLECTOR_URL", "")
 	tracingEnabled := getBoolEnvOrDefault("OTEL_TRACING_ENABLED", collectorURL != "" && app.cfg.Environment != "test")
 	tracingConfig := tracing.Config{
-		Enabled:      tracingEnabled,
-		CollectorURL: collectorURL,
-		Environment:  app.cfg.Environment,
-		SampleRate:   getSampleRate(app.cfg.Environment),
+		Enabled:           tracingEnabled,
+		CollectorURL:      collectorURL,
+		Environment:       app.cfg.Environment,
+		SampleRate:        getSampleRate(app.cfg.Environment),
+		LangfusePublicKey: app.cfg.AI.Langfuse.PublicKey,
+		LangfuseSecretKey: app.cfg.AI.Langfuse.SecretKey,
+		LangfuseHost:      app.cfg.AI.Langfuse.Host,
 	}
 
 	tracingShutdown, err := tracing.InitTracer(context.Background(), tracingConfig, app.log.Zap())
@@ -552,7 +555,6 @@ func (app *Application) initializeWorkers() error {
 			app.log.Info("Growth engine worker stopped")
 		}()
 	}
-
 
 	// Statement processor worker: processes uploaded bank statement PDFs via multi-strategy pipeline
 	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
@@ -1499,40 +1501,40 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 		} else if len(orphans) > 0 {
 			app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
 			for _, u := range orphans {
-		// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
-		// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
-		// claimed or completed the upload between the fetch and this update.
-		reset, err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID)
-		if err != nil {
-			app.log.Warnw("failed to reset stuck processing upload",
-				"upload_id", u.ID.String(),
-				"error", err,
-			)
-			continue
-		}
-		if u.Status == entities.StatementStatusProcessing && !reset {
-			// Upload was processing but ResetToPending didn't match — another worker already
-			// completed it. Skip enqueuing a duplicate job.
-			continue
-		}
+				// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
+				// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
+				// claimed or completed the upload between the fetch and this update.
+				reset, err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID)
+				if err != nil {
+					app.log.Warnw("failed to reset stuck processing upload",
+						"upload_id", u.ID.String(),
+						"error", err,
+					)
+					continue
+				}
+				if u.Status == entities.StatementStatusProcessing && !reset {
+					// Upload was processing but ResetToPending didn't match — another worker already
+					// completed it. Skip enqueuing a duplicate job.
+					continue
+				}
 
-		job := &jobqueue.Job{
-			ID:       uuid.New().String(),
-			Type:     statement_processor.JobType,
-			Priority: jobqueue.PriorityNormal,
-			Payload: map[string]interface{}{
-				"upload_id": u.ID.String(),
-				"user_id":   u.UserID.String(),
-				"bank_name": u.BankName,
-			},
-		}
-		if err := app.container.JobQueueInstance.Enqueue(ctx, job); err != nil {
-			app.log.Warnw("failed to re-enqueue orphaned statement",
-				"upload_id", u.ID.String(),
-				"error", err,
-			)
-		}
-	}
+				job := &jobqueue.Job{
+					ID:       uuid.New().String(),
+					Type:     statement_processor.JobType,
+					Priority: jobqueue.PriorityNormal,
+					Payload: map[string]interface{}{
+						"upload_id": u.ID.String(),
+						"user_id":   u.UserID.String(),
+						"bank_name": u.BankName,
+					},
+				}
+				if err := app.container.JobQueueInstance.Enqueue(ctx, job); err != nil {
+					app.log.Warnw("failed to re-enqueue orphaned statement",
+						"upload_id", u.ID.String(),
+						"error", err,
+					)
+				}
+			}
 		}
 
 		select {
