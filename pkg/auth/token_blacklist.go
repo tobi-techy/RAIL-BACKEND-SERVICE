@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -11,16 +12,55 @@ import (
 const (
 	blacklistPrefix = "token:blacklist:"
 	refreshPrefix   = "token:refresh:"
+
+	// negCacheTTL is how long a "not blacklisted" result is trusted locally
+	// before re-checking Redis. This collapses the per-request Redis Exists into
+	// roughly one call per token per window — a large Upstash cost reduction for
+	// the frontend's frequent polling. Tradeoff: a freshly-revoked token can
+	// remain valid for up to this window. Keep it short.
+	negCacheTTL     = 15 * time.Second
+	negCacheMaxSize = 50000 // purge threshold to bound memory
 )
 
-// TokenBlacklist manages revoked tokens using Redis
+// TokenBlacklist manages revoked tokens using Redis, with a short in-process
+// negative cache to cut Redis traffic and stay available during Redis blips.
 type TokenBlacklist struct {
 	redis *redis.Client
+
+	mu       sync.RWMutex
+	negCache map[string]int64 // tokenHash -> unix-nano expiry of the "not blacklisted" result
 }
 
 // NewTokenBlacklist creates a new token blacklist service
 func NewTokenBlacklist(redisClient *redis.Client) *TokenBlacklist {
-	return &TokenBlacklist{redis: redisClient}
+	return &TokenBlacklist{redis: redisClient, negCache: make(map[string]int64)}
+}
+
+func (b *TokenBlacklist) negCacheGet(tokenHash string) bool {
+	b.mu.RLock()
+	exp, ok := b.negCache[tokenHash]
+	b.mu.RUnlock()
+	return ok && time.Now().UnixNano() < exp
+}
+
+func (b *TokenBlacklist) negCachePut(tokenHash string) {
+	b.mu.Lock()
+	if len(b.negCache) >= negCacheMaxSize {
+		now := time.Now().UnixNano()
+		for k, exp := range b.negCache {
+			if now >= exp {
+				delete(b.negCache, k)
+			}
+		}
+	}
+	b.negCache[tokenHash] = time.Now().Add(negCacheTTL).UnixNano()
+	b.mu.Unlock()
+}
+
+func (b *TokenBlacklist) negCacheDel(tokenHash string) {
+	b.mu.Lock()
+	delete(b.negCache, tokenHash)
+	b.mu.Unlock()
 }
 
 // Blacklist adds a token to the blacklist until its expiration
@@ -31,17 +71,38 @@ func (b *TokenBlacklist) Blacklist(ctx context.Context, tokenHash string, expire
 	}
 
 	key := blacklistPrefix + tokenHash
-	return b.redis.Set(ctx, key, "1", ttl).Err()
+	if err := b.redis.Set(ctx, key, "1", ttl).Err(); err != nil {
+		return err
+	}
+	b.negCacheDel(tokenHash) // a now-revoked token must not be served from the negative cache
+	return nil
 }
 
-// IsBlacklisted checks if a token is blacklisted
+// IsBlacklisted checks if a token is blacklisted. It first consults a short
+// in-process negative cache (skips Redis entirely on a hit) and, if Redis is
+// unreachable, falls back to a recent negative result so a Redis blip doesn't
+// take down auth.
 func (b *TokenBlacklist) IsBlacklisted(ctx context.Context, tokenHash string) (bool, error) {
+	if b.negCacheGet(tokenHash) {
+		return false, nil
+	}
+
 	key := blacklistPrefix + tokenHash
 	exists, err := b.redis.Exists(ctx, key).Result()
 	if err != nil {
+		// Redis unreachable: trust a recent negative if we have one; otherwise
+		// surface the error so the caller can apply its fail-open/closed policy.
+		if b.negCacheGet(tokenHash) {
+			return false, nil
+		}
 		return false, fmt.Errorf("failed to check blacklist: %w", err)
 	}
-	return exists > 0, nil
+	if exists > 0 {
+		b.negCacheDel(tokenHash)
+		return true, nil
+	}
+	b.negCachePut(tokenHash)
+	return false, nil
 }
 
 // BlacklistUserTokens blacklists all tokens for a user (logout all sessions)
@@ -73,7 +134,7 @@ func (b *TokenBlacklist) StoreRefreshToken(ctx context.Context, tokenHash, userI
 // ValidateRefreshToken validates and invalidates a refresh token (one-time use)
 func (b *TokenBlacklist) ValidateRefreshToken(ctx context.Context, tokenHash string) (string, error) {
 	key := refreshPrefix + tokenHash
-	
+
 	// Get and delete atomically
 	userID, err := b.redis.GetDel(ctx, key).Result()
 	if err == redis.Nil {
@@ -82,7 +143,7 @@ func (b *TokenBlacklist) ValidateRefreshToken(ctx context.Context, tokenHash str
 	if err != nil {
 		return "", fmt.Errorf("failed to validate refresh token: %w", err)
 	}
-	
+
 	return userID, nil
 }
 
