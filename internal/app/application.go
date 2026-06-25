@@ -22,14 +22,15 @@ import (
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
+	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
@@ -203,6 +204,25 @@ func (app *Application) initializeTracing() error {
 
 // initializeWorkers initializes all background workers
 func (app *Application) initializeWorkers() error {
+	// Redis health monitor — alerts on Redis down/recovered (e.g. Upstash budget
+	// suspension) so it pages us instead of becoming user-facing 503s.
+	if app.container != nil && app.container.RedisClient != nil {
+		alerter := alerting.NewTelegramAlerter(app.cfg.TelegramAlerts.BotToken, app.cfg.TelegramAlerts.ChatID)
+		monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 30*time.Second, func(up bool, err error) {
+			if up {
+				if alerter != nil {
+					alerter.SendFatal("✅ Redis recovered", nil)
+				}
+				return
+			}
+			app.log.Error("Redis is DOWN — auth blacklist failing closed, rate limiting degraded", "error", err)
+			if alerter != nil {
+				alerter.SendFatal("🚨 Redis DOWN (check Upstash budget/suspension)", err)
+			}
+		})
+		monitor.Start(context.Background())
+	}
+
 	// Wallet provisioning scheduler
 	if err := app.initializeWalletProvisioning(); err != nil {
 		return fmt.Errorf("failed to initialize wallet provisioning: %w", err)
@@ -552,7 +572,6 @@ func (app *Application) initializeWorkers() error {
 			app.log.Info("Growth engine worker stopped")
 		}()
 	}
-
 
 	// Statement processor worker: processes uploaded bank statement PDFs via multi-strategy pipeline
 	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
@@ -1499,40 +1518,40 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 		} else if len(orphans) > 0 {
 			app.log.Infow("reconciling orphaned statement uploads", "count", len(orphans))
 			for _, u := range orphans {
-		// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
-		// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
-		// claimed or completed the upload between the fetch and this update.
-		reset, err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID)
-		if err != nil {
-			app.log.Warnw("failed to reset stuck processing upload",
-				"upload_id", u.ID.String(),
-				"error", err,
-			)
-			continue
-		}
-		if u.Status == entities.StatementStatusProcessing && !reset {
-			// Upload was processing but ResetToPending didn't match — another worker already
-			// completed it. Skip enqueuing a duplicate job.
-			continue
-		}
+				// Atomically reset stuck processing uploads back to pending so AtomicClaim can pick them up.
+				// The SQL WHERE status = 'processing' guard ensures we don't race with a worker that already
+				// claimed or completed the upload between the fetch and this update.
+				reset, err := app.container.BankStatementRepo.ResetToPending(ctx, u.ID)
+				if err != nil {
+					app.log.Warnw("failed to reset stuck processing upload",
+						"upload_id", u.ID.String(),
+						"error", err,
+					)
+					continue
+				}
+				if u.Status == entities.StatementStatusProcessing && !reset {
+					// Upload was processing but ResetToPending didn't match — another worker already
+					// completed it. Skip enqueuing a duplicate job.
+					continue
+				}
 
-		job := &jobqueue.Job{
-			ID:       uuid.New().String(),
-			Type:     statement_processor.JobType,
-			Priority: jobqueue.PriorityNormal,
-			Payload: map[string]interface{}{
-				"upload_id": u.ID.String(),
-				"user_id":   u.UserID.String(),
-				"bank_name": u.BankName,
-			},
-		}
-		if err := app.container.JobQueueInstance.Enqueue(ctx, job); err != nil {
-			app.log.Warnw("failed to re-enqueue orphaned statement",
-				"upload_id", u.ID.String(),
-				"error", err,
-			)
-		}
-	}
+				job := &jobqueue.Job{
+					ID:       uuid.New().String(),
+					Type:     statement_processor.JobType,
+					Priority: jobqueue.PriorityNormal,
+					Payload: map[string]interface{}{
+						"upload_id": u.ID.String(),
+						"user_id":   u.UserID.String(),
+						"bank_name": u.BankName,
+					},
+				}
+				if err := app.container.JobQueueInstance.Enqueue(ctx, job); err != nil {
+					app.log.Warnw("failed to re-enqueue orphaned statement",
+						"upload_id", u.ID.String(),
+						"error", err,
+					)
+				}
+			}
 		}
 
 		select {
