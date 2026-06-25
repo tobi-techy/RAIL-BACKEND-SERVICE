@@ -1025,6 +1025,11 @@ func (s *Service) observeStashRaid(userID uuid.UUID, amount decimal.Decimal, ref
 		return
 	}
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("stash raid observer panicked", "user_id", userID.String(), "panic", r)
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := s.stashRaids.EvaluateStashRaid(ctx, userID, amount, reference); err != nil {
