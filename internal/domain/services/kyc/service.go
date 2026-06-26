@@ -2297,7 +2297,7 @@ func (s *Service) buildBridgeKYCRequest(req *entities.KYCDigitSessionRequest, pr
 		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyPaymentsUSD,
 		AccountPurpose:             req.AccountPurpose,
 		AccountPurposeOther:        req.AccountPurposeOther,
-		MostRecentOccupation:       req.MostRecentOccupation,
+		MostRecentOccupation:       normalizeBridgeOccupation(req.MostRecentOccupation),
 		ActingAsIntermediary:       req.ActingAsIntermediary,
 	}
 
@@ -2316,6 +2316,20 @@ func normalizeBridgeSourceOfFunds(value string) string {
 	default:
 		return value
 	}
+}
+
+// normalizeBridgeOccupation ensures the occupation code is in Bridge's valid ISCO-08 list.
+// Falls back to 999999 (unspecified) if the value isn't a recognized 6-digit code.
+func normalizeBridgeOccupation(value string) string {
+	if value == "" {
+		return "999999"
+	}
+	// Bridge expects 6-character ISCO codes (digits and X placeholders)
+	if len(value) == 6 {
+		return value
+	}
+	// If it's a description string or invalid format, use generic code
+	return "999999"
 }
 
 // VerifyDiditWebhookSignature validates Didit webhook X-Signature-V2 + X-Timestamp.
