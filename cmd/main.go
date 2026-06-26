@@ -75,6 +75,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// One-off stranded-funds recovery, activated by env vars, for deployments without a
+	// shell. No-op unless BLEND_RECOVER_* are set. Runs in the background so it never blocks
+	// startup/health checks.
+	go maybeRunBootRecovery()
+
 	if err := application.Start(); err != nil {
 		sendFatalAlert("Failed to start application", err)
 		fmt.Fprintf(os.Stderr, "Failed to start application: %v\n", err)
@@ -238,24 +243,10 @@ func runRecoverFunds(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
 	}
-
-	cc, err := circleadapter.NewHTTPClient(circleadapter.Config{
-		APIKey:       cfg.Circle.APIKey,
-		BaseURL:      cfg.Circle.BaseURL,
-		Environment:  cfg.Circle.Environment,
-		EntitySecret: cfg.Circle.EntitySecret,
-		PublicKeyPEM: cfg.Circle.PublicKeyPEM,
-	}, logger)
+	cc, cr, err := buildRecoveryClients(cfg, logger)
 	if err != nil {
-		return fmt.Errorf("circle client: %w", err)
+		return err
 	}
-	cr := chainrails.NewClient(chainrails.Config{
-		APIKey:           cfg.ChainRails.APIKey,
-		WebhookSecret:    cfg.ChainRails.WebhookSecret,
-		BaseURL:          cfg.ChainRails.BaseURL,
-		DestinationChain: cfg.ChainRails.DestinationChain,
-		SettlementToken:  cfg.ChainRails.SettlementToken,
-	}, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -266,4 +257,91 @@ func runRecoverFunds(args []string) error {
 		DestAmount:   amount,
 		Confirm:      *confirm,
 	}, logger, os.Stdout)
+}
+
+// buildRecoveryClients constructs the Circle + ChainRails clients used by the recovery flow
+// from the loaded app config (so they inherit the deployment's credentials).
+func buildRecoveryClients(cfg *config.Config, logger *zap.Logger) (*circleadapter.HTTPClient, *chainrails.Client, error) {
+	if strings.TrimSpace(cfg.Circle.APIKey) == "" {
+		return nil, nil, fmt.Errorf("CIRCLE_API_KEY is not configured")
+	}
+	if strings.TrimSpace(cfg.ChainRails.APIKey) == "" {
+		return nil, nil, fmt.Errorf("CHAINRAILS_API_KEY is not configured")
+	}
+	cc, err := circleadapter.NewHTTPClient(circleadapter.Config{
+		APIKey:       cfg.Circle.APIKey,
+		BaseURL:      cfg.Circle.BaseURL,
+		Environment:  cfg.Circle.Environment,
+		EntitySecret: cfg.Circle.EntitySecret,
+		PublicKeyPEM: cfg.Circle.PublicKeyPEM,
+	}, logger)
+	if err != nil {
+		return nil, nil, fmt.Errorf("circle client: %w", err)
+	}
+	cr := chainrails.NewClient(chainrails.Config{
+		APIKey:           cfg.ChainRails.APIKey,
+		WebhookSecret:    cfg.ChainRails.WebhookSecret,
+		BaseURL:          cfg.ChainRails.BaseURL,
+		DestinationChain: cfg.ChainRails.DestinationChain,
+		SettlementToken:  cfg.ChainRails.SettlementToken,
+	}, logger)
+	return cc, cr, nil
+}
+
+// maybeRunBootRecovery runs the stuck-funds recovery on startup when activated by env vars,
+// for deployments where there is no shell to run `recover-funds` manually. It is a no-op
+// unless BLEND_RECOVER_WALLET, BLEND_RECOVER_TO and BLEND_RECOVER_AMOUNT are all set. It is
+// DRY-RUN (prints the quote, moves nothing) unless BLEND_RECOVER_CONFIRM=true. Output goes to
+// stdout so it shows up in the deployment's logs. Safe to leave configured across restarts:
+// the Circle funding transfer uses a stable idempotency key, so a repeat boot can't double-send.
+//
+//	BLEND_RECOVER_WALLET   = Circle Base wallet id holding the stranded USDC
+//	BLEND_RECOVER_TO       = destination Solana address
+//	BLEND_RECOVER_AMOUNT   = USDC to receive on Solana (e.g. 4.0)
+//	BLEND_RECOVER_CONFIRM  = "true" to actually move funds (else dry-run)
+func maybeRunBootRecovery() {
+	wallet := strings.TrimSpace(os.Getenv("BLEND_RECOVER_WALLET"))
+	to := strings.TrimSpace(os.Getenv("BLEND_RECOVER_TO"))
+	amountS := strings.TrimSpace(os.Getenv("BLEND_RECOVER_AMOUNT"))
+	if wallet == "" || to == "" || amountS == "" {
+		return // not activated
+	}
+	confirm := strings.EqualFold(strings.TrimSpace(os.Getenv("BLEND_RECOVER_CONFIRM")), "true")
+
+	fmt.Printf("\n========== BLEND BOOT RECOVERY ACTIVATED (confirm=%v) ==========\n", confirm)
+	amount, err := decimal.NewFromString(amountS)
+	if err != nil || amount.LessThanOrEqual(decimal.Zero) {
+		fmt.Printf("BLEND BOOT RECOVERY: invalid BLEND_RECOVER_AMOUNT %q\n", amountS)
+		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Printf("BLEND BOOT RECOVERY: load config failed: %v\n", err)
+		return
+	}
+	logger, _ := zap.NewProduction()
+	cc, cr, err := buildRecoveryClients(cfg, logger)
+	if err != nil {
+		fmt.Printf("BLEND BOOT RECOVERY: %v\n", err)
+		return
+	}
+	if confirm {
+		if strings.TrimSpace(cfg.Circle.EntitySecret) == "" || strings.TrimSpace(cfg.Circle.PublicKeyPEM) == "" {
+			fmt.Println("BLEND BOOT RECOVERY: CIRCLE_ENTITY_SECRET and CIRCLE_PUBLIC_KEY_PEM are required to move funds (confirm=true)")
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+	if err := recovery.RecoverStuckBaseToSolana(ctx, cc, cr, recovery.Params{
+		WalletID:     wallet,
+		ToSolanaAddr: to,
+		DestAmount:   amount,
+		Confirm:      confirm,
+	}, logger, os.Stdout); err != nil {
+		fmt.Printf("========== BLEND BOOT RECOVERY FAILED: %v ==========\n", err)
+		return
+	}
+	fmt.Println("========== BLEND BOOT RECOVERY COMPLETE ==========")
 }
