@@ -171,16 +171,23 @@ func weiValue(s string) (*big.Int, error) {
 	if s == "" || s == "0x" {
 		return big.NewInt(0), nil
 	}
+	var v *big.Int
+	var ok bool
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		v, ok := new(big.Int).SetString(s[2:], 16)
-		if !ok {
+		if v, ok = new(big.Int).SetString(s[2:], 16); !ok {
 			return nil, fmt.Errorf("invalid hex value %q", s)
 		}
-		return v, nil
-	}
-	v, ok := new(big.Int).SetString(s, 10)
-	if !ok {
+	} else if v, ok = new(big.Int).SetString(s, 10); !ok {
 		return nil, fmt.Errorf("invalid decimal value %q", s)
+	}
+	// A tx value must be a non-negative uint256; reject anything else before it reaches
+	// the 32-byte word encoder (big.Int.Bytes() drops the sign, so a negative would be
+	// silently mis-encoded otherwise).
+	if v.Sign() < 0 {
+		return nil, fmt.Errorf("negative value %q not allowed", s)
+	}
+	if v.BitLen() > 256 {
+		return nil, fmt.Errorf("value %q exceeds uint256 range", s)
 	}
 	return v, nil
 }

@@ -257,6 +257,18 @@ func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, pl
 		return nil, fmt.Errorf("blend: refusing Safe multisend without on-chain verification (verifier not configured)")
 	}
 
+	// Validate every inner step target against the same allowlist the direct path uses,
+	// so a poisoned withdraw quote can't make the Safe call an arbitrary contract. (An
+	// empty allowlist allows all — dev only — matching Execute's behavior.)
+	for i, step := range plan.Steps {
+		if !isHexAddress(step.To) {
+			return nil, fmt.Errorf("blend: multisend step %d: invalid `to` address %q", i, step.To)
+		}
+		if !e.allowlist.Allows(step.To) {
+			return nil, fmt.Errorf("blend: multisend step %d: contract %s not in allowlist", i, step.To)
+		}
+	}
+
 	multiSendData, err := encodeMultiSendData(plan.Steps)
 	if err != nil {
 		return nil, fmt.Errorf("blend: encode multisend: %w", err)
@@ -293,11 +305,17 @@ func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, pl
 }
 
 // multisendDigest is a stable digest of all steps, so retries of the same withdraw batch
-// reuse the same Circle idempotency key instead of re-broadcasting.
+// reuse the same Circle idempotency key instead of re-broadcasting. The call/delegatecall
+// operation is part of the digest so a plan that differs only in operation type yields a
+// different key.
 func multisendDigest(steps []ActionStep) string {
 	parts := make([]string, 0, len(steps))
 	for _, s := range steps {
-		parts = append(parts, txDigest(s))
+		op := "call"
+		if s.IsDelegateCall {
+			op = "delegatecall"
+		}
+		parts = append(parts, op+":"+txDigest(s))
 	}
 	return strings.Join(parts, ";")
 }
@@ -349,6 +367,21 @@ type rawWithdrawCalldata struct {
 func ParseActionPlan(raw json.RawMessage) (*ActionPlan, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("blend payload is empty")
+	}
+
+	// If the payload is already a normalized ActionPlan (carries an explicit deployType),
+	// honor it first so a multisend plan can never be misrouted to direct execution.
+	var typed struct {
+		DeployType string       `json:"deployType"`
+		Steps      []ActionStep `json:"steps"`
+	}
+	if err := json.Unmarshal(raw, &typed); err == nil && len(typed.Steps) > 0 {
+		switch typed.DeployType {
+		case deployMultisend:
+			return &ActionPlan{DeployType: deployMultisend, Steps: typed.Steps}, nil
+		case deployDirect:
+			return &ActionPlan{DeployType: deployDirect, Steps: typed.Steps}, nil
+		}
 	}
 
 	// Withdraw: distinguished by the `payloads` array of per-chain step lists.

@@ -196,6 +196,40 @@ func TestParseActionPlan_Unrecognized(t *testing.T) {
 	}
 }
 
+func TestParseActionPlan_HonorsExplicitDeployType(t *testing.T) {
+	// A normalized payload carrying deployType=multisend with top-level steps must NOT be
+	// misrouted to direct execution.
+	raw := json.RawMessage(`{"deployType":"multisend","steps":[{"to":"0xaa","data":"0x01"}]}`)
+	plan, err := ParseActionPlan(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.DeployType != deployMultisend {
+		t.Fatalf("deployType = %q, want multisend", plan.DeployType)
+	}
+}
+
+func TestWeiValue_RejectsNegativeAndOverflow(t *testing.T) {
+	if _, err := weiValue("-1"); err == nil {
+		t.Fatal("expected error for negative value")
+	}
+	// 2^256 (one past max uint256)
+	if _, err := weiValue("115792089237316195423570985008687907853269984665640564039457584007913129639936"); err == nil {
+		t.Fatal("expected error for value exceeding uint256")
+	}
+	if v, err := weiValue("0x0"); err != nil || v.Sign() != 0 {
+		t.Fatalf("0x0 should parse to zero, got %v err=%v", v, err)
+	}
+}
+
+func TestMultisendDigest_OperationMatters(t *testing.T) {
+	a := []ActionStep{{To: "0xaa", Data: "0x01", Value: "0"}}
+	b := []ActionStep{{To: "0xaa", Data: "0x01", Value: "0", IsDelegateCall: true}}
+	if multisendDigest(a) == multisendDigest(b) {
+		t.Fatal("digest must differ when call vs delegatecall differs")
+	}
+}
+
 // bigIntView reads a 32-byte big-endian word as a uint64 (low 8 bytes), for assertions.
 type bigIntView []byte
 

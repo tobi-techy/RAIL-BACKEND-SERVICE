@@ -28,6 +28,9 @@ func runRecoverFunds(args []string) error {
 	amountS := fs.String("amount", "", "USDC amount to receive on Solana (e.g. 4.0); ChainRails fees are added on top")
 	confirm := fs.Bool("confirm", false, "actually move funds (default: dry-run)")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil // -h/--help is a clean exit, not a failure
+		}
 		return err
 	}
 	if *walletID == "" || *toAddr == "" || *amountS == "" {

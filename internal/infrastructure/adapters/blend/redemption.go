@@ -282,7 +282,7 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 		if err == nil {
 			switch session.Status {
 			case IntentStatusSettled:
-				return r.finalizeRedemption(ctx, red, amount, session)
+				return r.finalizeRedemption(ctx, acct, red, amount, session)
 			case IntentStatusFailed, IntentStatusCancelled:
 				msg := session.ErrorMessage
 				if msg == "" {
@@ -308,8 +308,26 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 }
 
 // finalizeRedemption decrements positions FIFO and marks the redemption complete,
-// atomically.
-func (r *DepositRouter) finalizeRedemption(ctx context.Context, red *redemption, amount decimal.Decimal, session *Session) error {
+// atomically — but only after confirming the redeemed USDC actually landed in the user's
+// EOA on-chain. Blend reporting SETTLED is necessary but not sufficient: the withdrawal
+// pipeline spends these funds immediately, so we must not mark success unless they are
+// truly present and spendable in the wallet.
+func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
+	// On-chain proof-of-arrival: the EOA must hold at least the redeemed amount (read via
+	// includeAll, so bridge/contract-delivered funds are seen). If not, do NOT finalize —
+	// return an error so the redemption stays in-flight and the caller/worker retries
+	// rather than letting the withdrawal spend funds that aren't there.
+	if acct != nil && acct.CircleWalletID != "" {
+		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+		if balErr != nil {
+			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
+		}
+		if have.LessThan(amount.Truncate(6)) {
+			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s holds %s < %s USDC; not finalizing",
+				red.ID, acct.CircleWalletID, have.StringFixed(6), amount.Truncate(6).StringFixed(6))
+		}
+	}
+
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("blend: begin redemption finalize tx: %w", err)

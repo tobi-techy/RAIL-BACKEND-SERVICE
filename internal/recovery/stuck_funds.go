@@ -58,6 +58,11 @@ func RecoverStuckBaseToSolana(ctx context.Context, cc *circle.HTTPClient, cr *ch
 	if err != nil {
 		return fmt.Errorf("get wallet: %w", err)
 	}
+	// This flow is hard-coded to bridge FROM Base (sourceChain). Refuse a non-Base wallet
+	// so we never construct a Base intent against funds that live on another chain.
+	if !strings.EqualFold(strings.TrimSpace(string(wallet.Blockchain)), "BASE") {
+		return fmt.Errorf("wallet %s is on %s, but recovery bridges from Base — refusing", p.WalletID, wallet.Blockchain)
+	}
 	tokenID, balance, err := onchainUSDC(ctx, cc, p.WalletID)
 	if err != nil {
 		return err
@@ -85,13 +90,17 @@ func RecoverStuckBaseToSolana(ctx context.Context, cc *circle.HTTPClient, cr *ch
 		return fmt.Errorf("chainrails create intent: %w", err)
 	}
 
+	// Base USDC has 6 decimals; don't trust an unexpected scale from the intent response.
+	if intent.AssetTokenDecimals != 6 {
+		return fmt.Errorf("unexpected asset token decimals %d (expected 6 for Base USDC); refusing to scale funding amount", intent.AssetTokenDecimals)
+	}
 	fundAmount := decimal.Zero
-	if raw, ok := new(big.Int).SetString(strings.TrimSpace(intent.TotalAmountInAssetToken), 10); ok && intent.AssetTokenDecimals > 0 {
-		fundAmount = decimal.NewFromBigInt(raw, -int32(intent.AssetTokenDecimals))
+	if raw, ok := new(big.Int).SetString(strings.TrimSpace(intent.TotalAmountInAssetToken), 10); ok {
+		fundAmount = decimal.NewFromBigInt(raw, -6)
 	}
 	if !fundAmount.GreaterThan(decimal.Zero) {
-		return fmt.Errorf("chainrails returned no/invalid funding amount (total_amount_in_asset_token=%q, decimals=%d)",
-			intent.TotalAmountInAssetToken, intent.AssetTokenDecimals)
+		return fmt.Errorf("chainrails returned no/invalid funding amount (total_amount_in_asset_token=%q)",
+			intent.TotalAmountInAssetToken)
 	}
 
 	fmt.Fprintf(out, "ChainRails intent\n  id=%d  intent_address=%s\n  recipient(Solana)=%s\n  receive ≈ %s USDC, fund (send to intent) = %s USDC, fees ≈ $%s\n\n",

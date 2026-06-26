@@ -91,8 +91,16 @@ func probeWallet(ctx context.Context, client *circle.HTTPClient, rpcURL, usdc, w
 	fmt.Printf("  address=%s  chain=%s  state=%s  accountType=%s\n",
 		wallet.Address, wallet.Blockchain, wallet.State, wallet.AccountType)
 
-	indexed := usdcFrom(client.GetTokenBalance(ctx, walletID))
-	onchainAPI := usdcFrom(client.GetTokenBalanceOnchain(ctx, walletID))
+	indexedBal, idxErr := client.GetTokenBalance(ctx, walletID)
+	onchainBal, ocErr := client.GetTokenBalanceOnchain(ctx, walletID)
+	if idxErr != nil {
+		fmt.Printf("  ! indexed balance read failed: %v\n", idxErr)
+	}
+	if ocErr != nil {
+		fmt.Printf("  ! includeAll balance read failed: %v\n", ocErr)
+	}
+	indexed := usdcFrom(indexedBal, idxErr)
+	onchainAPI := usdcFrom(onchainBal, ocErr)
 	chain, chainErr := balanceOfUSDC(ctx, rpcURL, usdc, wallet.Address)
 
 	fmt.Printf("\n  1. Circle indexed balance (GET /balances)             : %s USDC\n", fmtAmt(indexed))
