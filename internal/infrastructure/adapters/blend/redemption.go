@@ -332,11 +332,6 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 // pipeline spends these funds immediately, so we must not mark success unless they are
 // truly present and spendable in the wallet.
 func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
-	required := amount.Truncate(6)
-	if red.PreRedeemBalance.Valid {
-		required = red.PreRedeemBalance.Decimal.Add(amount.Truncate(6))
-	}
-
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("blend: begin redemption finalize tx: %w", err)
@@ -349,24 +344,38 @@ func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserA
 		return fmt.Errorf("blend: advisory lock for redemption finalize: %w", err)
 	}
 
-	// On-chain proof-of-arrival: require the EOA balance to have RISEN by this redemption's
-	// amount (have >= pre_redeem_balance + amount), read via includeAll so bridge-delivered
-	// funds are seen. Stronger than "have >= amount" — each concurrent redemption has its own
-	// pre-snapshot, so they can't all settle against the same funds; pre-snapshot NULL (rows
-	// predating the column) falls back to the presence check.
-	//
-	// The balance is read INSIDE the advisory lock so the check is atomic with the status
-	// update + position decrement below: no other finalize for this user can interleave
-	// between the read and the commit. (A small RPC under the per-user lock is acceptable —
-	// redemptions are rare and already serialized per user.)
+	// Airtight on-chain proof-of-arrival (read INSIDE the lock so it's atomic with the
+	// finalize below). Rather than each redemption only checking its own delta — which two
+	// concurrent redemptions that snapshotted the same baseline could both pass against a
+	// SINGLE arrival — we require the EOA balance to cover the baseline (the lowest pre-snapshot
+	// among the user's in-flight redemptions, i.e. the balance before any of them started) PLUS
+	// the TOTAL amount of every in-flight redemption awaiting funds (including this one). So a
+	// batch of concurrent redemptions only finalizes once enough funds have arrived for ALL of
+	// them — never two against the same dollars. Self-healing: a sibling whose funds never
+	// arrive is marked 'failed' by its own settlement poll, dropping out of the sum so the rest
+	// can finalize. (Rows predating the snapshot column have pre NULL → baseline 0 → require the
+	// full sum present, the conservative fallback.)
 	if acct != nil && acct.CircleWalletID != "" {
 		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
 		if balErr != nil {
 			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
 		}
+		var agg struct {
+			Baseline decimal.Decimal `db:"baseline"`
+			Claimed  decimal.Decimal `db:"claimed"`
+		}
+		if err := tx.GetContext(ctx, &agg, `
+			SELECT COALESCE(MIN(pre_redeem_eoa_balance), 0) AS baseline,
+			       COALESCE(SUM(amount), 0) AS claimed
+			FROM blend_yield_redemptions
+			WHERE user_id = $1 AND status IN ('executing', 'submitted')
+		`, red.UserID); err != nil {
+			return fmt.Errorf("blend: read in-flight redemptions for finalize: %w", err)
+		}
+		required := agg.Baseline.Add(agg.Claimed)
 		if have.LessThan(required) {
-			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s balance %s < required %s USDC; not finalizing",
-				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6))
+			return fmt.Errorf("blend: redemption %s: EOA %s balance %s < required %s (baseline %s + in-flight claims %s); not finalizing",
+				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6), agg.Baseline.StringFixed(6), agg.Claimed.StringFixed(6))
 		}
 	}
 

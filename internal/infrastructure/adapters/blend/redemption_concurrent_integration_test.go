@@ -77,10 +77,12 @@ func insertRedemption(t *testing.T, db *sqlx.DB, userID uuid.UUID, key string, a
 	require.NoError(t, err)
 }
 
-// TestConcurrentRedemptionFinalize_OnlyArrivedFundsSettle proves the delta check: when two
-// redemptions for the same user finalize concurrently but the EOA balance only rose enough
-// for one of them, exactly one settles and the other is rejected (its funds never arrived).
-func TestConcurrentRedemptionFinalize_OnlyArrivedFundsSettle(t *testing.T) {
+// TestConcurrentRedemptionFinalize_PartialArrivalSettlesNone proves the airtight
+// sum-of-claims check: when two redemptions for the same user finalize concurrently but the
+// EOA balance only rose enough for ONE of them, NEITHER settles. The funds are fungible — we
+// can't tell whose arrived — so refusing both (until enough arrives for both, or a sibling is
+// marked failed) is the safe choice: two redemptions can never settle against the same dollars.
+func TestConcurrentRedemptionFinalize_PartialArrivalSettlesNone(t *testing.T) {
 	db := testDB(t)
 	defer db.Close()
 	ctx := context.Background()
@@ -94,10 +96,11 @@ func TestConcurrentRedemptionFinalize_OnlyArrivedFundsSettle(t *testing.T) {
 
 	amount := decimal.NewFromInt(10)
 	k1, k2 := userID.String()+"-r1", userID.String()+"-r2"
-	// R1 snapshotted pre=0 (first to execute); R2 snapshotted pre=10 (after R1's funds were
-	// already present). Only R1's funds actually arrived → on-chain balance is 10.
+	// The dangerous case: both snapshotted the same baseline (pre=0) before either's funds
+	// arrived. Only one batch of 10 actually landed → on-chain balance is 10, but the two
+	// redemptions claim 20 total.
 	insertRedemption(t, db, userID, k1, amount, decimal.Zero)
-	insertRedemption(t, db, userID, k2, amount, decimal.NewFromInt(10))
+	insertRedemption(t, db, userID, k2, amount, decimal.Zero)
 
 	router := NewDepositRouter(db, nil, &fakeBalanceCircle{balance: decimal.NewFromInt(10)}, nil, 8453, "", zap.NewNop())
 	acct := &blendUserAccount{UserID: userID, CircleWalletID: "wallet-1", EOAAddress: "0x0000000000000000000000000000000000000001"}
@@ -120,20 +123,12 @@ func TestConcurrentRedemptionFinalize_OnlyArrivedFundsSettle(t *testing.T) {
 	}
 	wg.Wait()
 
-	nilCount := 0
-	for _, e := range errs {
-		if e == nil {
-			nilCount++
-		}
-	}
-	require.Equal(t, 1, nilCount, "exactly one redemption should finalize; got errs=%v", errs)
+	require.Error(t, errs[0], "redemption must not settle: balance covers only one of two claims")
+	require.Error(t, errs[1], "redemption must not settle: balance covers only one of two claims")
 
 	var completed int
 	require.NoError(t, db.Get(&completed, `SELECT COUNT(*) FROM blend_yield_redemptions WHERE user_id=$1 AND status='complete'`, userID))
-	require.Equal(t, 1, completed, "exactly one redemption row should be complete")
-	// The one that settled must be R1 (the funds that actually arrived).
-	require.NoError(t, errs[0], "R1 (funds arrived) should settle")
-	require.Error(t, errs[1], "R2 (funds did not arrive) must be rejected")
+	require.Equal(t, 0, completed, "no redemption should settle when only one batch of funds arrived")
 }
 
 // TestConcurrentRedemptionFinalize_BothArrivedSettle proves the check does not reject
