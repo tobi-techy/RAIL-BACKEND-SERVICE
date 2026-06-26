@@ -1042,8 +1042,8 @@ func (h *BridgeWebhookHandler) verifyRSASignature(timestamp, sig string, body []
 		return false
 	}
 
-	// Normalize PEM key - handle single-line format from .env
-	pemKey := h.webhookSecret
+	// Normalize PEM key - handle escaped newlines from env vars
+	pemKey := strings.ReplaceAll(h.webhookSecret, `\n`, "\n")
 	if !strings.Contains(pemKey, "\n") {
 		// Single line PEM - add newlines
 		pemKey = strings.Replace(pemKey, "-----BEGIN PUBLIC KEY-----", "-----BEGIN PUBLIC KEY-----\n", 1)
