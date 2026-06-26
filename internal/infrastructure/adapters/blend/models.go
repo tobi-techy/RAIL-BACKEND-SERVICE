@@ -81,22 +81,23 @@ type blendUserAccount struct {
 
 // redemption mirrors a row in blend_yield_redemptions.
 type redemption struct {
-	ID                 uuid.UUID       `db:"id"`
-	UserID             uuid.UUID       `db:"user_id"`
-	BlendAccountID     string          `db:"blend_account_id"`
-	Amount             decimal.Decimal `db:"amount"`
-	DestinationChainID int64           `db:"destination_chain_id"`
-	IntentID           sql.NullString  `db:"intent_id"`
-	IntentStatus       sql.NullString  `db:"intent_status"`
-	QuotePayload       []byte          `db:"quote_payload"`
-	TxHash             sql.NullString  `db:"tx_hash"`
-	SubmittedAt        sql.NullTime    `db:"submitted_at"`
-	SettledAt          sql.NullTime    `db:"settled_at"`
-	IdempotencyKey     string          `db:"idempotency_key"`
-	Status             string          `db:"status"`
-	Attempts           int             `db:"attempts"`
-	LastError          sql.NullString  `db:"last_error"`
-	NextRetryAt        sql.NullTime    `db:"next_retry_at"`
+	ID                 uuid.UUID           `db:"id"`
+	UserID             uuid.UUID           `db:"user_id"`
+	BlendAccountID     string              `db:"blend_account_id"`
+	Amount             decimal.Decimal     `db:"amount"`
+	DestinationChainID int64               `db:"destination_chain_id"`
+	IntentID           sql.NullString      `db:"intent_id"`
+	IntentStatus       sql.NullString      `db:"intent_status"`
+	QuotePayload       []byte              `db:"quote_payload"`
+	TxHash             sql.NullString      `db:"tx_hash"`
+	SubmittedAt        sql.NullTime        `db:"submitted_at"`
+	SettledAt          sql.NullTime        `db:"settled_at"`
+	IdempotencyKey     string              `db:"idempotency_key"`
+	Status             string              `db:"status"`
+	Attempts           int                 `db:"attempts"`
+	LastError          sql.NullString      `db:"last_error"`
+	NextRetryAt        sql.NullTime        `db:"next_retry_at"`
+	PreRedeemBalance   decimal.NullDecimal `db:"pre_redeem_eoa_balance"`
 }
 
 func parseBig(s string) (*big.Int, bool) {

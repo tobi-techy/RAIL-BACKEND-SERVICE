@@ -14,22 +14,33 @@ import (
 	"go.uber.org/zap"
 )
 
+// Deploy types for an ActionPlan, mirroring @blend-money/core.
+const (
+	// deployDirect: individual transactions executed by the EOA/owner signer
+	// (Blend deposits). Funds are pulled from the EOA into the Safe + vault.
+	deployDirect = "direct"
+	// deployMultisend: the steps act ON the user's Safe (redeem vault shares, etc.)
+	// and MUST originate from the Safe — batched into one Safe MultiSend transaction.
+	// Executing these as plain EOA calls redeems nothing (the Safe owns the shares).
+	deployMultisend = "multisend"
+)
+
 // ActionStep is one on-chain transaction in a Blend action plan.
-// We accept the shape from /quote/deposit and /quote/withdraw payloads.
 type ActionStep struct {
 	ChainID        int64  `json:"chainId"`
 	To             string `json:"to"`
 	Data           string `json:"data"`
 	Value          string `json:"value"`
 	IsDelegateCall bool   `json:"isDelegateCall,omitempty"`
+	Kind           string `json:"kind,omitempty"`
 	Description    string `json:"description,omitempty"`
 }
 
-// ActionPlan is the on-chain plan a session expects the user's signer to execute.
-// Different Blend endpoints embed it under slightly different keys; ParseActionPlan
-// normalizes them.
+// ActionPlan is the on-chain plan a session expects the partner to execute.
+// DeployType determines HOW the steps are submitted (see deployDirect/deployMultisend).
 type ActionPlan struct {
-	Steps []ActionStep `json:"steps"`
+	DeployType string       `json:"deployType"`
+	Steps      []ActionStep `json:"steps"`
 }
 
 // ContractExecutor signs and broadcasts EVM contract calls from a Circle wallet.
@@ -165,6 +176,13 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 		dynamic[strings.ToLower(safeAddr)] = struct{}{}
 	}
 
+	// Withdraw-style plans act ON the Safe and must originate FROM it. Batch the steps
+	// into a single Safe MultiSend executed via Safe.execTransaction (the Safe is the
+	// only contract Circle calls here, and it was just on-chain verified above).
+	if plan.DeployType == deployMultisend {
+		return e.executeMultisend(ctx, walletID, plan, idempotencyPrefix, trustedSafe)
+	}
+
 	results := make([]ExecutedTx, 0, len(plan.Steps))
 	for i, step := range plan.Steps {
 		if !isHexAddress(step.To) {
@@ -183,7 +201,12 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 			return results, fmt.Errorf("blend plan step %d: invalid value: %w", i, err)
 		}
 
-		idemKey := uuid.New().String()
+		// Stable idempotency key: same (route/redemption, step index, exact tx) always
+		// produces the same key, so a retry resumes rather than re-broadcasting a
+		// duplicate on-chain transaction (a random key per call double-deposits/redeems).
+		// A genuinely different plan (re-quote with new calldata) yields a new key.
+		idemKey := uuid.NewSHA1(uuid.NameSpaceOID,
+			[]byte(fmt.Sprintf("%s|%d|%s", idempotencyPrefix, i, txDigest(step)))).String()
 		req := &circlepkg.CreateContractExecutionRequest{
 			IdempotencyKey:  idemKey,
 			WalletID:        walletID,
@@ -219,49 +242,221 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 	return results, nil
 }
 
-// ParseActionPlan extracts an action plan from a Blend session payload. Blend's
-// SDK exposes `depositQuoteToActionPlan(payload, eoa)` — we mirror that logic
-// here by accepting a few known payload shapes:
-//   - { "steps": [...] }
-//   - { "actionPlan": { "steps": [...] } }
-//   - { "transactions": [{to, data, value, chainId}, ...] }
-//   - top-level [{to, data, value, chainId}, ...]
+// executeMultisend submits all steps as a single Safe.execTransaction that delegatecalls
+// MultiSend — the non-4337 equivalent of Blend's batched Safe UserOp. The owner (this
+// Circle wallet) authorizes via a pre-validated signature, valid because it is both the
+// caller and the Safe's sole owner (verified on-chain above, incl. threshold==1).
+func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string, trustedSafe *TrustedSafe) ([]ExecutedTx, error) {
+	if trustedSafe == nil || strings.TrimSpace(trustedSafe.Address) == "" {
+		return nil, errors.New("blend: multisend plan requires the route's Safe")
+	}
+	if !isHexAddress(strings.TrimSpace(trustedSafe.OwnerEOA)) {
+		return nil, fmt.Errorf("blend: multisend plan requires a valid Safe owner, got %q", trustedSafe.OwnerEOA)
+	}
+	if e.verifier == nil {
+		return nil, fmt.Errorf("blend: refusing Safe multisend without on-chain verification (verifier not configured)")
+	}
+
+	// Validate every inner step target against the same allowlist the direct path uses,
+	// so a poisoned withdraw quote can't make the Safe call an arbitrary contract. (An
+	// empty allowlist allows all — dev only — matching Execute's behavior.)
+	for i, step := range plan.Steps {
+		if !isHexAddress(step.To) {
+			return nil, fmt.Errorf("blend: multisend step %d: invalid `to` address %q", i, step.To)
+		}
+		if !e.allowlist.Allows(step.To) {
+			return nil, fmt.Errorf("blend: multisend step %d: contract %s not in allowlist", i, step.To)
+		}
+	}
+
+	multiSendData, err := encodeMultiSendData(plan.Steps)
+	if err != nil {
+		return nil, fmt.Errorf("blend: encode multisend: %w", err)
+	}
+	execData, err := encodeSafeExecTransaction(multiSendData, trustedSafe.OwnerEOA)
+	if err != nil {
+		return nil, fmt.Errorf("blend: encode execTransaction: %w", err)
+	}
+
+	idemKey := uuid.NewSHA1(uuid.NameSpaceOID,
+		[]byte(fmt.Sprintf("%s|safe-multisend|%s", idempotencyPrefix, multisendDigest(plan.Steps)))).String()
+	req := &circlepkg.CreateContractExecutionRequest{
+		IdempotencyKey:  idemKey,
+		WalletID:        walletID,
+		ContractAddress: trustedSafe.Address,
+		CallData:        hexEncode(execData),
+		Amount:          "0",
+		FeeLevel:        "MEDIUM",
+	}
+	e.logger.Info("Blend executor submitting Safe multisend",
+		zap.String("safe", trustedSafe.Address),
+		zap.String("owner_eoa", trustedSafe.OwnerEOA),
+		zap.String("wallet_id", walletID),
+		zap.Int("steps", len(plan.Steps)),
+		zap.Int64("chain_id", trustedSafe.ChainID),
+	)
+	tx, err := e.circle.ExecuteContract(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("blend: safe multisend circle execute: %w", err)
+	}
+	e.logger.Info("Blend executor Safe multisend result",
+		zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash), zap.String("state", string(tx.State)))
+	return []ExecutedTx{{ChainID: trustedSafe.ChainID, TxHash: tx.TxHash, TransactionID: tx.ID}}, nil
+}
+
+// multisendDigest is a stable digest of all steps, so retries of the same withdraw batch
+// reuse the same Circle idempotency key instead of re-broadcasting. The call/delegatecall
+// operation is part of the digest so a plan that differs only in operation type yields a
+// different key.
+func multisendDigest(steps []ActionStep) string {
+	parts := make([]string, 0, len(steps))
+	for _, s := range steps {
+		op := "call"
+		if s.IsDelegateCall {
+			op = "delegatecall"
+		}
+		parts = append(parts, op+":"+txDigest(s))
+	}
+	return strings.Join(parts, ";")
+}
+
+// rawDepositQuote mirrors @blend-money/core DepositApiQuoteResult (the raw
+// /quote/deposit payload). Steps are ordered approve→deposit and execute as direct
+// EOA transactions.
+type rawDepositQuote struct {
+	OriginChainID int64 `json:"originChainId"`
+	Steps         []struct {
+		Kind        string `json:"kind"`
+		Description string `json:"description"`
+		To          string `json:"to"`
+		Data        string `json:"data"`
+		Value       string `json:"value"`
+		ChainID     int64  `json:"chainId"`
+	} `json:"steps"`
+}
+
+// rawWithdrawCalldata mirrors @blend-money/core WithdrawApiCalldataResult (the raw
+// /quote/withdraw payload). Steps act on the Safe and execute as a Safe MultiSend;
+// liquidityReset must be a delegatecall from the Safe.
+type rawWithdrawCalldata struct {
+	SafeAddress        string `json:"safeAddress"`
+	DestinationChainID int64  `json:"destinationChainId"`
+	Payloads           []struct {
+		ChainID int64 `json:"chainId"`
+		Steps   []struct {
+			Kind         string `json:"kind"`
+			Description  string `json:"description"`
+			To           string `json:"to"`
+			Data         string `json:"data"`
+			Value        string `json:"value"`        // present on the bridge step
+			DelegateCall bool   `json:"delegateCall"` // present on liquidityReset
+			ChainID      int64  `json:"chainId"`      // present on the bridge step
+		} `json:"steps"`
+	} `json:"payloads"`
+}
+
+// ParseActionPlan normalizes a Blend session payload into an executable ActionPlan,
+// replicating @blend-money/core's depositQuoteToActionPlan / withdrawCalldataToActionPlans.
 //
-// Returns the normalized plan. If no shape matches, returns the raw payload as
-// an error so callers can capture it and we can extend the parser.
+// Two real shapes:
+//   - deposit  → { originChainId, steps: [{kind, to, data, value, chainId}] }  → DeployType "direct"
+//   - withdraw → { safeAddress, payloads: [{chainId, steps: [{kind, to, data, ...}]}] } → DeployType "multisend"
+//
+// Plus legacy/generic fallbacks ({steps}, {actionPlan.steps}, {transactions}, top-level
+// array) treated as "direct". Unrecognized payloads return the raw bytes as an error.
 func ParseActionPlan(raw json.RawMessage) (*ActionPlan, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("blend payload is empty")
 	}
-	// Shape 1: { steps: [...] }
-	var shape1 struct {
-		Steps []ActionStep `json:"steps"`
+
+	// If the payload is already a normalized ActionPlan (carries an explicit deployType),
+	// honor it first so a multisend plan can never be misrouted to direct execution.
+	var typed struct {
+		DeployType string       `json:"deployType"`
+		Steps      []ActionStep `json:"steps"`
 	}
-	if err := json.Unmarshal(raw, &shape1); err == nil && len(shape1.Steps) > 0 {
-		return &ActionPlan{Steps: shape1.Steps}, nil
+	if err := json.Unmarshal(raw, &typed); err == nil && len(typed.Steps) > 0 {
+		switch typed.DeployType {
+		case deployMultisend:
+			return &ActionPlan{DeployType: deployMultisend, Steps: typed.Steps}, nil
+		case deployDirect:
+			return &ActionPlan{DeployType: deployDirect, Steps: typed.Steps}, nil
+		}
 	}
-	// Shape 2: { actionPlan: { steps: [...] } }
+
+	// Withdraw: distinguished by the `payloads` array of per-chain step lists.
+	var wd rawWithdrawCalldata
+	if err := json.Unmarshal(raw, &wd); err == nil && hasWithdrawSteps(&wd) {
+		steps := make([]ActionStep, 0)
+		for _, p := range wd.Payloads {
+			chainID := p.ChainID
+			for _, s := range p.Steps {
+				stepChain := chainID
+				if s.ChainID != 0 {
+					stepChain = s.ChainID
+				}
+				steps = append(steps, ActionStep{
+					ChainID:        stepChain,
+					To:             s.To,
+					Data:           s.Data,
+					Value:          s.Value,
+					IsDelegateCall: s.DelegateCall || strings.EqualFold(s.Kind, "liquidityReset"),
+					Kind:           s.Kind,
+					Description:    s.Description,
+				})
+			}
+		}
+		if len(steps) > 0 {
+			return &ActionPlan{DeployType: deployMultisend, Steps: steps}, nil
+		}
+	}
+
+	// Deposit: top-level `steps` (with kind approve/deposit). Direct EOA execution.
+	var dep rawDepositQuote
+	if err := json.Unmarshal(raw, &dep); err == nil && len(dep.Steps) > 0 {
+		steps := make([]ActionStep, 0, len(dep.Steps))
+		for _, s := range dep.Steps {
+			steps = append(steps, ActionStep{
+				ChainID:     s.ChainID,
+				To:          s.To,
+				Data:        s.Data,
+				Value:       s.Value,
+				Kind:        s.Kind,
+				Description: s.Description,
+			})
+		}
+		return &ActionPlan{DeployType: deployDirect, Steps: steps}, nil
+	}
+
+	// Legacy/generic fallbacks (treated as direct).
 	var shape2 struct {
 		ActionPlan struct {
 			Steps []ActionStep `json:"steps"`
 		} `json:"actionPlan"`
 	}
 	if err := json.Unmarshal(raw, &shape2); err == nil && len(shape2.ActionPlan.Steps) > 0 {
-		return &ActionPlan{Steps: shape2.ActionPlan.Steps}, nil
+		return &ActionPlan{DeployType: deployDirect, Steps: shape2.ActionPlan.Steps}, nil
 	}
-	// Shape 3: { transactions: [...] }
 	var shape3 struct {
 		Transactions []ActionStep `json:"transactions"`
 	}
 	if err := json.Unmarshal(raw, &shape3); err == nil && len(shape3.Transactions) > 0 {
-		return &ActionPlan{Steps: shape3.Transactions}, nil
+		return &ActionPlan{DeployType: deployDirect, Steps: shape3.Transactions}, nil
 	}
-	// Shape 4: top-level array
 	var shape4 []ActionStep
 	if err := json.Unmarshal(raw, &shape4); err == nil && len(shape4) > 0 {
-		return &ActionPlan{Steps: shape4}, nil
+		return &ActionPlan{DeployType: deployDirect, Steps: shape4}, nil
 	}
-	return nil, fmt.Errorf("blend payload shape not recognized: %s", truncate(string(raw), 256))
+	return nil, fmt.Errorf("blend payload shape not recognized: %s", truncate(string(raw), 512))
+}
+
+func hasWithdrawSteps(wd *rawWithdrawCalldata) bool {
+	for _, p := range wd.Payloads {
+		if len(p.Steps) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeHex(s string) (string, error) {

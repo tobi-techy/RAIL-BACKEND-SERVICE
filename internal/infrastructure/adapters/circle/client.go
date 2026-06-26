@@ -386,9 +386,33 @@ func (c *HTTPClient) GetTokenBalance(ctx context.Context, walletID string) ([]To
 	return resp.Data.TokenBalances, nil
 }
 
+// GetTokenBalanceOnchain returns the wallet's token balances with `includeAll=true`,
+// which forces Circle to read live on-chain balances rather than only the tokens its
+// indexer is actively monitoring. This is the reliable balance source for funds that
+// arrived via an external bridge/contract (which Circle's default indexed balance does
+// not pick up). Use this — not GetTokenBalance — anywhere correctness depends on the
+// true on-chain balance.
+func (c *HTTPClient) GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]TokenBalance, error) {
+	var resp apiResponse[TokenBalancesData]
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/w3s/wallets/"+walletID+"/balances?includeAll=true", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data.TokenBalances, nil
+}
+
 // GetUSDCTokenID looks up the USDC token UUID from a wallet's balances.
 func (c *HTTPClient) GetUSDCTokenID(ctx context.Context, walletID string) (string, error) {
-	balances, err := c.GetTokenBalance(ctx, walletID)
+	return usdcTokenID(c.GetTokenBalance(ctx, walletID))
+}
+
+// GetUSDCTokenIDOnchain looks up the USDC token UUID using the on-chain (includeAll)
+// balance, so it resolves even when Circle's indexer has not picked up bridge-delivered
+// USDC (the indexed balance can omit the token entirely).
+func (c *HTTPClient) GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error) {
+	return usdcTokenID(c.GetTokenBalanceOnchain(ctx, walletID))
+}
+
+func usdcTokenID(balances []TokenBalance, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
@@ -397,7 +421,7 @@ func (c *HTTPClient) GetUSDCTokenID(ctx context.Context, walletID string) (strin
 			return b.Token.ID, nil
 		}
 	}
-	return "", fmt.Errorf("no USDC token found in wallet %s", walletID)
+	return "", fmt.Errorf("no USDC token found in wallet balances")
 }
 
 func (c *HTTPClient) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error) {

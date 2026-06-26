@@ -25,8 +25,12 @@ type SafeVerifier interface {
 	VerifySafe(ctx context.Context, chainID int64, safeAddr, ownerEOA string) error
 }
 
-// isOwnerSelector is keccak256("isOwner(address)")[:4]. Verified via golang.org/x/crypto/sha3.
+// isOwnerSelector is keccak256("isOwner(address)")[:4].
 const isOwnerSelector = "2f54bf6e"
+
+// getThresholdSelector is keccak256("getThreshold()")[:4]. We require threshold == 1 so
+// the owner's pre-validated signature (used to drive withdrawals) is sufficient.
+const getThresholdSelector = "e75235b8"
 
 // EVMSafeVerifier verifies Safes over a Base JSON-RPC endpoint using eth_getCode
 // (contract bytecode presence) and eth_call to isOwner(address) (ownership).
@@ -73,9 +77,31 @@ func (v *EVMSafeVerifier) VerifySafe(ctx context.Context, chainID int64, safeAdd
 	if err := v.verifySafeOwnership(ctx, safeAddr, ownerEOA); err != nil {
 		return err
 	}
+	if err := v.verifySafeThreshold(ctx, safeAddr); err != nil {
+		return err
+	}
 	v.mu.Lock()
 	v.verified[key] = time.Now()
 	v.mu.Unlock()
+	return nil
+}
+
+// verifySafeThreshold confirms the Safe's signing threshold is exactly 1. Driving the Safe
+// with the owner's pre-validated signature (msg.sender == owner, v=1) only authorizes a
+// 1-of-1 Safe; a higher threshold would require real co-signer signatures we don't have.
+func (v *EVMSafeVerifier) verifySafeThreshold(ctx context.Context, safeAddr string) error {
+	result, err := v.ethCall(ctx, safeAddr, "0x"+getThresholdSelector)
+	if err != nil {
+		return fmt.Errorf("blend: getThreshold eth_call for safe %s: %w", safeAddr, err)
+	}
+	stripped := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(result)), "0x")
+	val, ok := new(big.Int).SetString(stripped, 16)
+	if !ok {
+		return fmt.Errorf("blend: could not parse getThreshold result %q for safe %s", result, safeAddr)
+	}
+	if val.Cmp(big.NewInt(1)) != 0 {
+		return fmt.Errorf("blend: safe %s threshold is %s, expected 1 (pre-validated owner signing unsupported)", safeAddr, val.String())
+	}
 	return nil
 }
 

@@ -210,6 +210,17 @@ func (a *Adapter) GetTokenBalance(ctx context.Context, walletID string) ([]Token
 	return a.client.GetTokenBalance(ctx, walletID)
 }
 
+// GetTokenBalanceOnchain returns on-chain (includeAll) token balances — the reliable
+// source for funds delivered by an external bridge/contract that Circle's indexer misses.
+func (a *Adapter) GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]TokenBalance, error) {
+	return a.client.GetTokenBalanceOnchain(ctx, walletID)
+}
+
+// GetUSDCTokenIDOnchain resolves the USDC token ID from the on-chain (includeAll) balance.
+func (a *Adapter) GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error) {
+	return a.client.GetUSDCTokenIDOnchain(ctx, walletID)
+}
+
 func (a *Adapter) ListWalletsForUser(ctx context.Context, userID uuid.UUID, walletSetID string) ([]*entities.ManagedWallet, error) {
 	wallets, err := a.client.ListWalletsByRefID(ctx, userID.String())
 	if err != nil {
