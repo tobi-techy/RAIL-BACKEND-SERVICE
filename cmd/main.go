@@ -3,17 +3,21 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/rail-service/rail_service/internal/app"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
+	"github.com/rail-service/rail_service/internal/recovery"
 	wallet_migration "github.com/rail-service/rail_service/internal/workers/wallet_migration"
 	"github.com/rail-service/rail_service/pkg/alerting"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -175,4 +179,71 @@ func sendFatalAlert(msg string, err error) {
 	if t != nil {
 		t.SendFatal(msg, err)
 	}
+}
+
+// runRecoverFunds sweeps USDC stranded in a Base Circle wallet back to Solana via
+// ChainRails. It loads config exactly like the app, so when run inside the deployment it
+// inherits the same Circle + ChainRails credentials (no secret copying). Kept in this file
+// (not a separate cmd/ file) so the single-file `go build cmd/main.go` form used by the
+// Makefile and Dockerfiles keeps working.
+//
+//	rail_service recover-funds -wallet <id> -to <solana-addr> -amount 4.0          # dry run
+//	rail_service recover-funds -wallet <id> -to <solana-addr> -amount 4.0 -confirm  # execute
+func runRecoverFunds(args []string) error {
+	fs := flag.NewFlagSet("recover-funds", flag.ContinueOnError)
+	walletID := fs.String("wallet", "", "Circle Base wallet ID holding the stranded USDC")
+	toAddr := fs.String("to", "", "destination Solana address (recipient)")
+	amountS := fs.String("amount", "", "USDC amount to receive on Solana (e.g. 4.0); ChainRails fees are added on top")
+	confirm := fs.Bool("confirm", false, "actually move funds (default: dry-run)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil // -h/--help is a clean exit, not a failure
+		}
+		return err
+	}
+	if *walletID == "" || *toAddr == "" || *amountS == "" {
+		fs.Usage()
+		return fmt.Errorf("-wallet, -to and -amount are required")
+	}
+	amount, err := decimal.NewFromString(*amountS)
+	if err != nil {
+		return fmt.Errorf("invalid -amount %q", *amountS)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return fmt.Errorf("create logger: %w", err)
+	}
+
+	cc, err := circleadapter.NewHTTPClient(circleadapter.Config{
+		APIKey:       cfg.Circle.APIKey,
+		BaseURL:      cfg.Circle.BaseURL,
+		Environment:  cfg.Circle.Environment,
+		EntitySecret: cfg.Circle.EntitySecret,
+		PublicKeyPEM: cfg.Circle.PublicKeyPEM,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("circle client: %w", err)
+	}
+	cr := chainrails.NewClient(chainrails.Config{
+		APIKey:           cfg.ChainRails.APIKey,
+		WebhookSecret:    cfg.ChainRails.WebhookSecret,
+		BaseURL:          cfg.ChainRails.BaseURL,
+		DestinationChain: cfg.ChainRails.DestinationChain,
+		SettlementToken:  cfg.ChainRails.SettlementToken,
+	}, logger)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	return recovery.RecoverStuckBaseToSolana(ctx, cc, cr, recovery.Params{
+		WalletID:     *walletID,
+		ToSolanaAddr: *toAddr,
+		DestAmount:   amount,
+		Confirm:      *confirm,
+	}, logger, os.Stdout)
 }
