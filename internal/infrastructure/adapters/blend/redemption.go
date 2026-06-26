@@ -332,31 +332,24 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 // pipeline spends these funds immediately, so we must not mark success unless they are
 // truly present and spendable in the wallet.
 func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
-	tx, err := r.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("blend: begin redemption finalize tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	// Serialize check-and-finalize per user (held for the whole tx) so two concurrent
-	// redemptions can't both read the same balance and both pass.
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(red.UserID)); err != nil {
-		return fmt.Errorf("blend: advisory lock for redemption finalize: %w", err)
-	}
-
 	// On-chain proof-of-arrival: require the EOA balance to have RISEN by this redemption's
 	// amount (have >= pre_redeem_balance + amount), read via includeAll so bridge-delivered
 	// funds are seen. Stronger than "have >= amount" — each concurrent redemption has its
 	// own pre-snapshot, so they can't all settle against the same funds. Redemptions created
-	// before the snapshot column existed (pre NULL) fall back to the presence check. If the
-	// balance hasn't risen enough, do NOT finalize: return an error so the redemption stays
-	// in-flight and retries rather than letting the withdrawal spend funds that aren't there.
-	if acct != nil && acct.CircleWalletID != "" {
-		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+	// before the snapshot column existed (pre NULL) fall back to the presence check.
+	//
+	// The balance RPC is done BEFORE opening the tx/lock so the critical section doesn't hold
+	// a pooled connection + advisory lock across network time; the value is re-checked inside
+	// the locked tx before we finalize.
+	checkBalance := acct != nil && acct.CircleWalletID != ""
+	var have, required decimal.Decimal
+	if checkBalance {
+		h, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
 		if balErr != nil {
 			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
 		}
-		required := amount.Truncate(6)
+		have = h
+		required = amount.Truncate(6)
 		if red.PreRedeemBalance.Valid {
 			required = red.PreRedeemBalance.Decimal.Add(amount.Truncate(6))
 		}
@@ -364,6 +357,24 @@ func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserA
 			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s balance %s < required %s USDC; not finalizing",
 				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6))
 		}
+	}
+
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("blend: begin redemption finalize tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Serialize check-and-finalize per user (held for the whole tx) so two concurrent
+	// redemptions can't both finalize against the same balance.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(red.UserID)); err != nil {
+		return fmt.Errorf("blend: advisory lock for redemption finalize: %w", err)
+	}
+	// Re-validate inside the lock before finalizing — keeps the check atomic with the status
+	// update and position decrement below.
+	if checkBalance && have.LessThan(required) {
+		return fmt.Errorf("blend: redemption %s balance %s < required %s USDC; not finalizing",
+			red.ID, have.StringFixed(6), required.StringFixed(6))
 	}
 
 	// Mark complete only if still in a non-terminal state (guards against double-apply).
@@ -443,13 +454,21 @@ func userAdvisoryLockKey(userID uuid.UUID) int64 {
 }
 
 func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currentRedemptionID uuid.UUID) error {
-	// Use advisory lock on user to serialize concurrent redemption checks.
-	// This prevents two concurrent RedeemStashYield calls from both passing.
-	if _, err := r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(userID)); err != nil {
+	// Hold the advisory lock across BOTH reads in one transaction. pg_advisory_xact_lock is
+	// released at end-of-transaction, so it must run inside an explicit tx — issued on the
+	// pooled connection (autocommit) it would release immediately and not protect the reads,
+	// letting two concurrent RedeemStashYield calls both pass.
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("blend: begin position check tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(userID)); err != nil {
 		return fmt.Errorf("blend: advisory lock for redemption check: %w", err)
 	}
 	var available decimal.Decimal
-	if err := r.db.GetContext(ctx, &available, `
+	if err := tx.GetContext(ctx, &available, `
 		SELECT COALESCE(SUM(principal_amount - redeemed_amount), 0)
 		FROM blend_yield_positions
 		WHERE user_id = $1 AND status = 'active'
@@ -457,7 +476,7 @@ func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uui
 		return fmt.Errorf("blend: read user position: %w", err)
 	}
 	var reserved decimal.Decimal
-	if err := r.db.GetContext(ctx, &reserved, `
+	if err := tx.GetContext(ctx, &reserved, `
 		SELECT COALESCE(SUM(amount), 0)
 		FROM blend_yield_redemptions
 		WHERE user_id = $1
@@ -471,7 +490,7 @@ func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uui
 		return fmt.Errorf("blend: insufficient yield position: have %s spendable (%s reserved), need %s",
 			spendable.StringFixed(6), reserved.StringFixed(6), amount.StringFixed(6))
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (r *DepositRouter) markRedemptionFailed(ctx context.Context, idempotencyKey, reason string) error {

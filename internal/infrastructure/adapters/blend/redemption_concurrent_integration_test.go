@@ -93,18 +93,19 @@ func TestConcurrentRedemptionFinalize_OnlyArrivedFundsSettle(t *testing.T) {
 	})
 
 	amount := decimal.NewFromInt(10)
+	k1, k2 := userID.String()+"-r1", userID.String()+"-r2"
 	// R1 snapshotted pre=0 (first to execute); R2 snapshotted pre=10 (after R1's funds were
 	// already present). Only R1's funds actually arrived → on-chain balance is 10.
-	insertRedemption(t, db, userID, "redeem-r1", amount, decimal.Zero)
-	insertRedemption(t, db, userID, "redeem-r2", amount, decimal.NewFromInt(10))
+	insertRedemption(t, db, userID, k1, amount, decimal.Zero)
+	insertRedemption(t, db, userID, k2, amount, decimal.NewFromInt(10))
 
 	router := NewDepositRouter(db, nil, &fakeBalanceCircle{balance: decimal.NewFromInt(10)}, nil, 8453, "", zap.NewNop())
 	acct := &blendUserAccount{UserID: userID, CircleWalletID: "wallet-1", EOAAddress: "0x0000000000000000000000000000000000000001"}
 	session := &Session{Status: IntentStatusSettled}
 
-	red1, err := router.getRedemption(ctx, "redeem-r1")
+	red1, err := router.getRedemption(ctx, k1)
 	require.NoError(t, err)
-	red2, err := router.getRedemption(ctx, "redeem-r2")
+	red2, err := router.getRedemption(ctx, k2)
 	require.NoError(t, err)
 
 	reds := []*redemption{red1, red2}
@@ -151,17 +152,18 @@ func TestConcurrentRedemptionFinalize_BothArrivedSettle(t *testing.T) {
 	})
 
 	amount := decimal.NewFromInt(10)
-	insertRedemption(t, db, userID, "ok-r1", amount, decimal.Zero)
-	insertRedemption(t, db, userID, "ok-r2", amount, decimal.NewFromInt(10))
+	k1, k2 := userID.String()+"-ok1", userID.String()+"-ok2"
+	insertRedemption(t, db, userID, k1, amount, decimal.Zero)
+	insertRedemption(t, db, userID, k2, amount, decimal.NewFromInt(10))
 
 	// Both arrived → on-chain balance is 20.
 	router := NewDepositRouter(db, nil, &fakeBalanceCircle{balance: decimal.NewFromInt(20)}, nil, 8453, "", zap.NewNop())
 	acct := &blendUserAccount{UserID: userID, CircleWalletID: "wallet-1", EOAAddress: "0x0000000000000000000000000000000000000001"}
 	session := &Session{Status: IntentStatusSettled}
 
-	red1, err := router.getRedemption(ctx, "ok-r1")
+	red1, err := router.getRedemption(ctx, k1)
 	require.NoError(t, err)
-	red2, err := router.getRedemption(ctx, "ok-r2")
+	red2, err := router.getRedemption(ctx, k2)
 	require.NoError(t, err)
 
 	reds := []*redemption{red1, red2}
