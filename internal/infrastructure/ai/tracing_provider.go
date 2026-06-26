@@ -3,16 +3,12 @@ package ai
 import (
 	"context"
 
+	"github.com/rail-service/rail_service/pkg/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
-
-// observationTypeKey marks a span as a Langfuse LLM observation. Kept in sync
-// with pkg/tracing.LangfuseObservationTypeKey (duplicated to avoid importing
-// pkg/tracing here).
-const observationTypeKey = "langfuse.observation.type"
 
 // NewTracingProvider wraps an AIProvider so every completion emits a GenAI
 // "generation" span (model, tokens, latency, provider, tool count) that Langfuse
@@ -55,11 +51,11 @@ func (p *tracingProvider) ChatCompletionWithTools(ctx context.Context, req *Chat
 }
 
 func (p *tracingProvider) startGeneration(ctx context.Context, req *ChatRequest, toolCount int) (context.Context, trace.Span) {
-	ctx, span := p.tracer.Start(ctx, "llm.generation")
-	attrs := []attribute.KeyValue{
-		attribute.String(observationTypeKey, "generation"),
-		attribute.String("gen_ai.system", p.inner.Name()),
-	}
+	// The observation marker must be a start-time attribute so llmAwareSampler
+	// can force-sample this span before any SetAttributes call runs.
+	ctx, span := p.tracer.Start(ctx, "llm.generation",
+		trace.WithAttributes(attribute.String(tracing.LangfuseObservationTypeKey, "generation")))
+	var attrs []attribute.KeyValue
 	if req.ModelHint != "" {
 		attrs = append(attrs, attribute.String("gen_ai.request.model_hint", req.ModelHint))
 	}
@@ -71,22 +67,34 @@ func (p *tracingProvider) startGeneration(ctx context.Context, req *ChatRequest,
 			attrs = append(attrs, attribute.String("gen_ai.prompt", msg))
 		}
 	}
-	span.SetAttributes(attrs...)
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
 	return ctx, span
 }
 
 func (p *tracingProvider) finish(span trace.Span, resp *ChatResponse, err error) {
 	if err != nil {
+		// gen_ai.system is set exactly once per span; on error we only know the
+		// provider we dispatched to.
+		span.SetAttributes(attribute.String("gen_ai.system", p.inner.Name()))
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return
 	}
 	if resp == nil {
+		span.SetAttributes(attribute.String("gen_ai.system", p.inner.Name()))
 		return
 	}
+	// resp.Provider is the provider that actually served the request (accurate
+	// after failover); fall back to the dispatched provider name if unset.
+	system := resp.Provider
+	if system == "" {
+		system = p.inner.Name()
+	}
 	span.SetAttributes(
+		attribute.String("gen_ai.system", system),
 		attribute.String("gen_ai.response.model", resp.Model),
-		attribute.String("gen_ai.system", resp.Provider),
 		attribute.Int("gen_ai.usage.total_tokens", resp.TokensUsed),
 		attribute.String("gen_ai.response.finish_reason", resp.FinishReason),
 		attribute.Int("gen_ai.response.tool_calls", len(resp.ToolCalls)),
@@ -97,18 +105,17 @@ func (p *tracingProvider) finish(span trace.Span, resp *ChatResponse, err error)
 }
 
 // streamingTracingProvider adds StreamProvider support when the inner provider
-// streams. The streamed generation span captures latency + provider; token
-// usage is captured on the non-streamed tool-round generations.
+// streams.
 type streamingTracingProvider struct {
 	*tracingProvider
 	streamer StreamProvider
 }
 
 func (p *streamingTracingProvider) ChatCompletionStream(ctx context.Context, req *ChatRequest, tools []Tool, ch chan<- StreamChunk) error {
-	ctx, span := p.tracer.Start(ctx, "llm.generation.stream")
+	ctx, span := p.tracer.Start(ctx, "llm.generation.stream",
+		trace.WithAttributes(attribute.String(tracing.LangfuseObservationTypeKey, "generation")))
 	defer span.End()
 	span.SetAttributes(
-		attribute.String(observationTypeKey, "generation"),
 		attribute.String("gen_ai.system", p.inner.Name()),
 		attribute.Bool("gen_ai.streaming", true),
 	)
@@ -117,7 +124,30 @@ func (p *streamingTracingProvider) ChatCompletionStream(ctx context.Context, req
 			span.SetAttributes(attribute.String("gen_ai.prompt", msg))
 		}
 	}
-	err := p.streamer.ChatCompletionStream(ctx, req, tools, ch)
+
+	// Proxy the stream so we can read token usage off the final chunk without
+	// altering the contract: the inner streamer closes `proxy`; we forward each
+	// chunk to the caller's `ch` and close `ch` ourselves when the stream ends.
+	proxy := make(chan StreamChunk)
+	drained := make(chan struct{})
+	var tokens int
+	go func() {
+		defer close(drained)
+		defer close(ch)
+		for chunk := range proxy {
+			if chunk.TokensUsed > tokens {
+				tokens = chunk.TokensUsed
+			}
+			ch <- chunk
+		}
+	}()
+
+	err := p.streamer.ChatCompletionStream(ctx, req, tools, proxy)
+	<-drained
+
+	if tokens > 0 {
+		span.SetAttributes(attribute.Int("gen_ai.usage.total_tokens", tokens))
+	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

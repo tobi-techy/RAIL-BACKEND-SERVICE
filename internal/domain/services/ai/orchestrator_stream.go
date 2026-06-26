@@ -11,9 +11,11 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/analytics"
+	"github.com/rail-service/rail_service/pkg/tracing"
 	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -156,11 +158,13 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 	}
 
 	// Root trace span for this turn — groups generations into a Langfuse
-	// session (per conversation) and attributes them to the user.
-	ctx, span := otel.Tracer("miriam.chat").Start(ctx, "miriam.chat")
+	// session (per conversation) and attributes them to the user. The marker is
+	// a start-time attribute so llmAwareSampler force-samples it (and, via the
+	// child generations' own markers, the whole turn) at 100%.
+	ctx, span := otel.Tracer("miriam.chat").Start(ctx, "miriam.chat",
+		trace.WithAttributes(attribute.String(tracing.LangfuseObservationTypeKey, "span")))
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("langfuse.observation.type", "span"),
 		attribute.String("langfuse.user.id", userID.String()),
 		attribute.StringSlice("langfuse.tags", []string{"miriam", "chat"}),
 	)

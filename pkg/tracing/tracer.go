@@ -76,6 +76,13 @@ func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) (func(conte
 		sampler = sdktrace.TraceIDRatioBased(cfg.SampleRate)
 	}
 
+	// LLM spans must be captured at 100% for observability/cost/eval, so force
+	// them through regardless of the (often low) app-trace sample rate. Only
+	// applied when Langfuse is configured; everything else keeps the base rate.
+	if langfuseConfigured {
+		sampler = llmAwareSampler{base: sampler}
+	}
+
 	tpOpts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
