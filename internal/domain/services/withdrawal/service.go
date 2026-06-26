@@ -202,10 +202,10 @@ type WithdrawalService struct {
 }
 
 type CryptoTransferResult struct {
-	TxHash         string
-	TransferID     string
-	State          string
-	IntentAddress  string // ChainRails intent address for polling
+	TxHash        string
+	TransferID    string
+	State         string
+	IntentAddress string // ChainRails intent address for polling
 }
 
 // NewWithdrawalService creates a new withdrawal service
@@ -409,6 +409,23 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 	}
 	if err := sl.MarkEmergencyWithdrawn(ctx, userID); err != nil {
 		s.logger.Error("failed to mark cycles as emergency withdrawn", zap.String("user_id", userID.String()), zap.Error(err))
+	}
+
+	// Reconcile on-chain custody with the ledger: the stash just dropped by `total`, so redeem
+	// that from Blend back into spendable custody. Non-blocking — the user already has their
+	// spending balance and the funds stay on-platform; the Blend reconciliation worker resumes
+	// the redemption if this attempt fails. (The crypto-withdrawal path redeems synchronously
+	// because funds leave the platform there; here they don't, so a background redeem is fine.)
+	if s.stashYieldRedeemer != nil {
+		total := total
+		go func() {
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := s.stashYieldRedeemer.RedeemStashYield(rctx, userID, total, "emergency-redeem-"+idempotencyKey); err != nil {
+				s.logger.Error("emergency stash-to-spending: async Blend redemption failed (worker will retry)",
+					zap.String("user_id", userID.String()), zap.String("amount", total.String()), zap.Error(err))
+			}
+		}()
 	}
 	if s.notificationService != nil {
 		_ = s.notificationService.NotifyEmergencyWithdrawal(ctx, userID, amount, fee)
@@ -2665,11 +2682,11 @@ func (s *WithdrawalService) failWithdrawal(ctx context.Context, withdrawal *enti
 	}
 
 	analytics.TrackEvent(ctx, withdrawal.UserID.String(), analytics.EventWithdrawalFailed, map[string]any{
-		"withdrawal_id":   withdrawal.ID.String(),
-		"type":            string(withdrawal.WithdrawalType),
-		"amount":          withdrawal.Amount.InexactFloat64(),
-		"currency":        string(withdrawal.Currency),
-		"failure_reason":  reason,
+		"withdrawal_id":  withdrawal.ID.String(),
+		"type":           string(withdrawal.WithdrawalType),
+		"amount":         withdrawal.Amount.InexactFloat64(),
+		"currency":       string(withdrawal.Currency),
+		"failure_reason": reason,
 	})
 
 	return nil
