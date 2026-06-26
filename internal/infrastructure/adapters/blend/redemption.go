@@ -332,31 +332,9 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 // pipeline spends these funds immediately, so we must not mark success unless they are
 // truly present and spendable in the wallet.
 func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
-	// On-chain proof-of-arrival: require the EOA balance to have RISEN by this redemption's
-	// amount (have >= pre_redeem_balance + amount), read via includeAll so bridge-delivered
-	// funds are seen. Stronger than "have >= amount" — each concurrent redemption has its
-	// own pre-snapshot, so they can't all settle against the same funds. Redemptions created
-	// before the snapshot column existed (pre NULL) fall back to the presence check.
-	//
-	// The balance RPC is done BEFORE opening the tx/lock so the critical section doesn't hold
-	// a pooled connection + advisory lock across network time; the value is re-checked inside
-	// the locked tx before we finalize.
-	checkBalance := acct != nil && acct.CircleWalletID != ""
-	var have, required decimal.Decimal
-	if checkBalance {
-		h, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
-		if balErr != nil {
-			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
-		}
-		have = h
-		required = amount.Truncate(6)
-		if red.PreRedeemBalance.Valid {
-			required = red.PreRedeemBalance.Decimal.Add(amount.Truncate(6))
-		}
-		if have.LessThan(required) {
-			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s balance %s < required %s USDC; not finalizing",
-				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6))
-		}
+	required := amount.Truncate(6)
+	if red.PreRedeemBalance.Valid {
+		required = red.PreRedeemBalance.Decimal.Add(amount.Truncate(6))
 	}
 
 	tx, err := r.db.BeginTxx(ctx, nil)
@@ -370,11 +348,26 @@ func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserA
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(red.UserID)); err != nil {
 		return fmt.Errorf("blend: advisory lock for redemption finalize: %w", err)
 	}
-	// Re-validate inside the lock before finalizing — keeps the check atomic with the status
-	// update and position decrement below.
-	if checkBalance && have.LessThan(required) {
-		return fmt.Errorf("blend: redemption %s balance %s < required %s USDC; not finalizing",
-			red.ID, have.StringFixed(6), required.StringFixed(6))
+
+	// On-chain proof-of-arrival: require the EOA balance to have RISEN by this redemption's
+	// amount (have >= pre_redeem_balance + amount), read via includeAll so bridge-delivered
+	// funds are seen. Stronger than "have >= amount" — each concurrent redemption has its own
+	// pre-snapshot, so they can't all settle against the same funds; pre-snapshot NULL (rows
+	// predating the column) falls back to the presence check.
+	//
+	// The balance is read INSIDE the advisory lock so the check is atomic with the status
+	// update + position decrement below: no other finalize for this user can interleave
+	// between the read and the commit. (A small RPC under the per-user lock is acceptable —
+	// redemptions are rare and already serialized per user.)
+	if acct != nil && acct.CircleWalletID != "" {
+		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+		if balErr != nil {
+			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
+		}
+		if have.LessThan(required) {
+			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s balance %s < required %s USDC; not finalizing",
+				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6))
+		}
 	}
 
 	// Mark complete only if still in a non-terminal state (guards against double-apply).

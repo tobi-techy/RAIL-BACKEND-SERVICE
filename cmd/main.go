@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rail-service/rail_service/internal/app"
@@ -214,6 +215,25 @@ func runRecoverFunds(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+
+	// Fail fast with a clear message if required credentials are missing, rather than
+	// surfacing an opaque error mid-recovery. The Circle API key + ChainRails key are needed
+	// even for a dry-run; the entity secret + public key are only needed to move funds.
+	if strings.TrimSpace(cfg.Circle.APIKey) == "" {
+		return fmt.Errorf("recover-funds: CIRCLE_API_KEY is not configured")
+	}
+	if strings.TrimSpace(cfg.ChainRails.APIKey) == "" {
+		return fmt.Errorf("recover-funds: CHAINRAILS_API_KEY is not configured")
+	}
+	if *confirm {
+		if strings.TrimSpace(cfg.Circle.EntitySecret) == "" {
+			return fmt.Errorf("recover-funds: CIRCLE_ENTITY_SECRET is required to move funds (-confirm)")
+		}
+		if strings.TrimSpace(cfg.Circle.PublicKeyPEM) == "" {
+			return fmt.Errorf("recover-funds: CIRCLE_PUBLIC_KEY_PEM is required to move funds (-confirm)")
+		}
+	}
+
 	logger, err := zap.NewProduction()
 	if err != nil {
 		return fmt.Errorf("create logger: %w", err)
