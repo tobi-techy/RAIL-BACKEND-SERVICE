@@ -155,7 +155,7 @@ func (r *DepositRouter) fundBaseEOA(ctx context.Context, route *depositRoute, ne
 }
 
 func (r *DepositRouter) fundSameChain(ctx context.Context, route *depositRoute, sourceWalletID string, need decimal.Decimal) error {
-	tokenID, err := r.circle.GetUSDCTokenID(ctx, sourceWalletID)
+	tokenID, err := r.circle.GetUSDCTokenIDOnchain(ctx, sourceWalletID)
 	if err != nil {
 		return fmt.Errorf("blend: get source USDC token id: %w", err)
 	}
@@ -250,7 +250,7 @@ func (r *DepositRouter) ensureBridgeFunded(ctx context.Context, route *depositRo
 	if !route.BridgeFundAmount.Valid || !route.BridgeFundAmount.Decimal.GreaterThan(decimal.Zero) {
 		return fmt.Errorf("blend: bridge fund amount missing for route %s", route.ID)
 	}
-	tokenID, err := r.circle.GetUSDCTokenID(ctx, sourceWalletID)
+	tokenID, err := r.circle.GetUSDCTokenIDOnchain(ctx, sourceWalletID)
 	if err != nil {
 		return fmt.Errorf("blend: get source USDC token id for bridge: %w", err)
 	}

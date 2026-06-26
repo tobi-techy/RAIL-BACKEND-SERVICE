@@ -48,8 +48,12 @@ const (
 type CircleWalletProvider interface {
 	GetWallet(ctx context.Context, walletID string) (*circlepkg.Wallet, error)
 	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
-	GetTokenBalance(ctx context.Context, walletID string) ([]circlepkg.TokenBalance, error)
-	GetUSDCTokenID(ctx context.Context, walletID string) (string, error)
+	// GetTokenBalanceOnchain / GetUSDCTokenIDOnchain read the TRUE on-chain balance
+	// (includeAll=true). Blend funds arrive in the Base wallet via the ChainRails bridge
+	// contract, and Circle's default indexed balance does not pick those up — so the
+	// funding gate and funding transfers MUST use the on-chain reads or they stall at $0.
+	GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]circlepkg.TokenBalance, error)
+	GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error)
 	ListCircleWalletsByRefID(ctx context.Context, refID string) ([]circlepkg.Wallet, error)
 	TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*circlepkg.Transaction, error)
 }
@@ -536,7 +540,10 @@ func (r *DepositRouter) stepFundAndQuote(ctx context.Context, route *depositRout
 }
 
 func (r *DepositRouter) usdcBalance(ctx context.Context, walletID string) (decimal.Decimal, error) {
-	balances, err := r.circle.GetTokenBalance(ctx, walletID)
+	// On-chain read (includeAll): the stash USDC lands here via the ChainRails bridge
+	// contract, which Circle's indexed balance does not report. Reading the indexed
+	// balance would stall every deposit at "have 0".
+	balances, err := r.circle.GetTokenBalanceOnchain(ctx, walletID)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("blend: get circle balances for %s: %w", walletID, err)
 	}
