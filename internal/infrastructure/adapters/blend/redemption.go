@@ -221,6 +221,25 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 		return fmt.Errorf("blend: mark redemption executing: %w", err)
 	}
 
+	// Snapshot the EOA's on-chain USDC balance BEFORE the withdraw moves any funds, and
+	// persist it once. finalizeRedemption then requires have >= pre_balance + amount, so a
+	// redemption can only settle if the balance actually rose by ITS amount — concurrent
+	// redemptions can't all pass against the same balance. Captured before execution;
+	// resumes reuse the stored value.
+	if !red.PreRedeemBalance.Valid {
+		pre, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+		if balErr != nil {
+			return fmt.Errorf("blend: snapshot pre-redeem EOA balance: %w", balErr)
+		}
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE blend_yield_redemptions SET pre_redeem_eoa_balance = $2, updated_at = NOW()
+			WHERE id = $1 AND pre_redeem_eoa_balance IS NULL
+		`, red.ID, pre); err != nil {
+			return fmt.Errorf("blend: persist pre-redeem balance: %w", err)
+		}
+		red.PreRedeemBalance = decimal.NullDecimal{Decimal: pre, Valid: true}
+	}
+
 	executed, err := r.executor.Execute(ctx, acct.CircleWalletID, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
 		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: acct.EOAAddress, ChainID: acct.ChainID})
 	if err != nil {
@@ -313,26 +332,39 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 // pipeline spends these funds immediately, so we must not mark success unless they are
 // truly present and spendable in the wallet.
 func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
-	// On-chain proof-of-arrival: the EOA must hold at least the redeemed amount (read via
-	// includeAll, so bridge/contract-delivered funds are seen). If not, do NOT finalize —
-	// return an error so the redemption stays in-flight and the caller/worker retries
-	// rather than letting the withdrawal spend funds that aren't there.
-	if acct != nil && acct.CircleWalletID != "" {
-		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
-		if balErr != nil {
-			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
-		}
-		if have.LessThan(amount.Truncate(6)) {
-			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s holds %s < %s USDC; not finalizing",
-				red.ID, acct.CircleWalletID, have.StringFixed(6), amount.Truncate(6).StringFixed(6))
-		}
-	}
-
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("blend: begin redemption finalize tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Serialize check-and-finalize per user (held for the whole tx) so two concurrent
+	// redemptions can't both read the same balance and both pass.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(red.UserID)); err != nil {
+		return fmt.Errorf("blend: advisory lock for redemption finalize: %w", err)
+	}
+
+	// On-chain proof-of-arrival: require the EOA balance to have RISEN by this redemption's
+	// amount (have >= pre_redeem_balance + amount), read via includeAll so bridge-delivered
+	// funds are seen. Stronger than "have >= amount" — each concurrent redemption has its
+	// own pre-snapshot, so they can't all settle against the same funds. Redemptions created
+	// before the snapshot column existed (pre NULL) fall back to the presence check. If the
+	// balance hasn't risen enough, do NOT finalize: return an error so the redemption stays
+	// in-flight and retries rather than letting the withdrawal spend funds that aren't there.
+	if acct != nil && acct.CircleWalletID != "" {
+		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+		if balErr != nil {
+			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
+		}
+		required := amount.Truncate(6)
+		if red.PreRedeemBalance.Valid {
+			required = red.PreRedeemBalance.Decimal.Add(amount.Truncate(6))
+		}
+		if have.LessThan(required) {
+			return fmt.Errorf("blend: redemption %s reported SETTLED but EOA %s balance %s < required %s USDC; not finalizing",
+				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6))
+		}
+	}
 
 	// Mark complete only if still in a non-terminal state (guards against double-apply).
 	res, err := tx.ExecContext(ctx, `
@@ -403,12 +435,17 @@ func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID,
 	return nil
 }
 
+// userAdvisoryLockKey derives a stable 64-bit Postgres advisory-lock key from a user ID,
+// used to serialize per-user redemption checks and finalizations.
+func userAdvisoryLockKey(userID uuid.UUID) int64 {
+	return int64(userID[0])<<56 | int64(userID[1])<<48 | int64(userID[2])<<40 | int64(userID[3])<<32 |
+		int64(userID[4])<<24 | int64(userID[5])<<16 | int64(userID[6])<<8 | int64(userID[7])
+}
+
 func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currentRedemptionID uuid.UUID) error {
 	// Use advisory lock on user to serialize concurrent redemption checks.
 	// This prevents two concurrent RedeemStashYield calls from both passing.
-	lockKey := int64(userID[0])<<56 | int64(userID[1])<<48 | int64(userID[2])<<40 | int64(userID[3])<<32 |
-		int64(userID[4])<<24 | int64(userID[5])<<16 | int64(userID[6])<<8 | int64(userID[7])
-	if _, err := r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey); err != nil {
+	if _, err := r.db.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, userAdvisoryLockKey(userID)); err != nil {
 		return fmt.Errorf("blend: advisory lock for redemption check: %w", err)
 	}
 	var available decimal.Decimal
@@ -451,7 +488,7 @@ func (r *DepositRouter) getRedemption(ctx context.Context, idempotencyKey string
 	err := r.db.GetContext(ctx, &red, `
 		SELECT id, user_id, blend_account_id, amount, destination_chain_id,
 			intent_id, intent_status, quote_payload, tx_hash, submitted_at, settled_at,
-			idempotency_key, status, attempts, last_error, next_retry_at
+			idempotency_key, status, attempts, last_error, next_retry_at, pre_redeem_eoa_balance
 		FROM blend_yield_redemptions WHERE idempotency_key = $1
 	`, idempotencyKey)
 	if err == sql.ErrNoRows {
