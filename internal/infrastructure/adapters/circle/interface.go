@@ -15,6 +15,11 @@ type Client interface {
 	ListWalletsByRefID(ctx context.Context, refID string) ([]Wallet, error)
 	GetTokenBalance(ctx context.Context, walletID string) ([]TokenBalance, error)
 	GetUSDCTokenID(ctx context.Context, walletID string) (string, error)
+	// On-chain (includeAll=true) variants — read the true on-chain balance instead of
+	// Circle's indexed balance, which does not pick up tokens delivered by an external
+	// bridge/contract. Required wherever correctness depends on bridge-delivered funds.
+	GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]TokenBalance, error)
+	GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error)
 
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error)
