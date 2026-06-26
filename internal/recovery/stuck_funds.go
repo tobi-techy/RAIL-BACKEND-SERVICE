@@ -153,7 +153,10 @@ func onchainUSDC(ctx context.Context, cc *circle.HTTPClient, walletID string) (s
 	}
 	for _, b := range balances {
 		if strings.EqualFold(b.Token.Symbol, "USDC") {
-			amt, _ := decimal.NewFromString(b.Amount)
+			amt, err := decimal.NewFromString(b.Amount)
+			if err != nil {
+				return "", decimal.Zero, fmt.Errorf("parse USDC amount %q: %w", b.Amount, err)
+			}
 			return b.Token.ID, amt, nil
 		}
 	}

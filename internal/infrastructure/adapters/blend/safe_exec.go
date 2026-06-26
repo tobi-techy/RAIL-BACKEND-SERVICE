@@ -1,6 +1,7 @@
 package blend
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -58,9 +59,13 @@ func encodeMultiSendData(steps []ActionStep) ([]byte, error) {
 		if s.IsDelegateCall {
 			op = 1
 		}
+		valueWord, err := leftPad32(value.Bytes())
+		if err != nil {
+			return nil, fmt.Errorf("multisend step %d value: %w", i, err)
+		}
 		packed = append(packed, op)
-		packed = append(packed, to...)                       // 20 bytes
-		packed = append(packed, leftPad32(value.Bytes())...) // 32 bytes
+		packed = append(packed, to...)        // 20 bytes
+		packed = append(packed, valueWord...) // 32 bytes
 		packed = append(packed, uint256Bytes(uint64(len(data)))...)
 		packed = append(packed, data...)
 	}
@@ -81,6 +86,10 @@ func encodeSafeExecTransaction(multiSendCalldata []byte, ownerEOA string) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	toWord, err := leftPad32(to)
+	if err != nil {
+		return nil, err
+	}
 	sig, err := preValidatedSignature(ownerEOA)
 	if err != nil {
 		return nil, err
@@ -92,7 +101,7 @@ func encodeSafeExecTransaction(multiSendCalldata []byte, ownerEOA string) ([]byt
 	sigOffset := headLen + 32 + len(rightPad32(multiSendCalldata))
 
 	out := mustHex(selectorExecTransaction)
-	out = append(out, leftPad32(to)...)                    // 1: to = MultiSend
+	out = append(out, toWord...)                           // 1: to = MultiSend
 	out = append(out, uint256Bytes(0)...)                  // 2: value
 	out = append(out, uint256Bytes(uint64(dataOffset))...) // 3: data offset
 	out = append(out, uint256Bytes(1)...)                  // 4: operation = 1 (delegatecall)
@@ -119,8 +128,12 @@ func preValidatedSignature(ownerEOA string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("owner address: %w", err)
 	}
+	r, err := leftPad32(to)
+	if err != nil {
+		return nil, err
+	}
 	sig := make([]byte, 0, 65)
-	sig = append(sig, leftPad32(to)...)    // r = owner (left-padded)
+	sig = append(sig, r...)                // r = owner (left-padded)
 	sig = append(sig, make([]byte, 32)...) // s = 0
 	sig = append(sig, byte(1))             // v = 1
 	return sig, nil
@@ -172,20 +185,24 @@ func weiValue(s string) (*big.Int, error) {
 	return v, nil
 }
 
-// uint256Bytes returns a 32-byte big-endian encoding of n.
+// uint256Bytes returns a 32-byte big-endian encoding of n. n is a uint64, so it always
+// fits a word — no overflow path, no error.
 func uint256Bytes(n uint64) []byte {
-	return leftPad32(new(big.Int).SetUint64(n).Bytes())
+	out := make([]byte, 32)
+	binary.BigEndian.PutUint64(out[24:], n)
+	return out
 }
 
-// leftPad32 left-pads b to 32 bytes (for words/addresses/uint256). Panics if len>32.
-func leftPad32(b []byte) []byte {
+// leftPad32 left-pads b into a 32-byte word. It returns an error rather than panicking
+// when b exceeds 32 bytes, so a malformed value can never crash transaction encoding on
+// the money path.
+func leftPad32(b []byte) ([]byte, error) {
 	if len(b) > 32 {
-		// Should never happen for our inputs; guard rather than silently truncate.
-		panic("leftPad32: input longer than 32 bytes")
+		return nil, fmt.Errorf("value %x exceeds 32 bytes", b)
 	}
 	out := make([]byte, 32)
 	copy(out[32-len(b):], b)
-	return out
+	return out, nil
 }
 
 // rightPad32 right-pads b to a multiple of 32 bytes (for dynamic bytes payloads).

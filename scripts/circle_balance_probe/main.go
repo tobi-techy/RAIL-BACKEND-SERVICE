@@ -170,10 +170,13 @@ func balanceOfUSDC(ctx context.Context, rpcURL, token, holder string) (decimal.D
 		return decimal.Zero, fmt.Errorf("invalid holder address %q", holder)
 	}
 	data := balanceOfSelector + strings.Repeat("0", 24) + h
-	reqBody, _ := json.Marshal(map[string]any{
+	reqBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "eth_call",
 		"params": []any{map[string]string{"to": token, "data": data}, "latest"},
 	})
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("marshal rpc request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return decimal.Zero, err
@@ -184,7 +187,10 @@ func balanceOfUSDC(ctx context.Context, rpcURL, token, holder string) (decimal.D
 		return decimal.Zero, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("read rpc response: %w", err)
+	}
 	var out struct {
 		Result string `json:"result"`
 		Error  *struct {

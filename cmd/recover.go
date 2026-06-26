@@ -43,7 +43,10 @@ func runRecoverFunds(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	logger, _ := zap.NewProduction()
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return fmt.Errorf("create logger: %w", err)
+	}
 
 	cc, err := circleadapter.NewHTTPClient(circleadapter.Config{
 		APIKey:       cfg.Circle.APIKey,
