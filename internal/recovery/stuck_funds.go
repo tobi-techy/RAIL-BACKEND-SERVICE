@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circle "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/shopspring/decimal"
@@ -122,9 +123,11 @@ func RecoverStuckBaseToSolana(ctx context.Context, cc *circle.HTTPClient, cr *ch
 	// 3. Fund the intent: same-chain Circle transfer Base wallet -> intent address.
 	fmt.Fprintf(out, "Funding intent: Circle transfer %s USDC -> %s ...\n", fundAmount.StringFixed(6), intent.IntentAddress)
 	// Stable idempotency key across re-runs (incl. an app restart that re-triggers the boot
-	// recovery): keyed on wallet + requested amount, NOT the per-run intent id — so Circle
-	// dedupes a repeat funding transfer and can never double-send the funds.
-	idem := fmt.Sprintf("recover-%s-%s", p.WalletID, p.DestAmount.StringFixed(6))
+	// recovery): a deterministic UUID derived from wallet + requested amount (NOT the per-run
+	// intent id). Circle requires the idempotencyKey to be UUID-format, and a stable derivation
+	// means a repeat funding transfer is deduped — never a double-send.
+	idem := uuid.NewSHA1(uuid.NameSpaceOID,
+		[]byte(fmt.Sprintf("recover-%s-%s", p.WalletID, p.DestAmount.StringFixed(6)))).String()
 	tx, err := adapter.TransferUSDCWithIdempotency(ctx, p.WalletID, tokenID, intent.IntentAddress, fundAmount.StringFixed(6), idem)
 	if err != nil {
 		return fmt.Errorf("circle fund transfer failed: %w", err)
