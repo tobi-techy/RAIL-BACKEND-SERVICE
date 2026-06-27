@@ -155,7 +155,14 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 	}
 
 	// 4. Poll until SETTLED within the deadline.
-	return r.awaitWithdrawSettlement(ctx, acct, red, amount)
+	if err := r.awaitWithdrawSettlement(ctx, acct, red, amount); err != nil {
+		return err
+	}
+
+	// 5. Bridge redeemed USDC from Base EOA → user's Solana wallet (best-effort, non-blocking).
+	go r.sweepToSolana(context.Background(), acct, amount, red.ID)
+
+	return nil
 }
 
 func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, externalRef string) (*Session, error) {
