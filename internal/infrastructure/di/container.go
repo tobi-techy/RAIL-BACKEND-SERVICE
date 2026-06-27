@@ -4882,8 +4882,8 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	// may be nil when Paj is unconfigured; the ramp service handles a nil fallback.
 	if c.Config.RampHub.APIKey != "" {
 		if c.Config.RampHub.WebhookSecret == "" {
-			c.ZapLog.Error("SECURITY: RampHub webhook_secret is not configured — cannot authenticate inbound webhooks, skipping RampHub initialization")
-		} else {
+			c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is not configured — cannot authenticate inbound webhooks")
+		}
 		ramphubClient, err := ramphubadapter.NewClient(ramphubadapter.Config{
 			APIKey:        c.Config.RampHub.APIKey,
 			BaseURL:       c.Config.RampHub.BaseURL,
@@ -4921,7 +4921,6 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		c.RampHandlers = fundinghandlers.NewRampHandlers(rampService, c.ZapLog)
 		c.ZapLog.Info("RampHub on/off ramp initialized (primary, Paj fallback)")
-		}
 	} else {
 		c.ZapLog.Warn("RampHub API key is empty, skipping initialization")
 	}
