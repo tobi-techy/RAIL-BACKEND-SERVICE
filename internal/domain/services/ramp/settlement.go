@@ -254,7 +254,7 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))
 		// Unclaim so the recovery worker can retry the reversal on its next sweep.
-		if _, unclaimErr := s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
+		if _, unclaimErr := s.db.ExecContext(context.Background(), `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
 			s.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires manual intervention",
 				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
 				zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))

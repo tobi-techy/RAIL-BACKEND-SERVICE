@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
@@ -28,10 +29,11 @@ func TestSandboxLive(t *testing.T) {
 		t.Skip("RAMPHUB_API_KEY not set; skipping live sandbox test")
 	}
 
-	client, _ := NewClient(Config{
+	client, err := NewClient(Config{
 		APIKey:  apiKey,
 		BaseURL: os.Getenv("RAMPHUB_BASE_URL"),
 	}, zap.NewNop())
+	require.NoError(t, err, "failed to create ramphub client")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

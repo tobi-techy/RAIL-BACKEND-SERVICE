@@ -41,6 +41,10 @@ func NewClient(cfg Config, logger *zap.Logger) (*Client, error) {
 		logger.Error("RampHub APIKey is required but was not provided")
 		return nil, fmt.Errorf("ramphub: APIKey is required")
 	}
+	if cfg.WebhookSecret == "" {
+		logger.Error("RampHub WebhookSecret is required but was not provided")
+		return nil, fmt.Errorf("ramphub: WebhookSecret is required for secure webhook processing")
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = defaultBaseURL
 	}
