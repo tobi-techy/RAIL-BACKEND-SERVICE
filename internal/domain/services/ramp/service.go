@@ -483,9 +483,15 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	// Estimate USDC: fiat/rate + 2% slippage buffer, capped at $50 to prevent
 	// over-holding on large orders. The 0.5% developer fee is accrued by RampHub
 	// on Rail's behalf (reduces NGN payout, not the USDC hold).
+	// Tiered cap: $50 base for orders ≤$2,500; for larger orders add 0.5% of
+	// the amount above $2,500 to accommodate rate volatility on high-value withdrawals.
 	baseUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
 	slippageBuf := baseUSDC.Mul(decimal.NewFromFloat(0.02))
 	maxSlippage := decimal.NewFromFloat(50)
+	tier := decimal.NewFromFloat(2500)
+	if baseUSDC.GreaterThan(tier) {
+		maxSlippage = maxSlippage.Add(baseUSDC.Sub(tier).Mul(decimal.NewFromFloat(0.005)))
+	}
 	if slippageBuf.GreaterThan(maxSlippage) {
 		slippageBuf = maxSlippage
 	}
@@ -845,7 +851,7 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 		return nil
 	}
 	if err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-		"ramphub-offramp-"+txID, holdAmount, map[string]interface{}{
+		entities.OfframpReversalKey(txID), holdAmount, map[string]interface{}{
 			"provider": ProviderRampHub, "type": "offramp_failure_reversal", "ramphub_tx_id": txID, "fee_revenue_posted": true,
 		}); err != nil {
 		s.logger.Error("CRITICAL: failed to reverse RampHub offramp hold after failure", zap.Error(err), zap.String("ramphub_tx_id", txID))

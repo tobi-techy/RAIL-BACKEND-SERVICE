@@ -240,6 +240,9 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID); dbErr != nil {
 		s.logger.Error("failed to mark RampHub order as failed",
 			zap.Error(dbErr), zap.String("ramphub_tx_id", txID))
+		// Do not proceed with ledger reversal — the recovery worker will handle
+		// it once the database is accessible again.
+		return
 	}
 
 	if s.ledger == nil {

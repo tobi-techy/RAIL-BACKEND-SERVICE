@@ -4919,7 +4919,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.RampHandlers = fundinghandlers.NewRampHandlers(rampService, c.ZapLog)
 		c.ZapLog.Info("RampHub on/off ramp initialized (primary, Paj fallback)")
 	} else if c.Config.RampHub.APIKey != "" {
-		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is not configured — cannot authenticate inbound webhooks")
+		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is required when RampHub API key is configured — refusing to start with unauthenticated webhooks")
 	} else {
 		c.ZapLog.Warn("RampHub API key is empty, skipping initialization")
 	}
