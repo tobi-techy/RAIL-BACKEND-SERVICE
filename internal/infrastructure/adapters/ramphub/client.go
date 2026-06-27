@@ -36,9 +36,10 @@ type Client struct {
 	logger     *zap.Logger
 }
 
-func NewClient(cfg Config, logger *zap.Logger) *Client {
+func NewClient(cfg Config, logger *zap.Logger) (*Client, error) {
 	if cfg.APIKey == "" {
-		logger.Fatal("RampHub APIKey is required but was not provided")
+		logger.Error("RampHub APIKey is required but was not provided")
+		return nil, fmt.Errorf("ramphub: APIKey is required")
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = defaultBaseURL
@@ -53,7 +54,7 @@ func NewClient(cfg Config, logger *zap.Logger) *Client {
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: cfg.Timeout},
 		logger:     logger,
-	}
+	}, nil
 }
 
 // WebhookSecret returns the configured webhook signing secret.

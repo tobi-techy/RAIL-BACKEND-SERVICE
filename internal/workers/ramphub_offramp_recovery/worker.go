@@ -247,7 +247,11 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, txID string, userID uuid
 			"provider": "ramphub", "type": reasonType, "ramphub_tx_id": txID, "fiat_amount": fiatAmount,
 		}); err != nil {
 		// Unclaim so the next worker sweep can retry the reversal.
-		w.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID)
+		if _, unclaimErr := w.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
+			w.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires immediate manual intervention",
+				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
+				zap.String("ramphub_tx_id", txID), zap.String("amount", claimedHold.String()))
+		}
 		return fmt.Errorf("reverse hold: %w", err)
 	}
 	w.logger.Info("RampHub offramp auto-reversed", zap.String("ramphub_tx_id", txID), zap.String("amount", claimedHold.String()))

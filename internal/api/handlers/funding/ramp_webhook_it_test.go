@@ -50,7 +50,7 @@ func TestRampWebhookIntegration(t *testing.T) {
 	}
 
 	const secret = "whsec_integration_test"
-	client := ramphub.NewClient(ramphub.Config{APIKey: "rh_test_x", WebhookSecret: secret}, zap.NewNop())
+	client, _ := ramphub.NewClient(ramphub.Config{APIKey: "rh_test_x", WebhookSecret: secret}, zap.NewNop())
 	svc := ramp.NewService(db, client, nil, nil, zap.NewNop())
 	h := NewRampHandlers(svc, zap.NewNop())
 

@@ -4882,13 +4882,16 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	// may be nil when Paj is unconfigured; the ramp service handles a nil fallback.
 	if c.Config.RampHub.APIKey != "" {
 		if c.Config.RampHub.WebhookSecret == "" {
-			c.ZapLog.Warn("SECURITY: RampHub webhook_secret is not configured — inbound webhooks will be unauthenticated")
+			c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is not configured — cannot authenticate inbound webhooks")
 		}
-		ramphubClient := ramphubadapter.NewClient(ramphubadapter.Config{
+		ramphubClient, err := ramphubadapter.NewClient(ramphubadapter.Config{
 			APIKey:        c.Config.RampHub.APIKey,
 			BaseURL:       c.Config.RampHub.BaseURL,
 			WebhookSecret: c.Config.RampHub.WebhookSecret,
 		}, c.ZapLog)
+		if err != nil {
+			c.ZapLog.Fatal("failed to initialize RampHub client", zap.Error(err))
+		}
 		rampService := rampsvc.NewService(sqlxDB, ramphubClient, pajService, c.RedisClient, c.ZapLog)
 		rampService.SetDeveloperFeePercent(c.Config.RampHub.DeveloperFeePercent)
 		rampService.SetLedger(&WithdrawalLedgerAdapter{ledgerService: c.LedgerService})

@@ -28,7 +28,7 @@ func TestSandboxLive(t *testing.T) {
 		t.Skip("RAMPHUB_API_KEY not set; skipping live sandbox test")
 	}
 
-	client := NewClient(Config{
+	client, _ := NewClient(Config{
 		APIKey:  apiKey,
 		BaseURL: os.Getenv("RAMPHUB_BASE_URL"),
 	}, zap.NewNop())

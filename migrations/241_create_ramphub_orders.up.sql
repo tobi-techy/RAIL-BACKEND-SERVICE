@@ -1,3 +1,19 @@
+-- Pre-migration safety check: if the table already exists, verify no duplicate
+-- deposit_id values exist that would violate the UNIQUE constraint. If duplicates
+-- are found, this DO block raises an exception requiring manual cleanup first.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ramphub_orders') THEN
+        IF EXISTS (
+            SELECT deposit_id FROM ramphub_orders
+            WHERE deposit_id IS NOT NULL
+            GROUP BY deposit_id HAVING COUNT(*) > 1
+        ) THEN
+            RAISE EXCEPTION 'MIGRATION BLOCKED: duplicate deposit_id values exist in ramphub_orders. Manual cleanup required before adding UNIQUE constraint.';
+        END IF;
+    END IF;
+END $$;
+
 -- RampHub on/off ramp orders.
 -- RampHub is a best-rate aggregator (one API, routes across many providers).
 -- This table tracks onramp (buy) and offramp (sell) orders for reconciliation,

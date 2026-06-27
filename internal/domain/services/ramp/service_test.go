@@ -98,7 +98,7 @@ func TestGetBestQuoteReturnsRampHubQuote(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL}, zap.NewNop())
+	client, _ := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL}, zap.NewNop())
 	s := NewService(nil, client, nil, nil, zap.NewNop())
 
 	q, err := s.GetBestQuote(context.Background(), "onramp", 10000, 0, "NGN")
@@ -116,7 +116,7 @@ func TestGetBestQuoteErrorsWithoutProviders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL, MaxRetries: 0}, zap.NewNop())
+	client, _ := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL, MaxRetries: 0}, zap.NewNop())
 	s := NewService(nil, client, nil, nil, zap.NewNop())
 
 	_, err := s.GetBestQuote(context.Background(), "offramp", 0, 5, "NGN")

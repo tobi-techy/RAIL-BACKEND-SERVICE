@@ -21,7 +21,7 @@ func TestSandboxLifecycle(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("RAMPHUB_API_KEY not set; skipping live sandbox lifecycle test")
 	}
-	client := NewClient(Config{APIKey: apiKey, BaseURL: os.Getenv("RAMPHUB_BASE_URL")}, zap.NewNop())
+	client, _ := NewClient(Config{APIKey: apiKey, BaseURL: os.Getenv("RAMPHUB_BASE_URL")}, zap.NewNop())
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
 

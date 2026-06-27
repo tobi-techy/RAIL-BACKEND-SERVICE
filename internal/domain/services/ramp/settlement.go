@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -40,7 +41,7 @@ func (s *Service) executeCircleTransferToRampHub(userID uuid.UUID, order *ramphu
 		if r := recover(); r != nil {
 			s.logger.Error("PANIC in executeCircleTransferToRampHub — reversing hold",
 				zap.Any("panic", r), zap.String("ramphub_tx_id", order.TransactionID))
-			ctx, cancel := contextWithTimeout()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			s.reverseHold(ctx, userID, order.TransactionID, totalHold, railFee, "goroutine_panic")
 		}
@@ -253,6 +254,10 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))
 		// Unclaim so the recovery worker can retry the reversal on its next sweep.
-		s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID)
+		if _, unclaimErr := s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
+			s.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires manual intervention",
+				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
+				zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))
+		}
 	}
 }
