@@ -488,9 +488,9 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	baseUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
 	slippageBuf := baseUSDC.Mul(decimal.NewFromFloat(0.02))
 	maxSlippage := decimal.NewFromFloat(50)
-	tier := decimal.NewFromFloat(2500)
-	if baseUSDC.GreaterThan(tier) {
-		maxSlippage = maxSlippage.Add(baseUSDC.Sub(tier).Mul(decimal.NewFromFloat(0.005)))
+	tierFiat := decimal.NewFromFloat(2500)
+	if decimal.NewFromFloat(fiatAmount).GreaterThan(tierFiat) {
+		maxSlippage = maxSlippage.Add(decimal.NewFromFloat(fiatAmount).Sub(tierFiat).Div(decimal.NewFromFloat(quote.Rate)).Mul(decimal.NewFromFloat(0.005)))
 	}
 	if slippageBuf.GreaterThan(maxSlippage) {
 		slippageBuf = maxSlippage
