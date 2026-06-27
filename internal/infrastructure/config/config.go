@@ -1561,6 +1561,12 @@ func validate(config *Config) error {
 		return err
 	}
 
+	if config.RampHub.APIKey != "" {
+		if config.RampHub.DeveloperFeePercent < 0 || config.RampHub.DeveloperFeePercent > 100 {
+			return fmt.Errorf("ramphub.developer_fee_percent must be between 0 and 100, got %.4f", config.RampHub.DeveloperFeePercent)
+		}
+	}
+
 	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {
 		if strings.TrimSpace(config.KYC.APIKey) == "" {
 			return fmt.Errorf("sumsub app token is required when kyc.provider=sumsub")

@@ -37,6 +37,9 @@ type Client struct {
 }
 
 func NewClient(cfg Config, logger *zap.Logger) *Client {
+	if cfg.APIKey == "" {
+		logger.Fatal("RampHub APIKey is required but was not provided")
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = defaultBaseURL
 	}
@@ -188,7 +191,8 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			c.logger.Warn("RampHub API error", zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)), zap.String("path", path))
+			// Body may contain PII / credentials — keep out of logs; callers have the APIError.
+			c.logger.Warn("RampHub API error", zap.Int("status", resp.StatusCode), zap.String("path", path))
 			return &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 

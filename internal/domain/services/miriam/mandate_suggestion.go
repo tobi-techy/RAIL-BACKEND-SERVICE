@@ -11,12 +11,20 @@ import (
 	"go.uber.org/zap"
 )
 
+// ErrSuggestionNotFound is returned when a suggestion does not exist for the
+// given user or has already been accepted/dismissed.
+var ErrSuggestionNotFound = fmt.Errorf("suggestion not found or already actioned")
+
 // MandateSuggestionRepository stores and retrieves mandate suggestions.
 type MandateSuggestionRepository interface {
 	CreateSuggestion(ctx context.Context, s *entities.MiriamMandateSuggestion) error
 	ListPendingSuggestions(ctx context.Context, userID uuid.UUID) ([]entities.MiriamMandateSuggestion, error)
-	DismissSuggestion(ctx context.Context, suggestionID uuid.UUID) error
-	AcceptSuggestion(ctx context.Context, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error)
+	// DismissSuggestion atomically verifies ownership (userID + pending status) and
+	// marks the suggestion dismissed in a single query — no separate pre-check needed.
+	DismissSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error
+	// AcceptSuggestion atomically verifies ownership (userID + pending status) and
+	// creates the mandate in a transaction — no separate pre-check needed.
+	AcceptSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error)
 }
 
 // MandateProvider checks whether a user already has an active mandate of a given type.
@@ -273,47 +281,21 @@ func (e *MandateSuggestionEngine) ListSuggestions(ctx context.Context, userID uu
 }
 
 // Accept converts a pending suggestion into an active mandate.
-// Returns an error if the suggestion does not belong to the user or is not pending.
+// Ownership and pending-status checks are performed atomically in the repository.
 func (e *MandateSuggestionEngine) Accept(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error) {
 	if e.repo == nil {
 		return nil, fmt.Errorf("suggestion service unavailable")
 	}
-	suggestions, err := e.repo.ListPendingSuggestions(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	found := false
-	for _, s := range suggestions {
-		if s.ID == suggestionID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, fmt.Errorf("suggestion not found or already actioned")
-	}
-	mandate, err := e.repo.AcceptSuggestion(ctx, suggestionID)
-	if err != nil {
-		return nil, err
-	}
-	return mandate, nil
+	return e.repo.AcceptSuggestion(ctx, userID, suggestionID)
 }
 
 // Dismiss marks a suggestion as dismissed for the user.
+// Ownership and pending-status checks are performed atomically in the repository.
 func (e *MandateSuggestionEngine) Dismiss(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error {
 	if e.repo == nil {
 		return fmt.Errorf("suggestion service unavailable")
 	}
-	suggestions, err := e.repo.ListPendingSuggestions(ctx, userID)
-	if err != nil {
-		return err
-	}
-	for _, s := range suggestions {
-		if s.ID == suggestionID {
-			return e.repo.DismissSuggestion(ctx, suggestionID)
-		}
-	}
-	return fmt.Errorf("suggestion not found or already actioned")
+	return e.repo.DismissSuggestion(ctx, userID, suggestionID)
 }
 
 func (e *MandateSuggestionEngine) hasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) bool {

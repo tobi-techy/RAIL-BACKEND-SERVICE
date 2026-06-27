@@ -133,6 +133,6 @@ func pollUntilTerminal(ctx context.Context, t *testing.T, client *Client, txID s
 		}
 		time.Sleep(5 * time.Second)
 	}
-	t.Logf("  poll timed out after %s (last status=%s)", max, last)
-	return tx
+	t.Fatalf("  poll timed out after %s (last status=%s)", max, last)
+	return nil // unreachable; t.Fatalf stops the test
 }

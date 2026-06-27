@@ -232,7 +232,7 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, txID string, userID uuid
 		UPDATE ramphub_orders
 		SET status = 'failed', deposit_id = gen_random_uuid(), last_webhook_status = $2, updated_at = NOW()
 		WHERE ramphub_transaction_id = $1 AND status IN ('pending','processing') AND deposit_id IS NULL
-		RETURNING COALESCE(hold_amount, token_amount), fiat_amount`, txID, "auto-failed:"+reasonType).Scan(&claimedHold, &fiatAmount)
+		RETURNING COALESCE(hold_amount, token_amount, 0), fiat_amount`, txID, "auto-failed:"+reasonType).Scan(&claimedHold, &fiatAmount)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
@@ -246,6 +246,8 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, txID string, userID uuid
 		"ramphub-offramp-"+txID, claimedHold, map[string]interface{}{
 			"provider": "ramphub", "type": reasonType, "ramphub_tx_id": txID, "fiat_amount": fiatAmount,
 		}); err != nil {
+		// Unclaim so the next worker sweep can retry the reversal.
+		w.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID)
 		return fmt.Errorf("reverse hold: %w", err)
 	}
 	w.logger.Info("RampHub offramp auto-reversed", zap.String("ramphub_tx_id", txID), zap.String("amount", claimedHold.String()))

@@ -23,7 +23,7 @@ func (e *APIError) Error() string {
 // IsUnauthorized reports whether err wraps a RampHub 401/403 response.
 func IsUnauthorized(err error) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr) && (apiErr.StatusCode == 401 || apiErr.StatusCode == 403)
+	return errors.As(err, &apiErr) && apiErr != nil && (apiErr.StatusCode == 401 || apiErr.StatusCode == 403)
 }
 
 // IsActiveIntentConflict reports whether err is a RampHub active payment-window

@@ -1,6 +1,7 @@
 package investing
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -332,7 +333,15 @@ func (h *MiriamIntelligenceHandler) AcceptSuggestion(c *gin.Context) {
 	}
 	mandate, err := h.suggestions.Accept(c.Request.Context(), userID, id)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if errors.Is(err, miriamservice.ErrSuggestionNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "suggestion not found"})
+			return
+		}
+		h.logger.Error("accept suggestion failed",
+			zap.String("user_id", userID.String()),
+			zap.String("suggestion_id", id.String()),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to accept suggestion"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": mandate})
@@ -354,7 +363,15 @@ func (h *MiriamIntelligenceHandler) DismissSuggestion(c *gin.Context) {
 		return
 	}
 	if err := h.suggestions.Dismiss(c.Request.Context(), userID, id); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if errors.Is(err, miriamservice.ErrSuggestionNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "suggestion not found"})
+			return
+		}
+		h.logger.Error("dismiss suggestion failed",
+			zap.String("user_id", userID.String()),
+			zap.String("suggestion_id", id.String()),
+			zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to dismiss suggestion"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"dismissed": true})

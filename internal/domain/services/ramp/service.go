@@ -312,9 +312,11 @@ func (s *Service) CreateOnramp(ctx context.Context, userID uuid.UUID, fiatAmount
 
 	// Duplicate protection: reject a same-amount pending onramp in the last 30s.
 	var hasDuplicate bool
-	s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM ramphub_orders WHERE user_id = $1 AND order_type = 'onramp' AND fiat_amount = $2 AND status NOT IN ('completed','failed') AND created_at > NOW() - interval '30 seconds')`,
-		userID, fiatAmount).Scan(&hasDuplicate)
+		userID, fiatAmount).Scan(&hasDuplicate); err != nil {
+		return nil, fmt.Errorf("failed to check for duplicate deposit: %w", err)
+	}
 	if hasDuplicate {
 		return nil, fmt.Errorf("deposit already in progress, please wait")
 	}
@@ -460,9 +462,11 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 
 	// Idempotency: reject duplicate requests within 30s.
 	var exists bool
-	s.db.QueryRowContext(ctx,
+	if err := s.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM ramphub_orders WHERE user_id = $1 AND bank_code = $2 AND fiat_amount = $3 AND created_at > NOW() - interval '30 seconds' AND status != 'failed')`,
-		userID, bankCode, fiatAmount).Scan(&exists)
+		userID, bankCode, fiatAmount).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("failed to check for duplicate withdrawal: %w", err)
+	}
 	if exists {
 		return nil, fmt.Errorf("duplicate withdrawal request, please wait")
 	}
@@ -476,10 +480,16 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", quote.Rate)
 	}
 
-	// Estimate USDC: fiat/rate + 2% slippage buffer. The 0.5% developer fee is
-	// accrued by RampHub on Rail's behalf (it reduces the NGN payout, not the
-	// USDC hold), so no extra ledger debit is needed here.
-	estimatedUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Mul(decimal.NewFromFloat(1.02)).Round(2)
+	// Estimate USDC: fiat/rate + 2% slippage buffer, capped at $50 to prevent
+	// over-holding on large orders. The 0.5% developer fee is accrued by RampHub
+	// on Rail's behalf (reduces NGN payout, not the USDC hold).
+	baseUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
+	slippageBuf := baseUSDC.Mul(decimal.NewFromFloat(0.02))
+	maxSlippage := decimal.NewFromFloat(50)
+	if slippageBuf.GreaterThan(maxSlippage) {
+		slippageBuf = maxSlippage
+	}
+	estimatedUSDC := baseUSDC.Add(slippageBuf).Round(2)
 	railFee := decimal.Zero
 	totalHold := estimatedUSDC
 
@@ -742,7 +752,11 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 		`UPDATE ramphub_orders SET deposit_id = gen_random_uuid()
 		 WHERE ramphub_transaction_id = $1 AND order_type = 'onramp' AND deposit_id IS NULL
 		 RETURNING id, COALESCE(token_amount, 0)`, txID).Scan(&claimedID, &storedToken); err != nil {
-		return nil // already credited or not an onramp
+		if err != sql.ErrNoRows {
+			s.logger.Error("failed to claim RampHub onramp order for credit",
+				zap.Error(err), zap.String("ramphub_tx_id", txID))
+		}
+		return nil // already credited, not an onramp, or DB error — skip
 	}
 
 	creditAmount := decimal.NewFromFloat(tokenAmount)

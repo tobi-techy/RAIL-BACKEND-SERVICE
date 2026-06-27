@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS ramphub_orders (
     our_crypto_address VARCHAR(255),
     -- Settlement / idempotency tracking
     bridge_transfer_id VARCHAR(255),                 -- "circle:<id>" or "circle-cr:<id>:<intent>"
-    deposit_id UUID,                                 -- idempotency claim slot (credit/reversal)
+    deposit_id UUID UNIQUE,                          -- idempotency claim slot (credit/reversal); UNIQUE prevents double-credit races
     withdrawal_id UUID,
     -- Webhook tracking
     last_webhook_status VARCHAR(40),

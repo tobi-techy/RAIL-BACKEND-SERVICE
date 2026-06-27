@@ -34,7 +34,7 @@ func TestRampWebhookIntegration(t *testing.T) {
 	}
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		dsn = "postgres://postgres:postgres@localhost:5432/rail_service_dev?sslmode=disable"
+		t.Fatal("TEST_DATABASE_URL must be set to run this integration test")
 	}
 	db, err := sqlx.Connect("postgres", dsn)
 	require.NoError(t, err, "connect to test db")

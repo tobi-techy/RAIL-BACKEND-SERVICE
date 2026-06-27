@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	miriam "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/shopspring/decimal"
 )
 
@@ -58,19 +59,22 @@ func (r *MandateSuggestionRepository) ListPendingSuggestions(ctx context.Context
 	return suggestions, nil
 }
 
-func (r *MandateSuggestionRepository) DismissSuggestion(ctx context.Context, suggestionID uuid.UUID) error {
+func (r *MandateSuggestionRepository) DismissSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error {
 	now := time.Now().UTC()
-	_, err := r.db.ExecContext(ctx, `
+	res, err := r.db.ExecContext(ctx, `
 		UPDATE miriam_mandate_suggestions
 		SET status = 'dismissed', dismissed_at = $1
-		WHERE id = $2`, now, suggestionID)
+		WHERE id = $2 AND user_id = $3 AND status = 'pending'`, now, suggestionID, userID)
 	if err != nil {
 		return fmt.Errorf("dismiss mandate suggestion: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return miriam.ErrSuggestionNotFound
 	}
 	return nil
 }
 
-func (r *MandateSuggestionRepository) AcceptSuggestion(ctx context.Context, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error) {
+func (r *MandateSuggestionRepository) AcceptSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error) {
 	var s entities.MiriamMandateSuggestion
 	err := r.db.GetContext(ctx, &s, `
 		SELECT id, user_id, name, action_type, reasoning,
@@ -78,9 +82,9 @@ func (r *MandateSuggestionRepository) AcceptSuggestion(ctx context.Context, sugg
 		       suggested_cooldown, confidence, status, created_at,
 		       dismissed_at, accepted_at
 		FROM miriam_mandate_suggestions
-		WHERE id = $1`, suggestionID)
+		WHERE id = $1 AND user_id = $2 AND status = 'pending'`, suggestionID, userID)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, miriam.ErrSuggestionNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get mandate suggestion: %w", err)
