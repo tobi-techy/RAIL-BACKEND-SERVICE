@@ -13,12 +13,27 @@ import (
 )
 
 type MiriamIntelligenceHandler struct {
-	service *miriamservice.Service
-	logger  *zap.Logger
+	service     *miriamservice.Service
+	healthScore *miriamservice.HealthScoreTracker
+	predictions *miriamservice.PredictiveEngine
+	suggestions *miriamservice.MandateSuggestionEngine
+	logger      *zap.Logger
 }
 
-func NewMiriamIntelligenceHandler(service *miriamservice.Service, logger *zap.Logger) *MiriamIntelligenceHandler {
-	return &MiriamIntelligenceHandler{service: service, logger: logger}
+func NewMiriamIntelligenceHandler(
+	service *miriamservice.Service,
+	healthScore *miriamservice.HealthScoreTracker,
+	predictions *miriamservice.PredictiveEngine,
+	suggestions *miriamservice.MandateSuggestionEngine,
+	logger *zap.Logger,
+) *MiriamIntelligenceHandler {
+	return &MiriamIntelligenceHandler{
+		service:     service,
+		healthScore: healthScore,
+		predictions: predictions,
+		suggestions: suggestions,
+		logger:      logger,
+	}
 }
 
 type createMiriamMandateRequest struct {
@@ -210,4 +225,137 @@ func (h *MiriamIntelligenceHandler) RecordFeedback(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"recorded": true})
+}
+
+func (h *MiriamIntelligenceHandler) GetHealthScore(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if h.healthScore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "health score service unavailable"})
+		return
+	}
+	summary, err := h.healthScore.GetHealthSummary(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("miriam health score failed", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get health score"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": summary})
+}
+
+func (h *MiriamIntelligenceHandler) GetHealthScoreTrend(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if h.healthScore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "health score service unavailable"})
+		return
+	}
+	limit := 30
+	if raw := c.Query("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			limit = parsed
+		}
+	}
+	if limit < 1 {
+		limit = 30
+	}
+	if limit > 90 {
+		limit = 90
+	}
+	scores, err := h.healthScore.GetHealthTrend(c.Request.Context(), userID, limit)
+	if err != nil {
+		h.logger.Error("miriam health trend failed", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get health trend"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": scores})
+}
+
+func (h *MiriamIntelligenceHandler) GetPredictions(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if h.predictions == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "prediction service unavailable"})
+		return
+	}
+	summary, err := h.predictions.GetActivePredictions(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("miriam predictions failed", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get predictions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": summary})
+}
+
+func (h *MiriamIntelligenceHandler) ListSuggestions(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if h.suggestions == nil {
+		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
+		return
+	}
+	suggestions, err := h.suggestions.ListSuggestions(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error("miriam suggestions failed", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list suggestions"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": suggestions})
+}
+
+func (h *MiriamIntelligenceHandler) AcceptSuggestion(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid suggestion id"})
+		return
+	}
+	if h.suggestions == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "suggestion service unavailable"})
+		return
+	}
+	mandate, err := h.suggestions.Accept(c.Request.Context(), userID, id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": mandate})
+}
+
+func (h *MiriamIntelligenceHandler) DismissSuggestion(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid suggestion id"})
+		return
+	}
+	if h.suggestions == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "suggestion service unavailable"})
+		return
+	}
+	if err := h.suggestions.Dismiss(c.Request.Context(), userID, id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"dismissed": true})
 }

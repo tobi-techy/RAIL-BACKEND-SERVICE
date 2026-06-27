@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	voiceDailyLimitUSD    = 100.0 // Max $100/day via voice
+	voiceDailyLimitUSD    = 500.0 // Max $100/day via voice
 	voiceDailySpendPrefix = "voice_daily_spend:"
 )
 

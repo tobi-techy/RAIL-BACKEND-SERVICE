@@ -257,6 +257,65 @@ func (e *MandateSuggestionEngine) suggestGoalContribution(ctx context.Context, u
 	}
 }
 
+// ListSuggestions returns pending mandate suggestions for a user.
+func (e *MandateSuggestionEngine) ListSuggestions(ctx context.Context, userID uuid.UUID) ([]entities.MiriamMandateSuggestion, error) {
+	if e.repo == nil {
+		return []entities.MiriamMandateSuggestion{}, nil
+	}
+	suggestions, err := e.repo.ListPendingSuggestions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if suggestions == nil {
+		return []entities.MiriamMandateSuggestion{}, nil
+	}
+	return suggestions, nil
+}
+
+// Accept converts a pending suggestion into an active mandate.
+// Returns an error if the suggestion does not belong to the user or is not pending.
+func (e *MandateSuggestionEngine) Accept(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (*entities.MiriamAutopilotMandate, error) {
+	if e.repo == nil {
+		return nil, fmt.Errorf("suggestion service unavailable")
+	}
+	suggestions, err := e.repo.ListPendingSuggestions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, s := range suggestions {
+		if s.ID == suggestionID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("suggestion not found or already actioned")
+	}
+	mandate, err := e.repo.AcceptSuggestion(ctx, suggestionID)
+	if err != nil {
+		return nil, err
+	}
+	return mandate, nil
+}
+
+// Dismiss marks a suggestion as dismissed for the user.
+func (e *MandateSuggestionEngine) Dismiss(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error {
+	if e.repo == nil {
+		return fmt.Errorf("suggestion service unavailable")
+	}
+	suggestions, err := e.repo.ListPendingSuggestions(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, s := range suggestions {
+		if s.ID == suggestionID {
+			return e.repo.DismissSuggestion(ctx, suggestionID)
+		}
+	}
+	return fmt.Errorf("suggestion not found or already actioned")
+}
+
 func (e *MandateSuggestionEngine) hasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) bool {
 	if e.mandates == nil {
 		return false
