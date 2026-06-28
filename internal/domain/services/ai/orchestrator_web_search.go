@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -116,7 +117,7 @@ func (o *Orchestrator) executeWebSearch(ctx context.Context, userID uuid.UUID, a
 	// Resolve per-user budget context up front (used for both result + display).
 	var budget string
 	if o.aggregateStats != nil {
-		spend, err := o.aggregateStats.GetAccountBalance(ctx, userID, "spending_balance")
+		spend, err := o.aggregateStats.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 		if err == nil {
 			budget = "$" + spend.StringFixed(2)
 		}
@@ -291,13 +292,14 @@ func buildDisplayItems(resp *infraai.TavilySearchResponse, category string) []Di
 	return items
 }
 
-// trimDescription collapses whitespace and trims a snippet to descriptionMaxLen.
+// trimDescription collapses whitespace and trims a snippet to descriptionMaxLen runes.
 func trimDescription(content string) string {
 	s := strings.Join(strings.Fields(content), " ")
-	if len(s) <= descriptionMaxLen {
+	runes := []rune(s)
+	if len(runes) <= descriptionMaxLen {
 		return s
 	}
-	return strings.TrimSpace(s[:descriptionMaxLen]) + "…"
+	return strings.TrimSpace(string(runes[:descriptionMaxLen])) + "…"
 }
 
 // extractPrice does a best-effort scan for a money string; "" if none found.

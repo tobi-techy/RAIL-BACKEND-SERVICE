@@ -17,7 +17,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// Tool names   AS_d05adf4a5ea2a97c1de9aa86712b5830da3700ba.HY2Zu3ORoAGC2IWWRmN1QkYDMZB5cjumpl9A03sFsPw
+// Tool names used in AI function-calling responses.
 const (
 	ToolGetPortfolioStats = "get_portfolio_stats"
 	ToolGetTopMovers      = "get_top_movers"

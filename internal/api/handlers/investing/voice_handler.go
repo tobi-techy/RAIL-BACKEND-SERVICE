@@ -245,7 +245,7 @@ func (h *VoiceHandler) PrepareVoiceAction(c *gin.Context) {
 			zap.String("user_id", userID.String()),
 			zap.String("action", req.Action),
 			zap.Error(prepErr))
-		c.JSON(http.StatusOK, gin.H{"error": prepErr.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": prepErr.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
