@@ -43,8 +43,8 @@ func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccoun
 		Sender:           acct.EOAAddress,
 		Amount:           micro.String(),
 		AmountSymbol:     "USDC",
-		TokenIn:          BaseUSDCAddress,
-		SourceChain:      "BASE_MAINNET",
+		TokenIn:          r.usdcAddr,
+		SourceChain:      r.sweepSourceChain(),
 		DestinationChain: "SOLANA_MAINNET",
 		Recipient:        solWallet.Address,
 		RefundAddress:    acct.EOAAddress,
@@ -106,4 +106,14 @@ func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccoun
 		zap.String("amount", amount.StringFixed(6)),
 		zap.String("intent_address", intent.IntentAddress),
 		zap.String("solana_dest", solWallet.Address))
+}
+
+
+// sweepSourceChain derives the ChainRails source chain identifier from the
+// router's configured chainID, matching the environment (mainnet vs testnet).
+func (r *DepositRouter) sweepSourceChain() string {
+	if r.chainID == BaseMainnetChainID {
+		return "BASE_MAINNET"
+	}
+	return "BASE_TESTNET"
 }

@@ -160,7 +160,11 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 	}
 
 	// 5. Bridge redeemed USDC from Base EOA → user's Solana wallet (best-effort, non-blocking).
-	go r.sweepToSolana(context.Background(), acct, amount, red.ID)
+	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	go func() {
+		defer sweepCancel()
+		r.sweepToSolana(sweepCtx, acct, amount, red.ID)
+	}()
 
 	return nil
 }

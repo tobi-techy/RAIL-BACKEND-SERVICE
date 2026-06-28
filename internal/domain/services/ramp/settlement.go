@@ -261,6 +261,7 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 			s.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires manual intervention",
 				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
 				zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))
+			return fmt.Errorf("reversal failed: %w; unclaim also failed: %v", err, unclaimErr)
 		}
 		return err
 	}
