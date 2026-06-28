@@ -581,6 +581,7 @@ type RampHubConfig struct {
 	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound webhooks
 	WebhookURL          string  `mapstructure:"webhook_url"`           // Rail's webhook endpoint URL registered with RampHub
 	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's business fee % applied to every order (e.g. 0.5)
+	Sandbox             bool    `mapstructure:"sandbox"`               // when true, sandbox webhook events (livemode:false) are accepted; must be false in production
 }
 
 // WorkerConfig contains background worker configuration

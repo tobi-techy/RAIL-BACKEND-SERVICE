@@ -94,6 +94,10 @@ func (s *Service) SetDeveloperFeePercent(pct float64) { s.developerFeePercent = 
 // WebhookSecret exposes the configured RampHub signing secret for the handler.
 func (s *Service) WebhookSecret() string { return s.ramphubClient.WebhookSecret() }
 
+// IsSandbox reports whether the RampHub client is in sandbox mode. The handler
+// uses this to decide whether to accept webhook events with livemode:false.
+func (s *Service) IsSandbox() bool { return s.ramphubClient != nil && s.ramphubClient.IsSandbox() }
+
 func contextWithTimeout() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 3*time.Minute)
 }
@@ -563,6 +567,11 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		return nil, err
 	}
 
+	// Normalize: top-level ourCryptoAddress takes precedence; fall back to
+	// providerDetails.depositAddress in case RampHub only populates the nested field.
+	if order.OurCryptoAddress == "" && order.ProviderDetails.DepositAddress != "" {
+		order.OurCryptoAddress = order.ProviderDetails.DepositAddress
+	}
 	if order.OurCryptoAddress == "" {
 		s.logger.Error("RampHub sell order missing deposit address — reversing hold", zap.String("ramphub_tx_id", order.TransactionID))
 		s.reverseInitialHold(ctx, userID, totalHold, railFee, "no_deposit_address")
@@ -864,10 +873,19 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 		return nil
 	}
 	var holdAmount decimal.Decimal
-	if err := s.db.QueryRowContext(ctx,
+	claimErr := s.db.QueryRowContext(ctx,
 		`UPDATE ramphub_orders SET deposit_id = gen_random_uuid()
 		 WHERE ramphub_transaction_id = $1 AND order_type = 'offramp' AND deposit_id IS NULL
-		 RETURNING COALESCE(hold_amount, token_amount)`, txID).Scan(&holdAmount); err != nil || holdAmount.IsZero() || holdAmount.IsNegative() {
+		 RETURNING COALESCE(hold_amount, token_amount)`, txID).Scan(&holdAmount)
+	if claimErr == sql.ErrNoRows {
+		return nil // already claimed by webhook or recovery worker
+	}
+	if claimErr != nil {
+		s.logger.Error("failed to claim order for offramp reversal",
+			zap.Error(claimErr), zap.String("ramphub_tx_id", txID))
+		return fmt.Errorf("claim order for reversal: %w", claimErr)
+	}
+	if holdAmount.IsZero() || holdAmount.IsNegative() {
 		return nil
 	}
 	if err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,

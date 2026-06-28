@@ -4895,6 +4895,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			APIKey:        c.Config.RampHub.APIKey,
 			BaseURL:       c.Config.RampHub.BaseURL,
 			WebhookSecret: c.Config.RampHub.WebhookSecret,
+			Sandbox:       c.Config.RampHub.Sandbox,
 		}, c.ZapLog)
 		if err != nil {
 			c.ZapLog.Fatal("failed to initialize RampHub client", zap.Error(err))

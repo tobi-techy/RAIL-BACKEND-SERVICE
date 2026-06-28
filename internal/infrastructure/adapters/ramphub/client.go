@@ -27,6 +27,7 @@ type Config struct {
 	WebhookSecret string
 	Timeout       time.Duration
 	MaxRetries    int
+	Sandbox       bool // mirrors RampHubConfig.Sandbox — when true, sandbox webhook events are accepted
 }
 
 // Client wraps the RampHub developer API.
@@ -63,6 +64,11 @@ func NewClient(cfg Config, logger *zap.Logger) (*Client, error) {
 
 // WebhookSecret returns the configured webhook signing secret.
 func (c *Client) WebhookSecret() string { return c.cfg.WebhookSecret }
+
+// IsSandbox reports whether this client is configured for sandbox mode. When
+// true, webhook events with livemode:false are processed; in production (false)
+// they are rejected to prevent sandbox events from affecting real accounts.
+func (c *Client) IsSandbox() bool { return c.cfg.Sandbox }
 
 // GetQuote fetches provider routes for a corridor. The response includes
 // RampHub's recommended BestQuote plus all options.
