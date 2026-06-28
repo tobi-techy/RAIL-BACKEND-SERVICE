@@ -347,7 +347,7 @@ func (s *Service) CreateOnramp(ctx context.Context, userID uuid.UUID, fiatAmount
 	// crypto amount, computed from the quote rate above.
 	if s.ramphubClient != nil {
 		if qErr == nil && quote.Provider == ProviderRampHub && quote.Rate > 0 {
-			cryptoAmount := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
+			cryptoAmount := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(6)
 			order, err := s.createRampHubBuyOrder(ctx, userID, fiatAmount, cryptoAmount.InexactFloat64(), currency, settlementAsset, rampChain, walletAddress)
 			if err == nil {
 				acctNum, acctName, bankName := buyBankDetails(order)
@@ -483,9 +483,15 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	// Estimate USDC: fiat/rate + 2% slippage buffer, capped at $50 to prevent
 	// over-holding on large orders. The 0.5% developer fee is accrued by RampHub
 	// on Rail's behalf (reduces NGN payout, not the USDC hold).
+	// Tiered cap: $50 base for orders ≤$2,500; for larger orders add 0.5% of
+	// the amount above $2,500 to accommodate rate volatility on high-value withdrawals.
 	baseUSDC := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
 	slippageBuf := baseUSDC.Mul(decimal.NewFromFloat(0.02))
 	maxSlippage := decimal.NewFromFloat(50)
+	tierFiat := decimal.NewFromFloat(2500)
+	if decimal.NewFromFloat(fiatAmount).GreaterThan(tierFiat) {
+		maxSlippage = maxSlippage.Add(decimal.NewFromFloat(fiatAmount).Sub(tierFiat).Div(decimal.NewFromFloat(quote.Rate)).Mul(decimal.NewFromFloat(0.005)))
+	}
 	if slippageBuf.GreaterThan(maxSlippage) {
 		slippageBuf = maxSlippage
 	}
@@ -541,7 +547,7 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	})
 	if err != nil {
 		// Reverse hold and try Paj fallback (Paj uses its own hold internally).
-		s.reverseInitialHold(ctx, userID, totalHold, railFee, err.Error())
+		s.reverseInitialHold(ctx, userID, totalHold, railFee, "ramphub_api_error")
 		if s.pajFallback != nil {
 			s.logger.Warn("ramphub offramp failed, falling back to Paj", zap.Error(err))
 			pajRes, pajErr := s.pajFallback.CreateOfframpOrder(ctx, userID, bankCode, accountNumber, fiatAmount, currency)
@@ -639,6 +645,25 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 		return nil
 	}
 
+	// Verify the order exists before recording delivery — if the order hasn't
+	// been persisted yet (race with create path), return an error so RampHub
+	// retries the webhook instead of permanently consuming the delivery_id.
+	var userID uuid.UUID
+	var currentStatus, orderType string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT user_id, status, order_type FROM ramphub_orders WHERE ramphub_transaction_id = $1`, txID).
+		Scan(&userID, &currentStatus, &orderType)
+	if err == sql.ErrNoRows {
+		s.logger.Warn("ramphub webhook for unknown order — will retry", zap.String("ramphub_tx_id", txID))
+		return fmt.Errorf("order not yet persisted for tx %s", txID)
+	}
+	if err != nil {
+		return fmt.Errorf("lookup ramphub order: %w", err)
+	}
+	if currentStatus == "completed" || currentStatus == "failed" {
+		return nil
+	}
+
 	// Delivery-level idempotency: RampHub retries deliveries with a unique
 	// delivery id. If we've already seen it, no-op. Business-level idempotency
 	// (claim-by-deposit_id) still guards against concurrent processing.
@@ -655,22 +680,6 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 				zap.String("delivery_id", deliveryID), zap.String("ramphub_tx_id", txID))
 			return nil
 		}
-	}
-
-	var userID uuid.UUID
-	var currentStatus, orderType string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT user_id, status, order_type FROM ramphub_orders WHERE ramphub_transaction_id = $1`, txID).
-		Scan(&userID, &currentStatus, &orderType)
-	if err == sql.ErrNoRows {
-		s.logger.Warn("ramphub webhook for unknown order", zap.String("ramphub_tx_id", txID))
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("lookup ramphub order: %w", err)
-	}
-	if currentStatus == "completed" || currentStatus == "failed" {
-		return nil
 	}
 
 	newStatus := ramphub.MapEventStatus(event.Type, event.Data.Status)
@@ -845,7 +854,7 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 		return nil
 	}
 	if err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-		"ramphub-offramp-"+txID, holdAmount, map[string]interface{}{
+		entities.OfframpReversalKey(txID), holdAmount, map[string]interface{}{
 			"provider": ProviderRampHub, "type": "offramp_failure_reversal", "ramphub_tx_id": txID, "fee_revenue_posted": true,
 		}); err != nil {
 		s.logger.Error("CRITICAL: failed to reverse RampHub offramp hold after failure", zap.Error(err), zap.String("ramphub_tx_id", txID))

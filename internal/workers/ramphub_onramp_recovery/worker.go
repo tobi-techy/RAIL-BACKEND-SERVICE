@@ -95,10 +95,15 @@ func (w *Worker) recover(ctx context.Context) {
 				zap.String("ramphub_tx_id", o.TxID), zap.String("user_id", o.UserID.String()), zap.Float64("fiat_amount", o.FiatAmount))
 			continue
 		}
-		if _, err := w.db.ExecContext(ctx, `
+		res, err := w.db.ExecContext(ctx, `
 			UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-			WHERE ramphub_transaction_id = $1 AND status NOT IN ('completed','failed') AND deposit_id IS NULL`, o.TxID); err != nil {
+			WHERE ramphub_transaction_id = $1 AND status NOT IN ('completed','failed') AND deposit_id IS NULL`, o.TxID)
+		if err != nil {
 			w.logger.Error("ramphub onramp recovery: mark failed", zap.Error(err), zap.String("ramphub_tx_id", o.TxID))
+			continue
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			w.logger.Debug("ramphub onramp recovery: order already processed", zap.String("ramphub_tx_id", o.TxID))
 			continue
 		}
 		w.logger.Warn("ramphub onramp recovery: marked stuck order as failed — user should retry",

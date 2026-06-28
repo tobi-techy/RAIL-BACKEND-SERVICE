@@ -243,14 +243,13 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, txID string, userID uuid
 		return nil
 	}
 	if err := w.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
-		"ramphub-offramp-"+txID, claimedHold, map[string]interface{}{
+		entities.OfframpReversalKey(txID), claimedHold, map[string]interface{}{
 			"provider": "ramphub", "type": reasonType, "ramphub_tx_id": txID, "fiat_amount": fiatAmount,
 		}); err != nil {
 		// Unclaim so the next worker sweep can retry the reversal.
 		if _, unclaimErr := w.db.ExecContext(context.Background(), `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
-			w.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires immediate manual intervention",
-				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
-				zap.String("ramphub_tx_id", txID), zap.String("amount", claimedHold.String()))
+			w.logger.Error("CRITICAL: recovery worker failed to unclaim order after ledger reversal failure - manual intervention required",
+				zap.Error(unclaimErr), zap.String("ramphub_tx_id", txID), zap.String("user_id", userID.String()))
 		}
 		return fmt.Errorf("reverse hold: %w", err)
 	}

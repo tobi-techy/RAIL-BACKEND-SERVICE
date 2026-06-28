@@ -273,34 +273,42 @@ func (r *DepositRouter) pollBridgeSettlement(ctx context.Context, route *deposit
 		return fmt.Errorf("blend: ChainRails not configured to reconcile bridge for route %s", route.ID)
 	}
 	intentAddr := strings.TrimSpace(route.BridgeIntentAddress.String)
-	status, err := bridge.GetIntentStatus(ctx, intentAddr)
-	if err != nil {
-		return fmt.Errorf("blend: poll ChainRails intent %s: %w", intentAddr, err)
-	}
-	switch {
-	case isChainRailsComplete(status.Status):
-		if _, err := r.db.ExecContext(ctx, `
-			UPDATE blend_deposit_routes SET bridge_tx_hash = NULLIF($2,''), updated_at = NOW() WHERE id = $1
-		`, route.ID, status.TxHash); err != nil {
-			return fmt.Errorf("blend: record bridge settlement: %w", err)
+
+	// Poll for up to 90 seconds — ChainRails typically settles within seconds of funding.
+	const maxPolls = 15
+	for i := 0; i < maxPolls; i++ {
+		status, err := bridge.GetIntentStatus(ctx, intentAddr)
+		if err != nil {
+			return fmt.Errorf("blend: poll ChainRails intent %s: %w", intentAddr, err)
 		}
-		return nil
-	case isChainRailsTerminalFailure(status.Status):
-		// Clear the intent so a retry can create a fresh one. Funds are refunded to
-		// the source wallet by ChainRails per its refund policy.
-		if _, err := r.db.ExecContext(ctx, `
-			UPDATE blend_deposit_routes
-			SET bridge_intent_id = NULL, bridge_intent_address = NULL, bridge_source_chain = NULL,
-				bridge_fund_amount = NULL, last_error = $2, updated_at = NOW()
-			WHERE id = $1
-		`, route.ID, fmt.Sprintf("ChainRails bridge %s failed: %s", intentAddr, status.Status)); err != nil {
-			return fmt.Errorf("blend: clear failed bridge intent: %w", err)
+		switch {
+		case isChainRailsComplete(status.Status):
+			if _, err := r.db.ExecContext(ctx, `
+				UPDATE blend_deposit_routes SET bridge_tx_hash = NULLIF($2,''), funded_at = NOW(), updated_at = NOW() WHERE id = $1
+			`, route.ID, status.TxHash); err != nil {
+				return fmt.Errorf("blend: record bridge settlement: %w", err)
+			}
+			return nil
+		case isChainRailsTerminalFailure(status.Status):
+			if _, err := r.db.ExecContext(ctx, `
+				UPDATE blend_deposit_routes
+				SET bridge_intent_id = NULL, bridge_intent_address = NULL, bridge_source_chain = NULL,
+					bridge_fund_amount = NULL, last_error = $2, updated_at = NOW()
+				WHERE id = $1
+			`, route.ID, fmt.Sprintf("ChainRails bridge %s failed: %s", intentAddr, status.Status)); err != nil {
+				return fmt.Errorf("blend: clear failed bridge intent: %w", err)
+			}
+			return fmt.Errorf("blend: ChainRails bridge %s failed with status %s", intentAddr, status.Status)
 		}
-		return fmt.Errorf("blend: ChainRails bridge %s failed with status %s", intentAddr, status.Status)
-	default:
-		// Still settling — caller will re-check balance and park for retry.
-		return nil
+		// Still settling — wait before next poll.
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(6 * time.Second):
+		}
 	}
+	// Not settled within poll window — park for next worker tick.
+	return nil
 }
 
 func (r *DepositRouter) waitCircleTransfer(ctx context.Context, initial *circlepkg.Transaction) (*circlepkg.Transaction, error) {

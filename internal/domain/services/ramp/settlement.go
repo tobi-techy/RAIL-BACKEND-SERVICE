@@ -234,16 +234,19 @@ func (s *Service) refundSlippage(ctx context.Context, userID uuid.UUID, txID str
 // order failed with deposit_id set (prevents double-reversal by worker/webhook).
 // If the ledger reversal fails, the order is restored to unclained so the
 // recovery worker can pick it up on its next sweep.
-func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string, amount, railFee decimal.Decimal, reason string) {
+func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string, amount, railFee decimal.Decimal, reason string) error {
 	if _, dbErr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
 		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID); dbErr != nil {
 		s.logger.Error("failed to mark RampHub order as failed",
 			zap.Error(dbErr), zap.String("ramphub_tx_id", txID))
+		// Do not proceed with ledger reversal — the recovery worker will handle
+		// it once the database is accessible again.
+		return dbErr
 	}
 
 	if s.ledger == nil {
-		return
+		return nil
 	}
 	if err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		"ramphub_offramp_"+reason+"_"+txID, amount, map[string]interface{}{
@@ -258,6 +261,9 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 			s.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires manual intervention",
 				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
 				zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))
+			return fmt.Errorf("reversal failed: %w; unclaim also failed: %v", err, unclaimErr)
 		}
+		return err
 	}
+	return nil
 }

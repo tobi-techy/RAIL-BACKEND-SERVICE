@@ -43,7 +43,7 @@ func NewClient(cfg Config, logger *zap.Logger) (*Client, error) {
 	}
 	if cfg.WebhookSecret == "" {
 		logger.Error("RampHub WebhookSecret is required but was not provided")
-		return nil, fmt.Errorf("ramphub: WebhookSecret is required for secure webhook processing")
+		return nil, fmt.Errorf("ramphub: WebhookSecret is required for webhook authentication")
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = defaultBaseURL

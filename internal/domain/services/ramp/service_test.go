@@ -98,7 +98,7 @@ func TestGetBestQuoteReturnsRampHubQuote(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL}, zap.NewNop())
+	client, err := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL, WebhookSecret: "test-secret"}, zap.NewNop())
 	require.NoError(t, err, "failed to create ramphub client")
 	s := NewService(nil, client, nil, nil, zap.NewNop())
 
@@ -117,7 +117,7 @@ func TestGetBestQuoteErrorsWithoutProviders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL, MaxRetries: 0}, zap.NewNop())
+	client, err := ramphub.NewClient(ramphub.Config{APIKey: "k", BaseURL: srv.URL, WebhookSecret: "test-secret", MaxRetries: 0}, zap.NewNop())
 	require.NoError(t, err, "failed to create ramphub client")
 	s := NewService(nil, client, nil, nil, zap.NewNop())
 
