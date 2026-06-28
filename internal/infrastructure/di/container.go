@@ -3635,6 +3635,13 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetSupermemory(&supermemoryAdapter{client: c.SupermemoryClient})
 	}
 
+	// Wire Tavily web search (powers web_search: places, flights, products, recs)
+	if tavilyKey := strings.TrimSpace(c.Config.AI.Tavily.APIKey); tavilyKey != "" {
+		c.AIOrchestrator.SetWebSearcher(ai.NewTavilyClient(tavilyKey))
+	} else {
+		c.ZapLog.Warn("Tavily API key not set — web_search (places/flights/recommendations) will be unavailable")
+	}
+
 	// Wire embedder to memory service now that EmbeddingsClient is initialized
 	if c.EmbeddingsClient != nil && c.MemoryService != nil {
 		c.MemoryService.SetEmbedder(c.EmbeddingsClient)
@@ -3686,6 +3693,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	// Voice daily transfer cap ($100/day via voice)
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
+		// Redis client for best-effort short-TTL caching of voice hot-path reads
+		// (realtime dynamic vars, cost-ceiling).
+		c.AIOrchestrator.SetRedisCache(c.RedisClient)
 	}
 
 	// Push notifications when Miriam moves money on the user's behalf

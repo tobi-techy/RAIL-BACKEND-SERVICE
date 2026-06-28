@@ -36,7 +36,7 @@ const (
 	voiceToolTimeout   = 12 * time.Second
 	voiceSampleRateHz  = 24000
 
-	voiceSessionTicketTTL        = 60 * time.Second
+	voiceSessionTicketTTL        = 120 * time.Second
 	maxVoiceFrameBytes           = 256 * 1024
 	maxVoiceAudioFrameBytes      = 128 * 1024
 	maxVoiceAudioBytesPerSecond  = 128 * 1024
@@ -56,28 +56,6 @@ type VoiceConversationPersister interface {
 	DeleteConversation(ctx context.Context, userID, convID uuid.UUID) error
 }
 
-type voiceRateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]int // userID -> count
-	resetAt  time.Time
-}
-
-var globalVoiceRateLimiter = &voiceRateLimiter{
-	attempts: make(map[string]int),
-	resetAt:  time.Now().Add(1 * time.Hour),
-}
-
-func (rl *voiceRateLimiter) allow(userID string, maxPerHour int) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	if time.Now().After(rl.resetAt) {
-		rl.attempts = make(map[string]int)
-		rl.resetAt = time.Now().Add(1 * time.Hour)
-	}
-	rl.attempts[userID]++
-	return rl.attempts[userID] <= maxPerHour
-}
-
 // VoiceHandler handles real-time voice sessions via ElevenLabs Conversational AI API.
 type VoiceHandler struct {
 	apiKey              string
@@ -88,6 +66,7 @@ type VoiceHandler struct {
 	orchestrator        *aiservice.Orchestrator
 	usage               VoiceUsageTracker
 	convService         VoiceConversationPersister
+	sessionLimiter      *aiservice.VoiceSessionRateLimiter
 	allowAnyOrigin      bool
 	allowedOriginSet    map[string]struct{}
 	allowedHostSet      map[string]struct{}
@@ -96,7 +75,7 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret, pidginVoiceID string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
+func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret, pidginVoiceID string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, sessionLimiter *aiservice.VoiceSessionRateLimiter, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
 		agentID:          agentID,
@@ -106,6 +85,7 @@ func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret, pidginVoiceID 
 		orchestrator:     orchestrator,
 		usage:            usage,
 		convService:      convService,
+		sessionLimiter:   sessionLimiter,
 		allowedOriginSet: make(map[string]struct{}),
 		allowedHostSet:   make(map[string]struct{}),
 		ttsConfig:        ttsConfig,
@@ -226,6 +206,54 @@ func (h *VoiceHandler) HandleToolExecution(c *gin.Context) {
 	})
 }
 
+// PrepareVoiceAction builds a tap-to-confirm PendingAction for a voice-initiated
+// money action instead of executing it immediately. The app shows a confirmation
+// card (with biometrics) and confirms via POST /v1/ai/conversations/:id/confirm.
+// Authenticated with the user's JWT (not the voice session token).
+// POST /v1/ai/voice/prepare-action
+func (h *VoiceHandler) PrepareVoiceAction(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		ConversationID string                 `json:"conversation_id"`
+		Action         string                 `json:"action"`
+		Params         map[string]interface{} `json:"params"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if strings.TrimSpace(req.Action) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action required"})
+		return
+	}
+
+	convID, parseErr := uuid.Parse(strings.TrimSpace(req.ConversationID))
+	if parseErr != nil || convID == uuid.Nil {
+		convID = uuid.New()
+	}
+
+	toolCtx, toolCancel := context.WithTimeout(c.Request.Context(), voiceToolTimeout)
+	defer toolCancel()
+
+	action, prepErr := h.orchestrator.PrepareVoiceAction(toolCtx, userID, convID, req.Action, req.Params)
+	if prepErr != nil {
+		h.logger.Warn("voice prepare-action failed",
+			zap.String("user_id", userID.String()),
+			zap.String("action", req.Action),
+			zap.Error(prepErr))
+		c.JSON(http.StatusBadRequest, gin.H{"error": prepErr.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"pending_action":  action,
+		"conversation_id": convID.String(),
+	})
+}
+
 // HandleSession upgrades to WebSocket and proxies audio between client and AssemblyAI Voice Agent API.
 func (h *VoiceHandler) HandleSession(c *gin.Context) {
 	userID, err := h.authenticateVoiceSession(c)
@@ -239,11 +267,17 @@ func (h *VoiceHandler) HandleSession(c *gin.Context) {
 		return
 	}
 
-	const maxVoiceSessionsPerHour = 10
-
-	if !globalVoiceRateLimiter.allow(userID.String(), maxVoiceSessionsPerHour) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "voice session rate limit reached. Try again later."})
-		return
+	if h.sessionLimiter != nil {
+		// Fail-open: on Redis error the limiter returns (true, err) so we still
+		// allow the session; we only block on a confirmed over-limit count.
+		allowed, limitErr := h.sessionLimiter.Allow(c.Request.Context(), userID)
+		if limitErr != nil {
+			h.logger.Warn("voice session rate limiter error (fail-open)", zap.Error(limitErr), zap.String("user_id", userID.String()))
+		}
+		if !allowed {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "voice session rate limit reached. Try again later."})
+			return
+		}
 	}
 
 	upgrader := wsUpgrader

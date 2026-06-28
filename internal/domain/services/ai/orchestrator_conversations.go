@@ -111,12 +111,29 @@ func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, user
 	return resp, nil
 }
 
+const voiceCostCeilingKeyPrefix = "voice_cost_ceiling:"
+const voiceCostCeilingTTL = 60 * time.Second
+
 // IsUserOverCostCeiling checks if a user has exceeded their monthly cost ceiling.
 // Returns false if no usage tracker is configured.
+//
+// The boolean is cached per-user in Redis for a short TTL (60s) to avoid a
+// usage lookup on every voice session start. The short TTL ensures a user who
+// crosses (or drops back under) the ceiling isn't trapped for long. Caching is
+// best-effort: any Redis error falls back to computing directly.
 func (o *Orchestrator) IsUserOverCostCeiling(ctx context.Context, userID uuid.UUID) bool {
 	if o.usage == nil {
 		return false
 	}
+
+	key := voiceCostCeilingKeyPrefix + userID.String()
+	if o.redis != nil {
+		var cached bool
+		if err := o.redis.Get(ctx, key, &cached); err == nil {
+			return cached
+		}
+	}
+
 	over, err := o.usage.IsOverCostCeiling(ctx, userID)
 	if err != nil {
 		o.logger.Warn("failed to check cost ceiling", zap.Error(err))
@@ -125,6 +142,13 @@ func (o *Orchestrator) IsUserOverCostCeiling(ctx context.Context, userID uuid.UU
 	if over {
 		observeCostCeilingHit()
 	}
+
+	if o.redis != nil {
+		if err := o.redis.Set(ctx, key, over, voiceCostCeilingTTL); err != nil {
+			o.logger.Debug("voice_cost_ceiling: cache store failed", zap.Error(err))
+		}
+	}
+
 	return over
 }
 

@@ -8,8 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -235,6 +236,71 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 		Name:      action,
 		Arguments: params,
 	})
+}
+
+// PrepareVoiceAction builds and stores a PendingAction for a voice-initiated
+// money action so the app can show a tap-to-confirm card (with biometrics),
+// instead of executing immediately. It enforces the same safety rails as the
+// immediate voice path and reuses the chat action builders (executeActionTool),
+// which store the pending action under convID.
+func (o *Orchestrator) PrepareVoiceAction(ctx context.Context, userID, convID uuid.UUID, action string, params map[string]interface{}) (*entities.PendingAction, error) {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return nil, fmt.Errorf("action is required")
+	}
+	if action == ToolInitiateWithdrawal {
+		return nil, fmt.Errorf("withdrawals need app confirmation")
+	}
+	if !isVoiceActionTool(action) {
+		return nil, fmt.Errorf("%s is not available through voice", action)
+	}
+	if !o.canCreateActionTool(action) {
+		return nil, fmt.Errorf("%s is not configured for this user", action)
+	}
+
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+	coerceNumericStrings(params)
+	voiceAliasParams(action, params)
+
+	// Enforce daily voice transfer cap for financial actions. The per-transfer
+	// $500 cap is enforced inside the transfer builder we dispatch to below.
+	if o.voiceLimiter != nil && isVoiceFinancialAction(action) {
+		amount := extractAmountFromParams(params)
+		if amount.IsPositive() {
+			if err := o.voiceLimiter.CheckAndRecord(ctx, userID, amount); err != nil {
+				return nil, fmt.Errorf("%s", err.Error())
+			}
+		}
+	}
+
+	result, err := o.executeActionTool(ctx, userID, convID, infraai.ToolCall{
+		Name:      action,
+		Arguments: params,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pendingActionFromResult(action, result)
+}
+
+// pendingActionFromResult extracts the stored PendingAction from an action
+// builder's result map, or surfaces a descriptive error when the builder
+// declined to create one (validation error, requires_passcode, etc.).
+func pendingActionFromResult(action string, result map[string]interface{}) (*entities.PendingAction, error) {
+	if result != nil {
+		if pa, ok := result["pending_action"].(*entities.PendingAction); ok && pa != nil {
+			return pa, nil
+		}
+		if msg, ok := result["error"].(string); ok && msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+		if msg, ok := result["message"].(string); ok && msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+	}
+	return nil, fmt.Errorf("%s could not be prepared for confirmation", action)
 }
 
 func isVoiceLookupTool(name string) bool {

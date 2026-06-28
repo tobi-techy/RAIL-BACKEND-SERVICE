@@ -141,3 +141,6 @@ backfill-va-details
 
 # Performance test artifacts
 k6.tar.gz
+
+# Local Miriam test CLI binary
+miriam_test_cli

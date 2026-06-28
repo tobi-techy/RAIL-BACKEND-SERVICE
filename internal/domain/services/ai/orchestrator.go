@@ -12,11 +12,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
-// Tool names
+// Tool names used in AI function-calling responses.
 const (
 	ToolGetPortfolioStats = "get_portfolio_stats"
 	ToolGetTopMovers      = "get_top_movers"
@@ -175,6 +176,7 @@ type Orchestrator struct {
 	supermemory         SupermemoryClient
 	webSearcher         WebSearcher
 	moneyMoveNotifier   MoneyMoveNotifier
+	redis               cache.RedisClient
 	logger              *zap.Logger
 }
 
@@ -314,7 +316,6 @@ func NewOrchestrator(
 		logger:            logger,
 	}
 }
-
 
 // GetTools returns available tools for the AI
 func (o *Orchestrator) GetTools() []ai.Tool {
