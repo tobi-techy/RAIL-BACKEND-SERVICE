@@ -35,11 +35,15 @@ type llmAwareSampler struct {
 }
 
 func (s llmAwareSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
-	for _, a := range p.Attributes {
-		if string(a.Key) == LangfuseObservationTypeKey {
-			return sdktrace.SamplingResult{
-				Decision:   sdktrace.RecordAndSample,
-				Tracestate: trace.SpanContextFromContext(p.ParentContext).TraceState(),
+	// Fast path: only miriam/llm spans carry the observation marker. Skip the
+	// attribute scan for the bulk of app spans (HTTP, DB, infra).
+	if strings.HasPrefix(p.Name, "miriam.") || strings.HasPrefix(p.Name, "llm.") {
+		for _, a := range p.Attributes {
+			if string(a.Key) == LangfuseObservationTypeKey {
+				return sdktrace.SamplingResult{
+					Decision:   sdktrace.RecordAndSample,
+					Tracestate: trace.SpanContextFromContext(p.ParentContext).TraceState(),
+				}
 			}
 		}
 	}

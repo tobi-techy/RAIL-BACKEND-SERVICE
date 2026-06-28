@@ -20,6 +20,7 @@ func TestLLMAwareSampler_ForcesMarkedSpans(t *testing.T) {
 
 	got := s.ShouldSample(sdktrace.SamplingParameters{
 		ParentContext: context.Background(),
+		Name:          "llm.generation",
 		Attributes:    markerAttrs(),
 	})
 	if got.Decision != sdktrace.RecordAndSample {
