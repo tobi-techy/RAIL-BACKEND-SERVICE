@@ -162,6 +162,14 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 	// 5. Bridge redeemed USDC from Base EOA → user's Solana wallet (best-effort, non-blocking).
 	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				r.logger.Error("CRITICAL: panic in Solana sweep goroutine",
+					zap.String("redemption_id", red.ID.String()),
+					zap.Any("panic", p),
+					zap.Stack("stack"))
+			}
+		}()
 		defer sweepCancel()
 		r.sweepToSolana(sweepCtx, acct, amount, red.ID)
 	}()
@@ -343,6 +351,17 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 // pipeline spends these funds immediately, so we must not mark success unless they are
 // truly present and spendable in the wallet.
 func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
+	// Fetch on-chain balance BEFORE acquiring any DB locks to minimise lock hold time.
+	// The advisory-lock check inside the transaction uses this pre-fetched value.
+	var have decimal.Decimal
+	if acct != nil && acct.CircleWalletID != "" {
+		var balErr error
+		have, balErr = r.usdcBalance(ctx, acct.CircleWalletID)
+		if balErr != nil {
+			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
+		}
+	}
+
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("blend: begin redemption finalize tx: %w", err)
@@ -355,22 +374,17 @@ func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserA
 		return fmt.Errorf("blend: advisory lock for redemption finalize: %w", err)
 	}
 
-	// Airtight on-chain proof-of-arrival (read INSIDE the lock so it's atomic with the
-	// finalize below). Rather than each redemption only checking its own delta — which two
-	// concurrent redemptions that snapshotted the same baseline could both pass against a
-	// SINGLE arrival — we require the EOA balance to cover the baseline (the lowest pre-snapshot
-	// among the user's in-flight redemptions, i.e. the balance before any of them started) PLUS
-	// the TOTAL amount of every in-flight redemption awaiting funds (including this one). So a
-	// batch of concurrent redemptions only finalizes once enough funds have arrived for ALL of
-	// them — never two against the same dollars. Self-healing: a sibling whose funds never
-	// arrive is marked 'failed' by its own settlement poll, dropping out of the sum so the rest
-	// can finalize. (Rows predating the snapshot column have pre NULL → baseline 0 → require the
-	// full sum present, the conservative fallback.)
+	// Airtight on-chain proof-of-arrival. Rather than each redemption only checking its own
+	// delta — which two concurrent redemptions that snapshotted the same baseline could both
+	// pass against a SINGLE arrival — we require the EOA balance to cover the baseline (the
+	// lowest pre-snapshot among the user's in-flight redemptions, i.e. the balance before any
+	// of them started) PLUS the TOTAL amount of every in-flight redemption awaiting funds
+	// (including this one). So a batch of concurrent redemptions only finalizes once enough
+	// funds have arrived for ALL of them — never two against the same dollars. Self-healing: a
+	// sibling whose funds never arrive is marked 'failed' by its own settlement poll, dropping
+	// out of the sum so the rest can finalize. (Rows predating the snapshot column have pre
+	// NULL → baseline 0 → require the full sum present, the conservative fallback.)
 	if acct != nil && acct.CircleWalletID != "" {
-		have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
-		if balErr != nil {
-			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
-		}
 		var agg struct {
 			Baseline decimal.Decimal `db:"baseline"`
 			Claimed  decimal.Decimal `db:"claimed"`

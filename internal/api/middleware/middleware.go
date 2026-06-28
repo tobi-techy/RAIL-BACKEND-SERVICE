@@ -393,7 +393,10 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 				// prioritize availability over revocation during a Redis outage —
 				// active sessions ride through via the local negative cache either way.
 				if cfg.Security.AuthBlacklistFailOpen {
-					log.Warnw("Token blacklist check failed — failing open (Redis unavailable)", "error", err)
+					log.Warnw("Token blacklist check failed — failing open (Redis unavailable)",
+						"error", err,
+						"token_hash_prefix", tokenHash[:8],
+						"security_mode", "degraded")
 				} else {
 					log.Errorw("Token blacklist check failed — rejecting request", "error", err)
 					c.JSON(http.StatusServiceUnavailable, gin.H{

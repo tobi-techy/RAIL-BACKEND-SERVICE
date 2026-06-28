@@ -400,7 +400,7 @@ func ParseActionPlan(raw json.RawMessage) (*ActionPlan, error) {
 					To:             s.To,
 					Data:           s.Data,
 					Value:          s.Value,
-					IsDelegateCall: s.DelegateCall || strings.EqualFold(s.Kind, "liquidityReset"),
+					IsDelegateCall: s.DelegateCall,
 					Kind:           s.Kind,
 					Description:    s.Description,
 				})

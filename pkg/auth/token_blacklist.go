@@ -45,6 +45,7 @@ func (b *TokenBlacklist) negCacheGet(tokenHash string) bool {
 
 func (b *TokenBlacklist) negCachePut(tokenHash string) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if len(b.negCache) >= negCacheMaxSize {
 		now := time.Now().UnixNano()
 		for k, exp := range b.negCache {
@@ -52,9 +53,19 @@ func (b *TokenBlacklist) negCachePut(tokenHash string) {
 				delete(b.negCache, k)
 			}
 		}
+		// If still at capacity after removing expired entries, evict 10% to enforce the hard limit.
+		if len(b.negCache) >= negCacheMaxSize {
+			evict := negCacheMaxSize / 10
+			for k := range b.negCache {
+				if evict <= 0 {
+					break
+				}
+				delete(b.negCache, k)
+				evict--
+			}
+		}
 	}
 	b.negCache[tokenHash] = time.Now().Add(negCacheTTL).UnixNano()
-	b.mu.Unlock()
 }
 
 func (b *TokenBlacklist) negCacheDel(tokenHash string) {
@@ -79,9 +90,9 @@ func (b *TokenBlacklist) Blacklist(ctx context.Context, tokenHash string, expire
 }
 
 // IsBlacklisted checks if a token is blacklisted. It first consults a short
-// in-process negative cache (skips Redis entirely on a hit) and, if Redis is
-// unreachable, falls back to a recent negative result so a Redis blip doesn't
-// take down auth.
+// in-process negative cache (skips Redis entirely on a hit). On Redis error
+// the error is returned to the caller so the middleware's AUTH_BLACKLIST_FAIL_OPEN
+// policy controls the security decision (fail-open vs. fail-closed).
 func (b *TokenBlacklist) IsBlacklisted(ctx context.Context, tokenHash string) (bool, error) {
 	if b.negCacheGet(tokenHash) {
 		return false, nil
@@ -90,11 +101,6 @@ func (b *TokenBlacklist) IsBlacklisted(ctx context.Context, tokenHash string) (b
 	key := blacklistPrefix + tokenHash
 	exists, err := b.redis.Exists(ctx, key).Result()
 	if err != nil {
-		// Redis unreachable: trust a recent negative if we have one; otherwise
-		// surface the error so the caller can apply its fail-open/closed policy.
-		if b.negCacheGet(tokenHash) {
-			return false, nil
-		}
 		return false, fmt.Errorf("failed to check blacklist: %w", err)
 	}
 	if exists > 0 {

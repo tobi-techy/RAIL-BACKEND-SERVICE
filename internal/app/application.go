@@ -117,6 +117,10 @@ type Application struct {
 	opportunitySyncWorker        *opportunity_sync.Worker
 	depositAutoSweepWorker       *deposit_autosweep.Worker
 
+	// Redis health monitor
+	redisMonitor  *cache.HealthMonitor
+	monitorCancel context.CancelFunc
+
 	// Tracing
 	tracingShutdown func(context.Context) error
 }
@@ -227,7 +231,10 @@ func (app *Application) initializeWorkers() error {
 				alerter.SendFatal("🚨 Redis DOWN (check Upstash budget/suspension)", err)
 			}
 		})
-		monitor.Start(context.Background())
+		monCtx, monCancel := context.WithCancel(context.Background())
+		app.monitorCancel = monCancel
+		app.redisMonitor = monitor
+		monitor.Start(monCtx)
 	}
 
 	// Wallet provisioning scheduler
@@ -1237,6 +1244,12 @@ func (app *Application) stopWorkers() {
 	}
 	if app.growthEngineCancel != nil {
 		app.growthEngineCancel()
+	}
+
+	// Stop Redis health monitor.
+	if app.monitorCancel != nil {
+		app.monitorCancel()
+		app.redisMonitor.Wait()
 	}
 }
 

@@ -588,7 +588,20 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 
 	cryptoAmount := decimal.NewFromFloat(cryptoSendAmount(order, fiatAmount, quote.Rate))
-	go s.executeCircleTransferToRampHub(userID, order, cryptoAmount, totalHold, railFee)
+	transferCtx, transferCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	go func() {
+		defer transferCancel()
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error("CRITICAL: panic in Circle transfer goroutine",
+					zap.String("ramphub_tx_id", order.TransactionID),
+					zap.Any("panic", r),
+					zap.Stack("stack"))
+				s.reverseHold(context.Background(), userID, order.TransactionID, totalHold, railFee, "transfer_panic")
+			}
+		}()
+		s.executeCircleTransferToRampHub(transferCtx, userID, order, cryptoAmount, totalHold, railFee)
+	}()
 
 	// Record usage against limits (non-blocking).
 	if s.limitsChecker != nil {
@@ -664,9 +677,29 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 		return nil
 	}
 
-	// Delivery-level idempotency: RampHub retries deliveries with a unique
-	// delivery id. If we've already seen it, no-op. Business-level idempotency
-	// (claim-by-deposit_id) still guards against concurrent processing.
+	newStatus := ramphub.MapEventStatus(event.Type, event.Data.Status)
+	s.db.ExecContext(ctx, `
+		UPDATE ramphub_orders SET status = $1, last_webhook_status = $2, last_webhook_at = NOW(), updated_at = NOW()
+		WHERE ramphub_transaction_id = $3 AND status NOT IN ('completed','failed')`,
+		newStatus, event.Type+":"+event.Data.Status, txID)
+
+	// Surface processing failures so the handler returns a non-2xx and RampHub
+	// retries the delivery (credit/reversal are idempotent on retry).
+	// Delivery-level idempotency is recorded only on success so a failed
+	// credit/reversal does not permanently consume the delivery ID — RampHub
+	// can retry and the work will be attempted again.
+	credErr := s.creditOnrampIfCompleted(ctx, userID, txID, newStatus, event.Data.TokenAmount, event.Data.FiatAmount, event.Data.TxHash)
+	revErr := s.reverseOfframpIfFailed(ctx, userID, txID, orderType, newStatus)
+	s.notifyTerminal(ctx, userID, txID, orderType, newStatus, event.Data.FiatAmount)
+	if credErr != nil {
+		return credErr
+	}
+	if revErr != nil {
+		return revErr
+	}
+
+	// Record the delivery ID only after all work succeeds so retries are not
+	// permanently suppressed by a failed prior attempt.
 	if deliveryID != "" {
 		res, err := s.db.ExecContext(ctx,
 			`INSERT INTO ramphub_webhook_deliveries (delivery_id, event_type, transaction_id)
@@ -676,27 +709,11 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 			return fmt.Errorf("record webhook delivery: %w", err)
 		}
 		if affected, _ := res.RowsAffected(); affected == 0 {
-			s.logger.Info("ramphub webhook delivery already processed, skipping",
+			s.logger.Info("ramphub webhook delivery already recorded",
 				zap.String("delivery_id", deliveryID), zap.String("ramphub_tx_id", txID))
-			return nil
 		}
 	}
-
-	newStatus := ramphub.MapEventStatus(event.Type, event.Data.Status)
-	s.db.ExecContext(ctx, `
-		UPDATE ramphub_orders SET status = $1, last_webhook_status = $2, last_webhook_at = NOW(), updated_at = NOW()
-		WHERE ramphub_transaction_id = $3 AND status NOT IN ('completed','failed')`,
-		newStatus, event.Type+":"+event.Data.Status, txID)
-
-	// Surface processing failures so the handler returns a non-2xx and RampHub
-	// retries the delivery (credit/reversal are idempotent on retry).
-	credErr := s.creditOnrampIfCompleted(ctx, userID, txID, newStatus, event.Data.TokenAmount, event.Data.FiatAmount, event.Data.TxHash)
-	revErr := s.reverseOfframpIfFailed(ctx, userID, txID, orderType, newStatus)
-	s.notifyTerminal(ctx, userID, txID, orderType, newStatus, event.Data.FiatAmount)
-	if credErr != nil {
-		return credErr
-	}
-	return revErr
+	return nil
 }
 
 // PollOrderStatus fetches the latest status from RampHub, verifying ownership.
@@ -978,23 +995,35 @@ func circleToRampChain(blockchain string) string {
 }
 
 // acquireOfframpLock takes a per-user PostgreSQL advisory lock, using a distinct
-// key space from the Paj and withdrawal services.
+// key space from the Paj and withdrawal services. A dedicated connection is used
+// for both lock and unlock so they always execute on the same session — pool
+// connections are different sessions and pg_advisory_unlock would have no effect.
 func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (func(), error) {
 	h := fnv.New64a()
 	b := [16]byte(userID)
 	h.Write(b[:])
 	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) + 2000000
 
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire connection for offramp lock: %w", err)
+	}
+
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var acquired bool
-		if err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			conn.Close()
 			return nil, fmt.Errorf("failed to acquire offramp lock: %w", err)
 		}
 		if acquired {
-			return func() { s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key) }, nil
+			return func() {
+				conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key) //nolint:errcheck
+				conn.Close()
+			}, nil
 		}
 		if time.Now().After(deadline) {
+			conn.Close()
 			return nil, fmt.Errorf("timeout acquiring offramp lock")
 		}
 		time.Sleep(25 * time.Millisecond)

@@ -190,7 +190,8 @@ func balanceOfUSDC(ctx context.Context, rpcURL, token, holder string) (decimal.D
 		return decimal.Zero, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return decimal.Zero, err
 	}
