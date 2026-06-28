@@ -11,17 +11,24 @@ import (
 )
 
 const (
-	voiceDailyLimitUSD    = 100.0 // Max $100/day via voice
-	voiceDailySpendPrefix = "voice_daily_spend:"
+	defaultVoiceDailyLimitUSD = 500.0 // Default max/day via voice (configurable)
+	voiceDailySpendPrefix     = "voice_daily_spend:"
 )
 
 // VoiceDailyLimiter enforces a daily transfer cap for voice sessions.
 type VoiceDailyLimiter struct {
-	redis cache.RedisClient
+	redis    cache.RedisClient
+	limitUSD float64
 }
 
-func NewVoiceDailyLimiter(redis cache.RedisClient) *VoiceDailyLimiter {
-	return &VoiceDailyLimiter{redis: redis}
+// NewVoiceDailyLimiter creates the limiter. A limitUSD <= 0 falls back to the
+// default. This caps total money moved by voice per day (fail-closed) and is the
+// hands-free safety net even though individual transfers are confirm-card-gated.
+func NewVoiceDailyLimiter(redis cache.RedisClient, limitUSD float64) *VoiceDailyLimiter {
+	if limitUSD <= 0 {
+		limitUSD = defaultVoiceDailyLimitUSD
+	}
+	return &VoiceDailyLimiter{redis: redis, limitUSD: limitUSD}
 }
 
 func (l *VoiceDailyLimiter) key(userID uuid.UUID) string {
@@ -58,7 +65,7 @@ func (l *VoiceDailyLimiter) CheckAndRecord(ctx context.Context, userID uuid.UUID
 	result, err := l.redis.Client().Eval(ctx, luaCheckAndRecord,
 		[]string{key},
 		amount.InexactFloat64(),
-		voiceDailyLimitUSD,
+		l.limitUSD,
 		ttlSeconds,
 	).Text()
 	if err != nil {
@@ -70,12 +77,12 @@ func (l *VoiceDailyLimiter) CheckAndRecord(ctx context.Context, userID uuid.UUID
 		if pErr != nil {
 			return fmt.Errorf("voice_daily_limit: failed to parse spend (fail-closed): %w", pErr)
 		}
-		remaining := voiceDailyLimitUSD - current
+		remaining := l.limitUSD - current
 		if remaining < 0 {
 			remaining = 0
 		}
 		return fmt.Errorf("voice_daily_limit: You've used $%.0f of your $%.0f daily voice limit. Remaining: $%.0f. Open the app for larger transfers.",
-			current, voiceDailyLimitUSD, remaining)
+			current, l.limitUSD, remaining)
 	}
 	return nil
 }

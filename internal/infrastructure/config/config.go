@@ -110,7 +110,21 @@ type AIConfig struct {
 	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
 	Tavily      TavilyConfig      `mapstructure:"tavily"`
+	Langfuse    LangfuseConfig    `mapstructure:"langfuse"`
 	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+}
+
+// LangfuseConfig configures LLM observability (traces of Miriam's chat/voice
+// generations) exported to Langfuse over OTLP/HTTP.
+type LangfuseConfig struct {
+	PublicKey string `mapstructure:"public_key"` // pk-lf-...
+	SecretKey string `mapstructure:"secret_key"` // sk-lf-...
+	Host      string `mapstructure:"host"`       // e.g. https://cloud.langfuse.com (or self-hosted)
+	// CaptureContent sends prompt/response text to Langfuse. OFF by default —
+	// conversation content is financial PII; only enable for a self-hosted/
+	// trusted Langfuse instance. When off, only metadata is traced (model,
+	// tokens, latency, tool names, session/user ids).
+	CaptureContent bool `mapstructure:"capture_content"`
 }
 
 // SupermemoryConfig contains Supermemory API configuration.
@@ -132,15 +146,16 @@ type AssemblyAIConfig struct {
 
 // ElevenLabsConfig contains ElevenLabs Conversational AI configuration
 type ElevenLabsConfig struct {
-	APIKey          string  `mapstructure:"api_key"`
-	AgentID         string  `mapstructure:"agent_id"`          // ElevenLabs Conversational AI agent ID
-	WebhookSecret   string  `mapstructure:"webhook_secret"`    // Secret for authenticating server tool webhook calls
-	VoiceID         string  `mapstructure:"voice_id"`          // Optional: override agent's default voice
-	PidginVoiceID   string  `mapstructure:"pidgin_voice_id"`   // Voice ID for Nigerian Pidgin speakers
-	Stability       float64 `mapstructure:"stability"`         // 0-1: lower = more expressive but less stable
-	SimilarityBoost float64 `mapstructure:"similarity_boost"`  // 0-1: how closely to match original voice
-	Style           float64 `mapstructure:"style"`             // 0-1: style exaggeration
-	UseSpeakerBoost bool    `mapstructure:"use_speaker_boost"` // enhance speaker clarity
+	APIKey             string  `mapstructure:"api_key"`
+	AgentID            string  `mapstructure:"agent_id"`              // ElevenLabs Conversational AI agent ID
+	WebhookSecret      string  `mapstructure:"webhook_secret"`        // Secret for authenticating server tool webhook calls
+	VoiceID            string  `mapstructure:"voice_id"`              // Optional: override agent's default voice
+	PidginVoiceID      string  `mapstructure:"pidgin_voice_id"`       // Voice ID for Nigerian Pidgin speakers
+	Stability          float64 `mapstructure:"stability"`             // 0-1: lower = more expressive but less stable
+	SimilarityBoost    float64 `mapstructure:"similarity_boost"`      // 0-1: how closely to match original voice
+	Style              float64 `mapstructure:"style"`                 // 0-1: style exaggeration
+	UseSpeakerBoost    bool    `mapstructure:"use_speaker_boost"`     // enhance speaker clarity
+	VoiceDailyLimitUSD float64 `mapstructure:"voice_daily_limit_usd"` // max money moved via voice per day (default 500)
 }
 
 // BedrockConfig contains Amazon Bedrock configuration
@@ -912,7 +927,14 @@ func setDefaults() {
 	viper.BindEnv("ai.elevenlabs.similarity_boost", "ELEVENLABS_SIMILARITY_BOOST")
 	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")
 	viper.BindEnv("ai.elevenlabs.use_speaker_boost", "ELEVENLABS_USE_SPEAKER_BOOST")
+	viper.BindEnv("ai.elevenlabs.voice_daily_limit_usd", "VOICE_DAILY_LIMIT_USD")
+	viper.SetDefault("ai.elevenlabs.voice_daily_limit_usd", 500.0)
 	viper.BindEnv("ai.tavily.api_key", "TAVILY_API_KEY")
+	viper.BindEnv("ai.langfuse.public_key", "LANGFUSE_PUBLIC_KEY")
+	viper.BindEnv("ai.langfuse.secret_key", "LANGFUSE_SECRET_KEY")
+	viper.BindEnv("ai.langfuse.host", "LANGFUSE_HOST")
+	viper.BindEnv("ai.langfuse.capture_content", "LANGFUSE_CAPTURE_CONTENT")
+	viper.SetDefault("ai.langfuse.host", "https://cloud.langfuse.com")
 	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")

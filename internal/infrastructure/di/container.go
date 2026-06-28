@@ -1907,7 +1907,7 @@ func (c *Container) initializeDomainServices() error {
 	// Initialize ledger service
 	c.LedgerService = ledger.NewService(c.LedgerRepo, sqlxDB, c.Logger)
 	c.FinancialObligationService = obligationservice.NewService(c.FinancialObligationRepo)
-	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService}
+	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService, logger: c.ZapLog}
 	c.AutomationService = automation.NewService(c.AutomationRepo, automationAdapter, automationAdapter, c.ZapLog)
 	c.SharedGoalService = sharedgoal.NewService(c.SharedGoalRepo, nil, c.ZapLog) // nil UserLookup: invite resolution is not needed for AI-created goals
 
@@ -3557,9 +3557,12 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.ZapLog,
 	)
 
-	// Initialize AI orchestrator (wired to ProviderManager for failover)
+	// Initialize AI orchestrator (wired to ProviderManager for failover).
+	// Wrap the provider so every Miriam generation is traced to Langfuse
+	// (metadata-only unless ai.langfuse.capture_content is enabled).
+	tracedAIProvider := ai.NewTracingProvider(c.AIProviderManager, c.Config.AI.Langfuse.CaptureContent)
 	c.AIOrchestrator = aiservice.NewOrchestratorWithDeps(
-		c.AIProviderManager,
+		tracedAIProvider,
 		c.PortfolioDataProvider,
 		c.ActivityDataProvider,
 		&newsProviderAdapter{svc: c.NewsService},
@@ -3668,7 +3671,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Initialize action tools (funds transfer + audit)
 	if c.LedgerService != nil {
-		c.AIOrchestrator.SetFundsTransferer(&fundsTransfererAdapter{ledger: c.LedgerService})
+		c.AIOrchestrator.SetFundsTransferer(&fundsTransfererAdapter{ledger: c.LedgerService, blendRouter: c.BlendDepositRouter, logger: c.ZapLog})
 		auditRepo := repositories.NewActionAuditRepository(sqlxDB, c.ZapLog)
 		c.AIOrchestrator.SetActionAuditor(auditRepo)
 	}
@@ -3689,7 +3692,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Voice daily transfer cap ($100/day via voice)
 	if c.RedisClient != nil {
-		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
+		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient, c.Config.AI.ElevenLabs.VoiceDailyLimitUSD))
 		// Redis client for best-effort short-TTL caching of voice hot-path reads
 		// (realtime dynamic vars, cost-ceiling).
 		c.AIOrchestrator.SetRedisCache(c.RedisClient)
