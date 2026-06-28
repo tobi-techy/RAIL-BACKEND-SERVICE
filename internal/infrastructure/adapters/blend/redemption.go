@@ -106,15 +106,90 @@ func (r *DepositRouter) RedeemStashYield(ctx context.Context, userID uuid.UUID, 
 	pollCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	if err := r.driveRedemption(pollCtx, acct, existing, amount); err != nil {
+	if err := r.driveRedemption(pollCtx, acct, existing, amount, false); err != nil {
 		return err
 	}
 	return nil
 }
 
+// RedeemStashYieldForTransfer is like RedeemStashYield but skips the Base→Solana sweep.
+// Use this when funds are about to leave the platform via a crypto withdrawal — the
+// withdrawal transfer itself will spend the USDC from the Base EOA, so sweeping first
+// would race with and potentially consume the funds before the transfer can use them.
+func (r *DepositRouter) RedeemStashYieldForTransfer(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	if r == nil || r.db == nil || r.blend == nil {
+		return errors.New("blend redeemer not configured")
+	}
+	if userID == uuid.Nil {
+		return errors.New("user_id is required")
+	}
+	if !amount.GreaterThan(decimal.Zero) {
+		return nil
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return errors.New("redemption idempotency key is required")
+	}
+	amount = amount.Truncate(6)
+
+	existing, err := r.getRedemption(ctx, idempotencyKey)
+	if err != nil {
+		return err
+	}
+	if existing != nil && existing.Status == redemptionStatusComplete {
+		return nil
+	}
+
+	acct, err := r.getUserAccount(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if acct == nil || acct.BlendAccountID == "" {
+		return fmt.Errorf("blend: user %s has no Blend account to redeem from", userID)
+	}
+	if acct.SafeStatus != SafeStatusValidated {
+		return fmt.Errorf("blend: user %s Safe is not validated (status=%s); cannot redeem", userID, acct.SafeStatus)
+	}
+
+	if existing == nil {
+		if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount, idempotencyKey); err != nil {
+			return err
+		}
+		existing, err = r.getRedemption(ctx, idempotencyKey)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := r.assertSufficientPosition(ctx, userID, amount, existing.ID); err != nil {
+		_ = r.markRedemptionFailed(ctx, idempotencyKey, err.Error())
+		return err
+	}
+
+	timeout := r.getRedeemTimeout()
+	leaseSecs := int(timeout.Seconds()) + 30
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE blend_yield_redemptions
+		SET next_retry_at = NOW() + ($2 || ' seconds')::interval, updated_at = NOW()
+		WHERE id = $1
+	`, existing.ID, fmt.Sprintf("%d", leaseSecs)); err != nil {
+		return fmt.Errorf("blend: lease redemption: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	pollCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	// skipSweep=true: funds are leaving the platform; the crypto transfer will spend the
+	// USDC directly from the Base EOA, so we must not race with a concurrent sweep.
+	return r.driveRedemption(pollCtx, acct, existing, amount, true)
+}
+
 // driveRedemption advances a single redemption through quote → lock → execute →
 // submit → settle, then decrements the user's positions. Bounded by pollCtx.
-func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal) error {
+// skipSweep suppresses the async Base→Solana bridge goroutine (use when funds are
+// about to leave the platform via a crypto withdrawal transfer).
+func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, skipSweep bool) error {
 	// 1. Obtain a withdraw session. Refuse to proceed if a non-terminal DEPOSIT
 	//    session is occupying the single per-account session slot.
 	intentID := red.IntentID.String
@@ -159,8 +234,18 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 		return err
 	}
 
-	// 5. Bridge redeemed USDC from Base EOA → user's Solana wallet (best-effort, non-blocking).
-	sweepCtx, sweepCancel := context.WithTimeout(ctx, 5*time.Minute)
+	// 5. Bridge redeemed USDC from Base EOA → user's Solana wallet (async, best-effort).
+	// Skipped when funds are about to leave the platform via a crypto transfer — the
+	// transfer spends from the Base EOA directly, and a concurrent sweep would race it.
+	if skipSweep {
+		// Mark swept_at so the worker does not retry the sweep for this redemption.
+		_, _ = r.db.ExecContext(context.Background(), `
+			UPDATE blend_yield_redemptions SET swept_at = NOW(), updated_at = NOW() WHERE id = $1
+		`, red.ID)
+		return nil
+	}
+
+	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {

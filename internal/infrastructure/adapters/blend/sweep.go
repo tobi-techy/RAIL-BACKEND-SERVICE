@@ -13,28 +13,48 @@ import (
 
 // sweepToSolana bridges redeemed USDC from the user's Base EOA back to their Solana
 // wallet via ChainRails. Called after finalizeRedemption confirms funds are on-chain in
-// the Base EOA. Best-effort: failures are logged but do not fail the redemption.
+// the Base EOA. Best-effort: failures are persisted to swept_failed_reason so the worker
+// can retry; success stamps swept_at so the worker ignores it.
 func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccount, amount decimal.Decimal, redemptionID uuid.UUID) {
+	if err := r.doSweepToSolana(ctx, acct, amount, redemptionID); err != nil {
+		r.logger.Error("blend sweep: failed, will retry on next worker tick",
+			zap.String("redemption_id", redemptionID.String()), zap.Error(err))
+		r.persistSweepFailure(redemptionID, err.Error())
+		return
+	}
+	r.persistSweepSuccess(redemptionID)
+}
+
+func (r *DepositRouter) persistSweepSuccess(redemptionID uuid.UUID) {
+	_, _ = r.db.ExecContext(context.Background(), `
+		UPDATE blend_yield_redemptions
+		SET swept_at = NOW(), sweep_failed_reason = NULL, updated_at = NOW()
+		WHERE id = $1
+	`, redemptionID)
+}
+
+func (r *DepositRouter) persistSweepFailure(redemptionID uuid.UUID, reason string) {
+	_, _ = r.db.ExecContext(context.Background(), `
+		UPDATE blend_yield_redemptions
+		SET sweep_failed_reason = $2, updated_at = NOW()
+		WHERE id = $1
+	`, redemptionID, reason)
+}
+
+func (r *DepositRouter) doSweepToSolana(ctx context.Context, acct *blendUserAccount, amount decimal.Decimal, redemptionID uuid.UUID) error {
 	bridge, _ := r.getChainRails()
 	if bridge == nil {
-		r.logger.Warn("blend sweep: ChainRails not configured, skipping Base→Solana bridge",
-			zap.String("redemption_id", redemptionID.String()))
-		return
+		return fmt.Errorf("ChainRails not configured")
 	}
 
 	solWallet, err := r.resolveUserSolanaWallet(ctx, acct.UserID)
 	if err != nil || solWallet.Address == "" {
-		r.logger.Warn("blend sweep: cannot resolve Solana wallet, skipping",
-			zap.String("user_id", acct.UserID.String()), zap.Error(err))
-		return
+		return fmt.Errorf("cannot resolve Solana wallet: %w", err)
 	}
 
-	// Get the Base EOA's USDC token ID for the funding transfer.
 	tokenID, err := r.circle.GetUSDCTokenIDOnchain(ctx, acct.CircleWalletID)
 	if err != nil || tokenID == "" {
-		r.logger.Warn("blend sweep: cannot resolve Base USDC token ID, skipping",
-			zap.String("wallet_id", acct.CircleWalletID), zap.Error(err))
-		return
+		return fmt.Errorf("cannot resolve Base USDC token ID: %w", err)
 	}
 
 	micro := amount.Truncate(6).Shift(6).BigInt()
@@ -55,49 +75,35 @@ func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccoun
 		},
 	})
 	if err != nil {
-		r.logger.Error("blend sweep: ChainRails intent creation failed",
-			zap.String("redemption_id", redemptionID.String()), zap.Error(err))
-		return
+		return fmt.Errorf("ChainRails intent creation failed: %w", err)
 	}
 	if strings.TrimSpace(intent.IntentAddress) == "" {
-		r.logger.Error("blend sweep: ChainRails returned empty intent address",
-			zap.String("redemption_id", redemptionID.String()))
-		return
+		return fmt.Errorf("ChainRails returned empty intent address")
 	}
 
 	fundAmount, err := chainRailsFundingAmount(intent, amount)
 	if err != nil {
-		r.logger.Error("blend sweep: invalid funding amount from ChainRails",
-			zap.String("redemption_id", redemptionID.String()), zap.Error(err))
-		return
+		return fmt.Errorf("invalid funding amount from ChainRails: %w", err)
 	}
 
-	// Verify Base EOA has enough to fund (amount + bridge fee).
 	have, err := r.usdcBalance(ctx, acct.CircleWalletID)
-	if err != nil || have.LessThan(fundAmount) {
-		r.logger.Warn("blend sweep: insufficient Base EOA balance for bridge",
-			zap.String("redemption_id", redemptionID.String()),
-			zap.String("have", have.StringFixed(6)),
-			zap.String("need", fundAmount.StringFixed(6)), zap.Error(err))
-		return
+	if err != nil {
+		return fmt.Errorf("cannot check Base EOA balance: %w", err)
+	}
+	if have.LessThan(fundAmount) {
+		return fmt.Errorf("insufficient Base EOA balance: have %s need %s", have.StringFixed(6), fundAmount.StringFixed(6))
 	}
 
-	// Fund the intent: same-chain Circle transfer Base EOA → intent address.
 	idemKey := uuid.NewSHA1(uuid.NameSpaceOID,
 		[]byte(fmt.Sprintf("blend-sweep-%s", redemptionID.String()))).String()
 
 	tx, err := r.circle.TransferUSDCWithIdempotency(ctx, acct.CircleWalletID, tokenID, intent.IntentAddress, fundAmount.StringFixed(6), idemKey)
 	if err != nil {
-		r.logger.Error("blend sweep: Circle funding transfer failed",
-			zap.String("redemption_id", redemptionID.String()),
-			zap.String("intent_address", intent.IntentAddress), zap.Error(err))
-		return
+		return fmt.Errorf("Circle funding transfer failed: %w", err)
 	}
 
 	if _, err := r.waitCircleTransfer(ctx, tx); err != nil {
-		r.logger.Error("blend sweep: Circle funding transfer did not settle",
-			zap.String("redemption_id", redemptionID.String()), zap.Error(err))
-		return
+		return fmt.Errorf("Circle funding transfer did not settle: %w", err)
 	}
 
 	r.logger.Info("blend sweep: Base→Solana bridge funded, ChainRails settling",
@@ -106,6 +112,7 @@ func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccoun
 		zap.String("amount", amount.StringFixed(6)),
 		zap.String("intent_address", intent.IntentAddress),
 		zap.String("solana_dest", solWallet.Address))
+	return nil
 }
 
 

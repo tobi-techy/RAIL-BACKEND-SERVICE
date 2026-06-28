@@ -2,9 +2,11 @@ package blend
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -78,20 +80,77 @@ func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 
 	r.reconcileDepositRoutes(ctx)
 	r.reconcileRedemptions(ctx)
+	r.retryPendingSweeps(ctx)
 	r.detectStaleRoutes(ctx)
 }
 
-// detectStaleRoutes logs a warning for routes stuck in non-terminal states for >6 hours.
-func (r *DepositRouter) detectStaleRoutes(ctx context.Context) {
-	var count int
-	if err := r.db.GetContext(ctx, &count, `
-		SELECT COUNT(*) FROM blend_deposit_routes
-		WHERE status NOT IN ('complete', 'error_terminal', 'error_payload')
-			AND updated_at < NOW() - INTERVAL '6 hours'
-	`); err != nil || count == 0 {
+// retryPendingSweeps retries the Base→Solana bridge for complete redemptions whose
+// sweep failed or never ran. Uses a 5-minute grace period after settlement so we
+// don't race with a crypto transfer that may still be spending from the Base EOA.
+func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
+	type row struct {
+		ID     uuid.UUID `db:"id"`
+		UserID uuid.UUID `db:"user_id"`
+		Amount string    `db:"amount"`
+	}
+	var rows []row
+	if err := r.db.SelectContext(ctx, &rows, `
+		SELECT id, user_id, amount
+		FROM blend_yield_redemptions
+		WHERE status = 'complete'
+		  AND swept_at IS NULL
+		  AND settled_at < NOW() - INTERVAL '5 minutes'
+		ORDER BY settled_at
+		LIMIT $1
+	`, r.getBatchSize()); err != nil || len(rows) == 0 {
 		return
 	}
-	r.logger.Warn("Blend: stale routes detected (stuck >6h, may need operator review)", zap.Int("count", count))
+	for _, row := range rows {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		acct, err := r.getUserAccount(ctx, row.UserID)
+		if err != nil || acct == nil {
+			continue
+		}
+		amt, _ := decimal.NewFromString(row.Amount)
+		if !amt.GreaterThan(decimal.Zero) {
+			continue
+		}
+		sweepCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		r.sweepToSolana(sweepCtx, acct, amt, row.ID)
+		cancel()
+	}
+}
+
+// detectStaleRoutes logs a warning for routes stuck in non-terminal states for >6 hours,
+// including the last known error for each so operators can diagnose without a DB query.
+func (r *DepositRouter) detectStaleRoutes(ctx context.Context) {
+	type staleRow struct {
+		ID        uuid.UUID      `db:"id"`
+		Status    string         `db:"status"`
+		Attempts  int            `db:"attempts"`
+		LastError sql.NullString `db:"last_error"`
+	}
+	var rows []staleRow
+	if err := r.db.SelectContext(ctx, &rows, `
+		SELECT id, status, attempts, last_error
+		FROM blend_deposit_routes
+		WHERE status NOT IN ('complete', 'error_terminal', 'error_payload')
+		  AND updated_at < NOW() - INTERVAL '6 hours'
+		LIMIT 10
+	`); err != nil || len(rows) == 0 {
+		return
+	}
+	for _, row := range rows {
+		r.logger.Warn("Blend: stale deposit route (stuck >6h)",
+			zap.String("route_id", row.ID.String()),
+			zap.String("status", row.Status),
+			zap.Int("attempts", row.Attempts),
+			zap.String("last_error", row.LastError.String))
+	}
 }
 
 func (r *DepositRouter) reconcileDepositRoutes(ctx context.Context) {
@@ -215,7 +274,9 @@ func (r *DepositRouter) resumeRedemption(ctx context.Context, idempotencyKey str
 	}
 	pollCtx, cancel := context.WithTimeout(ctx, r.getRedeemTimeout())
 	defer cancel()
-	if err := r.driveRedemption(pollCtx, acct, red, red.Amount); err != nil {
+	// skipSweep=false: worker-resumed redemptions are for the emergency stash-to-spend
+	// path; funds stay on platform so we do want the Base→Solana sweep.
+	if err := r.driveRedemption(pollCtx, acct, red, red.Amount, false); err != nil {
 		r.logger.Warn("Blend: resume redemption did not settle (will retry)",
 			zap.String("redemption_id", red.ID.String()), zap.Error(err))
 	}

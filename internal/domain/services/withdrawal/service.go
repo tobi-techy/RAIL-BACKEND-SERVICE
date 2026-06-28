@@ -157,6 +157,14 @@ type StashYieldRedeemer interface {
 	RedeemStashYield(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
 
+// StashYieldRedeemerForTransfer extends StashYieldRedeemer with a variant that skips the
+// Base→Solana sweep. Use when funds are about to leave the platform via a crypto transfer
+// so the transfer itself can spend the USDC from the Base EOA without racing the sweep.
+type StashYieldRedeemerForTransfer interface {
+	StashYieldRedeemer
+	RedeemStashYieldForTransfer(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
+}
+
 // ChainRailsTransferAdapter creates cross-chain intents via ChainRails.
 type ChainRailsTransferAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
@@ -1189,7 +1197,14 @@ func (s *WithdrawalService) prepareStashYieldForCryptoWithdrawal(ctx context.Con
 	if !redeemAmount.GreaterThan(decimal.Zero) {
 		return nil
 	}
-	return s.stashYieldRedeemer.RedeemStashYield(ctx, withdrawal.UserID, redeemAmount, "withdrawal-"+withdrawal.ID.String())
+	idemKey := "withdrawal-" + withdrawal.ID.String()
+	// Use the no-sweep variant when available: funds are leaving the platform so the
+	// crypto transfer will spend the USDC directly from the Base EOA. A concurrent sweep
+	// goroutine would race the transfer for the same funds.
+	if rt, ok := s.stashYieldRedeemer.(StashYieldRedeemerForTransfer); ok {
+		return rt.RedeemStashYieldForTransfer(ctx, withdrawal.UserID, redeemAmount, idemKey)
+	}
+	return s.stashYieldRedeemer.RedeemStashYield(ctx, withdrawal.UserID, redeemAmount, idemKey)
 }
 
 // InitiateFiatWithdrawal initiates a fiat withdrawal (USDC to fiat via Bridge)
