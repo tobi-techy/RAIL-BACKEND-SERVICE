@@ -3692,7 +3692,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Voice daily transfer cap ($100/day via voice)
 	if c.RedisClient != nil {
-		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
+		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient, 500))
 		// Redis client for best-effort short-TTL caching of voice hot-path reads
 		// (realtime dynamic vars, cost-ceiling).
 		c.AIOrchestrator.SetRedisCache(c.RedisClient)

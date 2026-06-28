@@ -11,6 +11,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 const (
@@ -280,7 +281,8 @@ func (o *Orchestrator) PrepareVoiceAction(ctx context.Context, userID, convID uu
 		Arguments: params,
 	})
 	if err != nil {
-		return nil, err
+		o.logger.Warn("voice action tool execution failed", zap.String("action", action), zap.Error(err))
+		return nil, fmt.Errorf("failed to execute action")
 	}
 	return pendingActionFromResult(action, result)
 }

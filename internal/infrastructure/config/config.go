@@ -111,6 +111,7 @@ type AIConfig struct {
 	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
 	Tavily      TavilyConfig      `mapstructure:"tavily"`
+	Langfuse    LangfuseConfig    `mapstructure:"langfuse"`
 	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 }
 
@@ -123,6 +124,13 @@ type SupermemoryConfig struct {
 // places, flights, products, recommendations).
 type TavilyConfig struct {
 	APIKey string `mapstructure:"api_key"`
+}
+
+// LangfuseConfig contains Langfuse observability configuration.
+type LangfuseConfig struct {
+	Host      string `mapstructure:"host"`
+	PublicKey string `mapstructure:"public_key"`
+	SecretKey string `mapstructure:"secret_key"`
 }
 
 // AssemblyAIConfig contains AssemblyAI Voice Agent API configuration (deprecated, kept for backward compat)
