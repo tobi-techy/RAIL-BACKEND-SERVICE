@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -53,15 +54,21 @@ func (b *TokenBlacklist) negCachePut(tokenHash string) {
 				delete(b.negCache, k)
 			}
 		}
-		// If still at capacity after removing expired entries, evict 10% to enforce the hard limit.
+		// If still at capacity after removing expired entries, evict the oldest 10%
+		// (those with the earliest expiry) to enforce the hard limit deterministically.
 		if len(b.negCache) >= negCacheMaxSize {
+			type entry struct {
+				key string
+				exp int64
+			}
+			entries := make([]entry, 0, len(b.negCache))
+			for k, exp := range b.negCache {
+				entries = append(entries, entry{k, exp})
+			}
+			sort.Slice(entries, func(i, j int) bool { return entries[i].exp < entries[j].exp })
 			evict := negCacheMaxSize / 10
-			for k := range b.negCache {
-				if evict <= 0 {
-					break
-				}
-				delete(b.negCache, k)
-				evict--
+			for i := 0; i < evict && i < len(entries); i++ {
+				delete(b.negCache, entries[i].key)
 			}
 		}
 	}

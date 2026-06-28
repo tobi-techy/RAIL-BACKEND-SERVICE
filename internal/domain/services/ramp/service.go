@@ -588,7 +588,7 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 
 	cryptoAmount := decimal.NewFromFloat(cryptoSendAmount(order, fiatAmount, quote.Rate))
-	transferCtx, transferCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	transferCtx, transferCancel := context.WithTimeout(ctx, 5*time.Minute)
 	go func() {
 		defer transferCancel()
 		defer func() {

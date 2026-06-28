@@ -395,7 +395,12 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 				if cfg.Security.AuthBlacklistFailOpen {
 					log.Warnw("Token blacklist check failed — failing open (Redis unavailable)",
 						"error", err,
-						"token_hash_prefix", tokenHash[:8],
+						"token_hash_prefix", func() string {
+						if len(tokenHash) >= 8 {
+							return tokenHash[:8]
+						}
+						return tokenHash
+					}(),
 						"security_mode", "degraded")
 				} else {
 					log.Errorw("Token blacklist check failed — rejecting request", "error", err)

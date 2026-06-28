@@ -43,7 +43,7 @@ func (s *Service) executeCircleTransferToRampHub(ctx context.Context, userID uui
 				zap.String("ramphub_tx_id", order.TransactionID),
 				zap.Any("panic", r),
 				zap.Stack("stack"))
-			rCtx, rCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			rCtx, rCancel := context.WithTimeout(ctx, 30*time.Second)
 			defer rCancel()
 			s.reverseHold(rCtx, userID, order.TransactionID, totalHold, railFee, "transfer_panic")
 		}

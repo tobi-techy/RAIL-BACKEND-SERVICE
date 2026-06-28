@@ -1249,6 +1249,8 @@ func (app *Application) stopWorkers() {
 	// Stop Redis health monitor.
 	if app.monitorCancel != nil {
 		app.monitorCancel()
+	}
+	if app.redisMonitor != nil {
 		app.redisMonitor.Wait()
 	}
 }
