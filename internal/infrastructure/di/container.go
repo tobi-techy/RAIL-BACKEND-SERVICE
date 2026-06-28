@@ -3692,7 +3692,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Voice daily transfer cap ($100/day via voice)
 	if c.RedisClient != nil {
-		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
+		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient, 500))
 		// Redis client for best-effort short-TTL caching of voice hot-path reads
 		// (realtime dynamic vars, cost-ceiling).
 		c.AIOrchestrator.SetRedisCache(c.RedisClient)
@@ -4895,6 +4895,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			APIKey:        c.Config.RampHub.APIKey,
 			BaseURL:       c.Config.RampHub.BaseURL,
 			WebhookSecret: c.Config.RampHub.WebhookSecret,
+			Sandbox:       c.Config.RampHub.Sandbox,
 		}, c.ZapLog)
 		if err != nil {
 			c.ZapLog.Fatal("failed to initialize RampHub client", zap.Error(err))

@@ -36,18 +36,18 @@ var evmToChainRails = map[string]struct{ chain, token string }{
 // RampHub's deposit address. Solana wallets transfer directly; EVM wallets are
 // bridged to Solana via ChainRails. Any failure reverses the ledger hold.
 // Must be called in a goroutine; the function owns its context lifetime.
-func (s *Service) executeCircleTransferToRampHub(userID uuid.UUID, order *ramphub.OrderResponse, cryptoAmount, totalHold, railFee decimal.Decimal) {
+func (s *Service) executeCircleTransferToRampHub(ctx context.Context, userID uuid.UUID, order *ramphub.OrderResponse, cryptoAmount, totalHold, railFee decimal.Decimal) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.Error("PANIC in executeCircleTransferToRampHub — reversing hold",
-				zap.Any("panic", r), zap.String("ramphub_tx_id", order.TransactionID))
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			s.reverseHold(ctx, userID, order.TransactionID, totalHold, railFee, "goroutine_panic")
+			s.logger.Error("CRITICAL: panic in Circle transfer goroutine",
+				zap.String("ramphub_tx_id", order.TransactionID),
+				zap.Any("panic", r),
+				zap.Stack("stack"))
+			rCtx, rCancel := context.WithTimeout(ctx, 30*time.Second)
+			defer rCancel()
+			s.reverseHold(rCtx, userID, order.TransactionID, totalHold, railFee, "transfer_panic")
 		}
 	}()
-	ctx, cancel := contextWithTimeout()
-	defer cancel()
 
 	transferAmount, slippageRefund, calcErr := calculateOfframpTransferAmounts(cryptoAmount, totalHold, railFee)
 	if calcErr != nil {
@@ -75,7 +75,8 @@ func (s *Service) executeCircleTransferToRampHub(userID uuid.UUID, order *ramphu
 
 	isSolana := strings.Contains(strings.ToUpper(blockchain), "SOL")
 	if isSolana {
-		tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, order.OurCryptoAddress, transferAmount.StringFixed(2))
+		idem := fmt.Sprintf("ramphub-offramp-sol-%s", order.TransactionID)
+		tx, txErr := s.circleTransfer.TransferUSDCWithIdempotency(ctx, walletID, tokenID, order.OurCryptoAddress, transferAmount.StringFixed(2), idem)
 		if txErr != nil {
 			s.logger.Error("async: Circle SOL transfer to RampHub failed — reversing hold",
 				zap.Error(txErr), zap.String("ramphub_tx_id", order.TransactionID))
@@ -164,7 +165,8 @@ func (s *Service) executeCircleViaChainRails(ctx context.Context, userID uuid.UU
 		return
 	}
 
-	tx, txErr := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, intent.IntentAddress, circleAmount)
+	idem := fmt.Sprintf("ramphub-offramp-evm-%s", order.TransactionID)
+	tx, txErr := s.circleTransfer.TransferUSDCWithIdempotency(ctx, walletID, tokenID, intent.IntentAddress, circleAmount, idem)
 	if txErr != nil {
 		s.logger.Error("Circle transfer to ChainRails intent for RampHub failed — reversing hold",
 			zap.Error(txErr), zap.String("ramphub_tx_id", order.TransactionID))
@@ -235,14 +237,19 @@ func (s *Service) refundSlippage(ctx context.Context, userID uuid.UUID, txID str
 // If the ledger reversal fails, the order is restored to unclained so the
 // recovery worker can pick it up on its next sweep.
 func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string, amount, railFee decimal.Decimal, reason string) error {
-	if _, dbErr := s.db.ExecContext(ctx, `
+	res, dbErr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID); dbErr != nil {
+		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID)
+	if dbErr != nil {
 		s.logger.Error("failed to mark RampHub order as failed",
 			zap.Error(dbErr), zap.String("ramphub_tx_id", txID))
 		// Do not proceed with ledger reversal — the recovery worker will handle
 		// it once the database is accessible again.
 		return dbErr
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Already claimed or in a terminal state — nothing to reverse.
+		return nil
 	}
 
 	if s.ledger == nil {
@@ -257,7 +264,7 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))
 		// Unclaim so the recovery worker can retry the reversal on its next sweep.
-		if _, unclaimErr := s.db.ExecContext(context.Background(), `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
+		if _, unclaimErr := s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL, status = 'processing', updated_at = NOW() WHERE ramphub_transaction_id = $1 AND status = 'failed'`, txID); unclaimErr != nil {
 			s.logger.Error("CRITICAL: failed to unclaim RampHub order after failed reversal — requires manual intervention",
 				zap.Error(unclaimErr), zap.String("user_id", userID.String()),
 				zap.String("ramphub_tx_id", txID), zap.String("amount", amount.String()))

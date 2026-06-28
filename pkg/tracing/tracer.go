@@ -29,6 +29,13 @@ type Config struct {
 	Environment  string  // development, staging, production
 	SampleRate   float64 // 0.0 to 1.0
 	Insecure     bool    // Allow insecure connection (only for development)
+
+	// Langfuse LLM observability (optional). When public+secret keys are set, a
+	// second OTLP/HTTP exporter ships LLM spans to Langfuse alongside the main
+	// collector. gRPC is intentionally not used here — Langfuse is HTTP-only.
+	LangfusePublicKey string
+	LangfuseSecretKey string
+	LangfuseHost      string
 }
 
 // IsProduction returns true if the environment is production or staging
@@ -38,7 +45,9 @@ func (c Config) IsProduction() bool {
 
 // InitTracer initializes the OpenTelemetry tracer provider
 func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) (func(context.Context) error, error) {
-	if !cfg.Enabled {
+	langfuseConfigured := cfg.LangfusePublicKey != "" && cfg.LangfuseSecretKey != ""
+
+	if !cfg.Enabled && !langfuseConfigured {
 		logger.Info("OpenTelemetry tracing is disabled")
 		// Set up no-op tracer
 		otel.SetTracerProvider(sdktrace.NewTracerProvider())
@@ -57,46 +66,6 @@ func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) (func(conte
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// Build gRPC client options based on environment
-	grpcOpts := []otlptracegrpc.Option{
-		otlptracegrpc.WithEndpoint(cfg.CollectorURL),
-	}
-
-	// Security: Use TLS by default, only allow insecure in development
-	if cfg.IsProduction() {
-		// Production/Staging: Always use TLS
-		if cfg.Insecure {
-			logger.Warn("Insecure gRPC connection requested in production environment - forcing TLS",
-				zap.String("environment", cfg.Environment))
-		}
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-		grpcOpts = append(grpcOpts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
-		logger.Info("OpenTelemetry tracing configured with TLS",
-			zap.String("environment", cfg.Environment))
-	} else if cfg.Insecure {
-		// Development: Allow insecure only if explicitly configured
-		grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
-		logger.Warn("OpenTelemetry tracing using insecure gRPC connection",
-			zap.String("environment", cfg.Environment),
-			zap.String("security_note", "This should only be used in development"))
-	} else {
-		// Development without explicit insecure flag: still use TLS
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-		grpcOpts = append(grpcOpts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
-		logger.Info("OpenTelemetry tracing configured with TLS",
-			zap.String("environment", cfg.Environment))
-	}
-
-	// Create OTLP trace exporter
-	traceExporter, err := otlptrace.New(ctx, otlptracegrpc.NewClient(grpcOpts...))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
 	// Determine sampler based on sample rate
 	var sampler sdktrace.Sampler
 	if cfg.SampleRate >= 1.0 {
@@ -107,12 +76,59 @@ func InitTracer(ctx context.Context, cfg Config, logger *zap.Logger) (func(conte
 		sampler = sdktrace.TraceIDRatioBased(cfg.SampleRate)
 	}
 
-	// Create trace provider with batch span processor
-	tp := sdktrace.NewTracerProvider(
+	// LLM spans must be captured at 100% for observability/cost/eval, so force
+	// them through regardless of the (often low) app-trace sample rate. Only
+	// applied when Langfuse is configured; everything else keeps the base rate.
+	if langfuseConfigured {
+		sampler = llmAwareSampler{base: sampler}
+	}
+
+	tpOpts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
-		sdktrace.WithBatcher(traceExporter),
 		sdktrace.WithSampler(sampler),
-	)
+	}
+
+	// Main OTLP/gRPC collector (general app traces)
+	if cfg.Enabled {
+		grpcOpts := []otlptracegrpc.Option{
+			otlptracegrpc.WithEndpoint(cfg.CollectorURL),
+		}
+		// Security: Use TLS by default, only allow insecure in development
+		if cfg.IsProduction() {
+			if cfg.Insecure {
+				logger.Warn("Insecure gRPC connection requested in production environment - forcing TLS",
+					zap.String("environment", cfg.Environment))
+			}
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
+		} else if cfg.Insecure {
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithInsecure())
+			logger.Warn("OpenTelemetry tracing using insecure gRPC connection",
+				zap.String("environment", cfg.Environment),
+				zap.String("security_note", "This should only be used in development"))
+		} else {
+			grpcOpts = append(grpcOpts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})))
+		}
+		traceExporter, expErr := otlptrace.New(ctx, otlptracegrpc.NewClient(grpcOpts...))
+		if expErr != nil {
+			return nil, fmt.Errorf("failed to create trace exporter: %w", expErr)
+		}
+		tpOpts = append(tpOpts, sdktrace.WithBatcher(traceExporter))
+		logger.Info("OpenTelemetry collector exporter configured", zap.String("collector_url", cfg.CollectorURL))
+	}
+
+	// Langfuse LLM observability (OTLP/HTTP, filtered to LLM spans only)
+	if langfuseConfigured {
+		lfProc, lfErr := newLangfuseProcessor(ctx, cfg.LangfuseHost, cfg.LangfusePublicKey, cfg.LangfuseSecretKey)
+		if lfErr != nil {
+			logger.Warn("Langfuse exporter init failed — LLM tracing disabled", zap.Error(lfErr))
+		} else {
+			tpOpts = append(tpOpts, sdktrace.WithSpanProcessor(lfProc))
+			logger.Info("Langfuse LLM tracing enabled", zap.String("host", cfg.LangfuseHost))
+		}
+	}
+
+	// Create trace provider
+	tp := sdktrace.NewTracerProvider(tpOpts...)
 
 	// Set global trace provider
 	otel.SetTracerProvider(tp)

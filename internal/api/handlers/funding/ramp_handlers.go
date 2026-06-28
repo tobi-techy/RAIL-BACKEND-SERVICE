@@ -186,7 +186,7 @@ func (h *RampHandlers) GetOrderStatus(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"transactionId": tx.TransactionID,
-		"status":        tx.Status,
+		"status":        tx.MappedStatus(), // normalized (matches /orders history endpoint)
 		"side":          tx.Side,
 		"fiatAmount":    tx.FiatAmount,
 		"tokenAmount":   tx.TokenAmount,
@@ -217,6 +217,17 @@ func (h *RampHandlers) HandleWebhook(c *gin.Context) {
 	}
 	if event.Data.TransactionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing transactionId"})
+		return
+	}
+
+	// Reject sandbox events in non-sandbox mode to prevent test traffic from
+	// crediting or reversing real accounts. Return 200 so RampHub does not retry.
+	if !event.LiveMode && !h.service.IsSandbox() {
+		h.logger.Warn("ramphub webhook: ignoring sandbox event in production mode",
+			zap.String("event_id", event.ID),
+			zap.String("event_type", event.Type),
+			zap.String("ramphub_tx_id", event.Data.TransactionID))
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}
 

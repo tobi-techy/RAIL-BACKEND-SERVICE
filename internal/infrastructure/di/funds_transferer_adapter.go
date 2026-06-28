@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -32,8 +33,10 @@ func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userI
 	// Non-blocking — the user already has their spending balance.
 	if a.blendRouter != nil {
 		go func() {
+			redeemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
 			redeemKey := "redeem-" + idempotencyKey
-			if err := a.blendRouter.RedeemStashYield(context.Background(), userID, amount, redeemKey); err != nil {
+			if err := a.blendRouter.RedeemStashYield(redeemCtx, userID, amount, redeemKey); err != nil {
 				if a.logger != nil {
 					a.logger.Warn("async Blend redemption failed (will retry via worker)",
 						zap.String("user_id", userID.String()),

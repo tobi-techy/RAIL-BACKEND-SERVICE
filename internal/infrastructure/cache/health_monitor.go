@@ -17,6 +17,7 @@ type HealthMonitor struct {
 	timeout  time.Duration
 	// onChange is called when health flips. up=true means recovered.
 	onChange func(up bool, err error)
+	done     chan struct{}
 }
 
 // NewHealthMonitor builds a monitor. interval<=0 defaults to 30s.
@@ -38,7 +39,9 @@ func (m *HealthMonitor) Start(ctx context.Context) {
 	if m == nil || m.client == nil {
 		return
 	}
+	m.done = make(chan struct{})
 	go func() {
+		defer close(m.done)
 		ticker := time.NewTicker(m.interval)
 		defer ticker.Stop()
 		healthy := true // assume healthy at boot; first failure will alert
@@ -66,4 +69,12 @@ func (m *HealthMonitor) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// Wait blocks until the monitor goroutine has fully stopped.
+func (m *HealthMonitor) Wait() {
+	if m == nil || m.done == nil {
+		return
+	}
+	<-m.done
 }

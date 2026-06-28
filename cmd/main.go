@@ -319,7 +319,11 @@ func maybeRunBootRecovery() {
 		fmt.Printf("BLEND BOOT RECOVERY: load config failed: %v\n", err)
 		return
 	}
-	logger, _ := zap.NewProduction()
+	logger, err := zap.NewProduction()
+	if err != nil {
+		fmt.Printf("BLEND BOOT RECOVERY: failed to create logger: %v\n", err)
+		return
+	}
 	cc, cr, err := buildRecoveryClients(cfg, logger)
 	if err != nil {
 		fmt.Printf("BLEND BOOT RECOVERY: %v\n", err)

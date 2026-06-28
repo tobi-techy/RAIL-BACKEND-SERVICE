@@ -111,6 +111,7 @@ type AIConfig struct {
 	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
 	Tavily      TavilyConfig      `mapstructure:"tavily"`
+	Langfuse    LangfuseConfig    `mapstructure:"langfuse"`
 	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 }
 
@@ -123,6 +124,13 @@ type SupermemoryConfig struct {
 // places, flights, products, recommendations).
 type TavilyConfig struct {
 	APIKey string `mapstructure:"api_key"`
+}
+
+// LangfuseConfig contains Langfuse observability configuration.
+type LangfuseConfig struct {
+	Host      string `mapstructure:"host"`
+	PublicKey string `mapstructure:"public_key"`
+	SecretKey string `mapstructure:"secret_key"`
 }
 
 // AssemblyAIConfig contains AssemblyAI Voice Agent API configuration (deprecated, kept for backward compat)
@@ -573,6 +581,7 @@ type RampHubConfig struct {
 	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound webhooks
 	WebhookURL          string  `mapstructure:"webhook_url"`           // Rail's webhook endpoint URL registered with RampHub
 	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's business fee % applied to every order (e.g. 0.5)
+	Sandbox             bool    `mapstructure:"sandbox"`               // when true, sandbox webhook events (livemode:false) are accepted; must be false in production
 }
 
 // WorkerConfig contains background worker configuration

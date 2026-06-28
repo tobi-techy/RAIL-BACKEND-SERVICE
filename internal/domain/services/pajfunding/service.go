@@ -67,6 +67,7 @@ type WalletProvider interface {
 type CircleTransferAdapter interface {
 	FindWalletWithUSDC(ctx context.Context, userRefID string) (walletID, tokenID, blockchain, address string, err error)
 	TransferUSDC(ctx context.Context, walletID, tokenID, destinationAddress, amount string) (*circlepkg.Transaction, error)
+	TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*circlepkg.Transaction, error)
 }
 
 // ChainRailsAdapter creates cross-chain transfer intents.

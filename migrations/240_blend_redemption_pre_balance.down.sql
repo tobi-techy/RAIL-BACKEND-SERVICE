@@ -5,8 +5,7 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM blend_yield_redemptions
-        WHERE pre_redeem_eoa_balance IS NOT NULL
-          AND status IN ('pending', 'quoted', 'executing', 'submitted')
+        WHERE status IN ('pending', 'quoted', 'executing', 'submitted')
     ) THEN
         RAISE EXCEPTION 'Cannot drop pre_redeem_eoa_balance: in-flight redemptions still depend on it. Complete or fail all non-terminal redemptions (pending/quoted/executing/submitted) before rolling back.';
     END IF;

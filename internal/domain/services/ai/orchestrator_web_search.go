@@ -326,4 +326,4 @@ func extractLocation(content string) string {
 }
 
 // locationRegex matches a simple street-address-like fragment.
-var locationRegex = regexp.MustCompile(`\d{1,5}\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)*\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Ln|Lane|Dr|Drive)\b`)
+var locationRegex = regexp.MustCompile(`\d{1,5}\s+[A-Z][A-Za-z]{1,20}(?:\s+[A-Z][A-Za-z]{1,20}){0,3}\s+(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Ln|Lane|Dr|Drive)\b`)
