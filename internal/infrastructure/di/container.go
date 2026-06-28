@@ -3560,12 +3560,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.ZapLog,
 	)
 
-	// Initialize AI orchestrator (wired to ProviderManager for failover).
-	// Wrap the provider so every Miriam generation is traced to Langfuse
-	// (metadata-only unless ai.langfuse.capture_content is enabled).
-	tracedAIProvider := ai.NewTracingProvider(c.AIProviderManager, c.Config.AI.Langfuse.CaptureContent)
+	// Initialize AI orchestrator (wired to ProviderManager for failover)
 	c.AIOrchestrator = aiservice.NewOrchestratorWithDeps(
-		tracedAIProvider,
+		c.AIProviderManager,
 		c.PortfolioDataProvider,
 		c.ActivityDataProvider,
 		&newsProviderAdapter{svc: c.NewsService},
@@ -3695,7 +3692,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Voice daily transfer cap ($100/day via voice)
 	if c.RedisClient != nil {
-		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient, c.Config.AI.ElevenLabs.VoiceDailyLimitUSD))
+		c.AIOrchestrator.SetVoiceDailyLimiter(aiservice.NewVoiceDailyLimiter(c.RedisClient))
 		// Redis client for best-effort short-TTL caching of voice hot-path reads
 		// (realtime dynamic vars, cost-ceiling).
 		c.AIOrchestrator.SetRedisCache(c.RedisClient)
