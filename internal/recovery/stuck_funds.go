@@ -129,7 +129,7 @@ func RecoverStuckBaseToSolana(ctx context.Context, cc *circle.HTTPClient, cr *ch
 	// Include the destination address so concurrent recovery intents for the
 	// same wallet and amount (different destinations) never collide.
 	idem := uuid.NewSHA1(uuid.NameSpaceOID,
-		[]byte(fmt.Sprintf("recover-%s-%s-%s", p.WalletID, p.DestAmount.StringFixed(6), p.ToSolanaAddr))).String()
+		[]byte(fmt.Sprintf("recover-%s-%s-%s", p.WalletID, p.DestAmount.StringFixed(6), intent.IntentAddress))).String()
 	tx, err := adapter.TransferUSDCWithIdempotency(ctx, p.WalletID, tokenID, intent.IntentAddress, fundAmount.StringFixed(6), idem)
 	if err != nil {
 		return fmt.Errorf("circle fund transfer failed: %w", err)
