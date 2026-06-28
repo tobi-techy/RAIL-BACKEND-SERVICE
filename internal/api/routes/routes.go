@@ -950,6 +950,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
 				}
 
+				// RampHub: read-only best-rate lookups (no KYC required)
+				if container.RampHandlers != nil {
+					rampRO := funding.Group("/ramp")
+					rampRO.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					rampRO.GET("/quote", container.RampHandlers.GetQuote)
+					rampRO.GET("/banks", container.RampHandlers.GetBanks)
+					rampRO.GET("/orders", container.RampHandlers.GetOrders)
+					rampRO.GET("/orders/:id/status", container.RampHandlers.GetOrderStatus)
+				}
+
 				// KYC-gated funding operations
 				// Deposit address — available to all users with Circle wallets (no KYC required)
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
@@ -987,6 +997,16 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					paj.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
 					paj.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
 					paj.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
+				}
+
+				// RampHub: crypto-capable on/off ramp operations (backend enforces limits)
+				if container.RampHandlers != nil {
+					ramp := funding.Group("/ramp")
+					ramp.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					ramp.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
+					ramp.POST("/banks/resolve", container.RampHandlers.ResolveBankAccount)
+					ramp.POST("/onramp", middleware.AuthRateLimit(10), container.RampHandlers.CreateOnramp)
+					ramp.POST("/offramp", middleware.AuthRateLimit(10), container.RampHandlers.CreateOfframp)
 				}
 			}
 
@@ -1378,7 +1398,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
 					aiGroup.GET("/miriam-brief", middleware.AuthRateLimit(20), aiChatHandlers.MiriamBrief)
 					if container.MiriamIntelligenceService != nil {
-						miriamHandler := handlers.NewMiriamIntelligenceHandler(container.MiriamIntelligenceService, container.ZapLog)
+						miriamHandler := handlers.NewMiriamIntelligenceHandler(
+							container.MiriamIntelligenceService,
+							container.MiriamHealthScoreTracker,
+							container.MiriamPredictiveEngine,
+							container.MiriamMandateSuggestionEngine,
+							container.ZapLog,
+						)
 						miriam := aiGroup.Group("/miriam")
 						{
 							miriam.GET("/state", middleware.AuthRateLimit(20), miriamHandler.GetState)
@@ -1388,6 +1414,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							miriam.PATCH("/mandates/:id/status", middleware.AuthRateLimit(10), miriamHandler.UpdateMandateStatus)
 							miriam.GET("/receipts", middleware.AuthRateLimit(20), miriamHandler.ListReceipts)
 							miriam.POST("/receipts/:id/feedback", middleware.AuthRateLimit(20), miriamHandler.RecordFeedback)
+							miriam.GET("/health-score", middleware.AuthRateLimit(20), miriamHandler.GetHealthScore)
+							miriam.GET("/health-score/trend", middleware.AuthRateLimit(20), miriamHandler.GetHealthScoreTrend)
+							miriam.GET("/predictions", middleware.AuthRateLimit(20), miriamHandler.GetPredictions)
+							miriam.GET("/suggestions", middleware.AuthRateLimit(20), miriamHandler.ListSuggestions)
+							miriam.POST("/suggestions/:id/accept", middleware.AuthRateLimit(10), miriamHandler.AcceptSuggestion)
+							miriam.POST("/suggestions/:id/dismiss", middleware.AuthRateLimit(10), miriamHandler.DismissSuggestion)
 						}
 					}
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
@@ -1740,6 +1772,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				pajWebhooks := webhooks.Group("/paj")
 				pajWebhooks.Use(middleware.RateLimit(100))
 				pajWebhooks.POST("", container.PajHandlers.HandleWebhook)
+			}
+
+			// RampHub webhooks (HMAC-SHA256 signed; verified in the handler)
+			if container.RampHandlers != nil {
+				ramphubWebhooks := webhooks.Group("/ramphub")
+				ramphubWebhooks.Use(middleware.RateLimit(100))
+				ramphubWebhooks.POST("", container.RampHandlers.HandleWebhook)
 			}
 
 			// Circle Programmable Wallets webhooks for inbound deposits

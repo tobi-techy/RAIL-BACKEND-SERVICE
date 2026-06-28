@@ -106,7 +106,7 @@ func (r *DepositRouter) reconcileDepositRoutes(ctx context.Context) {
 			return
 		default:
 		}
-		routeCtx, routeCancel := context.WithTimeout(ctx, 45*time.Second)
+		routeCtx, routeCancel := context.WithTimeout(ctx, 3*time.Minute)
 		if err := r.ProcessRouteByID(routeCtx, id); err != nil {
 			r.logger.Warn("Blend: deposit route processing failed (will retry)",
 				zap.String("route_id", id.String()), zap.Error(err))

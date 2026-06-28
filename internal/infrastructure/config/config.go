@@ -37,6 +37,7 @@ type Config struct {
 	CCTP           CCTPConfig           `mapstructure:"cctp"`
 	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
 	Paj            PajConfig            `mapstructure:"paj"`
+	RampHub        RampHubConfig        `mapstructure:"ramphub"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -556,6 +557,15 @@ type PajConfig struct {
 	WalletAddress string `mapstructure:"wallet_address"` // Rail's USDC custody wallet (onramp recipient)
 	TokenMint     string `mapstructure:"token_mint"`     // USDC mint address on Solana
 	Chain         string `mapstructure:"chain"`          // default: SOLANA
+}
+
+// RampHubConfig contains RampHub on/off ramp aggregator configuration.
+type RampHubConfig struct {
+	APIKey              string  `mapstructure:"api_key"`
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.ramphub.io
+	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound webhooks
+	WebhookURL          string  `mapstructure:"webhook_url"`           // Rail's webhook endpoint URL registered with RampHub
+	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's business fee % applied to every order (e.g. 0.5)
 }
 
 // WorkerConfig contains background worker configuration
@@ -1430,6 +1440,20 @@ func overrideFromEnv() {
 		}
 	}
 
+	// RampHub on/off ramp aggregator
+	for _, kv := range [][2]string{
+		{"ramphub.api_key", "RAMPHUB_API_KEY"},
+		{"ramphub.base_url", "RAMPHUB_BASE_URL"},
+		{"ramphub.webhook_secret", "RAMPHUB_WEBHOOK_SECRET"},
+		{"ramphub.webhook_url", "RAMPHUB_WEBHOOK_URL"},
+		{"ramphub.developer_fee_percent", "RAMPHUB_DEVELOPER_FEE_PERCENT"},
+	} {
+		viper.BindEnv(kv[0], kv[1])
+		if v := os.Getenv(kv[1]); v != "" {
+			viper.Set(kv[0], v)
+		}
+	}
+
 	// Apple Sign-In
 	if v := os.Getenv("APPLE_TEAM_ID"); v != "" {
 		viper.Set("social_auth.apple.team_id", v)
@@ -1535,6 +1559,12 @@ func validate(config *Config) error {
 
 	if err := validateBlendConfig(config); err != nil {
 		return err
+	}
+
+	if config.RampHub.APIKey != "" {
+		if config.RampHub.DeveloperFeePercent < 0 || config.RampHub.DeveloperFeePercent > 100 {
+			return fmt.Errorf("ramphub.developer_fee_percent must be between 0 and 100, got %.4f", config.RampHub.DeveloperFeePercent)
+		}
 	}
 
 	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {

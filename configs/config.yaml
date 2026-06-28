@@ -9,6 +9,14 @@ chainrails:
   destination_chain: "SOLANA_MAINNET"
   settlement_token: "USDC"
 
+# RampHub on/off ramp aggregator (best-rate routing across providers)
+ramphub:
+  api_key: ""
+  base_url: "https://api.ramphub.io"
+  webhook_secret: ""
+  webhook_url: ""
+  developer_fee_percent: 0.5
+
 server:
   port: 8081
   host: 0.0.0.0

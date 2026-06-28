@@ -57,6 +57,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/premium"
+	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
@@ -84,6 +85,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
+	ramphubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/ramphub"
 	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -1466,6 +1468,7 @@ type Container struct {
 	ChainRailsClient       *chainrails.Client
 	DepositSweepRepo       *repositories.DepositSweepRepository
 	PajHandlers            *fundinghandlers.PajHandlers
+	RampHandlers           *fundinghandlers.RampHandlers
 	ActivityHandlers       *activityhandlers.Handlers
 
 	// Security Stores
@@ -4835,6 +4838,9 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	}
 
 	// --- Paj Cash (NGN on/off ramp) ---
+	// pajService is hoisted so RampHub can use it as a fallback even though the
+	// two initialize independently (RampHub must work with Paj unconfigured).
+	var pajService *pajfunding.Service
 	if c.Config.Paj.APIKey != "" {
 		pajClient := pajadapter.NewClient(pajadapter.Config{
 			APIKey:        c.Config.Paj.APIKey,
@@ -4844,7 +4850,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			TokenMint:     c.Config.Paj.TokenMint,
 			Chain:         c.Config.Paj.Chain,
 		}, c.ZapLog)
-		pajService := pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
+		pajService = pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
 		pajService.SetDepositRepository(c.DepositRepo)
 		if c.NotificationService != nil {
 			pajService.SetNotificationService(c.NotificationService)
@@ -4869,6 +4875,53 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {
 		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
+	}
+
+	// --- RampHub (best-rate on/off ramp; primary, Paj fallback) ---
+	// Initialized independently of Paj. pajService is passed as a fallback and
+	// may be nil when Paj is unconfigured; the ramp service handles a nil fallback.
+	if c.Config.RampHub.APIKey != "" && c.Config.RampHub.WebhookSecret != "" {
+		ramphubClient, err := ramphubadapter.NewClient(ramphubadapter.Config{
+			APIKey:        c.Config.RampHub.APIKey,
+			BaseURL:       c.Config.RampHub.BaseURL,
+			WebhookSecret: c.Config.RampHub.WebhookSecret,
+		}, c.ZapLog)
+		if err != nil {
+			c.ZapLog.Fatal("failed to initialize RampHub client", zap.Error(err))
+		}
+		rampService := rampsvc.NewService(sqlxDB, ramphubClient, pajService, c.RedisClient, c.ZapLog)
+		rampService.SetDeveloperFeePercent(c.Config.RampHub.DeveloperFeePercent)
+		rampService.SetLedger(&WithdrawalLedgerAdapter{ledgerService: c.LedgerService})
+		rampService.SetDepositLedger(&PajDepositLedgerAdapter{ledgerService: c.LedgerService})
+		if c.AllocationService != nil {
+			rampService.SetAllocationService(c.AllocationService)
+		}
+		rampService.SetDepositRepository(c.DepositRepo)
+		if c.NotificationService != nil {
+			rampService.SetNotificationService(c.NotificationService)
+		}
+		if c.WalletService != nil {
+			rampService.SetWalletProvider(c.WalletService)
+		}
+		if c.CircleAdapter != nil {
+			rampService.SetCircleTransfer(c.CircleAdapter)
+		}
+		if c.ChainRailsClient != nil {
+			rampService.SetChainRailsAdapter(c.ChainRailsClient)
+		}
+		if c.GameplayHooks != nil {
+			rampService.SetGameplayHooks(c.GameplayHooks)
+		}
+		if c.LimitsService != nil {
+			rampService.SetLimitsChecker(&PajLimitsAdapter{limitsService: c.LimitsService})
+			rampService.SetDepositLimits(c.LimitsService)
+		}
+		c.RampHandlers = fundinghandlers.NewRampHandlers(rampService, c.ZapLog)
+		c.ZapLog.Info("RampHub on/off ramp initialized (primary, Paj fallback)")
+	} else if c.Config.RampHub.APIKey != "" {
+		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is required when RampHub API key is configured — refusing to start with unauthenticated webhooks")
+	} else {
+		c.ZapLog.Warn("RampHub API key is empty, skipping initialization")
 	}
 
 	// Initialize unified activity feed service
