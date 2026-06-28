@@ -226,7 +226,10 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 		h.logger.Warn("ChainRails webhook signature invalid",
 			"error", err,
 			"client_ip", c.ClientIP(),
-			"user_agent", c.GetHeader("User-Agent"))
+			"user_agent", c.GetHeader("User-Agent"),
+			"sig_present", sig != "",
+			"ts_present", ts != "",
+			"secret_len", len(h.webhookSecret))
 		common.SendUnauthorized(c, "Invalid webhook signature")
 		return
 	}

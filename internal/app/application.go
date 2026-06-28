@@ -55,6 +55,8 @@ import (
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	ramphub_offramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_offramp_recovery"
+	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
@@ -85,6 +87,8 @@ type Application struct {
 	depositAllocationWorker      *deposit_allocation_recovery.Worker
 	pajOfframpRecoveryWorker     *paj_offramp_recovery.Worker
 	pajOnrampRecoveryWorker      *paj_onramp_recovery.Worker
+	ramphubOfframpRecoveryWorker *ramphub_offramp_recovery.Worker
+	ramphubOnrampRecoveryWorker  *ramphub_onramp_recovery.Worker
 	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
 	rebalancingWorker            *rebalancing_worker.Worker
@@ -300,6 +304,29 @@ func (app *Application) initializeWorkers() error {
 		app.pajOnrampRecoveryWorker = paj_onramp_recovery.NewWorker(app.container.DB, app.log.Zap())
 		go app.pajOnrampRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj onramp recovery worker started")
+	}
+
+	// RampHub offramp recovery worker — same safety net as Paj for RampHub
+	// withdrawals: reverse abandoned holds, reconcile via Circle, hard-timeout.
+	if app.container.DB != nil && app.container.RampHandlers != nil && app.container.LedgerService != nil {
+		app.ramphubOfframpRecoveryWorker = ramphub_offramp_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
+		if app.container.NotificationService != nil {
+			app.ramphubOfframpRecoveryWorker.SetNotifier(&pajOfframpRecoveryNotifierAdapter{svc: app.container.NotificationService})
+		}
+		if app.container.CircleAdapter != nil {
+			app.ramphubOfframpRecoveryWorker.SetCircleStatusChecker(&ramphubOfframpCircleStatusAdapter{adapter: app.container.CircleAdapter})
+		} else {
+			app.log.Warn("RampHub offramp recovery: no Circle adapter — reconciliation of post-transfer stuck orders disabled")
+		}
+		go app.ramphubOfframpRecoveryWorker.Start(context.Background())
+		app.log.Info("RampHub offramp recovery worker started")
+	}
+
+	// RampHub onramp recovery worker — marks stuck NGN deposits as failed for retry
+	if app.container.DB != nil && app.container.RampHandlers != nil {
+		app.ramphubOnrampRecoveryWorker = ramphub_onramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+		go app.ramphubOnrampRecoveryWorker.Start(context.Background())
+		app.log.Info("RampHub onramp recovery worker started")
 	}
 
 	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals and
@@ -1145,6 +1172,12 @@ func (app *Application) stopWorkers() {
 	if app.pajOfframpRecoveryWorker != nil {
 		app.pajOfframpRecoveryWorker.Stop()
 	}
+	if app.ramphubOfframpRecoveryWorker != nil {
+		app.ramphubOfframpRecoveryWorker.Stop()
+	}
+	if app.ramphubOnrampRecoveryWorker != nil {
+		app.ramphubOnrampRecoveryWorker.Stop()
+	}
 
 	// Stop KYC auto-invest worker
 	if app.kycAutoInvestWorker != nil {
@@ -1377,6 +1410,36 @@ func (a *pajOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.Cont
 		return paj_offramp_recovery.CircleTransferFailed, nil
 	default:
 		return paj_offramp_recovery.CircleTransferPending, nil
+	}
+}
+
+// ramphubOfframpCircleStatusAdapter is the RampHub equivalent of
+// pajOfframpCircleStatusAdapter, translating Circle's transaction state into the
+// RampHub recovery worker's CircleTransferStatus enum.
+type ramphubOfframpCircleStatusAdapter struct {
+	adapter *circleadapter.Adapter
+}
+
+func (a *ramphubOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.Context, circleTxID string) (ramphub_offramp_recovery.CircleTransferStatus, error) {
+	if a.adapter == nil {
+		return ramphub_offramp_recovery.CircleTransferUnknown, nil
+	}
+	tx, err := a.adapter.GetTransaction(ctx, circleTxID)
+	if err != nil {
+		return ramphub_offramp_recovery.CircleTransferUnknown, err
+	}
+	if tx == nil {
+		return ramphub_offramp_recovery.CircleTransferUnknown, nil
+	}
+	switch tx.State {
+	case circleadapter.TransactionStateComplete:
+		return ramphub_offramp_recovery.CircleTransferComplete, nil
+	case circleadapter.TransactionStateFailed,
+		circleadapter.TransactionStateCancelled,
+		circleadapter.TransactionStateDenied:
+		return ramphub_offramp_recovery.CircleTransferFailed, nil
+	default:
+		return ramphub_offramp_recovery.CircleTransferPending, nil
 	}
 }
 
