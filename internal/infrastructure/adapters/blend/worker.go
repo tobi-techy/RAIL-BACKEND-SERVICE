@@ -107,8 +107,8 @@ func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
 		         AND (updated_at < NOW() - INTERVAL '1 hour' OR attempts >= 50))
 		   OR (status = 'failed' AND updated_at > NOW() - INTERVAL '24 hours')
 		LIMIT 20
-	`); err != nil || len(rows) == 0 {
-		return
+	`); err != nil {
+		r.logger.Warn("Blend: stranded redemption query failed", zap.Error(err))
 	}
 	for _, row := range rows {
 		r.logger.Error("CRITICAL: Blend redemption stranded — ledger may be ahead of Blend custody, manual reconciliation may be required",
@@ -119,6 +119,10 @@ func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
 			zap.Int("attempts", row.Attempts),
 			zap.String("last_error", row.LastError.String))
 	}
+
+	// The stale-sweep detection below must run on every tick regardless of whether
+	// any stranded redemptions were found above — a completed-but-unswept sweep is
+	// an independent failure mode.
 
 	// Sweeps that keep failing: the redeemed USDC is settled and user-owned
 	// (Base EOA) but hasn't reached their Solana custody wallet. retryPendingSweeps

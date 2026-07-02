@@ -108,8 +108,7 @@ func (s *ExpoPushService) SendToUser(ctx context.Context, userID uuid.UUID, titl
 			// undeliverable via Expo. Drop it; the app re-registers an Expo
 			// token on next launch.
 			s.logger.Info("Dropping legacy non-Expo device token",
-				zap.String("user_id", userID.String()),
-				zap.String("token_prefix", truncateToken(token)))
+				zap.String("user_id", userID.String()))
 			if s.tokenCleaner != nil {
 				if cleanErr := s.tokenCleaner.DeleteToken(ctx, token); cleanErr != nil {
 					s.logger.Warn("Failed to delete legacy device token", zap.Error(cleanErr))

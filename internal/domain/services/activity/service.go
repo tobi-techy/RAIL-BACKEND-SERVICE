@@ -203,6 +203,9 @@ func (s *Service) fetchRampOrders(ctx context.Context, userID uuid.UUID, limit i
 		o.SourceType = "ramphub_order"
 		items = append(items, entities.NormalizePajOrderToActivity(&o))
 	}
+	if err := rows.Err(); err != nil {
+		return items, fmt.Errorf("iterate ramphub orders: %w", err)
+	}
 	return items, nil
 }
 
@@ -232,6 +235,9 @@ func (s *Service) fetchStashTransfers(ctx context.Context, userID uuid.UUID, lim
 			t.CompletedAt = &completedAt.Time
 		}
 		items = append(items, entities.NormalizeStashTransferToActivity(&t))
+	}
+	if err := rows.Err(); err != nil {
+		return items, fmt.Errorf("iterate stash transfers: %w", err)
 	}
 	return items, nil
 }

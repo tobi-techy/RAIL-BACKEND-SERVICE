@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -23,6 +24,17 @@ import (
 const (
 	openAIAPIURL = "https://api.openai.com/v1/chat/completions"
 )
+
+// synthToolCallSeq backs synthetic tool-call IDs. Combined with a nanosecond
+// timestamp it yields IDs unique across requests and process lifetimes, so IDs
+// baked into conversation history never collide across turns — a duplicate
+// tool_call_id makes strict providers (Kimi/Moonshot) reject the whole request.
+var synthToolCallSeq atomic.Int64
+
+// synthToolCallID returns a globally-unique synthetic tool-call ID.
+func synthToolCallID() string {
+	return fmt.Sprintf("call_%d_%d", time.Now().UnixNano(), synthToolCallSeq.Add(1))
+}
 
 // OpenAIProvider implements AIProvider for OpenAI's API and OpenAI-compatible providers (Kimi, etc.)
 type OpenAIProvider struct {
@@ -289,6 +301,11 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *ChatRequ
 
 	var totalTokens int
 	var sentDone bool
+	// One stable, stream-unique prefix for synthesizing IDs of any tool calls this
+	// provider returns without one. Keyed by index below so the same tool-call slot
+	// gets the same ID across streamed deltas (merge-by-index stays intact) while
+	// staying unique across separate streams (no cross-turn history collisions).
+	streamCallSeed := synthToolCallID()
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -332,7 +349,7 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *ChatRequ
 				}
 				id := tc.ID
 				if id == "" {
-					id = fmt.Sprintf("call_%d", i)
+					id = fmt.Sprintf("%s_%d", streamCallSeed, i)
 				}
 				sc.ToolCalls[i] = ToolCall{
 					ID:        id,
@@ -387,7 +404,6 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 	// carry a matching tool_call_id. Otherwise strict providers (Kimi/Moonshot) reject
 	// the request with "tool_call_id is not found". We backfill any missing ids here and
 	// hand them to the paired tool messages (which follow in order) as a safety net.
-	synthCounter := 0
 	var pendingToolCallIDs []string
 	for _, msg := range req.Messages {
 		content := msg.Content
@@ -403,16 +419,25 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 			"content": content,
 		}
 		if msg.Role == "tool" {
-			tcid := msg.ToolCallID
-			if tcid == "" && len(pendingToolCallIDs) > 0 {
-				tcid = pendingToolCallIDs[0]
+			// Consume one queued assistant tool_call id per tool message so the queue
+			// stays aligned in message order — even when this message already carries
+			// its own id. Only fall back to the queued id when ToolCallID is empty.
+			var queued string
+			if len(pendingToolCallIDs) > 0 {
+				queued = pendingToolCallIDs[0]
 				pendingToolCallIDs = pendingToolCallIDs[1:]
+			}
+			tcid := msg.ToolCallID
+			if tcid == "" {
+				tcid = queued
 			}
 			if tcid != "" {
 				m["tool_call_id"] = tcid
-				if msg.Name != "" {
-					m["name"] = msg.Name
-				}
+			}
+			// Preserve the tool name independently — a mixed-id conversation must not
+			// drop it just because no tool_call_id could be resolved.
+			if msg.Name != "" {
+				m["name"] = msg.Name
 			}
 		}
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
@@ -424,8 +449,7 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 			for i, tc := range msg.ToolCalls {
 				id := tc.ID
 				if id == "" {
-					id = fmt.Sprintf("call_%d", synthCounter)
-					synthCounter++
+					id = synthToolCallID()
 				}
 				pendingToolCallIDs = append(pendingToolCallIDs, id)
 				args, _ := json.Marshal(tc.Arguments)
@@ -532,7 +556,9 @@ func (p *OpenAIProvider) convertResponse(resp *openAIResponse, duration time.Dur
 			// stable id so the assistant tool_call and its tool result always match.
 			id := tc.ID
 			if id == "" {
-				id = fmt.Sprintf("call_%d", i)
+				// Globally unique so this id, once stored in history, never collides
+				// with a synthetic id from another turn in a later multi-turn request.
+				id = synthToolCallID()
 			}
 			chatResp.ToolCalls[i] = ToolCall{
 				ID:        id,

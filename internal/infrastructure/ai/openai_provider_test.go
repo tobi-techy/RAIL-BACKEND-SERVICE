@@ -140,12 +140,15 @@ func TestOpenAIProviderBuildRequest(t *testing.T) {
 			},
 		}
 		body := p.buildOpenAIRequest(req, nil)
-		msgs := body["messages"].([]map[string]interface{})
+		msgs, ok := body["messages"].([]map[string]interface{})
+		require.True(t, ok, "messages must be a slice of maps")
 		require.Len(t, msgs, 3)
 
-		toolCalls := msgs[1]["tool_calls"].([]map[string]interface{})
+		toolCalls, ok := msgs[1]["tool_calls"].([]map[string]interface{})
+		require.True(t, ok, "tool_calls must be a slice of maps")
 		require.Len(t, toolCalls, 1)
-		assistantID, _ := toolCalls[0]["id"].(string)
+		assistantID, ok := toolCalls[0]["id"].(string)
+		require.True(t, ok, "assistant tool_call id must be a string")
 		require.NotEmpty(t, assistantID, "assistant tool_call id must be backfilled")
 
 		toolID, ok := msgs[2]["tool_call_id"].(string)

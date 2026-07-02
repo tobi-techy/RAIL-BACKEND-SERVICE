@@ -231,7 +231,7 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, txID string, userID uuid
 	err := w.db.QueryRowContext(ctx, `
 		UPDATE ramphub_orders
 		SET status = 'failed', deposit_id = gen_random_uuid(), last_webhook_status = $2, updated_at = NOW()
-		WHERE ramphub_transaction_id = $1 AND status IN ('pending','processing','paid') AND deposit_id IS NULL
+		WHERE ramphub_transaction_id = $1 AND status IN ('pending','processing') AND deposit_id IS NULL
 		RETURNING COALESCE(hold_amount, token_amount, 0), fiat_amount`, txID, "auto-failed:"+reasonType).Scan(&claimedHold, &fiatAmount)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -269,7 +269,7 @@ func (w *Worker) failExpiredOrders(ctx context.Context) {
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT ramphub_transaction_id, user_id
 		FROM ramphub_orders
-		WHERE order_type = 'offramp' AND status IN ('pending','processing','paid') AND deposit_id IS NULL
+		WHERE order_type = 'offramp' AND status IN ('pending','processing') AND deposit_id IS NULL
 		  AND bridge_transfer_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
 		LIMIT 20`, int(w.hardMaxAge.Seconds()))

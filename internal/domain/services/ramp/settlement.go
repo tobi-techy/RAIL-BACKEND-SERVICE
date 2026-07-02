@@ -237,9 +237,13 @@ func (s *Service) refundSlippage(ctx context.Context, userID uuid.UUID, txID str
 // If the ledger reversal fails, the order is restored to unclained so the
 // recovery worker can pick it up on its next sweep.
 func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string, amount, railFee decimal.Decimal, reason string) error {
+	// Only reverse orders that have NOT reached 'paid'. Once RampHub reports
+	// 'paid' the crypto leg has reached them and an NGN payout may follow —
+	// auto-reversing the hold would double-credit (user keeps USDC and gets NGN).
+	// Paid-but-stuck orders go to manual reconciliation instead.
 	res, dbErr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing', 'paid')`, txID)
+		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID)
 	if dbErr != nil {
 		s.logger.Error("failed to mark RampHub order as failed",
 			zap.Error(dbErr), zap.String("ramphub_tx_id", txID))

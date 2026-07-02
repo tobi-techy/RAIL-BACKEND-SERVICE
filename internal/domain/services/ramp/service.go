@@ -336,6 +336,11 @@ func (s *Service) ResolveBankAccount(ctx context.Context, bankCode, accountNumbe
 	if !bankCodePattern.MatchString(bankCode) {
 		return nil, fmt.Errorf("invalid bank code")
 	}
+	// RampHub may be unconfigured in deployments that only run the Paj rail —
+	// mirror CreateOfframp and fail cleanly instead of dereferencing a nil client.
+	if s.ramphubClient == nil {
+		return nil, fmt.Errorf("bank verification service temporarily unavailable")
+	}
 	return s.ramphubClient.ResolveBankAccount(ctx, bankCode, accountNumber, bankName)
 }
 

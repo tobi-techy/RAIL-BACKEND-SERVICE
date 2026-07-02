@@ -142,6 +142,9 @@ type sharedGoalUserLookupAdapter struct {
 }
 
 func (a *sharedGoalUserLookupAdapter) GetUserIDByRailTag(ctx context.Context, tag string) (uuid.UUID, error) {
+	if a.repo == nil {
+		return uuid.Nil, fmt.Errorf("user repository not configured for rail-tag lookup")
+	}
 	user, err := a.repo.GetByRailTag(ctx, tag)
 	if err != nil {
 		return uuid.Nil, err

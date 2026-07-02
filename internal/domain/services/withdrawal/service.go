@@ -436,10 +436,15 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 	if err := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, userID, amount, fee, idempotencyKey); err != nil {
 		if blendReserved {
 			if reserver, ok := s.stashYieldRedeemer.(RedemptionReserver); ok {
-				if aerr := reserver.AbandonRedemption(ctx, redeemKey, "emergency ledger transfer failed: "+err.Error()); aerr != nil {
+				// Detach from the request context: the abandon must run even if the
+				// client disconnected and cancelled ctx, or the reservation would be
+				// left claimable with no ledger move behind it.
+				abandonCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				if aerr := reserver.AbandonRedemption(abandonCtx, redeemKey, "emergency ledger transfer failed: "+err.Error()); aerr != nil {
 					s.logger.Error("failed to abandon Blend redemption after emergency ledger failure",
 						zap.String("user_id", userID.String()), zap.Error(aerr))
 				}
+				cancel()
 			}
 		}
 		return nil, fmt.Errorf("emergency transfer failed: %w", err)
@@ -2897,7 +2902,13 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 		switch state {
 		case "COMPLETED", "COMPLETE", "SUCCESS":
 			if status.TxHash != "" {
-				_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash)
+				// tx_hash is non-critical metadata — a failed write must not block
+				// settling a withdrawal the chain already completed, else it strands
+				// in pending. Log and proceed.
+				if hashErr := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash); hashErr != nil {
+					s.logger.Warn("failed to persist ChainRails tx hash (non-fatal)",
+						zap.String("withdrawal_id", withdrawal.ID.String()), zap.Error(hashErr))
+				}
 			}
 			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
 				return withdrawal.Status, err

@@ -2180,6 +2180,11 @@ func (c *Container) initializeDomainServices() error {
 					c.ZapLog.Error("Failed to start Blend reconciliation worker", zap.Error(startErr))
 				} else {
 					c.BlendDepositRouter = router
+					// Backfill the automation funds-transfer adapter so its
+					// reserve-before-debit path (TransferStashToSpend) actually drives
+					// Blend — the adapter was built before the router existed, leaving
+					// blendRouter nil and the whole reservation invariant inert.
+					automationAdapter.blendRouter = router
 					// Blend wins over Reflect for new deposits.
 					c.AllocationService.SetYieldRouter(router)
 					c.ZapLog.Info("Blend yield router started; routing new stash deposits to Blend",
@@ -2406,10 +2411,12 @@ func (c *Container) initializeDomainServices() error {
 
 	if c.GrowthEngineRepo != nil {
 		var growthPush growthengine.PushSender
-		if c.SNSPushService != nil {
-			growthPush = c.SNSPushService
-		} else if c.ExpoPushService != nil {
+		// Expo is the only live delivery path — prefer it so stale SNS state can
+		// never win the routing (AWS is decommissioned).
+		if c.ExpoPushService != nil {
 			growthPush = c.ExpoPushService
+		} else if c.SNSPushService != nil {
+			growthPush = c.SNSPushService
 		}
 		if growthPush == nil {
 			c.ZapLog.Warn("growth engine initialized without push sender; push campaigns will fail gracefully")
@@ -2426,13 +2433,13 @@ func (c *Container) initializeDomainServices() error {
 		}
 	}
 
-	// Wire push notifier into gameplay services (now that push provider is resolved)
-	// Use SNS if available, otherwise Expo
+	// Wire push notifier into gameplay services (now that push provider is resolved).
+	// Expo is the only live delivery path; SNS remains only as a dead fallback.
 	var pushNotifier gameplay.PushNotifier
-	if c.SNSPushService != nil {
-		pushNotifier = c.SNSPushService
-	} else if c.ExpoPushService != nil {
+	if c.ExpoPushService != nil {
 		pushNotifier = c.ExpoPushService
+	} else if c.SNSPushService != nil {
+		pushNotifier = c.SNSPushService
 	}
 	if pushNotifier != nil {
 		c.GameplayXPService.SetNotifier(pushNotifier)

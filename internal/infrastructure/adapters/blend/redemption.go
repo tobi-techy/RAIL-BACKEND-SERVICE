@@ -612,16 +612,24 @@ func (r *DepositRouter) AbandonRedemption(ctx context.Context, idempotencyKey, r
 // --- helpers ---
 
 func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID, accountID string, amount decimal.Decimal, idempotencyKey string) error {
-	res, err := r.db.ExecContext(ctx, `
+	// Insert a fresh reservation, or REVIVE one that a prior attempt abandoned
+	// (status 'failed') back to 'pending'. Without the revive, ON CONFLICT DO
+	// NOTHING would silently no-op against a failed row and the caller would move
+	// the ledger believing an active redemption exists — the exact ledger-ahead-of-
+	// custody divergence the reservation guards against. A non-terminal or
+	// 'complete' row is left untouched (the WHERE makes the update a no-op), which
+	// is correct and idempotent.
+	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO blend_yield_redemptions (
 			id, user_id, blend_account_id, amount, destination_chain_id, idempotency_key, status, next_retry_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-		ON CONFLICT (idempotency_key) DO NOTHING
+		ON CONFLICT (idempotency_key) DO UPDATE
+			SET status = $7, amount = EXCLUDED.amount, next_retry_at = NOW(), updated_at = NOW()
+			WHERE blend_yield_redemptions.status = 'failed'
 	`, uuid.New(), userID, accountID, amount, r.chainID, idempotencyKey, redemptionStatusPending)
 	if err != nil {
 		return fmt.Errorf("blend: reserve redemption: %w", err)
 	}
-	_ = res
 	return nil
 }
 
