@@ -154,7 +154,7 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT ramphub_transaction_id, user_id, fiat_amount, bridge_transfer_id, COALESCE(hold_amount, token_amount, 0)
 		FROM ramphub_orders
-		WHERE order_type = 'offramp' AND status IN ('pending','processing')
+		WHERE order_type = 'offramp' AND status IN ('pending','processing','paid')
 		  AND bridge_transfer_id LIKE 'circle:%'
 		  AND deposit_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
@@ -205,7 +205,7 @@ func (w *Worker) promoteCompleted(ctx context.Context, c stuckOrder) error {
 		UPDATE ramphub_orders
 		SET status = 'completed', updated_at = NOW(), last_webhook_status = 'auto-completed:recovery'
 		WHERE ramphub_transaction_id = $1 AND order_type = 'offramp'
-		  AND status IN ('pending','processing') AND bridge_transfer_id IS NOT NULL AND deposit_id IS NULL`, c.TxID)
+		  AND status IN ('pending','processing','paid') AND bridge_transfer_id IS NOT NULL AND deposit_id IS NULL`, c.TxID)
 	if err != nil {
 		return fmt.Errorf("promote stuck offramp: %w", err)
 	}

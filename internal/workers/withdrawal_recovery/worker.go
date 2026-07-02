@@ -28,14 +28,14 @@ type WithdrawalSyncer interface {
 // started) or polls the provider to finalize it (if the transfer did start
 // but the webhook never arrived).
 type Worker struct {
-	db                 *sql.DB
-	ledger             LedgerReverser
-	syncer             WithdrawalSyncer
-	logger             *zap.Logger
-	checkInterval      time.Duration
-	maxStuckAge        time.Duration
+	db                  *sql.DB
+	ledger              LedgerReverser
+	syncer              WithdrawalSyncer
+	logger              *zap.Logger
+	checkInterval       time.Duration
+	maxStuckAge         time.Duration
 	postTransferSyncAge time.Duration
-	stopCh             chan struct{}
+	stopCh              chan struct{}
 }
 
 func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
@@ -143,9 +143,11 @@ func (w *Worker) syncPostTransferStuck(ctx context.Context) {
 	}
 	syncAgeSeconds := int(w.postTransferSyncAge.Seconds())
 
-	// ChainRails (cr:) withdrawals are webhook-only — syncWithdrawalStatusFromProvider
-	// short-circuits on that prefix without updating updated_at, so polling them
-	// here would burn cycles forever on the same rows.
+	// ChainRails (cr:) withdrawals are pollable only when the transfer ID embeds
+	// the intent address as a fourth segment (cr:{intentID}:{txID}:{address}).
+	// Legacy 3-segment IDs are webhook-only — syncWithdrawalStatusFromProvider
+	// short-circuits on them without updating updated_at, so polling them here
+	// would burn cycles forever on the same rows.
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT id
 		FROM withdrawals
@@ -153,7 +155,7 @@ func (w *Worker) syncPostTransferStuck(ctx context.Context) {
 		  AND withdrawal_type = 'crypto'
 		  AND bridge_transfer_id IS NOT NULL
 		  AND bridge_transfer_id <> ''
-		  AND bridge_transfer_id NOT LIKE 'cr:%'
+		  AND (bridge_transfer_id NOT LIKE 'cr:%' OR bridge_transfer_id LIKE 'cr:%:%:%')
 		  AND updated_at < NOW() - make_interval(secs => $1)
 		ORDER BY updated_at ASC LIMIT 25`, syncAgeSeconds)
 	if err != nil {

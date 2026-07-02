@@ -888,6 +888,8 @@ func voiceToolErrorMessage(toolName string) string {
 		return "I couldn't fetch your transaction history right now. Try again shortly."
 	case aiservice.ToolGetFinancialHealth, aiservice.ToolGetFinancialAudit:
 		return "I couldn't run your financial check right now. Try again in a moment."
+	case aiservice.ToolWebSearch:
+		return "I couldn't search for that right now. Give it a sec and ask again."
 	default:
 		return "That didn't work from voice. Try again in a moment, or do it in the app."
 	}

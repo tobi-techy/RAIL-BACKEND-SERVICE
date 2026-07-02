@@ -129,11 +129,21 @@ func (c *Client) GetProviderBankList(ctx context.Context, provider string) (*Pro
 }
 
 // ResolveBankAccount validates payout bank details before creating a sell order.
-func (c *Client) ResolveBankAccount(ctx context.Context, bankCode, accountNumber string) (*ResolvedAccount, error) {
+// bankName is optional but recommended: RampHub bank codes are provider-scoped,
+// and the name lets RampHub's directory conversion disambiguate the institution.
+func (c *Client) ResolveBankAccount(ctx context.Context, bankCode, accountNumber, bankName string) (*ResolvedAccount, error) {
 	body := map[string]string{"bankCode": bankCode, "accountNumber": accountNumber}
+	if bankName != "" {
+		body["bankName"] = bankName
+	}
 	var resp ResolvedAccount
 	if err := c.post(ctx, "/api/developer/bank-accounts/resolve", body, &resp); err != nil {
 		return nil, fmt.Errorf("ramphub resolve bank: %w", err)
+	}
+	// RampHub can return 200 with success:false (or an empty name) when the
+	// directory lookup fails — treat that as a resolution failure, not a match.
+	if !resp.Success || resp.AccountName == "" {
+		return nil, ErrAccountResolveFailed
 	}
 	return &resp, nil
 }
@@ -202,8 +212,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			// Body may contain PII / credentials — keep out of logs; callers have the APIError.
-			c.logger.Warn("RampHub API error", zap.Int("status", resp.StatusCode), zap.String("path", path))
+			// Body may contain PII / credentials — log only the machine error code,
+			// not the full body; callers have the complete APIError.
+			c.logger.Warn("RampHub API error",
+				zap.Int("status", resp.StatusCode),
+				zap.String("path", path),
+				zap.String("error_code", extractErrorCode(respBody)))
 			return &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,10 +15,10 @@ import (
 )
 
 const (
-	expoPushURL       = "https://exp.host/--/api/v2/push/send"
-	expoBatchLimit    = 100
-	maxRetries        = 3
-	retryBaseDelay    = 500 * time.Millisecond
+	expoPushURL    = "https://exp.host/--/api/v2/push/send"
+	expoBatchLimit = 100
+	maxRetries     = 3
+	retryBaseDelay = 500 * time.Millisecond
 )
 
 // ExpoPushMessage represents a single push notification
@@ -82,6 +83,13 @@ func (s *ExpoPushService) SetTokenCleaner(cleaner StaleTokenCleaner) {
 	s.tokenCleaner = cleaner
 }
 
+// isExpoPushToken reports whether a stored token is in Expo push format.
+// Anything else is a raw APNs/FCM token from the decommissioned SNS era and
+// can never be delivered through Expo.
+func isExpoPushToken(token string) bool {
+	return strings.HasPrefix(token, "ExponentPushToken[") || strings.HasPrefix(token, "ExpoPushToken[")
+}
+
 // SendToUser sends a push notification to all of a user's devices
 func (s *ExpoPushService) SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error {
 	tokens, err := s.tokenProvider.GetUserDeviceTokens(ctx, userID)
@@ -95,10 +103,28 @@ func (s *ExpoPushService) SendToUser(ctx context.Context, userID uuid.UUID, titl
 
 	messages := make([]ExpoPushMessage, 0, len(tokens))
 	for _, token := range tokens {
+		if !isExpoPushToken(token) {
+			// Legacy native (APNs/FCM) token registered for the old SNS path —
+			// undeliverable via Expo. Drop it; the app re-registers an Expo
+			// token on next launch.
+			s.logger.Info("Dropping legacy non-Expo device token",
+				zap.String("user_id", userID.String()))
+			if s.tokenCleaner != nil {
+				if cleanErr := s.tokenCleaner.DeleteToken(ctx, token); cleanErr != nil {
+					s.logger.Warn("Failed to delete legacy device token", zap.Error(cleanErr))
+				}
+			}
+			continue
+		}
 		messages = append(messages, ExpoPushMessage{
 			To: token, Title: title, Body: body, Data: data,
 			Sound: "default", Priority: "high",
 		})
+	}
+	if len(messages) == 0 {
+		s.logger.Warn("No Expo-format device tokens for user — push skipped until the app re-registers",
+			zap.String("user_id", userID.String()))
+		return nil
 	}
 
 	return s.sendBatch(ctx, messages)

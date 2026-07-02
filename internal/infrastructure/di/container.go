@@ -1912,7 +1912,7 @@ func (c *Container) initializeDomainServices() error {
 	c.FinancialObligationService = obligationservice.NewService(c.FinancialObligationRepo)
 	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService, logger: c.ZapLog}
 	c.AutomationService = automation.NewService(c.AutomationRepo, automationAdapter, automationAdapter, c.ZapLog)
-	c.SharedGoalService = sharedgoal.NewService(c.SharedGoalRepo, nil, c.ZapLog) // nil UserLookup: invite resolution is not needed for AI-created goals
+	c.SharedGoalService = sharedgoal.NewService(c.SharedGoalRepo, &sharedGoalUserLookupAdapter{repo: c.UserRepo}, c.ZapLog)
 
 	// Wire optional automation dependencies
 	if c.NotificationService != nil {
@@ -2180,6 +2180,11 @@ func (c *Container) initializeDomainServices() error {
 					c.ZapLog.Error("Failed to start Blend reconciliation worker", zap.Error(startErr))
 				} else {
 					c.BlendDepositRouter = router
+					// Backfill the automation funds-transfer adapter so its
+					// reserve-before-debit path (TransferStashToSpend) actually drives
+					// Blend — the adapter was built before the router existed, leaving
+					// blendRouter nil and the whole reservation invariant inert.
+					automationAdapter.blendRouter = router
 					// Blend wins over Reflect for new deposits.
 					c.AllocationService.SetYieldRouter(router)
 					c.ZapLog.Info("Blend yield router started; routing new stash deposits to Blend",
@@ -2388,42 +2393,16 @@ func (c *Container) initializeDomainServices() error {
 		c.MiriamIntelligenceOrchestrator.SetNotifier(c.NotificationService)
 	}
 
-	// Wire push notification service (SNS preferred, Expo fallback)
-	c.ZapLog.Info("SNS push config check",
-		zap.String("ios_arn", c.Config.SNSPush.IOSPlatformARN),
-		zap.String("android_arn", c.Config.SNSPush.AndroidPlatformARN),
-		zap.String("region", c.Config.SNSPush.Region))
+	// Wire push notification service. Expo is the only delivery path — AWS/SNS
+	// was decommissioned, so stale SNS env config must never win the routing
+	// (it silently swallowed every push after the AWS account went away).
 	if c.Config.SNSPush.IOSPlatformARN != "" || c.Config.SNSPush.AndroidPlatformARN != "" {
-		region := c.Config.SNSPush.Region
-		if region == "" {
-			region = "us-east-1" // default
-		}
-		snsPushSvc, err := adapters.NewSNSPushService(context.Background(), adapters.SNSPushConfig{
-			Region:             region,
-			IOSPlatformARN:     c.Config.SNSPush.IOSPlatformARN,
-			AndroidPlatformARN: c.Config.SNSPush.AndroidPlatformARN,
-		}, c.DeviceTokenRepo, c.ZapLog)
-		if err != nil {
-			c.Logger.Warn("Failed to init SNS push, falling back to Expo", err)
-			expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
-			c.ExpoPushService = expoPushService
-			c.NotificationService.SetPushSender(expoPushService)
-		} else {
-			c.SNSPushService = snsPushSvc
-			// Wire Expo fallback so SNS can route Expo tokens correctly.
-			expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
-			c.ExpoPushService = expoPushService
-			snsPushSvc.SetExpoFallback(expoPushService)
-			c.NotificationService.SetPushSender(snsPushSvc)
-			c.Logger.Info("SNS push service initialized",
-				zap.Bool("ios", c.Config.SNSPush.IOSPlatformARN != ""),
-				zap.Bool("android", c.Config.SNSPush.AndroidPlatformARN != ""))
-		}
-	} else {
-		expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
-		c.ExpoPushService = expoPushService
-		c.NotificationService.SetPushSender(expoPushService)
+		c.ZapLog.Warn("SNS push config is set but ignored — AWS is decommissioned; using Expo push. Remove SNS_PUSH_* env vars.")
 	}
+	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+	c.ExpoPushService = expoPushService
+	c.NotificationService.SetPushSender(expoPushService)
+	c.ZapLog.Info("Expo push service initialized as the push delivery path")
 	// Wire email notifications for important events
 	if c.EmailService != nil {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
@@ -2432,10 +2411,12 @@ func (c *Container) initializeDomainServices() error {
 
 	if c.GrowthEngineRepo != nil {
 		var growthPush growthengine.PushSender
-		if c.SNSPushService != nil {
-			growthPush = c.SNSPushService
-		} else if c.ExpoPushService != nil {
+		// Expo is the only live delivery path — prefer it so stale SNS state can
+		// never win the routing (AWS is decommissioned).
+		if c.ExpoPushService != nil {
 			growthPush = c.ExpoPushService
+		} else if c.SNSPushService != nil {
+			growthPush = c.SNSPushService
 		}
 		if growthPush == nil {
 			c.ZapLog.Warn("growth engine initialized without push sender; push campaigns will fail gracefully")
@@ -2452,13 +2433,13 @@ func (c *Container) initializeDomainServices() error {
 		}
 	}
 
-	// Wire push notifier into gameplay services (now that push provider is resolved)
-	// Use SNS if available, otherwise Expo
+	// Wire push notifier into gameplay services (now that push provider is resolved).
+	// Expo is the only live delivery path; SNS remains only as a dead fallback.
 	var pushNotifier gameplay.PushNotifier
-	if c.SNSPushService != nil {
-		pushNotifier = c.SNSPushService
-	} else if c.ExpoPushService != nil {
+	if c.ExpoPushService != nil {
 		pushNotifier = c.ExpoPushService
+	} else if c.SNSPushService != nil {
+		pushNotifier = c.SNSPushService
 	}
 	if pushNotifier != nil {
 		c.GameplayXPService.SetNotifier(pushNotifier)

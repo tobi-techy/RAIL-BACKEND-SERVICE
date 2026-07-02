@@ -102,7 +102,7 @@ func TestSandboxLive(t *testing.T) {
 		if bankCode == "" || acct == "" {
 			t.Skip("RAMPHUB_RESOLVE_BANK / RAMPHUB_RESOLVE_ACCT not set; skipping resolve")
 		}
-		resolved, err := client.ResolveBankAccount(ctx, bankCode, acct)
+		resolved, err := client.ResolveBankAccount(ctx, bankCode, acct, os.Getenv("RAMPHUB_RESOLVE_BANK_NAME"))
 		if err != nil {
 			t.Fatalf("ResolveBankAccount: %v", err)
 		}

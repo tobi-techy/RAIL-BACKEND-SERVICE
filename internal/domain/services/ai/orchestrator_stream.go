@@ -321,7 +321,18 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 		req.MaxTokens = maxFollowUp
 		req.Messages = messages
 
-		resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
+		// Keep the follow-up on the provider that produced the tool calls. Tool-call
+		// IDs are provider-specific, so failing over to a different provider mid-round
+		// can trigger "tool_call_id is not found"; it also avoids re-hammering providers
+		// that were already rate-limited on the first round.
+		prevProvider := resp.Provider
+		if pp, ok := o.aiProvider.(interface {
+			ChatCompletionWithToolsPreferring(context.Context, *ai.ChatRequest, []ai.Tool, string) (*ai.ChatResponse, error)
+		}); ok && prevProvider != "" {
+			resp, err = pp.ChatCompletionWithToolsPreferring(ctx, req, tools, prevProvider)
+		} else {
+			resp, err = o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
+		}
 		if err != nil {
 			return fmt.Errorf("follow-up completion failed: %w", err)
 		}

@@ -65,18 +65,21 @@ func (h *RampHandlers) GetBanks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"banks": banks})
 }
 
-// ResolveBankAccount verifies a bank account name before an offramp.
+// ResolveBankAccount verifies a bank account name before an offramp. bankName
+// is optional but improves matching because RampHub bank codes are
+// provider-scoped.
 // POST /v1/funding/ramp/banks/resolve
 func (h *RampHandlers) ResolveBankAccount(c *gin.Context) {
 	var req struct {
 		BankCode      string `json:"bankCode" binding:"required"`
 		AccountNumber string `json:"accountNumber" binding:"required"`
+		BankName      string `json:"bankName"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_REQUEST", "message": "bankCode and accountNumber required"})
 		return
 	}
-	resolved, err := h.service.ResolveBankAccount(c.Request.Context(), req.BankCode, req.AccountNumber)
+	resolved, err := h.service.ResolveBankAccount(c.Request.Context(), req.BankCode, req.AccountNumber, req.BankName)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -128,6 +131,7 @@ func (h *RampHandlers) CreateOfframp(c *gin.Context) {
 	var req struct {
 		BankCode      string  `json:"bankCode" binding:"required"`
 		AccountNumber string  `json:"accountNumber" binding:"required"`
+		BankName      string  `json:"bankName"`
 		Amount        float64 `json:"amount" binding:"required,gt=0"`
 		Currency      string  `json:"currency"`
 	}
@@ -136,7 +140,7 @@ func (h *RampHandlers) CreateOfframp(c *gin.Context) {
 		return
 	}
 
-	res, err := h.service.CreateOfframp(c.Request.Context(), userID, req.BankCode, req.AccountNumber, req.Amount, req.Currency)
+	res, err := h.service.CreateOfframp(c.Request.Context(), userID, req.BankCode, req.AccountNumber, req.BankName, req.Amount, req.Currency)
 	if err != nil {
 		h.handleError(c, err)
 		return
@@ -247,6 +251,10 @@ func (h *RampHandlers) handleError(c *gin.Context, err error) {
 	l := strings.ToLower(errMsg)
 
 	switch {
+	case errors.Is(err, ramphub.ErrAccountResolveFailed), strings.Contains(l, "unable to verify bank account"):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "BANK_RESOLVE_FAILED", "message": "We couldn't verify this account. Please check the account number and bank."})
+	case strings.Contains(l, "account number must be"), strings.Contains(l, "invalid bank code"):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_REQUEST", "message": errMsg})
 	case strings.Contains(l, "order not found"):
 		c.JSON(http.StatusNotFound, gin.H{"code": "ORDER_NOT_FOUND", "message": "Order not found"})
 	case strings.Contains(l, "limit exceeded"):

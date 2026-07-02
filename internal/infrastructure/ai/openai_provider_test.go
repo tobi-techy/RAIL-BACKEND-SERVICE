@@ -121,6 +121,41 @@ func TestOpenAIProviderBuildRequest(t *testing.T) {
 		assert.Equal(t, `{"user_id":"123"}`, fn["arguments"])
 	})
 
+	// Regression: some OpenAI-compatible providers (Kimi/Moonshot) return tool calls
+	// with an empty id. If we echo that back, the tool result message loses its
+	// tool_call_id and the follow-up request is rejected with "tool_call_id is not found".
+	// buildOpenAIRequest must backfill a stable id and reuse it on the paired tool message.
+	t.Run("empty tool_call ids are backfilled and matched to tool results", func(t *testing.T) {
+		req := &ChatRequest{
+			Messages: []Message{
+				{Role: "user", Content: "find me a hotel"},
+				{
+					Role:    "assistant",
+					Content: "",
+					ToolCalls: []ToolCall{
+						{ID: "", Name: "web_search", Arguments: map[string]interface{}{"query": "hotel"}},
+					},
+				},
+				{Role: "tool", Content: `{"results":[]}`, Name: "web_search", ToolCallID: ""},
+			},
+		}
+		body := p.buildOpenAIRequest(req, nil)
+		msgs, ok := body["messages"].([]map[string]interface{})
+		require.True(t, ok, "messages must be a slice of maps")
+		require.Len(t, msgs, 3)
+
+		toolCalls, ok := msgs[1]["tool_calls"].([]map[string]interface{})
+		require.True(t, ok, "tool_calls must be a slice of maps")
+		require.Len(t, toolCalls, 1)
+		assistantID, ok := toolCalls[0]["id"].(string)
+		require.True(t, ok, "assistant tool_call id must be a string")
+		require.NotEmpty(t, assistantID, "assistant tool_call id must be backfilled")
+
+		toolID, ok := msgs[2]["tool_call_id"].(string)
+		require.True(t, ok, "tool message must carry a tool_call_id")
+		assert.Equal(t, assistantID, toolID, "tool result id must match the assistant tool_call id")
+	})
+
 	t.Run("empty assistant message without tool calls is skipped", func(t *testing.T) {
 		req := &ChatRequest{
 			Messages: []Message{

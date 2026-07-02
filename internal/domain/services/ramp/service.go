@@ -13,10 +13,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -120,13 +123,22 @@ type Quote struct {
 	Fee             float64 `json:"fee"`
 }
 
-// GetBestQuote returns the single best rate for a corridor. For onramp it
-// compares USDC and USDT via RampHub; for offramp it quotes USDC. If RampHub is
-// unavailable it falls back to the Paj rate.
+// GetBestQuote returns the single best rate for a corridor on the default
+// settlement chain. For onramp it compares USDC and USDT via RampHub; for
+// offramp it quotes USDC. If RampHub is unavailable it falls back to Paj.
 func (s *Service) GetBestQuote(ctx context.Context, side string, fiatAmount, tokenAmount float64, currency string) (*Quote, error) {
+	return s.getBestQuoteForChain(ctx, side, fiatAmount, tokenAmount, currency, offrampSettlementChain)
+}
+
+// getBestQuoteForChain is GetBestQuote for a specific chain — the quote and the
+// subsequent order must use the same corridor or providers can reject the order.
+func (s *Service) getBestQuoteForChain(ctx context.Context, side string, fiatAmount, tokenAmount float64, currency, chain string) (*Quote, error) {
 	side = strings.ToLower(strings.TrimSpace(side))
 	if currency == "" {
 		currency = "NGN"
+	}
+	if chain == "" {
+		chain = offrampSettlementChain
 	}
 
 	buy := normalizeSide(side) == "buy"
@@ -136,7 +148,6 @@ func (s *Service) GetBestQuote(ctx context.Context, side string, fiatAmount, tok
 		// Compare every supported asset and keep the best for the side. RampHub
 		// already routes to the best provider per asset; this picks the best asset.
 		// Currently USDC-only.
-		chain := offrampSettlementChain
 		// Sell quotes need a token amount; use the caller's, else a probe (the
 		// rate is effectively amount-independent and we recompute for the real
 		// fiat target below).
@@ -250,23 +261,46 @@ func (s *Service) GetBanks(ctx context.Context) ([]ramphub.Bank, error) {
 		return nil, err
 	}
 
-	seen := make(map[string]bool)
-	var banks []ramphub.Bank
+	// Fetch every sell-capable provider's list concurrently — this is the
+	// cold-cache path and providers are independent.
+	var sellProviders []string
 	for _, p := range catalog.Providers {
-		if !p.SupportsSell {
-			continue
+		if p.SupportsSell {
+			sellProviders = append(sellProviders, strings.ToLower(p.Name))
 		}
-		list, err := s.ramphubClient.GetProviderBankList(ctx, strings.ToLower(p.Name))
-		if err != nil {
-			s.logger.Warn("ramphub provider bank list failed, skipping provider",
-				zap.String("provider", p.Name), zap.Error(err))
-			continue
-		}
-		for _, b := range list.Banks {
-			if b.BankCode == "" || seen[b.BankCode] {
+	}
+	lists := make([][]ramphub.Bank, len(sellProviders))
+	var wg sync.WaitGroup
+	for i, name := range sellProviders {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			list, lerr := s.ramphubClient.GetProviderBankList(ctx, name)
+			if lerr != nil {
+				s.logger.Warn("ramphub provider bank list failed, skipping provider",
+					zap.String("provider", name), zap.Error(lerr))
+				return
+			}
+			lists[i] = list.Banks
+		}(i, name)
+	}
+	wg.Wait()
+
+	// Bank codes are provider-scoped, so the same institution can appear under
+	// several codes. Dedupe by code and by normalized name so the user sees each
+	// bank once; RampHub converts whichever code we send to the winning
+	// provider's directory internally.
+	seenCode := make(map[string]bool)
+	seenName := make(map[string]bool)
+	var banks []ramphub.Bank
+	for _, list := range lists {
+		for _, b := range list {
+			nameKey := strings.ToLower(strings.Join(strings.Fields(b.BankName), " "))
+			if b.BankCode == "" || seenCode[b.BankCode] || nameKey == "" || seenName[nameKey] {
 				continue
 			}
-			seen[b.BankCode] = true
+			seenCode[b.BankCode] = true
+			seenName[nameKey] = true
 			banks = append(banks, b)
 		}
 	}
@@ -284,9 +318,30 @@ func (s *Service) GetBanks(ctx context.Context) ([]ramphub.Bank, error) {
 	return banks, nil
 }
 
-// ResolveBankAccount validates payout bank details before an offramp.
-func (s *Service) ResolveBankAccount(ctx context.Context, bankCode, accountNumber string) (*ramphub.ResolvedAccount, error) {
-	return s.ramphubClient.ResolveBankAccount(ctx, bankCode, accountNumber)
+// nubanPattern matches Nigerian NUBAN account numbers (exactly 10 digits).
+var nubanPattern = regexp.MustCompile(`^\d{10}$`)
+
+// bankCodePattern matches RampHub bank codes. Codes are provider-scoped and
+// vary in length (NIP codes, fintech codes like 999992), so allow 3–12
+// alphanumerics — enough to reject junk without rejecting a valid directory.
+var bankCodePattern = regexp.MustCompile(`^[A-Za-z0-9]{3,12}$`)
+
+// ResolveBankAccount validates payout bank details before an offramp. bankName
+// is optional but improves match rates because RampHub bank codes are
+// provider-scoped.
+func (s *Service) ResolveBankAccount(ctx context.Context, bankCode, accountNumber, bankName string) (*ramphub.ResolvedAccount, error) {
+	if !nubanPattern.MatchString(accountNumber) {
+		return nil, fmt.Errorf("account number must be exactly 10 digits")
+	}
+	if !bankCodePattern.MatchString(bankCode) {
+		return nil, fmt.Errorf("invalid bank code")
+	}
+	// RampHub may be unconfigured in deployments that only run the Paj rail —
+	// mirror CreateOfframp and fail cleanly instead of dereferencing a nil client.
+	if s.ramphubClient == nil {
+		return nil, fmt.Errorf("bank verification service temporarily unavailable")
+	}
+	return s.ramphubClient.ResolveBankAccount(ctx, bankCode, accountNumber, bankName)
 }
 
 // --- Onramp (NGN → USDC) ---
@@ -325,9 +380,18 @@ func (s *Service) CreateOnramp(ctx context.Context, userID uuid.UUID, fiatAmount
 		return nil, fmt.Errorf("deposit already in progress, please wait")
 	}
 
+	// Resolve the user's wallet first: the quote must be priced on the chain
+	// the order will actually deliver to, or providers can reject the order
+	// (which silently pushed every EVM-wallet deposit onto the Paj fallback).
+	walletAddress, walletChain := s.resolveUserWallet(ctx, userID)
+	if walletAddress == "" {
+		return nil, fmt.Errorf("no wallet available to receive deposit")
+	}
+	rampChain := circleToRampChain(walletChain)
+
 	// Fetch the best onramp quote once and reuse it for both limit conversion and
 	// the crypto amount on the order (avoids a second live quote round-trip).
-	quote, qErr := s.GetBestQuote(ctx, "onramp", fiatAmount, 0, currency)
+	quote, qErr := s.getBestQuoteForChain(ctx, "onramp", fiatAmount, 0, currency, rampChain)
 	quoteRate := 0.0
 	if qErr == nil && quote != nil {
 		quoteRate = quote.Rate
@@ -339,13 +403,6 @@ func (s *Service) CreateOnramp(ctx context.Context, userID uuid.UUID, fiatAmount
 			return nil, err
 		}
 	}
-
-	// Resolve the user's wallet to receive USDC.
-	walletAddress, walletChain := s.resolveUserWallet(ctx, userID)
-	if walletAddress == "" {
-		return nil, fmt.Errorf("no wallet available to receive deposit")
-	}
-	rampChain := circleToRampChain(walletChain)
 
 	// Try RampHub first; fall back to Paj on failure. A buy order requires the
 	// crypto amount, computed from the quote rate above.
@@ -448,14 +505,22 @@ type OfframpResult struct {
 }
 
 // CreateOfframp creates a USDC→NGN withdrawal order. Mirrors the Paj offramp:
-// ledger hold → RampHub sell order → async Circle/ChainRails delivery to
-// RampHub's deposit address → reconcile via signed webhook + poll.
-func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode, accountNumber string, fiatAmount float64, currency string) (*OfframpResult, error) {
+// verify payout account → ledger hold → RampHub sell order → async
+// Circle/ChainRails delivery to RampHub's deposit address → reconcile via
+// signed webhook + poll. bankName is optional but improves RampHub's
+// provider-scoped bank code matching.
+func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode, accountNumber, bankName string, fiatAmount float64, currency string) (*OfframpResult, error) {
 	if currency == "" {
 		currency = "NGN"
 	}
 	if fiatAmount < float64(pajfunding.MinNGNTransactionAmount) {
 		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f", float64(pajfunding.MinNGNTransactionAmount))
+	}
+	if !nubanPattern.MatchString(accountNumber) {
+		return nil, fmt.Errorf("account number must be exactly 10 digits")
+	}
+	if !bankCodePattern.MatchString(bankCode) {
+		return nil, fmt.Errorf("invalid bank code")
 	}
 
 	unlock, lockErr := s.acquireOfframpLock(ctx, userID)
@@ -482,6 +547,41 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 	if quote.Rate < 100 || quote.Rate > 10000 {
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", quote.Rate)
+	}
+
+	// Verify the payout account before any money moves. RampHub requires the
+	// resolved account name on sell orders, and failing here costs nothing to
+	// unwind — no hold has been taken yet.
+	accountName := ""
+	rampHubViable := s.ramphubClient != nil && quote.Provider == ProviderRampHub
+	if rampHubViable {
+		resolved, rerr := s.ramphubClient.ResolveBankAccount(ctx, bankCode, accountNumber, bankName)
+		switch {
+		case rerr == nil:
+			accountName = resolved.AccountName
+		case errors.Is(rerr, ramphub.ErrAccountResolveFailed):
+			// The account itself didn't resolve — a wrong number or bank, not a
+			// provider outage. Refuse rather than pay out to an unverified account.
+			return nil, fmt.Errorf("unable to verify bank account details, please check the account number and bank")
+		default:
+			// RampHub unreachable — skip its order path and use the Paj fallback.
+			s.logger.Warn("ramphub resolve unavailable, using Paj fallback", zap.Error(rerr))
+			rampHubViable = false
+		}
+	}
+	if !rampHubViable {
+		if s.pajFallback != nil {
+			pajRes, pajErr := s.pajFallback.CreateOfframpOrder(ctx, userID, bankCode, accountNumber, fiatAmount, currency)
+			if pajErr != nil {
+				return nil, pajErr
+			}
+			return &OfframpResult{
+				TransactionID: pajRes.Order.ID, Provider: ProviderPaj,
+				FiatAmount: pajRes.Order.FiatAmount, Rate: pajRes.Order.Rate,
+				RailFee: pajRes.RailFee, Status: "pending",
+			}, nil
+		}
+		return nil, fmt.Errorf("withdrawal service temporarily unavailable")
 	}
 
 	// Estimate USDC: fiat/rate + 2% slippage buffer, capped at $50 to prevent
@@ -529,12 +629,6 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		}
 	}
 
-	// Resolve account name (best-effort) and create the RampHub sell order.
-	accountName := ""
-	if resolved, rerr := s.ramphubClient.ResolveBankAccount(ctx, bankCode, accountNumber); rerr == nil {
-		accountName = resolved.AccountName
-	}
-
 	// A sell order requires the crypto amount (NGN payout is derived from it).
 	orderCrypto := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
 	order, err := s.ramphubClient.CreateOrder(ctx, ramphub.OrderRequest{
@@ -546,6 +640,7 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		BankCode:            bankCode,
 		AccountNumber:       accountNumber,
 		AccountName:         accountName,
+		BankName:            bankName,
 		ExternalCustomerID:  userID.String(),
 		DeveloperFeePercent: s.developerFeePercent,
 	})
@@ -580,11 +675,11 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 
 	// Persist order.
 	if _, dbErr := s.db.ExecContext(ctx, `
-		INSERT INTO ramphub_orders (user_id, ramphub_transaction_id, request_reference, order_type, status, selected_provider, fiat_amount, token_amount, asset, chain, currency, rate, rail_fee_usdc, hold_amount, bank_code, account_number, account_name, our_crypto_address)
-		VALUES ($1,$2,$3,'offramp','pending',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		INSERT INTO ramphub_orders (user_id, ramphub_transaction_id, request_reference, order_type, status, selected_provider, fiat_amount, token_amount, asset, chain, currency, rate, rail_fee_usdc, hold_amount, bank_code, account_number, account_name, bank_name, our_crypto_address)
+		VALUES ($1,$2,$3,'offramp','pending',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		userID, order.TransactionID, order.RequestReference, order.SelectedProvider, fiatAmount, cryptoSendAmount(order, fiatAmount, quote.Rate),
 		settlementAsset, offrampSettlementChain, currency, order.BestRateUsed, railFee, totalHold,
-		bankCode, accountNumber, accountName, order.OurCryptoAddress); dbErr != nil {
+		bankCode, accountNumber, accountName, bankName, order.OurCryptoAddress); dbErr != nil {
 		s.logger.Error("CRITICAL: failed to persist ramphub offramp order — reversing hold", zap.Error(dbErr), zap.String("ramphub_tx_id", order.TransactionID))
 		s.reverseHold(ctx, userID, order.TransactionID, totalHold, railFee, "db_fail")
 		return nil, fmt.Errorf("failed to record withdrawal order")
@@ -597,7 +692,9 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 
 	cryptoAmount := decimal.NewFromFloat(cryptoSendAmount(order, fiatAmount, quote.Rate))
-	transferCtx, transferCancel := context.WithTimeout(ctx, 5*time.Minute)
+	// WithoutCancel: ctx is the HTTP request context, which Gin cancels the
+	// moment the response is written — the transfer must outlive the request.
+	transferCtx, transferCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 	go func() {
 		defer transferCancel()
 		defer func() {
@@ -687,10 +784,14 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 	}
 
 	newStatus := ramphub.MapEventStatus(event.Type, event.Data.Status)
-	s.db.ExecContext(ctx, `
+	if _, uerr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = $1, last_webhook_status = $2, last_webhook_at = NOW(), updated_at = NOW()
 		WHERE ramphub_transaction_id = $3 AND status NOT IN ('completed','failed')`,
-		newStatus, event.Type+":"+event.Data.Status, txID)
+		newStatus, event.Type+":"+event.Data.Status, txID); uerr != nil {
+		// Fail the delivery so RampHub retries — otherwise the order status and
+		// the credit/reversal work below could diverge from provider truth.
+		return fmt.Errorf("update ramphub order status: %w", uerr)
+	}
 
 	// Surface processing failures so the handler returns a non-2xx and RampHub
 	// retries the delivery (credit/reversal are idempotent on retry).
@@ -740,6 +841,12 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, txID st
 	var orderType string
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT user_id, order_type FROM ramphub_orders WHERE ramphub_transaction_id = $1`, txID).Scan(&ownerID, &orderType); err != nil {
+		// Orders created during a Paj fallback return a Paj order ID, which has
+		// no ramphub_orders row. Poll it transparently so the client's status
+		// screen keeps working regardless of which provider won the route.
+		if errors.Is(err, sql.ErrNoRows) && s.pajFallback != nil {
+			return s.pollPajFallbackOrder(ctx, userID, txID)
+		}
 		return nil, fmt.Errorf("order not found")
 	}
 	if ownerID != userID {
@@ -752,10 +859,12 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, txID st
 	}
 
 	newStatus := tx.MappedStatus()
-	s.db.ExecContext(ctx, `
+	if _, uerr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = $1, token_amount = COALESCE(NULLIF($2,0), token_amount), rate = COALESCE(NULLIF($3,0), rate), updated_at = NOW()
 		WHERE ramphub_transaction_id = $4 AND status NOT IN ('completed','failed')`,
-		newStatus, tx.TokenAmount, tx.Rate, txID)
+		newStatus, tx.TokenAmount, tx.Rate, txID); uerr != nil {
+		s.logger.Error("failed to persist polled ramphub status", zap.Error(uerr), zap.String("ramphub_tx_id", txID))
+	}
 
 	// Poll path: log processing failures but still return the status to the user;
 	// the webhook/recovery paths retry crediting/reversal idempotently.
@@ -767,6 +876,42 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, txID st
 	}
 	s.notifyTerminal(ctx, userID, txID, orderType, newStatus, tx.FiatAmount)
 	return tx, nil
+}
+
+// pollPajFallbackOrder polls a Paj order through the fallback service and
+// adapts the result to the RampHub transaction shape, so orders that routed to
+// Paj report status through the same /ramp endpoint the client already polls.
+// Paj's PollOrderStatus verifies ownership and handles credit/reversal itself.
+func (s *Service) pollPajFallbackOrder(ctx context.Context, userID uuid.UUID, pajOrderID string) (*ramphub.Transaction, error) {
+	tx, err := s.pajFallback.PollOrderStatus(ctx, userID, pajOrderID)
+	if err != nil {
+		return nil, err
+	}
+	// Paj statuses: INIT, PAID, COMPLETED, FAILED.
+	status := "pending"
+	switch tx.Status {
+	case "PAID":
+		status = "paid"
+	case "COMPLETED":
+		status = "completed"
+	case "FAILED":
+		status = "failed"
+	}
+	side := "buy"
+	if tx.TransactionType == "OFF_RAMP" {
+		side = "sell"
+	}
+	return &ramphub.Transaction{
+		TransactionID: pajOrderID,
+		Status:        status,
+		Completed:     status == "completed",
+		Terminal:      status == "completed" || status == "failed",
+		Side:          side,
+		Provider:      ProviderPaj,
+		FiatAmount:    tx.FiatAmount,
+		TokenAmount:   tx.USDCAmount,
+		Rate:          tx.Rate,
+	}, nil
 }
 
 // creditOnrampIfCompleted credits USDC and runs the 70/30 allocation split when

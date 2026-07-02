@@ -157,6 +157,14 @@ type StashYieldRedeemer interface {
 	RedeemStashYield(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
 
+// RedemptionReserver durably reserves a redemption before the ledger moves, so
+// the reconciliation worker always has a record to resume if the async redeem
+// attempt dies. Implemented by the Blend deposit router.
+type RedemptionReserver interface {
+	EnsureRedemptionReserved(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (bool, error)
+	AbandonRedemption(ctx context.Context, idempotencyKey, reason string) error
+}
+
 // StashYieldRedeemerForTransfer extends StashYieldRedeemer with a variant that skips the
 // Base→Solana sweep. Use when funds are about to leave the platform via a crypto transfer
 // so the transfer itself can spend the USDC from the Base EOA without racing the sweep.
@@ -412,25 +420,69 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		return nil, fmt.Errorf("insufficient stash balance: have %s, need %s (amount %s + fee %s)", balance.String(), total.String(), amount.String(), fee.String())
 	}
 
+	// Reserve the Blend redemption BEFORE the ledger moves so a crash after the
+	// transfer always leaves a durable record for the reconciliation worker —
+	// otherwise the ledger can run ahead of Blend custody with nothing to retry.
+	redeemKey := "emergency-redeem-" + idempotencyKey
+	blendReserved := false
+	if reserver, ok := s.stashYieldRedeemer.(RedemptionReserver); ok && reserver != nil {
+		reserved, rerr := reserver.EnsureRedemptionReserved(ctx, userID, total, redeemKey)
+		if rerr != nil {
+			return nil, fmt.Errorf("reserve yield redemption: %w", rerr)
+		}
+		blendReserved = reserved
+	}
+
 	if err := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, userID, amount, fee, idempotencyKey); err != nil {
+		if blendReserved {
+			if reserver, ok := s.stashYieldRedeemer.(RedemptionReserver); ok {
+				// Detach from the request context: the abandon must run even if the
+				// client disconnected and cancelled ctx, or the reservation would be
+				// left claimable with no ledger move behind it.
+				abandonCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				if aerr := reserver.AbandonRedemption(abandonCtx, redeemKey, "emergency ledger transfer failed: "+err.Error()); aerr != nil {
+					s.logger.Error("failed to abandon Blend redemption after emergency ledger failure",
+						zap.String("user_id", userID.String()), zap.Error(aerr))
+				}
+				cancel()
+			}
+		}
 		return nil, fmt.Errorf("emergency transfer failed: %w", err)
 	}
 	if err := sl.MarkEmergencyWithdrawn(ctx, userID); err != nil {
 		s.logger.Error("failed to mark cycles as emergency withdrawn", zap.String("user_id", userID.String()), zap.Error(err))
 	}
 
+	// Record the transfer so it appears in the user's transaction history.
+	transferID := uuid.New()
+	if s.stashTransferRepo != nil {
+		now := time.Now()
+		if err := s.stashTransferRepo.Create(ctx, &entities.StashTransfer{
+			ID:          transferID,
+			UserID:      userID,
+			Amount:      amount,
+			Direction:   entities.StashTransferDirectionStashToSpending,
+			Status:      entities.StashTransferStatusCompleted,
+			CreatedAt:   now,
+			CompletedAt: &now,
+		}); err != nil {
+			s.logger.Error("failed to record emergency stash transfer (funds moved)",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
+	}
+
 	// Reconcile on-chain custody with the ledger: the stash just dropped by `total`, so redeem
 	// that from Blend back into spendable custody. Non-blocking — the user already has their
 	// spending balance and the funds stay on-platform; the Blend reconciliation worker resumes
-	// the redemption if this attempt fails. (The crypto-withdrawal path redeems synchronously
-	// because funds leave the platform there; here they don't, so a background redeem is fine.)
-	if s.stashYieldRedeemer != nil {
+	// the reserved redemption if this attempt fails. (The crypto-withdrawal path redeems
+	// synchronously because funds leave the platform there; here they don't.)
+	if s.stashYieldRedeemer != nil && blendReserved {
 		total := total
 		go func() {
 			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
-			if err := s.stashYieldRedeemer.RedeemStashYield(rctx, userID, total, "emergency-redeem-"+idempotencyKey); err != nil {
-				s.logger.Error("emergency stash-to-spending: async Blend redemption failed (worker will retry)",
+			if err := s.stashYieldRedeemer.RedeemStashYield(rctx, userID, total, redeemKey); err != nil {
+				s.logger.Error("emergency stash-to-spending: async Blend redemption incomplete (reserved; worker will resume)",
 					zap.String("user_id", userID.String()), zap.String("amount", total.String()), zap.Error(err))
 			}
 		}()
@@ -444,7 +496,7 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		Fee:        fee,
 		FeePercent: feePct,
 		NetAmount:  amount.Sub(fee),
-		TransferID: uuid.New(),
+		TransferID: transferID,
 	}, nil
 }
 
@@ -951,7 +1003,10 @@ func (s *WithdrawalService) ResumeComplianceApprovedWithdrawal(ctx context.Conte
 
 // executeCryptoWithdrawalAsync runs the Bridge transfer and post-processing in the background.
 func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	// 8 minutes: yield redemption + transfer + the completion pollers below
+	// (ChainRails polls up to 5 minutes on its own) must all fit — a shorter
+	// parent deadline silently truncated polling and left rows in processing.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	if err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req); err != nil {
@@ -2225,7 +2280,10 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 		"intent_address", intent.IntentAddress)
 
 	return &CryptoTransferResult{
-		TransferID:    fmt.Sprintf("cr:%d:%s", intent.ID, tx.ID),
+		// The intent address rides along as a fourth segment so recovery can
+		// poll ChainRails for rows whose webhook never arrived. Webhook
+		// reconciliation matches on the "cr:{intentID}:" prefix, unaffected.
+		TransferID:    fmt.Sprintf("cr:%d:%s:%s", intent.ID, tx.ID, intent.IntentAddress),
 		State:         intent.IntentStatus,
 		IntentAddress: intent.IntentAddress,
 	}, nil
@@ -2344,10 +2402,12 @@ func (s *WithdrawalService) executeChainRailsTransfer(ctx context.Context, withd
 		"bridge_transfer_id", transfer.ID,
 		"intent_address", intent.IntentAddress)
 
-	// Store the ChainRails intent ID as the provider reference for webhook reconciliation
+	// Store the ChainRails intent ID as the provider reference for webhook
+	// reconciliation, with the intent address as a fourth segment for polling.
 	return &CryptoTransferResult{
-		TransferID: fmt.Sprintf("cr:%d:%s", intent.ID, transfer.ID),
-		State:      intent.IntentStatus,
+		TransferID:    fmt.Sprintf("cr:%d:%s:%s", intent.ID, transfer.ID, intent.IntentAddress),
+		State:         intent.IntentStatus,
+		IntentAddress: intent.IntentAddress,
 	}, nil
 }
 
@@ -2821,8 +2881,45 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 
 	transferID := strings.TrimSpace(*withdrawal.ProviderTransferID)
 
-	// ChainRails withdrawals are tracked via webhooks, not polling
+	// ChainRails withdrawals: newer transfer IDs embed the intent address as a
+	// fourth segment (cr:{intentID}:{fundingTxID}:{intentAddress}) so stuck rows
+	// can be polled when the webhook is missed. Legacy 3-segment IDs stay
+	// webhook-only.
 	if strings.HasPrefix(transferID, "cr:") {
+		parts := strings.SplitN(transferID, ":", 4)
+		if len(parts) < 4 || parts[3] == "" || s.chainRailsAdapter == nil {
+			return withdrawal.Status, nil
+		}
+		status, err := s.chainRailsAdapter.GetIntentStatus(ctx, parts[3])
+		if err != nil || status == nil {
+			if err != nil {
+				s.logger.Warn("ChainRails intent status check failed",
+					zap.String("withdrawal_id", withdrawal.ID.String()), zap.Error(err))
+			}
+			return withdrawal.Status, nil // non-fatal: retried on next sweep
+		}
+		state := strings.ToUpper(strings.TrimSpace(status.Status))
+		switch state {
+		case "COMPLETED", "COMPLETE", "SUCCESS":
+			if status.TxHash != "" {
+				// tx_hash is non-critical metadata — a failed write must not block
+				// settling a withdrawal the chain already completed, else it strands
+				// in pending. Log and proceed.
+				if hashErr := s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash); hashErr != nil {
+					s.logger.Warn("failed to persist ChainRails tx hash (non-fatal)",
+						zap.String("withdrawal_id", withdrawal.ID.String()), zap.Error(hashErr))
+				}
+			}
+			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
+				return withdrawal.Status, err
+			}
+			return entities.WithdrawalStatusCompleted, nil
+		case "REFUNDED", "FAILED", "EXPIRED", "CANCELLED":
+			if err := s.failWithdrawal(ctx, withdrawal, "chainrails intent "+strings.ToLower(state)); err != nil {
+				return withdrawal.Status, err
+			}
+			return entities.WithdrawalStatusFailed, nil
+		}
 		return withdrawal.Status, nil
 	}
 

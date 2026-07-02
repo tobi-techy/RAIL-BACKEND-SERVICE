@@ -276,7 +276,17 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 			return
 		}
 		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
-		errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error_after_partial", Content: "Something went wrong — try again", Data: map[string]interface{}{"partial": true}})
+		// Emit a visible error event. error_after_partial is silently dropped by the
+		// client when no tokens were streamed (e.g. a tool call ran but the follow-up
+		// completion failed), which left the user staring at nothing. A plain "error"
+		// event is always rendered.
+		errEvent, marshalErr := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "I couldn't finish that one — mind trying again?"})
+		if marshalErr != nil {
+			// Never leave the stream without a renderable error event — fall back to
+			// a hardcoded, known-valid JSON payload.
+			h.logger.Error("failed to marshal stream error event", "error", marshalErr, "user_id", userID.String())
+			errEvent = []byte(`{"type":"error","content":"I couldn't finish that one — mind trying again?"}`)
+		}
 		fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
 		c.Writer.Flush()
 	}
