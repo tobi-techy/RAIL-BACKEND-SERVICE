@@ -239,7 +239,7 @@ func (s *Service) refundSlippage(ctx context.Context, userID uuid.UUID, txID str
 func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string, amount, railFee decimal.Decimal, reason string) error {
 	res, dbErr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID)
+		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing', 'paid')`, txID)
 	if dbErr != nil {
 		s.logger.Error("failed to mark RampHub order as failed",
 			zap.Error(dbErr), zap.String("ramphub_tx_id", txID))

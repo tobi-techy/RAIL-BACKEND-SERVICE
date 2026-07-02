@@ -104,7 +104,7 @@ func TestSandboxLifecycle(t *testing.T) {
 		sellFinal.Status, sellFinal.Completed, sellFinal.Terminal, sellFinal.MappedStatus())
 
 	// --- 6. Error path: invalid bank resolve ---
-	if _, rErr := client.ResolveBankAccount(ctx, "000000", "0000000000"); rErr != nil {
+	if _, rErr := client.ResolveBankAccount(ctx, "000000", "0000000000", ""); rErr != nil {
 		t.Logf("invalid bank resolve rejected as expected: %v", rErr)
 	} else {
 		t.Logf("invalid bank resolve unexpectedly succeeded")

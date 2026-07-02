@@ -11,16 +11,17 @@ import (
 type ActivityType string
 
 const (
-	ActivityTypeDeposit        ActivityType = "deposit"
-	ActivityTypeWithdrawal     ActivityType = "withdrawal"
-	ActivityTypeNairaFund      ActivityType = "naira_fund"      // PAJ onramp: NGN → USDC
-	ActivityTypeNairaWithdraw  ActivityType = "naira_withdraw"  // PAJ offramp: USDC → NGN
-	ActivityTypeP2PSend        ActivityType = "p2p_send"
-	ActivityTypeP2PReceive     ActivityType = "p2p_receive"
-	ActivityTypeInvestment     ActivityType = "investment"
-	ActivityTypeCardPayment    ActivityType = "card_payment"
-	ActivityTypeAllocation     ActivityType = "allocation"      // internal 70/30 split
-	ActivityTypeMiriamAction   ActivityType = "miriam_action"   // financial agent moved money
+	ActivityTypeDeposit       ActivityType = "deposit"
+	ActivityTypeWithdrawal    ActivityType = "withdrawal"
+	ActivityTypeNairaFund     ActivityType = "naira_fund"     // PAJ onramp: NGN → USDC
+	ActivityTypeNairaWithdraw ActivityType = "naira_withdraw" // PAJ offramp: USDC → NGN
+	ActivityTypeP2PSend       ActivityType = "p2p_send"
+	ActivityTypeP2PReceive    ActivityType = "p2p_receive"
+	ActivityTypeInvestment    ActivityType = "investment"
+	ActivityTypeCardPayment   ActivityType = "card_payment"
+	ActivityTypeAllocation    ActivityType = "allocation"     // internal 70/30 split
+	ActivityTypeMiriamAction  ActivityType = "miriam_action"  // financial agent moved money
+	ActivityTypeStashTransfer ActivityType = "stash_transfer" // spend ↔ stash move
 )
 
 // ActivityStatus is a normalized status across all transaction types.
@@ -46,35 +47,35 @@ const (
 // For simple transfers, only Primary is set.
 type ActivityCurrencyPair struct {
 	Primary   string `json:"primary"`             // e.g. "USDC", "NGN"
-	Secondary string `json:"secondary,omitempty"`  // e.g. "USDC" when primary is "NGN"
+	Secondary string `json:"secondary,omitempty"` // e.g. "USDC" when primary is "NGN"
 }
 
 // ActivityItem is a single normalized activity entry returned to the frontend.
 type ActivityItem struct {
-	ID          string               `json:"id"`
-	Type        ActivityType         `json:"type"`
-	Direction   ActivityDirection     `json:"direction"`
-	Status      ActivityStatus       `json:"status"`
-	Title       string               `json:"title"`
-	Subtitle    string               `json:"subtitle,omitempty"`
-	Amount      decimal.Decimal      `json:"amount"`                // primary amount (what user sees)
-	Currency    ActivityCurrencyPair `json:"currency"`
-	FiatAmount  *decimal.Decimal     `json:"fiatAmount,omitempty"`  // NGN amount for naira txns
-	FeeAmount   *decimal.Decimal     `json:"feeAmount,omitempty"`
-	Chain       string               `json:"chain,omitempty"`
-	TxHash      string               `json:"txHash,omitempty"`
-	Destination string               `json:"destination,omitempty"` // address, bank, railtag
-	ReceiverName string              `json:"receiverName,omitempty"`
-	BankName     string              `json:"bankName,omitempty"`
-	AccountNumber string             `json:"accountNumber,omitempty"`
-	Rate          *decimal.Decimal   `json:"rate,omitempty"`
-	TokenAmount   *decimal.Decimal   `json:"tokenAmount,omitempty"`
-	Narration    string              `json:"narration,omitempty"`
-	SourceID    string               `json:"sourceId"`              // original entity ID for detail fetch
-	SourceType  string               `json:"sourceType"`            // "deposit", "withdrawal", "paj_order", "p2p_transfer"
-	GroupID     string               `json:"groupId,omitempty"`     // links related txns (e.g., PAJ order + deposit)
-	CreatedAt   time.Time            `json:"createdAt"`
-	CompletedAt *time.Time           `json:"completedAt,omitempty"`
+	ID            string               `json:"id"`
+	Type          ActivityType         `json:"type"`
+	Direction     ActivityDirection    `json:"direction"`
+	Status        ActivityStatus       `json:"status"`
+	Title         string               `json:"title"`
+	Subtitle      string               `json:"subtitle,omitempty"`
+	Amount        decimal.Decimal      `json:"amount"` // primary amount (what user sees)
+	Currency      ActivityCurrencyPair `json:"currency"`
+	FiatAmount    *decimal.Decimal     `json:"fiatAmount,omitempty"` // NGN amount for naira txns
+	FeeAmount     *decimal.Decimal     `json:"feeAmount,omitempty"`
+	Chain         string               `json:"chain,omitempty"`
+	TxHash        string               `json:"txHash,omitempty"`
+	Destination   string               `json:"destination,omitempty"` // address, bank, railtag
+	ReceiverName  string               `json:"receiverName,omitempty"`
+	BankName      string               `json:"bankName,omitempty"`
+	AccountNumber string               `json:"accountNumber,omitempty"`
+	Rate          *decimal.Decimal     `json:"rate,omitempty"`
+	TokenAmount   *decimal.Decimal     `json:"tokenAmount,omitempty"`
+	Narration     string               `json:"narration,omitempty"`
+	SourceID      string               `json:"sourceId"`          // original entity ID for detail fetch
+	SourceType    string               `json:"sourceType"`        // "deposit", "withdrawal", "paj_order", "p2p_transfer"
+	GroupID       string               `json:"groupId,omitempty"` // links related txns (e.g., PAJ order + deposit)
+	CreatedAt     time.Time            `json:"createdAt"`
+	CompletedAt   *time.Time           `json:"completedAt,omitempty"`
 }
 
 // ActivityFeedResponse is the paginated response for the activity endpoint.
@@ -88,19 +89,19 @@ type ActivityFeedResponse struct {
 func NormalizeDepositToActivity(d *Deposit) ActivityItem {
 	status := normalizeDepositStatus(d.Status)
 	return ActivityItem{
-		ID:         d.ID.String(),
-		Type:       ActivityTypeDeposit,
-		Direction:  ActivityDirectionIn,
-		Status:     status,
-		Title:      "Deposit received",
-		Subtitle:   string(d.Chain) + " • " + string(d.Token),
-		Amount:     d.Amount,
-		Currency:   ActivityCurrencyPair{Primary: string(d.Token)},
-		Chain:      string(d.Chain),
-		TxHash:     d.TxHash,
-		SourceID:   d.ID.String(),
-		SourceType: "deposit",
-		CreatedAt:  d.CreatedAt,
+		ID:          d.ID.String(),
+		Type:        ActivityTypeDeposit,
+		Direction:   ActivityDirectionIn,
+		Status:      status,
+		Title:       "Deposit received",
+		Subtitle:    string(d.Chain) + " • " + string(d.Token),
+		Amount:      d.Amount,
+		Currency:    ActivityCurrencyPair{Primary: string(d.Token)},
+		Chain:       string(d.Chain),
+		TxHash:      d.TxHash,
+		SourceID:    d.ID.String(),
+		SourceType:  "deposit",
+		CreatedAt:   d.CreatedAt,
 		CompletedAt: d.ConfirmedAt,
 	}
 }
@@ -124,27 +125,29 @@ func NormalizeWithdrawalToActivity(w *Withdrawal) ActivityItem {
 	}
 	fee := w.FeeAmount
 	return ActivityItem{
-		ID:           w.ID.String(),
-		Type:         ActivityTypeWithdrawal,
-		Direction:    ActivityDirectionOut,
-		Status:       status,
-		Title:        title,
-		Subtitle:     subtitle,
-		Amount:       w.Amount,
-		Currency:     ActivityCurrencyPair{Primary: string(w.Currency)},
-		FeeAmount:    &fee,
-		Chain:        w.DestinationChain,
-		TxHash:       derefStr(w.TxHash),
-		Destination:  dest,
-		Narration:    narration,
-		SourceID:     w.ID.String(),
-		SourceType:   "withdrawal",
-		CreatedAt:    w.CreatedAt,
-		CompletedAt:  w.CompletedAt,
+		ID:          w.ID.String(),
+		Type:        ActivityTypeWithdrawal,
+		Direction:   ActivityDirectionOut,
+		Status:      status,
+		Title:       title,
+		Subtitle:    subtitle,
+		Amount:      w.Amount,
+		Currency:    ActivityCurrencyPair{Primary: string(w.Currency)},
+		FeeAmount:   &fee,
+		Chain:       w.DestinationChain,
+		TxHash:      derefStr(w.TxHash),
+		Destination: dest,
+		Narration:   narration,
+		SourceID:    w.ID.String(),
+		SourceType:  "withdrawal",
+		CreatedAt:   w.CreatedAt,
+		CompletedAt: w.CompletedAt,
 	}
 }
 
-// PajOrderForActivity is the minimal PAJ order data needed for normalization.
+// PajOrderForActivity is the minimal NGN ramp order data needed for
+// normalization. Used for both PAJ and RampHub orders — SourceType
+// distinguishes them ("paj_order" default, "ramphub_order").
 type PajOrderForActivity struct {
 	ID                string
 	OrderType         string // "onramp" or "offramp"
@@ -157,6 +160,7 @@ type PajOrderForActivity struct {
 	BankAccountName   *string
 	BankAccountNumber *string
 	BankName          *string
+	SourceType        string // "" → "paj_order"
 	CreatedAt         time.Time
 }
 
@@ -167,6 +171,10 @@ func NormalizePajOrderToActivity(o *PajOrderForActivity) ActivityItem {
 	status := normalizePajStatus(o.Status)
 	usdcAmount := decimal.NewFromFloat(o.TokenAmount)
 	fiatAmount := decimal.NewFromFloat(o.FiatAmount)
+	sourceType := o.SourceType
+	if sourceType == "" {
+		sourceType = "paj_order"
+	}
 
 	if o.OrderType == "onramp" {
 		return ActivityItem{
@@ -180,7 +188,7 @@ func NormalizePajOrderToActivity(o *PajOrderForActivity) ActivityItem {
 			Currency:   ActivityCurrencyPair{Primary: "NGN", Secondary: "USDC"},
 			FiatAmount: &fiatAmount,
 			SourceID:   o.ID,
-			SourceType: "paj_order",
+			SourceType: sourceType,
 			GroupID:    o.ID, // deposits linked to this order share this groupID
 			CreatedAt:  o.CreatedAt,
 		}
@@ -223,8 +231,46 @@ func NormalizePajOrderToActivity(o *PajOrderForActivity) ActivityItem {
 		Rate:          &rate,
 		TokenAmount:   &tokenAmt,
 		SourceID:      o.ID,
-		SourceType:    "paj_order",
+		SourceType:    sourceType,
 		CreatedAt:     o.CreatedAt,
+	}
+}
+
+// NormalizeStashTransferToActivity converts a spend↔stash move into an
+// ActivityItem so internal transfers show up in transaction history.
+func NormalizeStashTransferToActivity(t *StashTransfer) ActivityItem {
+	title := "Moved to Stash"
+	subtitle := "Spend → Stash"
+	direction := ActivityDirectionOut
+	if t.Direction == StashTransferDirectionStashToSpending {
+		title = "Withdrew from Stash"
+		subtitle = "Stash → Spend"
+		direction = ActivityDirectionIn
+	}
+	return ActivityItem{
+		ID:          t.ID.String(),
+		Type:        ActivityTypeStashTransfer,
+		Direction:   direction,
+		Status:      normalizeStashTransferStatus(string(t.Status)),
+		Title:       title,
+		Subtitle:    subtitle + " • $" + t.Amount.StringFixed(2),
+		Amount:      t.Amount,
+		Currency:    ActivityCurrencyPair{Primary: "USDC"},
+		SourceID:    t.ID.String(),
+		SourceType:  "stash_transfer",
+		CreatedAt:   t.CreatedAt,
+		CompletedAt: t.CompletedAt,
+	}
+}
+
+func normalizeStashTransferStatus(s string) ActivityStatus {
+	switch s {
+	case "completed":
+		return ActivityStatusCompleted
+	case "failed":
+		return ActivityStatusFailed
+	default:
+		return ActivityStatusPending
 	}
 }
 

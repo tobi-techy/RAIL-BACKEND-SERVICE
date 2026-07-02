@@ -65,6 +65,11 @@ func VoiceTools() []infraai.Tool {
 				"required": []string{"action", "params"},
 			},
 		},
+		// web_search lets voice Miriam answer travel / places / flights / product / recommendation
+		// questions via Tavily. It is registered on the ElevenLabs agent as a webhook (server)
+		// tool pointing at POST /api/v1/ai/voice/server-tool/web_search, and executed here via
+		// ExecuteToolPublic -> executeWebSearch. Keep this definition in sync with the EL agent.
+		WebSearchTool(),
 	}
 }
 

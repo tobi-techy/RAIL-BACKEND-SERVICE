@@ -993,11 +993,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					paj.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 					paj.POST("/initiate", middleware.AuthRateLimit(5), container.PajHandlers.Initiate)
 					paj.POST("/verify", middleware.AuthRateLimit(10), container.PajHandlers.Verify)
-					paj.POST("/banks/resolve", container.PajHandlers.ResolveBankAccount)
+					// Rate-limited: bank resolution is an account-name oracle (PII) and
+					// each call costs a provider lookup.
+					paj.POST("/banks/resolve", middleware.AuthRateLimit(10), container.PajHandlers.ResolveBankAccount)
 					paj.POST("/banks/add", container.PajHandlers.AddBankAccount)
 					paj.GET("/banks/saved", container.PajHandlers.GetBankAccounts)
 					paj.POST("/onramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOnramp)
-					paj.POST("/offramp", middleware.AuthRateLimit(10), container.PajHandlers.CreateOfframp)
+					// Withdrawals require a passcode-verified session, matching
+					// /v1/withdrawals — the bearer token alone must not be able to move
+					// funds out. The app already sends X-Passcode-Session here.
+					paj.POST("/offramp",
+						middleware.AuthRateLimit(10),
+						middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog),
+						container.PajHandlers.CreateOfframp)
 				}
 
 				// RampHub: crypto-capable on/off ramp operations (backend enforces limits)
@@ -1005,9 +1013,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					ramp := funding.Group("/ramp")
 					ramp.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 					ramp.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
-					ramp.POST("/banks/resolve", container.RampHandlers.ResolveBankAccount)
+					ramp.POST("/banks/resolve", middleware.AuthRateLimit(10), container.RampHandlers.ResolveBankAccount)
 					ramp.POST("/onramp", middleware.AuthRateLimit(10), container.RampHandlers.CreateOnramp)
-					ramp.POST("/offramp", middleware.AuthRateLimit(10), container.RampHandlers.CreateOfframp)
+					ramp.POST("/offramp",
+						middleware.AuthRateLimit(10),
+						middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog),
+						container.RampHandlers.CreateOfframp)
 				}
 			}
 
@@ -1857,6 +1868,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			container.UserRepo,
 			container.TokenBlacklist,
 		)
+
+		// Register collaborative savings goal routes (also created via Miriam)
+		if container.SharedGoalService != nil {
+			RegisterSharedGoalRoutes(protected, container.SharedGoalService, container.ZapLog)
+		}
 
 		// Register opportunity routes
 		RegisterOpportunityRoutes(

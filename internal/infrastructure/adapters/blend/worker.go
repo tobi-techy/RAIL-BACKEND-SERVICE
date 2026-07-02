@@ -82,6 +82,71 @@ func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 	r.reconcileRedemptions(ctx)
 	r.retryPendingSweeps(ctx)
 	r.detectStaleRoutes(ctx)
+	r.detectStrandedRedemptions(ctx)
+}
+
+// detectStrandedRedemptions surfaces redemptions the ledger is counting on that
+// are not making progress: non-terminal rows stuck >1h, rows that exhausted the
+// retry budget, and terminally failed rows from the last 24h. Each of these
+// means a user's ledger balance moved but Blend custody did not follow —
+// operators must reconcile manually.
+func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
+	type strandedRow struct {
+		ID        uuid.UUID      `db:"id"`
+		UserID    uuid.UUID      `db:"user_id"`
+		Status    string         `db:"status"`
+		Amount    string         `db:"amount"`
+		Attempts  int            `db:"attempts"`
+		LastError sql.NullString `db:"last_error"`
+	}
+	var rows []strandedRow
+	if err := r.db.SelectContext(ctx, &rows, `
+		SELECT id, user_id, status, amount::text AS amount, attempts, last_error
+		FROM blend_yield_redemptions
+		WHERE (status IN ('pending','quoted','executing','submitted')
+		         AND (updated_at < NOW() - INTERVAL '1 hour' OR attempts >= 50))
+		   OR (status = 'failed' AND updated_at > NOW() - INTERVAL '24 hours')
+		LIMIT 20
+	`); err != nil || len(rows) == 0 {
+		return
+	}
+	for _, row := range rows {
+		r.logger.Error("CRITICAL: Blend redemption stranded — ledger may be ahead of Blend custody, manual reconciliation may be required",
+			zap.String("redemption_id", row.ID.String()),
+			zap.String("user_id", row.UserID.String()),
+			zap.String("status", row.Status),
+			zap.String("amount", row.Amount),
+			zap.Int("attempts", row.Attempts),
+			zap.String("last_error", row.LastError.String))
+	}
+
+	// Sweeps that keep failing: the redeemed USDC is settled and user-owned
+	// (Base EOA) but hasn't reached their Solana custody wallet. retryPendingSweeps
+	// retries forever; surface anything stuck >2h so it doesn't fail silently.
+	type staleSweep struct {
+		ID     uuid.UUID      `db:"id"`
+		UserID uuid.UUID      `db:"user_id"`
+		Amount string         `db:"amount"`
+		Reason sql.NullString `db:"sweep_failed_reason"`
+	}
+	var sweeps []staleSweep
+	if err := r.db.SelectContext(ctx, &sweeps, `
+		SELECT id, user_id, amount::text AS amount, sweep_failed_reason
+		FROM blend_yield_redemptions
+		WHERE status = 'complete'
+		  AND swept_at IS NULL
+		  AND settled_at < NOW() - INTERVAL '2 hours'
+		LIMIT 10
+	`); err != nil || len(sweeps) == 0 {
+		return
+	}
+	for _, sw := range sweeps {
+		r.logger.Error("Blend sweep stalled — redeemed USDC sitting in Base EOA instead of Solana custody",
+			zap.String("redemption_id", sw.ID.String()),
+			zap.String("user_id", sw.UserID.String()),
+			zap.String("amount", sw.Amount),
+			zap.String("last_sweep_error", sw.Reason.String))
+	}
 }
 
 // retryPendingSweeps retries the Base→Solana bridge for complete redemptions whose
@@ -226,11 +291,12 @@ func (r *DepositRouter) reconcileRedemptions(ctx context.Context) {
 func (r *DepositRouter) claimRedemptions(ctx context.Context, limit int) ([]string, error) {
 	rows, err := r.db.QueryxContext(ctx, `
 		UPDATE blend_yield_redemptions
-		SET next_retry_at = NOW() + ($2 || ' seconds')::interval, updated_at = NOW()
+		SET next_retry_at = NOW() + ($2 || ' seconds')::interval, attempts = attempts + 1, updated_at = NOW()
 		WHERE idempotency_key IN (
 			SELECT idempotency_key FROM blend_yield_redemptions
 			WHERE status IN ('pending', 'quoted', 'executing', 'submitted')
 				AND next_retry_at <= NOW()
+				AND attempts < 50
 			ORDER BY next_retry_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED

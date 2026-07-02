@@ -53,12 +53,6 @@ func (m *ProviderManager) ChatCompletion(ctx context.Context, req *ChatRequest) 
 
 // ChatCompletionWithTools performs chat completion with tools and automatic failover
 func (m *ProviderManager) ChatCompletionWithTools(ctx context.Context, req *ChatRequest, tools []Tool) (*ChatResponse, error) {
-	ctx, span := m.tracer.Start(ctx, "provider_manager.chat_completion", trace.WithAttributes(
-		attribute.Int("message_count", len(req.Messages)),
-		attribute.Int("tool_count", len(tools)),
-	))
-	defer span.End()
-
 	// Try primary provider first
 	providers := []AIProvider{m.primary}
 	providers = append(providers, m.fallbacks...)
@@ -70,6 +64,48 @@ func (m *ProviderManager) ChatCompletionWithTools(ctx context.Context, req *Chat
 		providers = append(providers, m.fallbacks...)
 		providers = append(providers, m.primary)
 	}
+
+	return m.completeOver(ctx, providers, req, tools)
+}
+
+// ChatCompletionWithToolsPreferring behaves like ChatCompletionWithTools but tries
+// `preferred` (by provider name) first, falling back to the others in their normal order.
+//
+// This exists for multi-round tool conversations: the follow-up round must be sent to the
+// same provider that generated the tool calls, otherwise tool_call_id semantics can diverge
+// across providers (e.g. Kimi/Moonshot rejects the request with "tool_call_id is not found").
+// It also avoids re-hammering providers that were rate-limited on the first round.
+func (m *ProviderManager) ChatCompletionWithToolsPreferring(ctx context.Context, req *ChatRequest, tools []Tool, preferred string) (*ChatResponse, error) {
+	if preferred == "" {
+		return m.ChatCompletionWithTools(ctx, req, tools)
+	}
+
+	all := m.GetAllProviders()
+	ordered := make([]AIProvider, 0, len(all))
+	for _, p := range all {
+		if p.Name() == preferred {
+			ordered = append(ordered, p)
+		}
+	}
+	for _, p := range all {
+		if p.Name() != preferred {
+			ordered = append(ordered, p)
+		}
+	}
+	if len(ordered) == 0 {
+		ordered = all
+	}
+
+	return m.completeOver(ctx, ordered, req, tools)
+}
+
+// completeOver runs the failover loop over an explicit, ordered provider list.
+func (m *ProviderManager) completeOver(ctx context.Context, providers []AIProvider, req *ChatRequest, tools []Tool) (*ChatResponse, error) {
+	ctx, span := m.tracer.Start(ctx, "provider_manager.chat_completion", trace.WithAttributes(
+		attribute.Int("message_count", len(req.Messages)),
+		attribute.Int("tool_count", len(tools)),
+	))
+	defer span.End()
 
 	var lastErr error
 

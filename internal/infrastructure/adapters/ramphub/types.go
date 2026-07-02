@@ -11,6 +11,10 @@ func mapStatusLabel(status string) string {
 		return "completed"
 	case strings.Contains(l, "fail"), strings.Contains(l, "cancel"), strings.Contains(l, "denied"):
 		return "failed"
+	case strings.Contains(l, "paid"), strings.Contains(l, "payment received"):
+		// Fiat received, conversion not yet done — lets the client's timeline
+		// advance past "payment received" instead of sitting on pending.
+		return "paid"
 	case strings.Contains(l, "settl"), strings.Contains(l, "forward"), strings.Contains(l, "process"), strings.Contains(l, "await"):
 		return "processing"
 	default:

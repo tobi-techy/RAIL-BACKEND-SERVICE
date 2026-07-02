@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	blend "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	blend "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -16,9 +16,9 @@ import (
 
 // fundsTransfererAdapter adapts the ledger service to the FundsTransferer interface.
 type fundsTransfererAdapter struct {
-	ledger        *ledger.Service
-	blendRouter   *blend.DepositRouter
-	logger        *zap.Logger
+	ledger      *ledger.Service
+	blendRouter *blend.DepositRouter
+	logger      *zap.Logger
 }
 
 func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
@@ -26,19 +26,45 @@ func (a *fundsTransfererAdapter) TransferSpendToStash(ctx context.Context, userI
 }
 
 func (a *fundsTransfererAdapter) TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	// Reserve the Blend redemption BEFORE the ledger moves. The reservation is
+	// the durable record the reconciliation worker resumes from — taking it
+	// first means a crash (or a failed async attempt) after the ledger debit
+	// can never leave the ledger ahead of Blend custody with nothing to retry.
+	redeemKey := "redeem-" + idempotencyKey
+	blendReserved := false
+	if a.blendRouter != nil {
+		reserved, err := a.blendRouter.EnsureRedemptionReserved(ctx, userID, amount, redeemKey)
+		if err != nil {
+			// Refuse to move the ledger without a durable redemption record —
+			// this is exactly the divergence that stranded funds in Blend.
+			return fmt.Errorf("reserve yield redemption: %w", err)
+		}
+		blendReserved = reserved
+	}
+
 	if err := a.ledger.TransferStashToSpending(ctx, userID, amount, idempotencyKey); err != nil {
+		if blendReserved {
+			// Ledger never moved — the reservation must not be driven.
+			abandonCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			if aerr := a.blendRouter.AbandonRedemption(abandonCtx, redeemKey, "ledger transfer failed: "+err.Error()); aerr != nil && a.logger != nil {
+				a.logger.Error("failed to abandon Blend redemption after ledger failure",
+					zap.String("user_id", userID.String()), zap.String("key", redeemKey), zap.Error(aerr))
+			}
+		}
 		return err
 	}
-	// Async: redeem from Blend so on-chain state reconciles with ledger.
-	// Non-blocking — the user already has their spending balance.
-	if a.blendRouter != nil {
+
+	// Async: drive the reserved redemption so on-chain state reconciles with the
+	// ledger. Non-blocking — the user already has their spending balance and the
+	// reconciliation worker resumes the reserved row if this attempt dies.
+	if blendReserved {
 		go func() {
 			redeemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
-			redeemKey := "redeem-" + idempotencyKey
 			if err := a.blendRouter.RedeemStashYield(redeemCtx, userID, amount, redeemKey); err != nil {
 				if a.logger != nil {
-					a.logger.Warn("async Blend redemption failed (will retry via worker)",
+					a.logger.Warn("async Blend redemption incomplete (reserved; worker will resume)",
 						zap.String("user_id", userID.String()),
 						zap.String("amount", amount.StringFixed(6)),
 						zap.Error(err))
@@ -106,6 +132,24 @@ func (a *userProfileAdapter) GetEmail(ctx context.Context, userID uuid.UUID) (st
 
 func (a *userProfileAdapter) GetProfile(ctx context.Context, userID uuid.UUID) (*entities.UserProfile, error) {
 	return a.userRepo.GetByID(ctx, userID)
+}
+
+// sharedGoalUserLookupAdapter resolves rail tags to user IDs for shared-goal
+// invites. Without it the shared-goal service's invite path would dereference
+// a nil UserLookup.
+type sharedGoalUserLookupAdapter struct {
+	repo *repositories.UserRepository
+}
+
+func (a *sharedGoalUserLookupAdapter) GetUserIDByRailTag(ctx context.Context, tag string) (uuid.UUID, error) {
+	user, err := a.repo.GetByRailTag(ctx, tag)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if user == nil {
+		return uuid.Nil, fmt.Errorf("no user with rail tag %q", tag)
+	}
+	return user.ID, nil
 }
 
 // accountCheckerAdapter adapts UserRepository to the UserAccountChecker interface.

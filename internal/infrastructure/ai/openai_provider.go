@@ -330,8 +330,12 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req *ChatRequ
 				if args == nil {
 					args = map[string]interface{}{}
 				}
+				id := tc.ID
+				if id == "" {
+					id = fmt.Sprintf("call_%d", i)
+				}
 				sc.ToolCalls[i] = ToolCall{
-					ID:        tc.ID,
+					ID:        id,
 					Name:      tc.Function.Name,
 					Arguments: args,
 				}
@@ -376,7 +380,15 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 		})
 	}
 
-	// Add conversation messages
+	// Add conversation messages.
+	//
+	// Tool-call IDs must be internally consistent within a single request: every
+	// assistant tool_call needs a non-empty id, and every following tool result must
+	// carry a matching tool_call_id. Otherwise strict providers (Kimi/Moonshot) reject
+	// the request with "tool_call_id is not found". We backfill any missing ids here and
+	// hand them to the paired tool messages (which follow in order) as a safety net.
+	synthCounter := 0
+	var pendingToolCallIDs []string
 	for _, msg := range req.Messages {
 		content := msg.Content
 		if msg.Role == "assistant" && strings.TrimSpace(content) == "" {
@@ -390,21 +402,35 @@ func (p *OpenAIProvider) buildOpenAIRequest(req *ChatRequest, tools []Tool) map[
 			"role":    msg.Role,
 			"content": content,
 		}
-		if msg.Role == "tool" && msg.ToolCallID != "" {
-			m["tool_call_id"] = msg.ToolCallID
-			if msg.Name != "" {
-				m["name"] = msg.Name
+		if msg.Role == "tool" {
+			tcid := msg.ToolCallID
+			if tcid == "" && len(pendingToolCallIDs) > 0 {
+				tcid = pendingToolCallIDs[0]
+				pendingToolCallIDs = pendingToolCallIDs[1:]
+			}
+			if tcid != "" {
+				m["tool_call_id"] = tcid
+				if msg.Name != "" {
+					m["name"] = msg.Name
+				}
 			}
 		}
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			if msg.ReasoningContent != "" {
 				m["reasoning_content"] = msg.ReasoningContent
 			}
+			pendingToolCallIDs = pendingToolCallIDs[:0]
 			toolCalls := make([]map[string]interface{}, len(msg.ToolCalls))
 			for i, tc := range msg.ToolCalls {
+				id := tc.ID
+				if id == "" {
+					id = fmt.Sprintf("call_%d", synthCounter)
+					synthCounter++
+				}
+				pendingToolCallIDs = append(pendingToolCallIDs, id)
 				args, _ := json.Marshal(tc.Arguments)
 				toolCalls[i] = map[string]interface{}{
-					"id":   tc.ID,
+					"id":   id,
 					"type": "function",
 					"function": map[string]interface{}{
 						"name":      tc.Name,
@@ -499,8 +525,17 @@ func (p *OpenAIProvider) convertResponse(resp *openAIResponse, duration time.Dur
 				args = map[string]interface{}{}
 			}
 
+			// Some OpenAI-compatible providers (notably Kimi/Moonshot) return tool
+			// calls with an empty id. If we echo an empty id back on the follow-up
+			// round, the tool result message loses its tool_call_id and the provider
+			// rejects the request with "tool_call_id is not found". Synthesize a
+			// stable id so the assistant tool_call and its tool result always match.
+			id := tc.ID
+			if id == "" {
+				id = fmt.Sprintf("call_%d", i)
+			}
 			chatResp.ToolCalls[i] = ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				Name:      strings.TrimSuffix(tc.Function.Name, "{}"),
 				Arguments: args,
 			}

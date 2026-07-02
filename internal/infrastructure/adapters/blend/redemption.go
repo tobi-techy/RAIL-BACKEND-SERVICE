@@ -83,8 +83,19 @@ func (r *DepositRouter) RedeemStashYield(ctx context.Context, userID uuid.UUID, 
 
 	// Verify the user actually has enough principal to cover this redemption,
 	// EXCLUDING amounts already reserved by other in-flight redemptions.
+	//
+	// This path runs AFTER the ledger has moved (stash→spend / emergency), so a
+	// terminal failure here would leave the ledger permanently ahead of Blend
+	// custody with nothing for the worker to resume — the exact incident class
+	// this code exists to prevent. Positions are often just not recorded yet
+	// (an in-flight deposit route), so defer and let the worker retry.
 	if err := r.assertSufficientPosition(ctx, userID, amount, existing.ID); err != nil {
-		_ = r.markRedemptionFailed(ctx, idempotencyKey, err.Error())
+		r.logger.Error("Blend: redemption blocked on insufficient position — deferring for worker retry",
+			zap.String("redemption_id", existing.ID.String()),
+			zap.String("user_id", userID.String()),
+			zap.String("amount", amount.StringFixed(6)),
+			zap.Error(err))
+		r.deferRedemption(ctx, existing.ID, err.Error(), 2*time.Minute)
 		return err
 	}
 
@@ -291,7 +302,12 @@ func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, e
 func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAccount, red *redemption, intentID string) error {
 	plan, err := ParseActionPlan(red.QuotePayload)
 	if err != nil {
-		_ = r.markRedemptionFailed(ctx, red.IdempotencyKey, "parse withdraw plan: "+err.Error())
+		// Corrupt/stale quote payload — reset to pending so the retry re-quotes,
+		// rather than terminally failing a redemption the ledger already counts on.
+		if rerr := r.resetRedemptionForRetry(ctx, red.ID, "parse withdraw plan: "+err.Error(), time.Minute); rerr != nil {
+			r.logger.Error("Blend: failed to reset redemption after plan parse failure",
+				zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
+		}
 		return fmt.Errorf("blend: parse withdraw action plan: %w", err)
 	}
 
@@ -411,8 +427,20 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 				if msg == "" {
 					msg = session.Status
 				}
-				_ = r.markRedemptionFailed(ctx, red.IdempotencyKey, msg)
-				return fmt.Errorf("blend: withdraw session %s ended in %s: %s", session.IntentID, session.Status, msg)
+				// A failed/cancelled Blend session means this attempt didn't settle —
+				// not that the redemption can never settle. Reset to pending (fresh
+				// session + quote on retry) instead of terminally failing: the ledger
+				// may already have moved, and 'failed' rows are never retried.
+				r.logger.Error("Blend: withdraw session failed — resetting redemption for worker retry",
+					zap.String("redemption_id", red.ID.String()),
+					zap.String("intent_id", session.IntentID),
+					zap.String("session_status", session.Status),
+					zap.String("session_error", msg))
+				if rerr := r.resetRedemptionForRetry(ctx, red.ID, msg, time.Minute); rerr != nil {
+					r.logger.Error("Blend: failed to reset redemption after session failure",
+						zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
+				}
+				return fmt.Errorf("blend: withdraw session %s ended in %s: %s (reset for retry)", session.IntentID, session.Status, msg)
 			}
 		} else {
 			r.logger.Warn("Blend: poll withdraw session failed, will retry",
@@ -542,6 +570,45 @@ func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserA
 	return nil
 }
 
+// EnsureRedemptionReserved durably reserves a redemption row BEFORE the caller
+// moves the ledger, so a crash or failure after the ledger move still leaves a
+// record the reconciliation worker can drive to settlement. Returns false when
+// the user has nothing in Blend to redeem (no account / Safe not validated) —
+// callers should proceed without a Blend leg in that case.
+func (r *DepositRouter) EnsureRedemptionReserved(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (bool, error) {
+	if r == nil || r.db == nil || r.blend == nil {
+		return false, nil // Blend not configured — nothing to reserve
+	}
+	if userID == uuid.Nil || !amount.GreaterThan(decimal.Zero) {
+		return false, nil
+	}
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return false, errors.New("redemption idempotency key is required")
+	}
+	acct, err := r.getUserAccount(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	if acct == nil || acct.BlendAccountID == "" || acct.SafeStatus != SafeStatusValidated {
+		return false, nil // funds are not in Blend custody for this user
+	}
+	if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount.Truncate(6), idempotencyKey); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// AbandonRedemption marks a reserved redemption failed. Use when the ledger
+// move that the reservation was protecting did not happen, so the redemption
+// must not be driven by the worker.
+func (r *DepositRouter) AbandonRedemption(ctx context.Context, idempotencyKey, reason string) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	return r.markRedemptionFailed(ctx, idempotencyKey, reason)
+}
+
 // --- helpers ---
 
 func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID, accountID string, amount decimal.Decimal, idempotencyKey string) error {
@@ -603,6 +670,32 @@ func (r *DepositRouter) assertSufficientPosition(ctx context.Context, userID uui
 			spendable.StringFixed(6), reserved.StringFixed(6), amount.StringFixed(6))
 	}
 	return tx.Commit()
+}
+
+// deferRedemption reschedules a non-terminal redemption for a later worker
+// retry, recording the reason. Used for conditions expected to resolve on
+// their own (positions not yet recorded, transient provider state).
+func (r *DepositRouter) deferRedemption(ctx context.Context, redID uuid.UUID, reason string, delay time.Duration) {
+	if _, err := r.db.ExecContext(ctx, `
+		UPDATE blend_yield_redemptions
+		SET last_error = $2, next_retry_at = NOW() + ($3 || ' seconds')::interval, updated_at = NOW()
+		WHERE id = $1 AND status NOT IN ('complete','failed')
+	`, redID, reason, fmt.Sprintf("%d", int(delay.Seconds()))); err != nil {
+		r.logger.Error("Blend: defer redemption failed",
+			zap.String("redemption_id", redID.String()), zap.Error(err))
+	}
+}
+
+// resetRedemptionForRetry returns a redemption to pending with a fresh slate
+// (no intent/quote) so the next attempt re-quotes with a new session.
+func (r *DepositRouter) resetRedemptionForRetry(ctx context.Context, redID uuid.UUID, reason string, delay time.Duration) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE blend_yield_redemptions
+		SET intent_id = NULL, intent_status = NULL, quote_payload = NULL, status = $2,
+			last_error = $3, next_retry_at = NOW() + ($4 || ' seconds')::interval, updated_at = NOW()
+		WHERE id = $1 AND status NOT IN ('complete','failed')
+	`, redID, redemptionStatusPending, reason, fmt.Sprintf("%d", int(delay.Seconds())))
+	return err
 }
 
 func (r *DepositRouter) markRedemptionFailed(ctx context.Context, idempotencyKey, reason string) error {

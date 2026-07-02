@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -38,7 +39,8 @@ func (s *Service) GetActivityFeed(ctx context.Context, userID uuid.UUID, limit, 
 		items []entities.ActivityItem
 		err   error
 	}
-	ch := make(chan result, 5)
+	const sourceCount = 7
+	ch := make(chan result, sourceCount)
 
 	go func() {
 		items, err := s.fetchDepositsAndPajOrders(ctx, userID, limit+offset+10)
@@ -60,9 +62,17 @@ func (s *Service) GetActivityFeed(ctx context.Context, userID uuid.UUID, limit, 
 		items, err := s.fetchMiriamActions(ctx, userID, limit+offset+10)
 		ch <- result{items, err}
 	}()
+	go func() {
+		items, err := s.fetchRampOrders(ctx, userID, limit+offset+10)
+		ch <- result{items, err}
+	}()
+	go func() {
+		items, err := s.fetchStashTransfers(ctx, userID, limit+offset+10)
+		ch <- result{items, err}
+	}()
 
 	var all []entities.ActivityItem
-	for i := 0; i < 5; i++ {
+	for i := 0; i < sourceCount; i++ {
 		r := <-ch
 		if r.err != nil {
 			s.logger.Warn("activity source fetch failed", zap.Error(r.err))
@@ -153,13 +163,76 @@ func (s *Service) fetchDepositsAndPajOrders(ctx context.Context, userID uuid.UUI
 		if confirmedAt.Valid {
 			d.ConfirmedAt = &confirmedAt.Time
 		}
-		// Suppress deposits that are part of a PAJ onramp
-		if suppressDepositKeys[idempotencyKey] {
+		// Suppress deposits that are part of a PAJ onramp, and RampHub-onramp
+		// backstop credits — the ramp order row is the user-facing entry.
+		if suppressDepositKeys[idempotencyKey] || strings.HasPrefix(idempotencyKey, "ramphub-onramp-") {
 			continue
 		}
 		items = append(items, entities.NormalizeDepositToActivity(&d))
 	}
 
+	return items, nil
+}
+
+// fetchRampOrders returns RampHub NGN on/off ramp orders (RampHub primary,
+// Paj-fallback orders live in paj_orders and are fetched separately).
+func (s *Service) fetchRampOrders(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ramphub_transaction_id, order_type, status, COALESCE(fiat_amount,0), COALESCE(token_amount,0),
+		       COALESCE(currency,'NGN'), COALESCE(rate,0), account_name, account_number, bank_name, created_at
+		FROM ramphub_orders
+		WHERE user_id = $1
+		ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []entities.ActivityItem
+	for rows.Next() {
+		var o entities.PajOrderForActivity
+		var acctName, acctNumber, bankName *string
+		if err := rows.Scan(&o.ID, &o.OrderType, &o.Status, &o.FiatAmount, &o.TokenAmount,
+			&o.Currency, &o.Rate, &acctName, &acctNumber, &bankName, &o.CreatedAt); err != nil {
+			s.logger.Warn("scan ramphub order", zap.Error(err))
+			continue
+		}
+		o.BankAccountName = acctName
+		o.BankAccountNumber = acctNumber
+		o.BankName = bankName
+		o.SourceType = "ramphub_order"
+		items = append(items, entities.NormalizePajOrderToActivity(&o))
+	}
+	return items, nil
+}
+
+// fetchStashTransfers returns spend↔stash moves (app fund-stash, emergency
+// withdrawals). Miriam-initiated moves are audited separately in ai_action_audit
+// and do not write stash_transfers rows, so there is no double counting.
+func (s *Service) fetchStashTransfers(ctx context.Context, userID uuid.UUID, limit int) ([]entities.ActivityItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, user_id, amount, COALESCE(direction,'spending_to_stash'), status, created_at, completed_at
+		FROM stash_transfers
+		WHERE user_id = $1
+		ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []entities.ActivityItem
+	for rows.Next() {
+		var t entities.StashTransfer
+		var completedAt sql.NullTime
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Amount, &t.Direction, &t.Status, &t.CreatedAt, &completedAt); err != nil {
+			s.logger.Warn("scan stash transfer", zap.Error(err))
+			continue
+		}
+		if completedAt.Valid {
+			t.CompletedAt = &completedAt.Time
+		}
+		items = append(items, entities.NormalizeStashTransferToActivity(&t))
+	}
 	return items, nil
 }
 
