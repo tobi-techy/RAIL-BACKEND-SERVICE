@@ -70,6 +70,7 @@ DECLARE
     v_spend_acct_id  UUID;
     v_buffer_acct_id UUID;
     v_tx_id          UUID := gen_random_uuid();
+    v_match_count    INT;
 BEGIN
     SELECT id INTO STRICT v_user_id
     FROM users WHERE email = current_setting('rail.correction_target_email');
@@ -91,18 +92,33 @@ BEGIN
         RAISE EXCEPTION 'Correction % already applied — aborting to prevent double credit', v_idem_key;
     END IF;
 
-    -- Guard 2 (existence): the stranded withdrawal must actually exist for this
-    -- user. If no stash_balance movement of this amount is on record, refuse —
-    -- a blind rerun against the wrong account must not manufacture a credit.
-    IF NOT EXISTS (
-        SELECT 1
-        FROM ledger_entries le
-        JOIN ledger_accounts la ON la.id = le.account_id
-        WHERE la.user_id = v_user_id
-          AND la.account_type = 'stash_balance'
-          AND le.amount = v_amount
-    ) THEN
-        RAISE EXCEPTION 'No stash_balance movement of % found for user % — refusing correction', v_amount, v_user_id;
+    -- Guard 2 (existence + uniqueness): the stranded withdrawal must actually
+    -- exist for this user, and unambiguously, before we manufacture a credit.
+    -- We match the stash-side leg of a COMPLETED stash→spend movement of this
+    -- exact amount in the last 30 days.
+    --   * entry_type = 'credit': reducing stash_balance is a CREDIT in this
+    --     schema's convention (credit => balance DECREASES; see the header). It
+    --     is NOT a 'debit' despite the informal "debited" wording — verified
+    --     against ledger.TransferStashToSpending. Do not "correct" this to debit.
+    --   * status = 'completed' also rules out an original that was already
+    --     reversed (that row would be 'reversed', not 'completed').
+    -- Aborting on 0 (missing) or >1 (ambiguous) forces manual review instead of
+    -- guessing which withdrawal to offset.
+    SELECT COUNT(DISTINCT lt.id) INTO v_match_count
+    FROM ledger_transactions lt
+    JOIN ledger_entries le ON le.transaction_id = lt.id
+    JOIN ledger_accounts la ON la.id = le.account_id
+    WHERE la.user_id = v_user_id
+      AND la.account_type = 'stash_balance'
+      AND le.entry_type = 'credit'
+      AND le.amount = v_amount
+      AND lt.status = 'completed'
+      AND lt.created_at > NOW() - INTERVAL '30 days';
+
+    IF v_match_count = 0 THEN
+        RAISE EXCEPTION 'No completed stash withdrawal of % found for user % in the last 30 days — refusing correction (widen the window only after manual verification)', v_amount, v_user_id;
+    ELSIF v_match_count > 1 THEN
+        RAISE EXCEPTION '% ambiguous stash withdrawals of % found for user % — resolve manually before correcting', v_match_count, v_amount, v_user_id;
     END IF;
 
     -- Transaction header. The UNIQUE idempotency_key makes re-runs abort here too.
