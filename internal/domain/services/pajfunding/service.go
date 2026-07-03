@@ -1211,16 +1211,18 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 	// claimed and reversed this order, reversing again here would refund the
 	// user twice — this path and the webhook path use different ledger
 	// idempotency keys, so the ledger cannot dedupe across them.
-	res, dbErr := s.db.ExecContext(ctx, `
+	var claimID uuid.UUID
+	dbErr := s.db.QueryRowContext(ctx, `
 		UPDATE paj_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-		WHERE paj_order_id = $1 AND status = 'pending' AND deposit_id IS NULL`, pajOrderID)
+		WHERE paj_order_id = $1 AND status = 'pending' AND deposit_id IS NULL
+		RETURNING deposit_id`, pajOrderID).Scan(&claimID)
+	if dbErr == sql.ErrNoRows {
+		return // already claimed by webhook/worker, or not in a reversible state
+	}
 	if dbErr != nil {
 		s.logger.Error("failed to claim paj order for hold reversal — recovery worker will retry",
 			zap.Error(dbErr), zap.String("paj_order_id", pajOrderID))
 		return
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return // already claimed by webhook/worker, or not in a reversible state
 	}
 
 	if s.ledger == nil {
@@ -1236,10 +1238,12 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("paj_order_id", pajOrderID), zap.String("amount", amount.String()))
 		// Un-claim and restore 'pending' — the Paj recovery worker only sweeps
-		// pending orders, so any other status would strand the hold.
+		// pending orders, so any other status would strand the hold. Scoped to
+		// OUR claim's deposit_id so this can only release the claim taken above,
+		// never one taken by another process in the meantime.
 		if _, unclaimErr := s.db.ExecContext(ctx, `
 			UPDATE paj_orders SET deposit_id = NULL, status = 'pending', updated_at = NOW()
-			WHERE paj_order_id = $1 AND status = 'failed'`, pajOrderID); unclaimErr != nil {
+			WHERE paj_order_id = $1 AND deposit_id = $2 AND status = 'failed'`, pajOrderID, claimID); unclaimErr != nil {
 			s.logger.Error("CRITICAL: failed to unclaim paj order after failed reversal — manual intervention required",
 				zap.Error(unclaimErr), zap.String("paj_order_id", pajOrderID))
 		}
@@ -1267,18 +1271,18 @@ func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (fun
 	for {
 		var acquired bool
 		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 			s.logger.Error("advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
 			return nil, fmt.Errorf("failed to acquire offramp lock: %w", err)
 		}
 		if acquired {
 			return func() {
 				conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key) //nolint:errcheck
-				conn.Close()
+				conn.Close()                                                                 //nolint:errcheck // best-effort cleanup
 			}, nil
 		}
 		if time.Now().After(deadline) {
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 			return nil, fmt.Errorf("timeout acquiring offramp lock")
 		}
 		time.Sleep(25 * time.Millisecond)

@@ -295,12 +295,12 @@ func (s *Service) triggerAutoInvest(ctx context.Context, userID uuid.UUID) {
 		}
 		var acquired bool
 		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 			s.logger.Error("Auto-invest advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
 			return
 		}
 		if !acquired {
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 			s.logger.Debug("Auto-invest already in progress for user", zap.String("user_id", userID.String()))
 			return
 		}
@@ -308,7 +308,7 @@ func (s *Service) triggerAutoInvest(ctx context.Context, userID uuid.UUID) {
 			if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
 				s.logger.Error("Failed to release auto-invest advisory lock", zap.Int64("key", key), zap.Error(err))
 			}
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 		}()
 	}
 

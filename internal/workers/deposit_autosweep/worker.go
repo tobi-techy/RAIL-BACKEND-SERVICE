@@ -68,6 +68,7 @@ type SweepRepository interface {
 type CircleTransferer interface {
 	GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error)
 	TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*circlepkg.Transaction, error)
+	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
 }
 
 // Worker polls for pending deposit sweeps and creates ChainRails intents to bridge to Solana.
@@ -314,10 +315,64 @@ func (w *Worker) fundIntent(ctx context.Context, sweep *entities.DepositSweep, c
 	if err != nil {
 		return fmt.Errorf("fund chainrails intent: %w", err)
 	}
-	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
-		return fmt.Errorf("funding transfer %s ended in state %s", tx.ID, tx.State)
+	// Circle transfers are asynchronous — a returned PENDING/QUEUED state does
+	// not mean funds arrived. Poll to a positive terminal state so the sweep is
+	// only considered funded once the transfer actually completed. On timeout
+	// the retry re-funds under the same idempotency key (Circle returns the
+	// original transfer) and waits again, so this converges without double-spend.
+	return w.waitTransferComplete(ctx, tx)
+}
+
+// waitTransferComplete polls a Circle transfer until it completes, fails
+// terminally, or the wait budget elapses.
+func (w *Worker) waitTransferComplete(ctx context.Context, initial *circlepkg.Transaction) error {
+	if initial == nil {
+		return fmt.Errorf("nil circle transfer")
 	}
-	return nil
+	if isTransferComplete(string(initial.State)) {
+		return nil
+	}
+	if isTransferTerminalFailure(string(initial.State)) {
+		return fmt.Errorf("funding transfer %s ended in state %s", initial.ID, initial.State)
+	}
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	const maxPolls = 20 // ~60s; the batch poll ctx allows 2 minutes total
+	for i := 0; i < maxPolls; i++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("funding transfer %s not confirmed before timeout: %w", initial.ID, ctx.Err())
+		case <-ticker.C:
+			tx, err := w.circle.GetTransaction(ctx, initial.ID)
+			if err != nil {
+				w.logger.Warn("Failed to poll funding transfer", zap.String("tx_id", initial.ID), zap.Error(err))
+				continue
+			}
+			if isTransferComplete(string(tx.State)) {
+				return nil
+			}
+			if isTransferTerminalFailure(string(tx.State)) {
+				return fmt.Errorf("funding transfer %s ended in state %s", tx.ID, tx.State)
+			}
+		}
+	}
+	return fmt.Errorf("funding transfer %s still %s after %d polls", initial.ID, initial.State, maxPolls)
+}
+
+func isTransferComplete(state string) bool {
+	switch strings.ToUpper(state) {
+	case "COMPLETE", "COMPLETED", "CONFIRMED":
+		return true
+	}
+	return false
+}
+
+func isTransferTerminalFailure(state string) bool {
+	switch strings.ToUpper(state) {
+	case "DENIED", "FAILED", "CANCELLED":
+		return true
+	}
+	return false
 }
 
 // sweepFundingAmount derives the exact USDC to send to the intent address from
@@ -325,6 +380,13 @@ func (w *Worker) fundIntent(ctx context.Context, sweep *entities.DepositSweep, c
 func sweepFundingAmount(intent *chainrails.CreateIntentResponse, requested decimal.Decimal) (decimal.Decimal, error) {
 	if strings.TrimSpace(intent.TotalAmountInAssetToken) == "" || intent.AssetTokenDecimals <= 0 {
 		return decimal.Zero, fmt.Errorf("chainrails intent %d did not return total funding amount", intent.ID)
+	}
+	// This flow is USDC-only (6 decimals). Any other value means the intent is
+	// not quoting USDC — refuse rather than derive a wrong funding amount (and
+	// avoid the unchecked int→int32 shift below for absurd values).
+	if intent.AssetTokenDecimals != 6 {
+		return decimal.Zero, fmt.Errorf("chainrails intent %d has unexpected asset decimals %d (want 6 for USDC)",
+			intent.ID, intent.AssetTokenDecimals)
 	}
 	totalUnits, ok := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
 	if !ok {

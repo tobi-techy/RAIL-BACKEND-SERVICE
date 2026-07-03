@@ -572,7 +572,7 @@ func (s *WithdrawalService) acquireAdvisoryLock(ctx context.Context, userID uuid
 	for {
 		var acquired bool
 		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 			return nil, fmt.Errorf("advisory lock query failed: %w", err)
 		}
 		if acquired {
@@ -580,12 +580,12 @@ func (s *WithdrawalService) acquireAdvisoryLock(ctx context.Context, userID uuid
 				if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
 					s.logger.Error("failed to release advisory lock", zap.Int64("key", key), zap.Error(err))
 				}
-				conn.Close()
+				conn.Close() //nolint:errcheck // best-effort cleanup
 			}
 			return unlock, nil
 		}
 		if time.Now().After(deadline) {
-			conn.Close()
+			conn.Close() //nolint:errcheck // best-effort cleanup
 			return nil, fmt.Errorf("timeout acquiring withdrawal lock for user %s", userID)
 		}
 		time.Sleep(25 * time.Millisecond)

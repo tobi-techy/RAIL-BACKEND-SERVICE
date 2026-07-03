@@ -963,6 +963,21 @@ func (s *Service) pollPajFallbackOrder(ctx context.Context, userID uuid.UUID, pa
 	}, nil
 }
 
+// unclaimOnrampOrder releases the credit claim (deposit_id) taken by
+// creditOnrampIfCompleted so a later webhook retry can attempt the credit
+// again. A failed un-claim is CRITICAL: the order stays claimed, every retry
+// is blocked by the deposit_id IS NULL guard, and the credit never lands
+// without manual intervention — so the failure must be loudly visible.
+func (s *Service) unclaimOnrampOrder(ctx context.Context, txID string, claimedID uuid.UUID) {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE ramphub_orders SET deposit_id = NULL WHERE id = $1`, claimedID); err != nil {
+		s.logger.Error("CRITICAL: failed to un-claim ramphub onramp order — retries are blocked, manual intervention required",
+			zap.Error(err),
+			zap.String("ramphub_tx_id", txID),
+			zap.String("claimed_id", claimedID.String()))
+	}
+}
+
 // creditOnrampIfCompleted credits USDC and runs the 70/30 allocation split when
 // an onramp completes. Because RampHub delivers USDC straight to the user's
 // wallet, on-chain detection normally credits first; this is an idempotent
@@ -1023,13 +1038,21 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 	// deposit is either confirmed (guard above skips) or was rolled back
 	// (pending row deleted, direct credit proceeds safely).
 	var pendingInFlight bool
-	_ = s.db.QueryRowContext(ctx,
+	if scanErr := s.db.QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM deposits WHERE user_id = $1 AND status = 'pending' AND created_at > NOW() - INTERVAL '1 hour' AND amount = $2)`,
-		userID, creditAmount).Scan(&pendingInFlight)
+		userID, creditAmount).Scan(&pendingInFlight); scanErr != nil {
+		// Fail CLOSED: if we cannot verify that no on-chain credit is in
+		// flight, crediting anyway risks a double credit. Un-claim and fail
+		// the delivery so RampHub retries once the database is healthy.
+		s.logger.Error("ramphub onramp backstop: pending-deposit check failed — deferring",
+			zap.Error(scanErr), zap.String("ramphub_tx_id", txID), zap.String("user_id", userID.String()))
+		s.unclaimOnrampOrder(ctx, txID, claimedID)
+		return fmt.Errorf("failed to verify pending deposits for ramphub onramp %s: %w", txID, scanErr)
+	}
 	if pendingInFlight {
 		s.logger.Info("ramphub onramp backstop deferred — on-chain credit in flight",
 			zap.String("ramphub_tx_id", txID), zap.String("user_id", userID.String()))
-		s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+		s.unclaimOnrampOrder(ctx, txID, claimedID)
 		return fmt.Errorf("on-chain credit in flight for ramphub onramp %s — deferring backstop credit", txID)
 	}
 
