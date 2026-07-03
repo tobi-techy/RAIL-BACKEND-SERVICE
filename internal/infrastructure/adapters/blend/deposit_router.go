@@ -177,6 +177,7 @@ func NewDepositRouter(db *sqlx.DB, blend *Client, circle CircleWalletProvider, e
 		usdcAddr:      usdcAddr,
 		retryInterval: defaultRetryInterval,
 		stopCh:        make(chan struct{}),
+		lastAlertAt:   make(map[string]time.Time),
 	}
 }
 

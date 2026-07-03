@@ -84,6 +84,9 @@ func (r *DepositSweepRepository) GetPending(ctx context.Context, maxAttempts int
 }
 
 func (r *DepositSweepRepository) MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount, fundingAmount *decimal.Decimal) error {
+	if fundingAmount == nil {
+		return fmt.Errorf("funding_amount cannot be nil when marking sweep in_progress")
+	}
 	query := `
 		UPDATE deposit_sweeps
 		SET intent_address = $2, chainrails_intent_id = $3, fee_amount = $4, funding_amount = $5, updated_at = NOW()

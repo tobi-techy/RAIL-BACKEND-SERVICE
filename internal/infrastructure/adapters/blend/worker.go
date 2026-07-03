@@ -165,6 +165,7 @@ func (r *DepositRouter) detectSweepDoubleCredits(ctx context.Context) {
 		 AND d.created_at < s.completed_at + INTERVAL '1 hour'
 		 AND d.id <> s.deposit_id
 		WHERE s.status = 'completed'
+		  AND s.completed_at IS NOT NULL
 		  AND s.completed_at > NOW() - INTERVAL '24 hours'
 		LIMIT 10
 	`); err != nil {
