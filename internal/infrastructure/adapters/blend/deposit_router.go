@@ -94,6 +94,11 @@ type DepositRouter struct {
 	chainRailsDestCfg string
 	stopCh            chan struct{}
 	stopOnce          sync.Once
+
+	// alertMu/lastAlertAt throttle the per-row stranded/stale CRITICAL logs so a
+	// long-lived incident pages once per window instead of every reconcile tick.
+	alertMu     sync.Mutex
+	lastAlertAt map[string]time.Time
 }
 
 // SetChainRailsBridge enables cross-chain settlement of stash USDC into the user's

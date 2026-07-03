@@ -558,23 +558,34 @@ func (s *WithdrawalService) acquireAdvisoryLock(ctx context.Context, userID uuid
 	}
 	key := advisoryLockKey(userID)
 
+	// Advisory locks are session-scoped: lock and unlock MUST run on the same
+	// connection. Issued on the pool they land on different connections — the
+	// unlock is a no-op and the lock leaks on whichever connection acquired it,
+	// blocking the user's subsequent withdrawals until that connection recycles.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire connection for withdrawal lock: %w", err)
+	}
+
 	// Try to acquire with timeout
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var acquired bool
-		err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired)
-		if err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			conn.Close()
 			return nil, fmt.Errorf("advisory lock query failed: %w", err)
 		}
 		if acquired {
 			unlock := func() {
-				if _, err := s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+				if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
 					s.logger.Error("failed to release advisory lock", zap.Int64("key", key), zap.Error(err))
 				}
+				conn.Close()
 			}
 			return unlock, nil
 		}
 		if time.Now().After(deadline) {
+			conn.Close()
 			return nil, fmt.Errorf("timeout acquiring withdrawal lock for user %s", userID)
 		}
 		time.Sleep(25 * time.Millisecond)

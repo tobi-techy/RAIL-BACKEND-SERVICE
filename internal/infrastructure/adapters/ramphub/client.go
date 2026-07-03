@@ -217,7 +217,8 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 			c.logger.Warn("RampHub API error",
 				zap.Int("status", resp.StatusCode),
 				zap.String("path", path),
-				zap.String("error_code", extractErrorCode(respBody)))
+				zap.String("error_code", extractErrorCode(respBody)),
+				zap.String("error_detail", extractErrorMessage(respBody)))
 			return &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 

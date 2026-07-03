@@ -82,7 +82,11 @@ type OrderRequest struct {
 	AccountName   string `json:"accountName,omitempty"`
 	BankName      string `json:"bankName,omitempty"`
 
-	// Customer scoping for the active-intent payment window.
+	// Customer scoping for the active-intent payment window. RampHub validates the
+	// order body strictly and rejects unknown fields, so only these two identity
+	// fields may be sent (there is no `name` field). The provider derives the
+	// customer's virtual pay-in account name from ExternalCustomerId, which must
+	// therefore be alphanumeric (a dashed UUID fails Nigerian bank name rules).
 	Email              string `json:"email,omitempty"`
 	ExternalCustomerID string `json:"externalCustomerId,omitempty"`
 

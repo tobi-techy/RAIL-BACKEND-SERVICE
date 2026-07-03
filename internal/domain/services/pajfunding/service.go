@@ -1206,10 +1206,22 @@ func (s *Service) GetOrders(ctx context.Context, userID uuid.UUID) ([]PajOrder, 
 // as failed with deposit_id set (prevents double-reversal by worker or webhook).
 // railFee must be the USDC-denominated fee (not NGN) that was included in the original hold.
 func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID string, amount, railFee decimal.Decimal, reason string) {
-	// Mark order as failed and claim it (same idempotency as worker/webhook).
-	s.db.ExecContext(ctx, `
+	// Mark order as failed and claim it (same deposit_id claim the webhook/worker
+	// reversal paths use). The claim MUST be checked: if the webhook already
+	// claimed and reversed this order, reversing again here would refund the
+	// user twice — this path and the webhook path use different ledger
+	// idempotency keys, so the ledger cannot dedupe across them.
+	res, dbErr := s.db.ExecContext(ctx, `
 		UPDATE paj_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-		WHERE paj_order_id = $1 AND status = 'pending'`, pajOrderID)
+		WHERE paj_order_id = $1 AND status = 'pending' AND deposit_id IS NULL`, pajOrderID)
+	if dbErr != nil {
+		s.logger.Error("failed to claim paj order for hold reversal — recovery worker will retry",
+			zap.Error(dbErr), zap.String("paj_order_id", pajOrderID))
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return // already claimed by webhook/worker, or not in a reversible state
+	}
 
 	if s.ledger == nil {
 		return
@@ -1223,10 +1235,22 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, pajOrderID 
 		s.logger.Error("CRITICAL: failed to reverse offramp hold",
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("paj_order_id", pajOrderID), zap.String("amount", amount.String()))
+		// Un-claim and restore 'pending' — the Paj recovery worker only sweeps
+		// pending orders, so any other status would strand the hold.
+		if _, unclaimErr := s.db.ExecContext(ctx, `
+			UPDATE paj_orders SET deposit_id = NULL, status = 'pending', updated_at = NOW()
+			WHERE paj_order_id = $1 AND status = 'failed'`, pajOrderID); unclaimErr != nil {
+			s.logger.Error("CRITICAL: failed to unclaim paj order after failed reversal — manual intervention required",
+				zap.Error(unclaimErr), zap.String("paj_order_id", pajOrderID))
+		}
 	}
 }
 
-// acquireOfframpLock acquires a PostgreSQL advisory lock for the user's offramp operations.
+// acquireOfframpLock acquires a PostgreSQL advisory lock for the user's offramp
+// operations. A dedicated connection is used for both lock and unlock so they
+// always execute on the same session — issued on the pool, lock and unlock land
+// on different connections: the unlock is a no-op and the lock leaks until the
+// holding connection is recycled, blocking the user's subsequent offramps.
 func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (func(), error) {
 	h := fnv.New64a()
 	b := [16]byte(userID)
@@ -1234,20 +1258,27 @@ func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (fun
 	// Use a different key space than withdrawal service (add offset)
 	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) + 1000000
 
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire connection for offramp lock: %w", err)
+	}
+
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var acquired bool
-		err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired)
-		if err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			conn.Close()
 			s.logger.Error("advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
 			return nil, fmt.Errorf("failed to acquire offramp lock: %w", err)
 		}
 		if acquired {
 			return func() {
-				s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key)
+				conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key) //nolint:errcheck
+				conn.Close()
 			}, nil
 		}
 		if time.Now().After(deadline) {
+			conn.Close()
 			return nil, fmt.Errorf("timeout acquiring offramp lock")
 		}
 		time.Sleep(25 * time.Millisecond)

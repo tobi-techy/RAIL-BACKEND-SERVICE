@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,8 @@ func TestVerifyWebhookSignature(t *testing.T) {
 	}{
 		{"valid", body, good, secret, false},
 		{"valid with prefix", body, "sha256=" + good, secret, false},
+		{"valid with surrounding whitespace", body, "  " + good + "\n", secret, false},
+		{"valid uppercase hex", body, strings.ToUpper(good), secret, false},
 		{"tampered body", []byte(`{"type":"transaction.failed"}`), good, secret, true},
 		{"wrong secret", body, sign(body, "other"), secret, true},
 		{"empty signature", body, "", secret, true},

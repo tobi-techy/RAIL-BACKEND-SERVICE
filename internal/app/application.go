@@ -521,8 +521,10 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Opportunity sync worker started")
 	}
 
-	// Deposit auto-sweep worker: bridges non-Solana Circle deposits to Solana
-	if app.container.DepositSweepRepo != nil && app.container.ChainRailsClient != nil && app.container.WalletRepo != nil {
+	// Deposit auto-sweep worker: bridges non-Solana Circle deposits to Solana.
+	// The Circle adapter funds the ChainRails intents — without it a sweep's
+	// intent would never receive USDC and would simply expire.
+	if app.container.DepositSweepRepo != nil && app.container.ChainRailsClient != nil && app.container.WalletRepo != nil && app.container.CircleAdapter != nil {
 		var sweepAlerter deposit_autosweep.Alerter
 		if ta := alerting.NewTelegramAlerter(
 			app.cfg.TelegramAlerts.BotToken,
@@ -536,11 +538,14 @@ func (app *Application) initializeWorkers() error {
 			app.container.DepositSweepRepo,
 			app.container.WalletRepo,
 			app.container.ChainRailsClient,
+			app.container.CircleAdapter,
 			sweepAlerter,
 			app.log.Zap(),
 		)
 		app.depositAutoSweepWorker.Start()
 		app.log.Info("Deposit auto-sweep worker started")
+	} else if app.container.DepositSweepRepo != nil {
+		app.log.Warn("Deposit auto-sweep worker NOT started — requires ChainRails client, wallet repo, and Circle adapter")
 	}
 
 	if app.container.UserRepo != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil {

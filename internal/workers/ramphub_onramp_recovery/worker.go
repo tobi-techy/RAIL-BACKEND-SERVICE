@@ -54,10 +54,14 @@ func (w *Worker) Start(ctx context.Context) {
 func (w *Worker) Stop() { close(w.stopCh) }
 
 func (w *Worker) recover(ctx context.Context) {
+	// Only fail orders still 'pending' — i.e. no payment activity at all. Orders
+	// that reached 'paid'/'processing' mean the user's transfer was received and
+	// RampHub is converting; auto-failing those would misreport an in-flight
+	// deposit as failed. Those go to reconciliation/manual review instead.
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT ramphub_transaction_id, user_id, fiat_amount, status, last_webhook_status
 		FROM ramphub_orders
-		WHERE order_type = 'onramp' AND status NOT IN ('completed','failed')
+		WHERE order_type = 'onramp' AND status = 'pending'
 		  AND deposit_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
 		LIMIT 10`, int(w.maxPendingAge.Seconds()))
@@ -97,7 +101,7 @@ func (w *Worker) recover(ctx context.Context) {
 		}
 		res, err := w.db.ExecContext(ctx, `
 			UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-			WHERE ramphub_transaction_id = $1 AND status NOT IN ('completed','failed') AND deposit_id IS NULL`, o.TxID)
+			WHERE ramphub_transaction_id = $1 AND status = 'pending' AND deposit_id IS NULL`, o.TxID)
 		if err != nil {
 			w.logger.Error("ramphub onramp recovery: mark failed", zap.Error(err), zap.String("ramphub_tx_id", o.TxID))
 			continue

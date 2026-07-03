@@ -9,10 +9,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/metrics"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -282,22 +282,33 @@ func roundupAdvisoryLockKey(userID uuid.UUID) int64 {
 
 // triggerAutoInvest triggers auto-investment when threshold is reached
 func (s *Service) triggerAutoInvest(ctx context.Context, userID uuid.UUID) {
-	// Acquire advisory lock to prevent concurrent auto-invest for the same user
+	// Acquire advisory lock to prevent concurrent auto-invest for the same user.
+	// Lock and unlock must share one dedicated connection: advisory locks are
+	// session-scoped, so a pool-issued unlock lands on a different connection,
+	// leaks the lock, and permanently blocks this user's auto-invest.
 	if s.db != nil {
 		key := roundupAdvisoryLockKey(userID)
+		conn, err := s.db.Conn(ctx)
+		if err != nil {
+			s.logger.Error("Auto-invest advisory lock connection failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return
+		}
 		var acquired bool
-		if err := s.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
+			conn.Close()
 			s.logger.Error("Auto-invest advisory lock query failed", zap.Error(err), zap.String("user_id", userID.String()))
 			return
 		}
 		if !acquired {
+			conn.Close()
 			s.logger.Debug("Auto-invest already in progress for user", zap.String("user_id", userID.String()))
 			return
 		}
 		defer func() {
-			if _, err := s.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
+			if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
 				s.logger.Error("Failed to release auto-invest advisory lock", zap.Int64("key", key), zap.Error(err))
 			}
+			conn.Close()
 		}()
 	}
 

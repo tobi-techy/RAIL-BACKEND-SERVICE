@@ -17,12 +17,16 @@ const (
 
 // DepositSweep represents an auto-sweep from a non-Solana deposit chain to the user's Solana wallet.
 type DepositSweep struct {
-	ID                 uuid.UUID        `db:"id"`
-	DepositID          uuid.UUID        `db:"deposit_id"`
-	UserID             uuid.UUID        `db:"user_id"`
-	SourceChain        string           `db:"source_chain"`
-	Amount             decimal.Decimal  `db:"amount"`
-	FeeAmount          *decimal.Decimal `db:"fee_amount"`
+	ID          uuid.UUID        `db:"id"`
+	DepositID   uuid.UUID        `db:"deposit_id"`
+	UserID      uuid.UUID        `db:"user_id"`
+	SourceChain string           `db:"source_chain"`
+	Amount      decimal.Decimal  `db:"amount"`
+	FeeAmount   *decimal.Decimal `db:"fee_amount"`
+	// FundingAmount is the exact USDC (incl. bridge fees) to transfer to the
+	// intent address, fixed at intent creation so retried funding attempts are
+	// byte-identical (same amount, same per-intent Circle idempotency key).
+	FundingAmount      *decimal.Decimal `db:"funding_amount"`
 	IntentAddress      *string          `db:"intent_address"`
 	ChainRailsIntentID *int             `db:"chainrails_intent_id"`
 	Status             string           `db:"status"`

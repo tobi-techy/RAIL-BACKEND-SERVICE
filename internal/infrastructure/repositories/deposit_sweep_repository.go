@@ -47,7 +47,7 @@ func (r *DepositSweepRepository) GetPending(ctx context.Context, maxAttempts int
 	defer tx.Rollback()
 
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, funding_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -83,13 +83,13 @@ func (r *DepositSweepRepository) GetPending(ctx context.Context, maxAttempts int
 	return sweeps, nil
 }
 
-func (r *DepositSweepRepository) MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount *decimal.Decimal) error {
+func (r *DepositSweepRepository) MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount, fundingAmount *decimal.Decimal) error {
 	query := `
 		UPDATE deposit_sweeps
-		SET intent_address = $2, chainrails_intent_id = $3, fee_amount = $4, updated_at = NOW()
+		SET intent_address = $2, chainrails_intent_id = $3, fee_amount = $4, funding_amount = $5, updated_at = NOW()
 		WHERE id = $1
 	`
-	_, err := r.db.ExecContext(ctx, query, id, intentAddress, intentID, feeAmount)
+	_, err := r.db.ExecContext(ctx, query, id, intentAddress, intentID, feeAmount, fundingAmount)
 	if err != nil {
 		return fmt.Errorf("mark sweep in_progress: %w", err)
 	}
@@ -137,7 +137,7 @@ func (r *DepositSweepRepository) MarkTerminalFailed(ctx context.Context, id uuid
 
 func (r *DepositSweepRepository) GetBySweepID(ctx context.Context, id uuid.UUID) (*entities.DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, funding_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -155,7 +155,7 @@ func (r *DepositSweepRepository) GetBySweepID(ctx context.Context, id uuid.UUID)
 
 func (r *DepositSweepRepository) GetByIntentAddress(ctx context.Context, intentAddress string) (*entities.DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, funding_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -173,7 +173,7 @@ func (r *DepositSweepRepository) GetByIntentAddress(ctx context.Context, intentA
 
 func (r *DepositSweepRepository) GetByDepositID(ctx context.Context, depositID uuid.UUID) (*entities.DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, funding_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
@@ -192,7 +192,7 @@ func (r *DepositSweepRepository) GetByDepositID(ctx context.Context, depositID u
 // GetStale returns sweeps stuck in 'in_progress' for longer than the given duration.
 func (r *DepositSweepRepository) GetStale(ctx context.Context, olderThan time.Duration) ([]*entities.DepositSweep, error) {
 	query := `
-		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, intent_address,
+		SELECT id, deposit_id, user_id, source_chain, amount, fee_amount, funding_amount, intent_address,
 		       chainrails_intent_id, status, tx_hash, error_message, attempts,
 		       created_at, updated_at, completed_at
 		FROM deposit_sweeps
