@@ -115,7 +115,6 @@ func (r *DepositRouter) doSweepToSolana(ctx context.Context, acct *blendUserAcco
 	return nil
 }
 
-
 // sweepSourceChain derives the ChainRails source chain identifier from the
 // router's configured chainID, matching the environment (mainnet vs testnet).
 func (r *DepositRouter) sweepSourceChain() string {

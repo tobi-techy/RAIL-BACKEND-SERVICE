@@ -17,7 +17,31 @@ const (
 	// preventing a second worker (or a second instance) from grabbing the same row
 	// while the first is still processing it.
 	leaseWindow = 2 * time.Minute
+	// alertThrottleWindow is how often the stranded/stale detectors re-log the
+	// same row. Ongoing incidents stay visible without a CRITICAL every tick.
+	alertThrottleWindow = 30 * time.Minute
 )
+
+// shouldAlert reports whether the given alert key is due for (re-)logging and
+// records the emission time. Keys are pruned once they age past two windows.
+func (r *DepositRouter) shouldAlert(key string) bool {
+	r.alertMu.Lock()
+	defer r.alertMu.Unlock()
+	now := time.Now()
+	if r.lastAlertAt == nil {
+		r.lastAlertAt = make(map[string]time.Time)
+	}
+	if last, ok := r.lastAlertAt[key]; ok && now.Sub(last) < alertThrottleWindow {
+		return false
+	}
+	for k, t := range r.lastAlertAt {
+		if now.Sub(t) > 2*alertThrottleWindow {
+			delete(r.lastAlertAt, k)
+		}
+	}
+	r.lastAlertAt[key] = now
+	return true
+}
 
 // SetWorkerInterval overrides the reconciliation tick interval.
 func (r *DepositRouter) SetWorkerInterval(d time.Duration) {
@@ -83,6 +107,80 @@ func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 	r.retryPendingSweeps(ctx)
 	r.detectStaleRoutes(ctx)
 	r.detectStrandedRedemptions(ctx)
+	r.detectSweepDoubleCredits(ctx)
+}
+
+// detectSweepDoubleCredits is a log-only tripwire for an unverified failure
+// mode: redemption sweeps deliver USDC to the user's Solana Circle wallet — the
+// same wallet deposit detection watches — and the credit paths have no sweep
+// suppression. If a detector reports a sweep arrival, it would be credited as a
+// fresh deposit (plus 70/30 split) on top of the ledger move the redemption
+// already backed. No sweep had ever completed in production as of July 2026, so
+// this could not be confirmed or ruled out; this check pages if it ever happens
+// so suppression can be added with real data instead of speculation.
+func (r *DepositRouter) detectSweepDoubleCredits(ctx context.Context) {
+	type hit struct {
+		DepositID    uuid.UUID `db:"deposit_id"`
+		RedemptionID uuid.UUID `db:"redemption_id"`
+		UserID       uuid.UUID `db:"user_id"`
+		Amount       string    `db:"amount"`
+	}
+	var hits []hit
+	if err := r.db.SelectContext(ctx, &hits, `
+		SELECT d.id AS deposit_id, red.id AS redemption_id, d.user_id, d.amount::text AS amount
+		FROM blend_yield_redemptions red
+		JOIN deposits d
+		  ON d.user_id = red.user_id
+		 AND d.amount = red.amount
+		 AND d.created_at > red.swept_at
+		 AND d.created_at < red.swept_at + INTERVAL '1 hour'
+		WHERE red.swept_at > NOW() - INTERVAL '24 hours'
+		LIMIT 10
+	`); err != nil {
+		r.logger.Warn("Blend: sweep double-credit check failed", zap.Error(err))
+		return
+	}
+	for _, h := range hits {
+		if !r.shouldAlert("sweep-double-credit:" + h.DepositID.String()) {
+			continue
+		}
+		r.logger.Error("CRITICAL: possible sweep double-credit — a deposit matching a just-swept redemption was credited; the sweep arrival may have been counted as a fresh deposit. Verify and claw back, then add credit-path suppression.",
+			zap.String("deposit_id", h.DepositID.String()),
+			zap.String("redemption_id", h.RedemptionID.String()),
+			zap.String("user_id", h.UserID.String()),
+			zap.String("amount", h.Amount))
+	}
+
+	// Same tripwire for deposit autosweeps (non-Solana deposit consolidated to
+	// the user's Solana wallet): the arrival lands on the same deposit-watched
+	// wallet and the credit paths have no suppression for it either.
+	var asHits []hit
+	if err := r.db.SelectContext(ctx, &asHits, `
+		SELECT d.id AS deposit_id, s.id AS redemption_id, d.user_id, d.amount::text AS amount
+		FROM deposit_sweeps s
+		JOIN deposits d
+		  ON d.user_id = s.user_id
+		 AND d.amount = s.amount
+		 AND d.created_at > s.completed_at
+		 AND d.created_at < s.completed_at + INTERVAL '1 hour'
+		 AND d.id <> s.deposit_id
+		WHERE s.status = 'completed'
+		  AND s.completed_at > NOW() - INTERVAL '24 hours'
+		LIMIT 10
+	`); err != nil {
+		r.logger.Warn("Blend: autosweep double-credit check failed", zap.Error(err))
+		return
+	}
+	for _, h := range asHits {
+		if !r.shouldAlert("autosweep-double-credit:" + h.DepositID.String()) {
+			continue
+		}
+		r.logger.Error("CRITICAL: possible autosweep double-credit — a deposit matching a just-completed deposit sweep was credited; the sweep arrival may have been counted as a fresh deposit. Verify and claw back, then add credit-path suppression.",
+			zap.String("deposit_id", h.DepositID.String()),
+			zap.String("sweep_id", h.RedemptionID.String()),
+			zap.String("user_id", h.UserID.String()),
+			zap.String("amount", h.Amount))
+	}
 }
 
 // detectStrandedRedemptions surfaces redemptions the ledger is counting on that
@@ -111,6 +209,9 @@ func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
 		r.logger.Warn("Blend: stranded redemption query failed", zap.Error(err))
 	}
 	for _, row := range rows {
+		if !r.shouldAlert("redemption:" + row.ID.String()) {
+			continue
+		}
 		r.logger.Error("CRITICAL: Blend redemption stranded — ledger may be ahead of Blend custody, manual reconciliation may be required",
 			zap.String("redemption_id", row.ID.String()),
 			zap.String("user_id", row.UserID.String()),
@@ -145,6 +246,9 @@ func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
 		return
 	}
 	for _, sw := range sweeps {
+		if !r.shouldAlert("sweep:" + sw.ID.String()) {
+			continue
+		}
 		r.logger.Error("Blend sweep stalled — redeemed USDC sitting in Base EOA instead of Solana custody",
 			zap.String("redemption_id", sw.ID.String()),
 			zap.String("user_id", sw.UserID.String()),
@@ -214,6 +318,9 @@ func (r *DepositRouter) detectStaleRoutes(ctx context.Context) {
 		return
 	}
 	for _, row := range rows {
+		if !r.shouldAlert("route:" + row.ID.String()) {
+			continue
+		}
 		r.logger.Warn("Blend: stale deposit route (stuck >6h)",
 			zap.String("route_id", row.ID.String()),
 			zap.String("status", row.Status),
@@ -246,6 +353,12 @@ func (r *DepositRouter) reconcileDepositRoutes(ctx context.Context) {
 // claimDepositRoutes atomically leases a batch of due, non-terminal routes by pushing
 // their next_retry_at into the future, returning the claimed IDs. FOR UPDATE SKIP LOCKED
 // guarantees concurrent workers never claim the same row.
+//
+// Routes past the fast-retry budget (100 attempts) are NOT abandoned: every step
+// is idempotent, so they drop to a slow 6-hour cadence instead. This lets routes
+// blocked on transient-but-long conditions (e.g. a Circle wallet that is
+// temporarily short of USDC) self-heal once the condition clears, rather than
+// dying permanently after ~1h of fast retries and spamming stale-route warnings.
 func (r *DepositRouter) claimDepositRoutes(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	rows, err := r.db.QueryxContext(ctx, `
 		UPDATE blend_deposit_routes
@@ -254,7 +367,7 @@ func (r *DepositRouter) claimDepositRoutes(ctx context.Context, limit int) ([]uu
 			SELECT id FROM blend_deposit_routes
 			WHERE status NOT IN ('complete', 'error_terminal', 'error_payload')
 				AND next_retry_at <= NOW()
-				AND attempts < 100
+				AND (attempts < 100 OR updated_at < NOW() - INTERVAL '6 hours')
 			ORDER BY next_retry_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
@@ -292,6 +405,11 @@ func (r *DepositRouter) reconcileRedemptions(ctx context.Context) {
 	}
 }
 
+// claimRedemptions leases due redemptions for the resume path. Redemptions past
+// the fast-retry budget (50 attempts) MUST keep retrying — the ledger may
+// already be ahead of Blend custody (reserve-before-debit), so abandoning a
+// non-terminal redemption strands user money permanently. Past the budget they
+// drop to an hourly cadence instead of stopping.
 func (r *DepositRouter) claimRedemptions(ctx context.Context, limit int) ([]string, error) {
 	rows, err := r.db.QueryxContext(ctx, `
 		UPDATE blend_yield_redemptions
@@ -300,7 +418,7 @@ func (r *DepositRouter) claimRedemptions(ctx context.Context, limit int) ([]stri
 			SELECT idempotency_key FROM blend_yield_redemptions
 			WHERE status IN ('pending', 'quoted', 'executing', 'submitted')
 				AND next_retry_at <= NOW()
-				AND attempts < 50
+				AND (attempts < 50 OR updated_at < NOW() - INTERVAL '1 hour')
 			ORDER BY next_retry_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED

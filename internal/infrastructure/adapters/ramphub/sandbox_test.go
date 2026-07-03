@@ -30,8 +30,11 @@ func TestSandboxLive(t *testing.T) {
 	}
 
 	client, err := NewClient(Config{
-		APIKey:  apiKey,
-		BaseURL: os.Getenv("RAMPHUB_BASE_URL"),
+		APIKey: apiKey,
+		// WebhookSecret is required by NewClient but unused by the REST calls this
+		// test exercises; a placeholder keeps the sandbox smoke test runnable.
+		WebhookSecret: "sandbox-test-not-used",
+		BaseURL:       os.Getenv("RAMPHUB_BASE_URL"),
 	}, zap.NewNop())
 	require.NoError(t, err, "failed to create ramphub client")
 

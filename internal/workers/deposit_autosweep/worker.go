@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/chainrouting"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
+	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -53,11 +55,20 @@ type WalletLookup interface {
 
 type SweepRepository interface {
 	GetPending(ctx context.Context, maxAttempts int) ([]*entities.DepositSweep, error)
-	MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount *decimal.Decimal) error
+	MarkInProgress(ctx context.Context, id uuid.UUID, intentAddress string, intentID int, feeAmount, fundingAmount *decimal.Decimal) error
 	MarkCompleted(ctx context.Context, id uuid.UUID, txHash string) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errMsg string) error
 	MarkTerminalFailed(ctx context.Context, id uuid.UUID, errMsg string) error
 	GetStale(ctx context.Context, olderThan time.Duration) ([]*entities.DepositSweep, error)
+}
+
+// CircleTransferer funds ChainRails intents from the user's source-chain Circle
+// wallet. An intent settles only after its address receives the USDC — without
+// this transfer the sweep would sit unfunded until the intent expires.
+type CircleTransferer interface {
+	GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error)
+	TransferUSDCWithIdempotency(ctx context.Context, walletID, tokenID, destinationAddress, amount, idempotencyKey string) (*circlepkg.Transaction, error)
+	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
 }
 
 // Worker polls for pending deposit sweeps and creates ChainRails intents to bridge to Solana.
@@ -65,6 +76,7 @@ type Worker struct {
 	sweepRepo  SweepRepository
 	walletRepo WalletLookup
 	crClient   *chainrails.Client
+	circle     CircleTransferer
 	alerter    Alerter
 	logger     *zap.Logger
 	stopCh     chan struct{}
@@ -78,6 +90,7 @@ func NewWorker(
 	sweepRepo SweepRepository,
 	walletRepo WalletLookup,
 	crClient *chainrails.Client,
+	circle CircleTransferer,
 	alerter Alerter,
 	logger *zap.Logger,
 ) *Worker {
@@ -85,6 +98,7 @@ func NewWorker(
 		sweepRepo:  sweepRepo,
 		walletRepo: walletRepo,
 		crClient:   crClient,
+		circle:     circle,
 		alerter:    alerter,
 		logger:     logger,
 		stopCh:     make(chan struct{}),
@@ -221,9 +235,26 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 		return newTerminalSweepError("no USDC token address for chain: %s", crSourceChain)
 	}
 
+	// Resume branch: a prior attempt already created and persisted an intent but
+	// funding failed. Re-fund the SAME intent with the persisted amount and the
+	// per-intent idempotency key — Circle returns the original transfer if the
+	// earlier attempt actually went through, so this can never double-spend.
+	if sweep.IntentAddress != nil && *sweep.IntentAddress != "" && sweep.FundingAmount != nil {
+		if err := w.fundIntent(ctx, sweep, sourceWallet.CircleWalletID, *sweep.IntentAddress, *sweep.FundingAmount); err != nil {
+			return err
+		}
+		w.logger.Info("Deposit sweep intent re-funded",
+			zap.String("sweep_id", sweep.ID.String()),
+			zap.String("intent_address", *sweep.IntentAddress))
+		return nil
+	}
+
+	// ChainRails expects the amount as a micro-unit integer string (e.g.
+	// "1000000" for 1 USDC) — a decimal string like "1.000000" is rejected with
+	// "amount must be a positive integer string".
 	intent, err := w.crClient.CreateIntent(ctx, &chainrails.CreateIntentRequest{
 		Sender:           sourceWallet.Address,
-		Amount:           sweep.Amount.StringFixed(6),
+		Amount:           sweep.Amount.Truncate(6).Shift(6).BigInt().String(),
 		AmountSymbol:     "USDC",
 		TokenIn:          tokenIn,
 		SourceChain:      crSourceChain,
@@ -239,16 +270,137 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 	if err != nil {
 		return fmt.Errorf("create chainrails intent: %w", err)
 	}
+	fundingAmount, err := sweepFundingAmount(intent, sweep.Amount)
+	if err != nil {
+		return err
+	}
 
-	if err := w.sweepRepo.MarkInProgress(ctx, sweep.ID, intent.IntentAddress, intent.ID, parseSweepFee(intent)); err != nil {
+	// Persist the intent (address + exact funding amount) BEFORE moving money,
+	// so a crash between funding and persistence can never create an intent we
+	// fund twice under different keys.
+	if err := w.sweepRepo.MarkInProgress(ctx, sweep.ID, intent.IntentAddress, intent.ID, parseSweepFee(intent), &fundingAmount); err != nil {
 		return fmt.Errorf("mark in_progress: %w", err)
 	}
 
-	w.logger.Info("Deposit sweep intent created",
+	if err := w.fundIntent(ctx, sweep, sourceWallet.CircleWalletID, intent.IntentAddress, fundingAmount); err != nil {
+		return err
+	}
+
+	w.logger.Info("Deposit sweep intent created and funded",
 		zap.String("sweep_id", sweep.ID.String()),
 		zap.String("intent_address", intent.IntentAddress),
-		zap.Int("intent_id", intent.ID))
+		zap.Int("intent_id", intent.ID),
+		zap.String("funding_amount", fundingAmount.StringFixed(6)))
 	return nil
+}
+
+// fundIntent transfers the funding USDC from the user's source-chain Circle
+// wallet to the ChainRails intent address. The idempotency key is scoped to
+// (sweep, intent) so retries dedupe against the original transfer, and a
+// replacement intent would get its own key.
+func (w *Worker) fundIntent(ctx context.Context, sweep *entities.DepositSweep, circleWalletID, intentAddress string, amount decimal.Decimal) error {
+	if w.circle == nil {
+		return fmt.Errorf("circle transferer not configured; cannot fund sweep intent")
+	}
+	if circleWalletID == "" {
+		return newTerminalSweepError("source wallet for sweep %s has no circle_wallet_id", sweep.ID)
+	}
+	tokenID, err := w.circle.GetUSDCTokenIDOnchain(ctx, circleWalletID)
+	if err != nil {
+		return fmt.Errorf("resolve source USDC token id: %w", err)
+	}
+	idemKey := uuid.NewSHA1(uuid.NameSpaceOID,
+		[]byte("deposit-sweep-fund-"+sweep.ID.String()+"-"+intentAddress)).String()
+	tx, err := w.circle.TransferUSDCWithIdempotency(ctx, circleWalletID, tokenID, intentAddress, amount.StringFixed(6), idemKey)
+	if err != nil {
+		return fmt.Errorf("fund chainrails intent: %w", err)
+	}
+	// Circle transfers are asynchronous — a returned PENDING/QUEUED state does
+	// not mean funds arrived. Poll to a positive terminal state so the sweep is
+	// only considered funded once the transfer actually completed. On timeout
+	// the retry re-funds under the same idempotency key (Circle returns the
+	// original transfer) and waits again, so this converges without double-spend.
+	return w.waitTransferComplete(ctx, tx)
+}
+
+// waitTransferComplete polls a Circle transfer until it completes, fails
+// terminally, or the wait budget elapses.
+func (w *Worker) waitTransferComplete(ctx context.Context, initial *circlepkg.Transaction) error {
+	if initial == nil {
+		return fmt.Errorf("nil circle transfer")
+	}
+	if isTransferComplete(string(initial.State)) {
+		return nil
+	}
+	if isTransferTerminalFailure(string(initial.State)) {
+		return fmt.Errorf("funding transfer %s ended in state %s", initial.ID, initial.State)
+	}
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	const maxPolls = 20 // ~60s; the batch poll ctx allows 2 minutes total
+	for i := 0; i < maxPolls; i++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("funding transfer %s not confirmed before timeout: %w", initial.ID, ctx.Err())
+		case <-ticker.C:
+			tx, err := w.circle.GetTransaction(ctx, initial.ID)
+			if err != nil {
+				w.logger.Warn("Failed to poll funding transfer", zap.String("tx_id", initial.ID), zap.Error(err))
+				continue
+			}
+			if isTransferComplete(string(tx.State)) {
+				return nil
+			}
+			if isTransferTerminalFailure(string(tx.State)) {
+				return fmt.Errorf("funding transfer %s ended in state %s", tx.ID, tx.State)
+			}
+		}
+	}
+	return fmt.Errorf("funding transfer %s still %s after %d polls", initial.ID, initial.State, maxPolls)
+}
+
+func isTransferComplete(state string) bool {
+	switch strings.ToUpper(state) {
+	case "COMPLETE", "COMPLETED", "CONFIRMED":
+		return true
+	}
+	return false
+}
+
+func isTransferTerminalFailure(state string) bool {
+	switch strings.ToUpper(state) {
+	case "DENIED", "FAILED", "CANCELLED":
+		return true
+	}
+	return false
+}
+
+// sweepFundingAmount derives the exact USDC to send to the intent address from
+// ChainRails' quoted total (amount + bridge fees, in token micro-units).
+func sweepFundingAmount(intent *chainrails.CreateIntentResponse, requested decimal.Decimal) (decimal.Decimal, error) {
+	if strings.TrimSpace(intent.TotalAmountInAssetToken) == "" || intent.AssetTokenDecimals <= 0 {
+		return decimal.Zero, fmt.Errorf("chainrails intent %d did not return total funding amount", intent.ID)
+	}
+	// This flow is USDC-only (6 decimals). Any other value means the intent is
+	// not quoting USDC — refuse rather than derive a wrong funding amount (and
+	// avoid the unchecked int→int32 shift below for absurd values).
+	if intent.AssetTokenDecimals != 6 {
+		return decimal.Zero, fmt.Errorf("chainrails intent %d has unexpected asset decimals %d (want 6 for USDC)",
+			intent.ID, intent.AssetTokenDecimals)
+	}
+	totalUnits, ok := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
+	if !ok {
+		return decimal.Zero, fmt.Errorf("unparseable chainrails funding amount %q", intent.TotalAmountInAssetToken)
+	}
+	amount := decimal.NewFromBigInt(totalUnits, -int32(intent.AssetTokenDecimals))
+	if !amount.GreaterThan(decimal.Zero) {
+		return decimal.Zero, fmt.Errorf("chainrails intent %d returned non-positive funding amount %s", intent.ID, amount.String())
+	}
+	if amount.LessThan(requested.Truncate(6)) {
+		return decimal.Zero, fmt.Errorf("chainrails intent %d funding amount %s is less than requested %s",
+			intent.ID, amount.StringFixed(6), requested.Truncate(6).StringFixed(6))
+	}
+	return amount, nil
 }
 
 const staleThreshold = 10 * time.Minute

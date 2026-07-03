@@ -219,16 +219,23 @@ func (r *DepositRouter) createBridgeIntent(ctx context.Context, route *depositRo
 	if err != nil {
 		return err
 	}
+	// The funding idempotency key is scoped to this specific intent so that a
+	// replacement intent (created after a terminal bridge failure cleared the
+	// old one) gets its own funding transfer. A route-scoped key would be
+	// deduped by Circle against the old intent's transfer and the new intent
+	// would never receive funds.
+	fundKey := uuid.NewSHA1(uuid.NameSpaceOID, []byte("blend-bridge-"+route.ID.String()+"-"+intent.IntentAddress)).String()
 	if _, err := r.db.ExecContext(ctx, `
 		UPDATE blend_deposit_routes
 		SET bridge_intent_id = $2, bridge_intent_address = $3, bridge_source_chain = $4,
-			bridge_fund_amount = $5, updated_at = NOW()
+			bridge_fund_amount = $5, bridge_fund_key = $6, updated_at = NOW()
 		WHERE id = $1
-	`, route.ID, intent.ID, intent.IntentAddress, source.chain, fundAmount); err != nil {
+	`, route.ID, intent.ID, intent.IntentAddress, source.chain, fundAmount, fundKey); err != nil {
 		return fmt.Errorf("blend: persist bridge intent: %w", err)
 	}
 	route.BridgeIntentAddress = sql.NullString{String: intent.IntentAddress, Valid: true}
 	route.BridgeFundAmount = decimal.NullDecimal{Decimal: fundAmount, Valid: true}
+	route.BridgeFundKey = sql.NullString{String: fundKey, Valid: true}
 	r.logger.Info("Blend ChainRails intent created",
 		zap.String("route_id", route.ID.String()),
 		zap.Int("intent_id", intent.ID),
@@ -254,9 +261,17 @@ func (r *DepositRouter) ensureBridgeFunded(ctx context.Context, route *depositRo
 	if err != nil {
 		return fmt.Errorf("blend: get source USDC token id for bridge: %w", err)
 	}
+	// Prefer the per-intent key persisted at intent creation. Legacy in-flight
+	// intents (persisted before bridge_fund_key existed) were funded under the
+	// route-scoped key — keep using it for them so Circle's idempotency returns
+	// the original transfer instead of double-funding the intent.
+	fundKey := strings.TrimSpace(route.BridgeFundKey.String)
+	if fundKey == "" {
+		fundKey = uuid.NewSHA1(uuid.NameSpaceOID, []byte("blend-bridge-"+route.ID.String())).String()
+	}
 	transfer, err := r.circle.TransferUSDCWithIdempotency(
 		ctx, sourceWalletID, tokenID, intentAddr, route.BridgeFundAmount.Decimal.StringFixed(6),
-		uuid.NewSHA1(uuid.NameSpaceOID, []byte("blend-bridge-"+route.ID.String())).String(),
+		fundKey,
 	)
 	if err != nil {
 		return fmt.Errorf("blend: fund ChainRails intent: %w", err)
@@ -293,7 +308,7 @@ func (r *DepositRouter) pollBridgeSettlement(ctx context.Context, route *deposit
 			if _, err := r.db.ExecContext(ctx, `
 				UPDATE blend_deposit_routes
 				SET bridge_intent_id = NULL, bridge_intent_address = NULL, bridge_source_chain = NULL,
-					bridge_fund_amount = NULL, last_error = $2, updated_at = NOW()
+					bridge_fund_amount = NULL, bridge_fund_key = NULL, last_error = $2, updated_at = NOW()
 				WHERE id = $1
 			`, route.ID, fmt.Sprintf("ChainRails bridge %s failed: %s", intentAddr, status.Status)); err != nil {
 				return fmt.Errorf("blend: clear failed bridge intent: %w", err)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -71,6 +72,33 @@ func extractErrorCode(body []byte) string {
 		}
 	}
 	return ""
+}
+
+// digitRun matches runs of 6+ digits (e.g. bank account numbers) so they can be
+// masked out of anything we log.
+var digitRun = regexp.MustCompile(`\d{6,}`)
+
+// extractErrorMessage pulls RampHub's human-readable `message` (the validation
+// reason — e.g. "Name can only contain alphanumeric characters …" or "property
+// name should not exist") so 4xx failures are debuggable, while masking long
+// digit runs like account numbers to keep logs PII-safe. Handles both the
+// string and []string ("message": ["…"]) shapes RampHub returns.
+func extractErrorMessage(body []byte) string {
+	var envelope struct {
+		Message json.RawMessage `json:"message"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Message) == 0 {
+		return ""
+	}
+	var msg string
+	if json.Unmarshal(envelope.Message, &msg) != nil {
+		var many []string
+		if json.Unmarshal(envelope.Message, &many) != nil {
+			return ""
+		}
+		msg = strings.Join(many, "; ")
+	}
+	return truncateCode(digitRun.ReplaceAllString(msg, "***"))
 }
 
 // truncateCode keeps error strings log-safe: short and single-line.

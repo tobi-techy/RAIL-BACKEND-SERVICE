@@ -28,8 +28,13 @@ type depositRoute struct {
 	BridgeIntentAddress  sql.NullString      `db:"bridge_intent_address"`
 	BridgeSourceChain    sql.NullString      `db:"bridge_source_chain"`
 	BridgeFundAmount     decimal.NullDecimal `db:"bridge_fund_amount"`
-	BridgeTxHash         sql.NullString      `db:"bridge_tx_hash"`
-	FundedAt             sql.NullTime        `db:"funded_at"`
+	// BridgeFundKey is the Circle idempotency key for THIS intent's funding
+	// transfer. Scoped per intent so a replacement intent (after a terminal
+	// bridge failure) gets its own funding transfer instead of colliding with
+	// the old one. NULL = legacy intent funded under the route-scoped key.
+	BridgeFundKey sql.NullString `db:"bridge_fund_key"`
+	BridgeTxHash  sql.NullString `db:"bridge_tx_hash"`
+	FundedAt      sql.NullTime   `db:"funded_at"`
 
 	IntentID        sql.NullString `db:"intent_id"`
 	IntentStatus    sql.NullString `db:"intent_status"`
@@ -59,7 +64,7 @@ const depositRouteSelect = `
 		COALESCE(safe_address, '') AS safe_address, circle_wallet_id, chain_id,
 		input_asset, amount, amount_units,
 		source_circle_wallet_id, source_chain, bridge_intent_id, bridge_intent_address,
-		bridge_source_chain, bridge_fund_amount, bridge_tx_hash, funded_at,
+		bridge_source_chain, bridge_fund_amount, bridge_fund_key, bridge_tx_hash, funded_at,
 		intent_id, intent_status, intent_expires_at,
 		quote_payload, quote_summary, tx_hash, submitted_at, settled_at,
 		status, attempts, last_error, next_retry_at, external_ref, source

@@ -5,13 +5,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/ramphub"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+func TestRampCustomerID(t *testing.T) {
+	// externalCustomerId must be dash-free so the provider's derived pay-in
+	// account name passes the Nigerian bank alphanumeric rule.
+	id := uuid.MustParse("a28c1e1a-3e6d-4a3d-9fec-8186396cc478")
+	got := rampCustomerID(id)
+	if want := "a28c1e1a3e6d4a3d9fec8186396cc478"; got != want {
+		t.Errorf("rampCustomerID = %q, want %q", got, want)
+	}
+	if strings.ContainsRune(got, '-') {
+		t.Errorf("rampCustomerID still contains a dash: %q", got)
+	}
+}
 
 func TestMapEventStatus(t *testing.T) {
 	cases := map[[2]string]string{
