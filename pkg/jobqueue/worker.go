@@ -53,11 +53,13 @@ func (w *Worker) Start(ctx context.Context) {
 }
 
 // dequeueBlockTimeout is how long each worker's BRPOP blocks server-side while
-// the queues are empty. One billed command per window per worker — 10s keeps
-// the idle cost at ~43K commands/day across 5 workers (vs ~864K/day with the
-// old 4-RPOPs-every-2s polling) while a pushed job still wakes a blocked
-// worker instantly.
-const dequeueBlockTimeout = 10 * time.Second
+// the queues are empty. One billed command per window per worker. A pushed job
+// wakes a blocked worker INSTANTLY regardless of this value, so a long block
+// has zero latency cost and only cuts idle re-issues: at 30s across 5 workers
+// the idle floor is ~14K commands/day (vs ~864K/day with the old 2s polling).
+// 30s stays under common serverless blocking-command caps (Upstash allows up
+// to ~60s).
+const dequeueBlockTimeout = 30 * time.Second
 
 func (w *Worker) processJobs(ctx context.Context, workerID int) {
 	defer w.wg.Done()

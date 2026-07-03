@@ -577,10 +577,10 @@ func (s *WithdrawalService) acquireAdvisoryLock(ctx context.Context, userID uuid
 		}
 		if acquired {
 			unlock := func() {
+				defer conn.Close() //nolint:errcheck // best-effort cleanup
 				if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", key); err != nil {
 					s.logger.Error("failed to release advisory lock", zap.Int64("key", key), zap.Error(err))
 				}
-				conn.Close() //nolint:errcheck // best-effort cleanup
 			}
 			return unlock, nil
 		}

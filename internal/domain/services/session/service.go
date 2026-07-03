@@ -103,17 +103,29 @@ func (s *Service) CreateSession(ctx context.Context, userID uuid.UUID, accessTok
 	return session, nil
 }
 
-// ValidateSession validates a session by token hash with Redis caching
+// ErrSessionNotFound is returned when a session is definitively absent from the
+// database (not found or expired). Callers can distinguish this from transient
+// infrastructure errors and decide whether to reject the request or degrade
+// gracefully.
+var ErrSessionNotFound = errors.New("session not found or expired")
+
+// ValidateSession validates a session by token hash with Redis caching.
+//
+// Error semantics:
+//   - ErrSessionNotFound  — session is definitively not in the DB (401, log out)
+//   - any other error     — transient DB/infra failure; caller should decide
+//     whether to degrade gracefully rather than force a logout
 func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, error) {
 	tokenHash := s.hashToken(token)
 
-	// Try cache first
+	// Try cache first (uses a short independent timeout so a slow Redis doesn't
+	// eat into the caller's deadline — a cache miss is just a miss, not an error).
 	if session := s.getSessionFromCache(ctx, tokenHash); session != nil {
 		go s.updateLastUsed(context.Background(), session.ID)
 		return session, nil
 	}
 
-	// Cache miss - query database
+	// Cache miss — query the database.
 	query := `
 		SELECT id, user_id, token_hash, refresh_token_hash, ip_address, user_agent, 
 		       device_fingerprint, location, is_active, expires_at, created_at, last_used_at
@@ -128,13 +140,17 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, 
 
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("session not found or expired")
+			// Definitively not found — the caller should treat this as a logout.
+			return nil, ErrSessionNotFound
 		}
+		// Transient error (DB timeout, connection failure, etc.) — surface it
+		// distinctly so the middleware can degrade gracefully instead of logging
+		// the user out.
 		return nil, fmt.Errorf("failed to validate session: %w", err)
 	}
 
-	// Cache for future requests
-	s.cacheSession(ctx, tokenHash, session)
+	// Re-populate cache for future requests (fire-and-forget; uses background ctx).
+	go s.cacheSession(context.Background(), tokenHash, session)
 
 	go s.updateLastUsed(context.Background(), session.ID)
 
@@ -376,6 +392,9 @@ func (s *Service) hashToken(token string) string {
 }
 
 // Cache helpers
+
+// cacheSession stores the session in Redis. It always uses a short independent
+// context so a slow or unreachable Redis does not block the caller.
 func (s *Service) cacheSession(ctx context.Context, tokenHash string, session *Session) {
 	if s.redis == nil {
 		return
@@ -385,18 +404,27 @@ func (s *Service) cacheSession(ctx context.Context, tokenHash string, session *S
 		s.logger.Warn("Failed to marshal session for cache", zap.Error(err))
 		return
 	}
-	if err := s.redis.Set(ctx, sessionCachePrefix+tokenHash, data, sessionCacheTTL).Err(); err != nil {
+	// Use a fresh short timeout so Redis latency never bleeds into the parent
+	// context (request deadline). If ctx is already a background/WithoutCancel
+	// context this is a no-op overhead but always safe.
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := s.redis.Set(cacheCtx, sessionCachePrefix+tokenHash, data, sessionCacheTTL).Err(); err != nil {
 		s.logger.Warn("Failed to cache session", zap.Error(err))
 	}
 }
 
+// getSessionFromCache retrieves a session from Redis using a short independent
+// timeout. A slow Redis causes a cache miss, not a request failure.
 func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Session {
 	if s.redis == nil {
 		return nil
 	}
-	data, err := s.redis.Get(ctx, sessionCachePrefix+tokenHash).Bytes()
+	cacheCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	data, err := s.redis.Get(cacheCtx, sessionCachePrefix+tokenHash).Bytes()
 	if err != nil {
-		return nil // Cache miss
+		return nil // Cache miss (including Redis unreachable)
 	}
 	var session Session
 	if err := json.Unmarshal(data, &session); err != nil {
@@ -404,7 +432,7 @@ func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Se
 	}
 	// Verify not expired
 	if session.ExpiresAt.Before(time.Now()) || !session.IsActive {
-		s.invalidateSessionCache(ctx, tokenHash)
+		go s.invalidateSessionCache(context.Background(), tokenHash)
 		return nil
 	}
 	return &session

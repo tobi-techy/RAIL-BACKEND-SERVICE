@@ -219,7 +219,7 @@ func (app *Application) initializeWorkers() error {
 	// suspension) so it pages us instead of becoming user-facing 503s.
 	if app.container != nil && app.container.RedisClient != nil {
 		alerter := alerting.NewTelegramAlerter(app.cfg.TelegramAlerts.BotToken, app.cfg.TelegramAlerts.ChatID)
-		monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 30*time.Second, func(up bool, err error) {
+		monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 60*time.Second, func(up bool, err error) {
 			if up {
 				if alerter != nil {
 					alerter.SendFatal("✅ Redis recovered", nil)

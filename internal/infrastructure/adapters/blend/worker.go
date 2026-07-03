@@ -165,6 +165,7 @@ func (r *DepositRouter) detectSweepDoubleCredits(ctx context.Context) {
 		 AND d.created_at < s.completed_at + INTERVAL '1 hour'
 		 AND d.id <> s.deposit_id
 		WHERE s.status = 'completed'
+		  AND s.completed_at IS NOT NULL
 		  AND s.completed_at > NOW() - INTERVAL '24 hours'
 		LIMIT 10
 	`); err != nil {
@@ -467,5 +468,15 @@ func (r *DepositRouter) resumeRedemption(ctx context.Context, idempotencyKey str
 	if err := r.driveRedemption(pollCtx, acct, red, red.Amount, false); err != nil {
 		r.logger.Warn("Blend: resume redemption did not settle (will retry)",
 			zap.String("redemption_id", red.ID.String()), zap.Error(err))
+		// Persist the last error so detectStrandedRedemptions surfaces the real
+		// cause instead of an opaque empty last_error.
+		if _, dbErr := r.db.ExecContext(ctx, `
+			UPDATE blend_yield_redemptions
+			SET last_error = $2, updated_at = NOW()
+			WHERE id = $1 AND status NOT IN ('complete','failed')
+		`, red.ID, err.Error()); dbErr != nil {
+			r.logger.Warn("Blend: failed to persist redemption error",
+				zap.String("redemption_id", red.ID.String()), zap.Error(dbErr))
+		}
 	}
 }

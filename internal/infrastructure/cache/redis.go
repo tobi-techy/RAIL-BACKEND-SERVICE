@@ -40,6 +40,14 @@ func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, e
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		DB:       cfg.DB,
 		PoolSize: 5, // Keep low for serverless Redis (Upstash)
+		// Short, explicit timeouts so that when Redis is unreachable (e.g. an
+		// Upstash budget suspension) every command fails fast and the caller
+		// degrades, instead of hanging until the request context deadline and
+		// surfacing "context deadline exceeded" on user-facing paths.
+		DialTimeout:  3 * time.Second,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+		MaxRetries:   1,
 	}
 	if cfg.Password != "" {
 		opts.Password = cfg.Password
@@ -53,12 +61,17 @@ func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, e
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := rdb.Ping(ctx).Result()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+	// Do NOT fail boot when Redis is unreachable. Redis is a degradable
+	// dependency (cache, rate-limit, locks) — a suspended/broken Redis must not
+	// prevent the service from starting and serving DB-backed traffic. go-redis
+	// reconnects automatically once Redis is reachable again; the health monitor
+	// reports the transition.
+	if _, err := rdb.Ping(ctx).Result(); err != nil {
+		logger.Warn("Redis ping failed at startup — continuing in degraded mode (cache/rate-limit will fail open until Redis recovers)",
+			zap.String("host", cfg.Host), zap.Int("port", cfg.Port), zap.Error(err))
+	} else {
+		logger.Info("Connected to Redis successfully", zap.String("host", cfg.Host), zap.Int("port", cfg.Port))
 	}
-
-	logger.Info("Connected to Redis successfully", zap.String("host", cfg.Host), zap.Int("port", cfg.Port))
 
 	return &redisClient{
 		client: rdb,

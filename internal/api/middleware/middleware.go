@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,14 +14,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"go.uber.org/zap"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 )
+
+// ErrSessionNotFound is the sentinel value the session service returns when a
+// session is definitively absent from the database. The middleware uses this to
+// distinguish a real logout condition from a transient infra failure.
+// It mirrors session.ErrSessionNotFound without importing the package here.
+const errSessionNotFoundMsg = "session not found or expired"
 
 // SessionValidator interface for session validation
 type SessionValidator interface {
@@ -424,16 +433,33 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 
 		// Validate session if service is provided
 		if sessionService != nil {
-			session, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
+			sess, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
 			if err != nil {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error":      "Session invalid or expired",
-					"request_id": c.GetString("request_id"),
-				})
-				c.Abort()
-				return
+				// Distinguish between a definitively invalid session (force logout)
+				// and transient infrastructure failures (degrade gracefully without
+				// forcing a logout — the JWT is still valid, just Redis/DB was slow).
+				if errors.Is(err, session.ErrSessionNotFound) {
+					// Session definitively doesn't exist — force logout.
+					c.JSON(http.StatusUnauthorized, gin.H{
+						"error":      "Session invalid or expired",
+						"request_id": c.GetString("request_id"),
+					})
+					c.Abort()
+					return
+				}
+				// Transient error (DB timeout, Redis unreachable, etc.) — log it
+				// but let the request through. The JWT is valid and the session
+				// likely exists; we just couldn't confirm it this time.
+				if log != nil {
+					log.Warn("Session validation failed (non-fatal, degrading gracefully)",
+						zap.Error(err),
+						zap.String("user_id", claims.UserID.String()),
+						zap.String("request_id", c.GetString("request_id")))
+				}
+				// Skip setting session_id but continue — the user stays logged in.
+			} else {
+				c.Set("session_id", sess.ID)
 			}
-			c.Set("session_id", session.ID)
 		}
 
 		// Add user info to context
