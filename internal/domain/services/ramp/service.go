@@ -270,13 +270,22 @@ func (s *Service) GetBanks(ctx context.Context) ([]ramphub.Bank, error) {
 		}
 	}
 
-	catalog, err := s.ramphubClient.GetCatalog(ctx)
+	// Detach from the request context for all external API calls. The request
+	// context has a short deadline from TimeoutMiddleware; when Redis is slow
+	// (or unreachable), the cache miss eats most of that budget and all
+	// subsequent RampHub calls inherit a nearly-expired deadline, immediately
+	// producing "context canceled" for every provider. The httpClient already
+	// enforces a 15s per-call timeout, so we don't lose safety here.
+	fetchCtx, fetchCancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer fetchCancel()
+
+	catalog, err := s.ramphubClient.GetCatalog(fetchCtx)
 	if err != nil {
 		return nil, err
 	}
 
 	// Primary source: the resolver-compatible provider (if the catalog lists it).
-	banks := s.fetchBanks(ctx, []string{ramphubResolverProvider})
+	banks := s.fetchBanks(fetchCtx, []string{ramphubResolverProvider})
 	if len(banks) == 0 {
 		// Fallback: union of every sell-capable provider. Codes here may not all
 		// be resolver-compatible, but an incomplete list beats no list at all.
@@ -288,7 +297,7 @@ func (s *Service) GetBanks(ctx context.Context) ([]ramphub.Bank, error) {
 				sellProviders = append(sellProviders, strings.ToLower(p.Name))
 			}
 		}
-		banks = s.fetchBanks(ctx, sellProviders)
+		banks = s.fetchBanks(fetchCtx, sellProviders)
 	}
 	if len(banks) == 0 {
 		return nil, fmt.Errorf("no banks available")
@@ -297,7 +306,11 @@ func (s *Service) GetBanks(ctx context.Context) ([]ramphub.Bank, error) {
 	sort.Slice(banks, func(i, j int) bool { return banks[i].BankName < banks[j].BankName })
 
 	if s.redis != nil && len(banks) > 0 {
-		if cacheErr := s.redis.Set(ctx, ramphubBanksCacheKey, banks, ramphubBanksCacheTTL); cacheErr != nil {
+		// Use a background context for the cache write: the request context may
+		// have a tight deadline and we don't want a slow Redis to lose the result.
+		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cacheCancel()
+		if cacheErr := s.redis.Set(cacheCtx, ramphubBanksCacheKey, banks, ramphubBanksCacheTTL); cacheErr != nil {
 			s.logger.Warn("failed to cache ramphub banks", zap.Error(cacheErr))
 		}
 	}
@@ -967,15 +980,18 @@ func (s *Service) pollPajFallbackOrder(ctx context.Context, userID uuid.UUID, pa
 // creditOnrampIfCompleted so a later webhook retry can attempt the credit
 // again. A failed un-claim is CRITICAL: the order stays claimed, every retry
 // is blocked by the deposit_id IS NULL guard, and the credit never lands
-// without manual intervention — so the failure must be loudly visible.
-func (s *Service) unclaimOnrampOrder(ctx context.Context, txID string, claimedID uuid.UUID) {
+// without manual intervention — so it is both logged loudly and returned to
+// the caller for inclusion in the delivery-failure error.
+func (s *Service) unclaimOnrampOrder(ctx context.Context, txID string, claimedID uuid.UUID) error {
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE ramphub_orders SET deposit_id = NULL WHERE id = $1`, claimedID); err != nil {
 		s.logger.Error("CRITICAL: failed to un-claim ramphub onramp order — retries are blocked, manual intervention required",
 			zap.Error(err),
 			zap.String("ramphub_tx_id", txID),
 			zap.String("claimed_id", claimedID.String()))
+		return fmt.Errorf("un-claim ramphub onramp order %s (claim %s): %w", txID, claimedID, err)
 	}
+	return nil
 }
 
 // creditOnrampIfCompleted credits USDC and runs the 70/30 allocation split when
