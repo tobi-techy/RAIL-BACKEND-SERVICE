@@ -1062,13 +1062,17 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 		// the delivery so RampHub retries once the database is healthy.
 		s.logger.Error("ramphub onramp backstop: pending-deposit check failed — deferring",
 			zap.Error(scanErr), zap.String("ramphub_tx_id", txID), zap.String("user_id", userID.String()))
-		s.unclaimOnrampOrder(ctx, txID, claimedID)
+		if unclaimErr := s.unclaimOnrampOrder(ctx, txID, claimedID); unclaimErr != nil {
+			return fmt.Errorf("failed to verify pending deposits for ramphub onramp %s: %v; un-claim also failed: %w", txID, scanErr, unclaimErr)
+		}
 		return fmt.Errorf("failed to verify pending deposits for ramphub onramp %s: %w", txID, scanErr)
 	}
 	if pendingInFlight {
 		s.logger.Info("ramphub onramp backstop deferred — on-chain credit in flight",
 			zap.String("ramphub_tx_id", txID), zap.String("user_id", userID.String()))
-		s.unclaimOnrampOrder(ctx, txID, claimedID)
+		if unclaimErr := s.unclaimOnrampOrder(ctx, txID, claimedID); unclaimErr != nil {
+			return fmt.Errorf("on-chain credit in flight for ramphub onramp %s; un-claim also failed: %w", txID, unclaimErr)
+		}
 		return fmt.Errorf("on-chain credit in flight for ramphub onramp %s — deferring backstop credit", txID)
 	}
 
