@@ -18,8 +18,9 @@ const (
 	// before re-checking Redis. This collapses the per-request Redis Exists into
 	// roughly one call per token per window — a large Upstash cost reduction for
 	// the frontend's frequent polling. Tradeoff: a freshly-revoked token can
-	// remain valid for up to this window. Keep it short.
-	negCacheTTL     = 15 * time.Second
+	// remain valid for up to this window. 60s is safe: revocation clears the
+	// local cache entry immediately via negCacheDel.
+	negCacheTTL     = 60 * time.Second
 	negCacheMaxSize = 50000 // purge threshold to bound memory
 )
 

@@ -84,23 +84,40 @@ func (l *TieredLimiter) Check(ctx context.Context, ip, userID, endpoint string) 
 	return &CheckResult{Allowed: true, Remaining: -1}, nil
 }
 
+// slidingWindowCheckScript atomically prunes the sliding window, counts entries,
+// records the current request, and sets TTL — all in one Redis command instead of
+// the previous 4-command pipeline (ZRemRangeByScore + ZCount + ZAdd + Expire).
+//
+// KEYS[1] = redis key
+// ARGV[1] = window start (UnixNano as string)
+// ARGV[2] = now        (UnixNano as string — both score and member)
+// ARGV[3] = ttl        (seconds as string — window × 2)
+var slidingWindowCheckScript = redis.NewScript(`
+	local windowStart = tonumber(ARGV[1])
+	local now = ARGV[2]
+	local ttl = tonumber(ARGV[3])
+
+	redis.call('ZREMRANGEBYSCORE', KEYS[1], '0', windowStart)
+	local count = redis.call('ZCOUNT', KEYS[1], windowStart, '+inf')
+	redis.call('ZADD', KEYS[1], now, now)
+	redis.call('EXPIRE', KEYS[1], ttl)
+	return count
+`)
+
 func (l *TieredLimiter) checkLimit(ctx context.Context, tier, key string, limit int64, window time.Duration) (bool, int64, error) {
 	redisKey := fmt.Sprintf("ratelimit:%s:%s", tier, key)
 	now := time.Now()
 	windowStart := now.Add(-window)
 
-	pipe := l.redis.Pipeline()
-	pipe.ZRemRangeByScore(ctx, redisKey, "0", fmt.Sprintf("%d", windowStart.UnixNano()))
-	countCmd := pipe.ZCount(ctx, redisKey, fmt.Sprintf("%d", windowStart.UnixNano()), "+inf")
-	pipe.ZAdd(ctx, redisKey, &redis.Z{Score: float64(now.UnixNano()), Member: now.UnixNano()})
-	pipe.Expire(ctx, redisKey, window*2)
-
-	_, err := pipe.Exec(ctx)
+	count, err := slidingWindowCheckScript.Run(ctx, l.redis, []string{redisKey},
+		fmt.Sprintf("%d", windowStart.UnixNano()),
+		fmt.Sprintf("%d", now.UnixNano()),
+		fmt.Sprintf("%d", int(window.Seconds())*2),
+	).Int64()
 	if err != nil {
 		return false, 0, fmt.Errorf("rate limit check failed: %w", err)
 	}
 
-	count := countCmd.Val()
 	remaining := limit - count - 1
 	if remaining < 0 {
 		remaining = 0
