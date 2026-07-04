@@ -113,8 +113,14 @@ func contextWithTimeout() (context.Context, context.CancelFunc) {
 //   - Offramp: EstimatedOutput is the NGN the user receives; TokenAmount is the
 //     USDC it costs.
 type Quote struct {
-	Side            string  `json:"side"`
-	Provider        string  `json:"provider"`
+	Side     string `json:"side"`
+	Provider string `json:"provider"`
+	// SubProvider is the underlying RampHub provider the order will route to
+	// (e.g. "usebread", "paycrest"), normalized. Empty for the Paj fallback. It
+	// matters because RampHub bank codes are provider-scoped: an offramp sell
+	// order must carry the SELECTED provider's payout bank code, not the
+	// resolver's (Paycrest) code.
+	SubProvider     string  `json:"subProvider,omitempty"`
 	Asset           string  `json:"asset"`
 	Chain           string  `json:"chain"`
 	Currency        string  `json:"currency"`
@@ -122,6 +128,14 @@ type Quote struct {
 	EstimatedOutput float64 `json:"estimatedOutput"`
 	TokenAmount     float64 `json:"tokenAmount"`
 	Fee             float64 `json:"fee"`
+}
+
+// normalizeProviderName lowercases a RampHub provider label and drops the
+// " Sandbox" suffix so "UseBread Sandbox" and "UseBread" both become "usebread".
+func normalizeProviderName(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	p = strings.TrimSuffix(p, " sandbox")
+	return strings.TrimSpace(p)
 }
 
 // GetBestQuote returns the single best rate for a corridor on the default
@@ -169,7 +183,8 @@ func (s *Service) getBestQuoteForChain(ctx context.Context, side string, fiatAmo
 				continue
 			}
 			q := &Quote{
-				Side: side, Provider: ProviderRampHub, Asset: asset, Chain: chain, Currency: currency,
+				Side: side, Provider: ProviderRampHub, SubProvider: normalizeProviderName(resp.BestQuote.Provider),
+				Asset: asset, Chain: chain, Currency: currency,
 				Rate: resp.BestQuote.Rate, Fee: resp.BestQuote.Fee,
 			}
 			if buy {
@@ -352,6 +367,112 @@ func (s *Service) fetchBanks(ctx context.Context, providers []string) []ramphub.
 		}
 	}
 	return banks
+}
+
+// bankNameFillerTokens are words that vary between providers' names for the same
+// institution ("Moniepoint MFB" vs "Moniepoint Microfinance Bank") and carry no
+// identifying value. Stripped before matching a bank across provider lists.
+var bankNameFillerTokens = map[string]bool{
+	"microfinance": true, "mfb": true, "bank": true, "digital": true,
+	"services": true, "limited": true, "ltd": true, "plc": true,
+	"nigeria": true, "ng": true, "the": true,
+}
+
+// normalizeBankNameForMatch reduces a provider-specific bank name to a stable key
+// so the same institution matches across providers whose names/codes diverge.
+// Drops parentheticals and filler tokens, keeps only alphanumerics. E.g. both
+// "Moniepoint MFB" and "Moniepoint Microfinance Bank" -> "moniepoint".
+func normalizeBankNameForMatch(name string) string {
+	name = strings.ToLower(name)
+	// Drop parentheticals, e.g. "OPay Digital Services Limited (OPay)".
+	if i := strings.IndexByte(name, '('); i >= 0 {
+		name = name[:i]
+	}
+	var b strings.Builder
+	for _, tok := range strings.FieldsFunc(name, func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		if bankNameFillerTokens[tok] {
+			continue
+		}
+		b.WriteString(tok)
+	}
+	return b.String()
+}
+
+// payoutBankForProvider translates the user-selected payout bank (resolved via
+// the Paycrest-scoped list) into the SELECTED sell provider's own bank code and
+// name, matching on a normalized name key. RampHub bank codes are provider-
+// scoped, so a sell order must carry the routed provider's code or the
+// beneficiary lookup 400s ("Failed to lookup beneficiary bank account").
+//
+// Returns ok=false when there is no UNIQUE match (zero or ambiguous) — callers
+// must then refuse the withdrawal rather than guess a code that could misroute
+// funds. providerBankListCache keeps this off the hot path.
+func (s *Service) payoutBankForProvider(ctx context.Context, provider, userBankName string) (code, name string, ok bool) {
+	key := normalizeBankNameForMatch(userBankName)
+	if key == "" {
+		return "", "", false
+	}
+	list, err := s.providerBankList(ctx, provider)
+	if err != nil || len(list) == 0 {
+		s.logger.Warn("ramphub: could not load provider bank list for payout code translation",
+			zap.String("provider", provider), zap.Error(err))
+		return "", "", false
+	}
+	code, name, ok = matchBankByName(list, userBankName)
+	if !ok {
+		s.logger.Warn("ramphub: payout bank did not uniquely match the selected provider",
+			zap.String("provider", provider), zap.String("bank_name", userBankName))
+	}
+	return code, name, ok
+}
+
+// matchBankByName finds the single bank in list whose normalized name equals the
+// normalized userBankName. Returns ok=false on zero or multiple matches so the
+// caller can fail closed instead of guessing a provider bank code.
+func matchBankByName(list []ramphub.Bank, userBankName string) (code, name string, ok bool) {
+	key := normalizeBankNameForMatch(userBankName)
+	if key == "" {
+		return "", "", false
+	}
+	var matches []ramphub.Bank
+	for _, b := range list {
+		if b.BankCode != "" && normalizeBankNameForMatch(b.BankName) == key {
+			matches = append(matches, b)
+		}
+	}
+	if len(matches) != 1 {
+		return "", "", false
+	}
+	return matches[0].BankCode, matches[0].BankName, true
+}
+
+const providerBankListCacheTTL = 24 * time.Hour
+
+// providerBankList returns a single provider's payout bank list, cached 24h.
+func (s *Service) providerBankList(ctx context.Context, provider string) ([]ramphub.Bank, error) {
+	cacheKey := "ramphub:providerbanks:" + provider + ":v1"
+	if s.redis != nil {
+		var cached []ramphub.Bank
+		if err := s.redis.Get(ctx, cacheKey, &cached); err == nil && len(cached) > 0 {
+			return cached, nil
+		}
+	}
+	fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
+	list, err := s.ramphubClient.GetProviderBankList(fetchCtx, provider)
+	if err != nil {
+		return nil, err
+	}
+	if s.redis != nil && len(list.Banks) > 0 {
+		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cacheCancel()
+		if cacheErr := s.redis.Set(cacheCtx, cacheKey, list.Banks, providerBankListCacheTTL); cacheErr != nil {
+			s.logger.Warn("failed to cache provider bank list", zap.Error(cacheErr))
+		}
+	}
+	return list.Banks, nil
 }
 
 // nubanPattern matches Nigerian NUBAN account numbers (exactly 10 digits).
@@ -647,6 +768,22 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		return nil, fmt.Errorf("withdrawal service temporarily unavailable — RampHub bank resolution unavailable; try again later")
 	}
 
+	// Bank codes are provider-scoped. The account was resolved with the Paycrest
+	// (resolver) code, but the sell order routes to the best-rate provider, which
+	// needs ITS own code+name or the beneficiary lookup 400s. Translate to the
+	// selected provider's payout bank; fail closed (no hold taken yet) rather than
+	// send a code that could misroute funds. No-op when the routed provider is the
+	// resolver provider itself.
+	sellBankCode, sellBankName := bankCode, bankName
+	if prov := quote.SubProvider; prov != "" && prov != ramphubResolverProvider {
+		code, name, ok := s.payoutBankForProvider(ctx, prov, bankName)
+		if !ok {
+			metrics.RecordRampFallback("offramp", "bank_code_untranslatable")
+			return nil, fmt.Errorf("this bank isn't currently supported for withdrawal, please try another account or try again later")
+		}
+		sellBankCode, sellBankName = code, name
+	}
+
 	// Estimate USDC: fiat/rate + 2% slippage buffer, capped at $50 to prevent
 	// over-holding on large orders. The 0.5% developer fee is accrued by RampHub
 	// on Rail's behalf (reduces NGN payout, not the USDC hold).
@@ -700,10 +837,10 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		FiatCurrency:        currency,
 		Asset:               settlementAsset,
 		Chain:               offrampSettlementChain,
-		BankCode:            bankCode,
+		BankCode:            sellBankCode,
 		AccountNumber:       accountNumber,
 		AccountName:         accountName,
-		BankName:            bankName,
+		BankName:            sellBankName,
 		ExternalCustomerID:  rampCustomerID(userID),
 		DeveloperFeePercent: s.developerFeePercent,
 	})
