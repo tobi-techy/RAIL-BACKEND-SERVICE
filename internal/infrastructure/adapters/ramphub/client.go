@@ -87,18 +87,18 @@ func (c *Client) CreateOrder(ctx context.Context, req OrderRequest) (*OrderRespo
 	if err != nil {
 		return nil, fmt.Errorf("ramphub create order: %w", err)
 	}
-	// UseBread (and possibly other providers) return a buy order with only
-	// providerDetails.status = AWAITING_DEPOSIT and NO inline virtualAccount, so
-	// the customer gets no bank account to pay into. RampHub's public docs don't
-	// specify where that account surfaces, so log the raw providerDetails here to
-	// capture the true shape from a live order and resolve where the pay-in
-	// account is delivered (inline under another key, async webhook, or poll).
-	if resp.Side == "buy" && resp.ProviderDetails.VirtualAccount == nil {
-		c.logger.Warn("ramphub buy order returned no inline virtualAccount",
-			zap.String("transaction_id", resp.TransactionID),
-			zap.String("provider", resp.SelectedProvider),
-			zap.String("provider_details_status", resp.ProviderDetails.Status),
-			zap.String("provider_details_raw", extractProviderDetailsRaw(raw)))
+	// Providers return the pay-in account in different shapes (Paycrest's
+	// virtualAccount vs UseBread's nested data.deposit); PayInAccount normalizes
+	// them. If we still can't extract an account for a buy order, log the raw
+	// providerDetails so a new/unknown provider shape can be added quickly.
+	if resp.Side == "buy" {
+		if num, _, bank := resp.PayInAccount(); num == "" || bank == "" {
+			c.logger.Warn("ramphub buy order returned no recognizable pay-in account",
+				zap.String("transaction_id", resp.TransactionID),
+				zap.String("provider", resp.SelectedProvider),
+				zap.String("provider_details_status", resp.ProviderDetails.Status),
+				zap.String("provider_details_raw", extractProviderDetailsRaw(raw)))
+		}
 	}
 	return &resp, nil
 }

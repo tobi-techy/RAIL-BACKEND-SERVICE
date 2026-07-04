@@ -117,8 +117,11 @@ type OrderResponse struct {
 }
 
 // ProviderDetails carries the next-step instructions for an order.
-//   - Buy: VirtualAccount is the bank account the customer pays into; AmountToPay
-//     is the fiat amount.
+//   - Buy: the bank account the customer pays into; AmountToPay is the fiat
+//     amount. RampHub does NOT normalize this across providers — it passes each
+//     provider's native shape, so the pay-in account lives in different places:
+//     Paycrest uses VirtualAccount (camelCase); UseBread nests it under
+//     Data.Deposit (snake_case). Use OrderResponse.PayInAccount to read it.
 //   - Sell: DepositAddress is where we send crypto; AmountToSend is the crypto
 //     amount to send.
 type ProviderDetails struct {
@@ -127,18 +130,54 @@ type ProviderDetails struct {
 	Reference      string          `json:"reference,omitempty"`
 	Note           string          `json:"note,omitempty"`
 	Sandbox        bool            `json:"sandbox,omitempty"`
-	VirtualAccount *VirtualAccount `json:"virtualAccount,omitempty"` // buy
+	VirtualAccount *VirtualAccount `json:"virtualAccount,omitempty"` // buy: Paycrest-style
+	Data           *ProviderData   `json:"data,omitempty"`           // buy: UseBread-style
 	AmountToPay    float64         `json:"amountToPay,omitempty"`    // buy: fiat to pay
 	DepositAddress string          `json:"depositAddress,omitempty"` // sell
 	Network        string          `json:"network,omitempty"`        // sell
 	AmountToSend   float64         `json:"amountToSend,omitempty"`   // sell: crypto to send
 }
 
-// VirtualAccount is the bank account a buy-order customer pays into.
+// VirtualAccount is the Paycrest-style pay-in account (camelCase, at the top of
+// providerDetails).
 type VirtualAccount struct {
 	AccountName   string `json:"accountName"`
 	AccountNumber string `json:"accountNumber"`
 	BankName      string `json:"bankName"`
+}
+
+// ProviderData is the UseBread-style envelope nested under providerDetails.data.
+type ProviderData struct {
+	Status  string           `json:"status,omitempty"`
+	Type    string           `json:"type,omitempty"`
+	Deposit *ProviderDeposit `json:"deposit,omitempty"` // buy: pay-in account
+}
+
+// ProviderDeposit is the UseBread-style pay-in account (snake_case).
+type ProviderDeposit struct {
+	AccountNumber string  `json:"account_number"`
+	AccountName   string  `json:"account_name"`
+	BankName      string  `json:"bank_name"`
+	BankCode      string  `json:"bank_code"`
+	Amount        float64 `json:"amount"`
+	ExpiresAt     string  `json:"expires_at"`
+}
+
+// PayInAccount returns the fiat bank account a buy-order customer must transfer
+// to, normalized across providers. Returns empty strings when no pay-in account
+// is present (the order is then unusable for a bank-transfer UX).
+func (r *OrderResponse) PayInAccount() (accountNumber, accountName, bankName string) {
+	pd := r.ProviderDetails
+	// Paycrest-style: providerDetails.virtualAccount
+	if va := pd.VirtualAccount; va != nil && va.AccountNumber != "" {
+		return va.AccountNumber, va.AccountName, va.BankName
+	}
+	// UseBread-style: providerDetails.data.deposit (snake_case)
+	if pd.Data != nil && pd.Data.Deposit != nil && pd.Data.Deposit.AccountNumber != "" {
+		d := pd.Data.Deposit
+		return d.AccountNumber, d.AccountName, d.BankName
+	}
+	return "", "", ""
 }
 
 // --- Order intent (active payment window) ---

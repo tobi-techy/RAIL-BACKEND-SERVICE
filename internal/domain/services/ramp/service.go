@@ -542,12 +542,11 @@ func (s *Service) createRampHubBuyOrder(ctx context.Context, userID uuid.UUID, f
 	return order, err
 }
 
-// buyBankDetails extracts the virtual-account the customer must pay into.
+// buyBankDetails extracts the pay-in account the customer must transfer to,
+// normalized across RampHub providers (Paycrest's virtualAccount vs UseBread's
+// nested data.deposit shape).
 func buyBankDetails(order *ramphub.OrderResponse) (accountNumber, accountName, bankName string) {
-	if va := order.ProviderDetails.VirtualAccount; va != nil {
-		return va.AccountNumber, va.AccountName, va.BankName
-	}
-	return "", "", ""
+	return order.PayInAccount()
 }
 
 func (s *Service) persistOnrampOrder(ctx context.Context, userID uuid.UUID, order *ramphub.OrderResponse, fiatAmount, expectedToken float64, currency, asset, chain, acctNum, acctName, bankName string) error {
