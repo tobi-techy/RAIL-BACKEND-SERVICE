@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
+	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -124,21 +126,31 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 		if sessionService != nil {
 			sess, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
 			if err != nil {
+				// Distinguish between a definitively invalid session (force logout)
+				// and transient infrastructure failures (degrade gracefully).
+				if errors.Is(err, session.ErrSessionNotFound) {
+					// Session definitively doesn't exist — force logout.
+					c.JSON(http.StatusUnauthorized, gin.H{
+						"error":      "SESSION_INVALID",
+						"message":    "Session invalid or expired",
+						"request_id": c.GetString("request_id"),
+					})
+					c.Abort()
+					return
+				}
+				// Transient error (DB timeout, Redis unreachable, etc.) — log it
+				// but let the request through. The JWT is valid and the session
+				// likely exists; we just couldn't confirm it this time.
 				if log != nil {
-					log.Error("Session validation failed — rejecting request (fail closed)",
+					log.Warn("Session validation failed (non-fatal, degrading gracefully)",
 						zap.Error(err),
 						zap.String("user_id", claims.UserID.String()),
 						zap.String("request_id", c.GetString("request_id")))
 				}
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error":      "SESSION_INVALID",
-					"message":    "Session invalid or expired",
-					"request_id": c.GetString("request_id"),
-				})
-				c.Abort()
-				return
+				// Skip setting session_id but continue — the user stays logged in.
+			} else {
+				c.Set("session_id", sess.ID)
 			}
-			c.Set("session_id", sess.ID)
 		}
 
 		// Add user info to context
