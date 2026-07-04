@@ -804,6 +804,22 @@ func setDefaults() {
 	if redisTLS := os.Getenv("REDIS_TLS"); redisTLS != "" {
 		viper.Set("redis.tls", redisTLS == "true")
 	}
+	// Explicit env overrides for connection details. viper.AutomaticEnv() does
+	// NOT override keys already present in config.yaml when the config is loaded
+	// via Unmarshal, so REDIS_HOST/PORT/PASSWORD were silently ignored and the
+	// app fell back to the YAML "localhost" — connecting nowhere. viper.Set has
+	// the highest precedence and survives Unmarshal.
+	if redisHost := os.Getenv("REDIS_HOST"); redisHost != "" {
+		viper.Set("redis.host", redisHost)
+	}
+	if redisPort := os.Getenv("REDIS_PORT"); redisPort != "" {
+		if p, err := strconv.Atoi(redisPort); err == nil {
+			viper.Set("redis.port", p)
+		}
+	}
+	if redisPassword := os.Getenv("REDIS_PASSWORD"); redisPassword != "" {
+		viper.Set("redis.password", redisPassword)
+	}
 	viper.SetDefault("redis.cluster_mode", false)
 	viper.SetDefault("redis.max_retries", 3)
 	viper.SetDefault("redis.pool_size", 10)
