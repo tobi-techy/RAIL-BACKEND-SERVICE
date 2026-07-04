@@ -622,19 +622,11 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		}
 	}
 	if !rampHubViable {
-		if s.pajFallback != nil {
-			pajRes, pajErr := s.pajFallback.CreateOfframpOrder(ctx, userID, bankCode, accountNumber, fiatAmount, currency)
-			if pajErr != nil {
-				return nil, pajErr
-			}
-			metrics.RecordRampProvider("offramp", ProviderPaj)
-			return &OfframpResult{
-				TransactionID: pajRes.Order.ID, Provider: ProviderPaj,
-				FiatAmount: pajRes.Order.FiatAmount, Rate: pajRes.Order.Rate,
-				RailFee: pajRes.RailFee, Status: "pending",
-			}, nil
-		}
-		return nil, fmt.Errorf("withdrawal service temporarily unavailable")
+		// NOTE: Paj fallback is intentionally omitted here. Paj requires a MongoDB
+		// ObjectID for bank identification, but this flow has only a RampHub bank
+		// code (numeric, provider-scoped). Passing the wrong format would fail
+		// every time. Users who need Paj should use the Paj-specific endpoint.
+		return nil, fmt.Errorf("withdrawal service temporarily unavailable — RampHub bank resolution unavailable; try again later")
 	}
 
 	// Estimate USDC: fiat/rate + 2% slippage buffer, capped at $50 to prevent
@@ -698,22 +690,11 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		DeveloperFeePercent: s.developerFeePercent,
 	})
 	if err != nil {
-		// Reverse hold and try Paj fallback (Paj uses its own hold internally).
+		// Reverse hold and surface the error. Paj fallback is intentionally
+		// omitted — Paj requires a MongoDB ObjectID bank identifier but this
+		// flow carries a RampHub numeric bank code, so fallback always fails.
 		s.reverseInitialHold(ctx, userID, totalHold, railFee, "ramphub_api_error")
 		metrics.RecordRampFallback("offramp", "order_error")
-		if s.pajFallback != nil {
-			s.logger.Warn("ramphub offramp failed, falling back to Paj", zap.Error(err))
-			pajRes, pajErr := s.pajFallback.CreateOfframpOrder(ctx, userID, bankCode, accountNumber, fiatAmount, currency)
-			if pajErr != nil {
-				return nil, pajErr
-			}
-			metrics.RecordRampProvider("offramp", ProviderPaj)
-			return &OfframpResult{
-				TransactionID: pajRes.Order.ID, Provider: ProviderPaj,
-				FiatAmount: pajRes.Order.FiatAmount, Rate: pajRes.Order.Rate,
-				RailFee: pajRes.RailFee, Status: "pending",
-			}, nil
-		}
 		return nil, err
 	}
 
@@ -800,7 +781,11 @@ func (s *Service) reverseInitialHold(ctx context.Context, userID uuid.UUID, amou
 	if s.ledger == nil {
 		return
 	}
-	key := fmt.Sprintf("ramphub_offramp_prepersist_%s_%d", userID, time.Now().UnixNano())
+	// Use a compact UUID as the reference key. The verbose prefix+timestamp
+	// format produces idempotency_key values over 100 chars when embedded by
+	// the ledger adapter, violating the VARCHAR(100) UNIQUE constraint on
+	// ledger_transactions.idempotency_key.
+	key := uuid.New().String()
 	if err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance, key, amount, map[string]interface{}{
 		"provider": ProviderRampHub, "type": "offramp_prepersist_reversal", "reason": reason,
 		"rail_fee": railFee.String(), "fee_revenue_posted": true,
