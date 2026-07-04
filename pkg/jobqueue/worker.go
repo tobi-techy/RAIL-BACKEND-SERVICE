@@ -18,6 +18,7 @@ type Worker struct {
 	workers    int
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
+	cancelCtx  context.CancelFunc
 }
 
 func NewWorker(queue *JobQueue, logger *zap.Logger, workers int) *Worker {
@@ -43,13 +44,18 @@ func (w *Worker) RegisterHandler(jobType string, handler JobHandler) {
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("Starting workers", zap.Int("count", w.workers))
 
+	// Wrap in a cancellable context so Stop() can immediately unblock any
+	// in-flight BRPOP without waiting out the full dequeueBlockTimeout.
+	innerCtx, cancel := context.WithCancel(ctx)
+	w.cancelCtx = cancel
+
 	for i := 0; i < w.workers; i++ {
 		w.wg.Add(1)
-		go w.processJobs(ctx, i)
+		go w.processJobs(innerCtx, i)
 	}
 
 	w.wg.Add(1)
-	go w.processScheduledJobs(ctx)
+	go w.processScheduledJobs(innerCtx)
 }
 
 // dequeueBlockTimeout is how long each worker's BRPOP blocks server-side while
@@ -159,6 +165,12 @@ func (w *Worker) processScheduledJobs(ctx context.Context) {
 }
 
 func (w *Worker) Stop() {
+	// Cancel the inner context first: immediately unblocks any goroutine
+	// blocked in DequeueBlocking (BRPOP), so wg.Wait() returns promptly
+	// rather than waiting up to dequeueBlockTimeout (30s).
+	if w.cancelCtx != nil {
+		w.cancelCtx()
+	}
 	close(w.stopCh)
 	w.wg.Wait()
 	w.logger.Info("Workers stopped")

@@ -117,7 +117,12 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 			}
 		}
 
-		// Validate session if service is provided
+		// Validate session if service is provided. Security control (session
+		// revocation / forced logout) — FAILS CLOSED: any failure to confirm the
+		// session, definitive or transient, rejects the request. Failing open
+		// would allow a revoked session through whenever the session store
+		// errors. ValidateSession is Postgres-backed (Redis is only a cache), so
+		// a Redis outage is a cache miss resolved by the DB, not an error here.
 		if sessionService != nil {
 			sess, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
 			if err != nil {
@@ -291,7 +296,7 @@ func TieredRateLimiting(limiter *ratelimit.TieredLimiter, log *logger.Logger) gi
 		}
 
 		if result.Remaining >= 0 {
-		c.Header("X-RateLimit-Remaining", strconv.FormatInt(result.Remaining, 10))
+			c.Header("X-RateLimit-Remaining", strconv.FormatInt(result.Remaining, 10))
 		}
 
 		c.Next()

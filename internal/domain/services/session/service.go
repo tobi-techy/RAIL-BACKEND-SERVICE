@@ -432,7 +432,11 @@ func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Se
 	}
 	// Verify not expired
 	if session.ExpiresAt.Before(time.Now()) || !session.IsActive {
-		go s.invalidateSessionCache(context.Background(), tokenHash)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			s.invalidateSessionCache(ctx, tokenHash)
+		}()
 		return nil
 	}
 	return &session
@@ -442,5 +446,7 @@ func (s *Service) invalidateSessionCache(ctx context.Context, tokenHash string) 
 	if s.redis == nil {
 		return
 	}
-	s.redis.Del(ctx, sessionCachePrefix+tokenHash)
+	if err := s.redis.Del(ctx, sessionCachePrefix+tokenHash).Err(); err != nil {
+		s.logger.Warn("failed to invalidate stale session cache entry", zap.Error(err))
+	}
 }
