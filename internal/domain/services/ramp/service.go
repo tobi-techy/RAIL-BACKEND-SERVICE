@@ -1084,7 +1084,9 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 			"provider": ProviderRampHub, "type": "onramp_credit", "ramphub_tx_id": txID, "fiat_amount": fiatAmount,
 		}); err != nil {
 			s.logger.Error("CRITICAL: failed to credit USDC after RampHub onramp", zap.Error(err), zap.String("ramphub_tx_id", txID))
-			s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+			if uErr := s.unclaimOnrampOrder(ctx, txID, claimedID); uErr != nil {
+				return fmt.Errorf("credit usdc balance: %v; un-claim also failed: %w", err, uErr)
+			}
 			return fmt.Errorf("credit usdc balance: %w", err)
 		}
 	}
@@ -1098,7 +1100,9 @@ func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID,
 			Metadata: map[string]any{"source": "ramphub_onramp", "ramphub_tx_id": txID, "fiat_amount": fiatAmount},
 		}); err != nil {
 			s.logger.Error("failed allocation split for RampHub onramp — will retry", zap.Error(err), zap.String("ramphub_tx_id", txID))
-			s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL WHERE id = $1`, claimedID)
+			if uErr := s.unclaimOnrampOrder(ctx, txID, claimedID); uErr != nil {
+				return fmt.Errorf("allocation split: %v; un-claim also failed: %w", err, uErr)
+			}
 			return fmt.Errorf("allocation split: %w", err)
 		}
 	}
@@ -1147,7 +1151,10 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 			"provider": ProviderRampHub, "type": "offramp_failure_reversal", "ramphub_tx_id": txID, "fee_revenue_posted": true,
 		}); err != nil {
 		s.logger.Error("CRITICAL: failed to reverse RampHub offramp hold after failure", zap.Error(err), zap.String("ramphub_tx_id", txID))
-		s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL WHERE ramphub_transaction_id = $1`, txID)
+		if _, uErr := s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL WHERE ramphub_transaction_id = $1`, txID); uErr != nil {
+			s.logger.Error("CRITICAL: failed to un-claim RampHub offramp order after reversal failure — retries blocked, manual intervention required",
+				zap.Error(uErr), zap.String("ramphub_tx_id", txID))
+		}
 		return fmt.Errorf("reverse offramp hold: %w", err)
 	}
 	return nil

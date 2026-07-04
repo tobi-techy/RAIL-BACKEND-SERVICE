@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rail-service/rail_service/internal/domain/services/session"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
@@ -405,11 +403,11 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 					log.Warnw("Token blacklist check failed — failing open (Redis unavailable)",
 						"error", err,
 						"token_hash_prefix", func() string {
-						if len(tokenHash) >= 8 {
-							return tokenHash[:8]
-						}
-						return tokenHash
-					}(),
+							if len(tokenHash) >= 8 {
+								return tokenHash[:8]
+							}
+							return tokenHash
+						}(),
 						"security_mode", "degraded")
 				} else {
 					log.Errorw("Token blacklist check failed — rejecting request", "error", err)
@@ -431,35 +429,32 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 			}
 		}
 
-		// Validate session if service is provided
+		// Validate session if service is provided. This is a security control
+		// (it enforces session revocation / forced logout), so it FAILS CLOSED:
+		// if we cannot confirm the session is valid — whether it definitively
+		// doesn't exist or we hit a transient error — the request is rejected.
+		// Failing open here would let a revoked session ride through whenever the
+		// session store errors, a revocation-bypass an attacker can provoke.
+		// (ValidateSession is Postgres-backed with Redis only as a cache, so a
+		// Redis outage is a cache miss that still resolves against the DB, not an
+		// error — this does not turn a Redis outage into an auth outage.)
 		if sessionService != nil {
 			sess, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
 			if err != nil {
-				// Distinguish between a definitively invalid session (force logout)
-				// and transient infrastructure failures (degrade gracefully without
-				// forcing a logout — the JWT is still valid, just Redis/DB was slow).
-				if errors.Is(err, session.ErrSessionNotFound) {
-					// Session definitively doesn't exist — force logout.
-					c.JSON(http.StatusUnauthorized, gin.H{
-						"error":      "Session invalid or expired",
-						"request_id": c.GetString("request_id"),
-					})
-					c.Abort()
-					return
-				}
-				// Transient error (DB timeout, Redis unreachable, etc.) — log it
-				// but let the request through. The JWT is valid and the session
-				// likely exists; we just couldn't confirm it this time.
 				if log != nil {
-					log.Warn("Session validation failed (non-fatal, degrading gracefully)",
+					log.Error("Session validation failed — rejecting request (fail closed)",
 						zap.Error(err),
 						zap.String("user_id", claims.UserID.String()),
 						zap.String("request_id", c.GetString("request_id")))
 				}
-				// Skip setting session_id but continue — the user stays logged in.
-			} else {
-				c.Set("session_id", sess.ID)
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error":      "Session invalid or expired",
+					"request_id": c.GetString("request_id"),
+				})
+				c.Abort()
+				return
 			}
+			c.Set("session_id", sess.ID)
 		}
 
 		// Add user info to context
