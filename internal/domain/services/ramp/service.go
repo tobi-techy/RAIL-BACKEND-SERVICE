@@ -1154,6 +1154,7 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 		if _, uErr := s.db.ExecContext(ctx, `UPDATE ramphub_orders SET deposit_id = NULL WHERE ramphub_transaction_id = $1`, txID); uErr != nil {
 			s.logger.Error("CRITICAL: failed to un-claim RampHub offramp order after reversal failure — retries blocked, manual intervention required",
 				zap.Error(uErr), zap.String("ramphub_tx_id", txID))
+			return fmt.Errorf("reverse offramp hold: %v; un-claim also failed (retries blocked): %w", err, uErr)
 		}
 		return fmt.Errorf("reverse offramp hold: %w", err)
 	}
