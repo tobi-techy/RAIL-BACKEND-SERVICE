@@ -65,7 +65,11 @@ func NewMarketDataService(
 	alertRepo AlertRepository,
 	notifier NotificationService,
 	logger *zap.Logger,
+	taxonomyPath string,
 ) *MarketDataService {
+	if taxonomyPath == "" {
+		taxonomyPath = "configs/market_taxonomy.yaml"
+	}
 	return &MarketDataService{
 		alpacaClient: alpacaClient,
 		alertRepo:    alertRepo,
@@ -74,7 +78,7 @@ func NewMarketDataService(
 		priceCache:   make(map[string]*cachedQuote),
 		barsCache:    make(map[string]*cachedBars),
 		newsCache:    make(map[string]*cachedNews),
-		explorer:     NewExplorerService(alpacaClient, logger, "configs/market_taxonomy.yaml"),
+		explorer:     NewExplorerService(alpacaClient, logger, taxonomyPath),
 	}
 }
 

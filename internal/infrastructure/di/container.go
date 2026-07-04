@@ -3944,6 +3944,7 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		c.MarketAlertRepo,
 		&marketNotificationAdapter{svc: c.NotificationService},
 		c.ZapLog,
+		c.Config.Alpaca.TaxonomyFile,
 	)
 
 	// Initialize Order Placer adapter for scheduled investments

@@ -36,10 +36,36 @@ type redisClient struct {
 
 // NewRedisClient creates a new Redis client
 func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, error) {
+	poolSize := cfg.PoolSize
+	if poolSize <= 0 {
+		poolSize = 20
+	}
 	opts := &redis.Options{
-		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		DB:       cfg.DB,
-		PoolSize: 5, // Keep low for serverless Redis (Upstash)
+		Addr: fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		DB:   cfg.DB,
+		// PoolSize: controls the maximum number of connections in the pool.
+		// Driven by config so operators can tune per environment; defaults to 20.
+		// Each user app-open can fire ~15 concurrent Redis ops (blacklist check +
+		// rate limiter + session cache × N parallel requests), so 20 handles a
+		// modest concurrent user base. Upstash allows up to 100 concurrent conns.
+		PoolSize: poolSize,
+		// MinIdleConns: keeps at least 5 connections warm so traffic bursts don't
+		// stall re-establishing TCP/TLS from zero. Without this the pool drains
+		// during idle periods and every surge triggers a connection-storm that
+		// exhausts PoolTimeout before the pool recovers.
+		MinIdleConns: 5,
+		// MaxConnAge: proactively recycle connections to avoid silent TCP drops
+		// from managed Redis (Upstash, AWS ElastiCache) load balancers that
+		// terminate long-lived connections without notification.
+		MaxConnAge: 10 * time.Minute,
+		// IdleTimeout: close idle connections after 5 minutes to keep the pool
+		// fresh and avoid holding connections longer than necessary.
+		IdleTimeout: 5 * time.Minute,
+		// PoolTimeout: how long to wait for a free connection from the pool
+		// before giving up. Raised from 500ms → 1s so that brief connection
+		// bursts during MinIdleConns warm-up don't fail; still short enough that
+		// a genuinely dead Redis is detected within ~1 request instead of hanging.
+		PoolTimeout: 1 * time.Second,
 		// Short, explicit timeouts so that when Redis is unreachable (e.g. an
 		// Upstash budget suspension) every command fails fast and the caller
 		// degrades, instead of hanging until the request context deadline and
