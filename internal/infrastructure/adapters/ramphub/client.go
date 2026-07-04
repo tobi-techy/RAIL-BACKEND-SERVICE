@@ -83,8 +83,22 @@ func (c *Client) GetQuote(ctx context.Context, req QuoteRequest) (*QuoteResponse
 // CreateOrder creates a routed buy or sell order.
 func (c *Client) CreateOrder(ctx context.Context, req OrderRequest) (*OrderResponse, error) {
 	var resp OrderResponse
-	if err := c.post(ctx, "/api/developer/orders", req, &resp); err != nil {
+	raw, err := c.postCapture(ctx, "/api/developer/orders", req, &resp)
+	if err != nil {
 		return nil, fmt.Errorf("ramphub create order: %w", err)
+	}
+	// UseBread (and possibly other providers) return a buy order with only
+	// providerDetails.status = AWAITING_DEPOSIT and NO inline virtualAccount, so
+	// the customer gets no bank account to pay into. RampHub's public docs don't
+	// specify where that account surfaces, so log the raw providerDetails here to
+	// capture the true shape from a live order and resolve where the pay-in
+	// account is delivered (inline under another key, async webhook, or poll).
+	if resp.Side == "buy" && resp.ProviderDetails.VirtualAccount == nil {
+		c.logger.Warn("ramphub buy order returned no inline virtualAccount",
+			zap.String("transaction_id", resp.TransactionID),
+			zap.String("provider", resp.SelectedProvider),
+			zap.String("provider_details_status", resp.ProviderDetails.Status),
+			zap.String("provider_details_raw", extractProviderDetailsRaw(raw)))
 	}
 	return &resp, nil
 }
@@ -151,19 +165,39 @@ func (c *Client) ResolveBankAccount(ctx context.Context, bankCode, accountNumber
 // --- HTTP helpers ---
 
 func (c *Client) post(ctx context.Context, path string, body, dest interface{}) error {
+	_, err := c.do(ctx, http.MethodPost, path, body, dest)
+	return err
+}
+
+// postCapture is post that also returns the raw response body for diagnostics.
+func (c *Client) postCapture(ctx context.Context, path string, body, dest interface{}) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, path, body, dest)
 }
 
 func (c *Client) get(ctx context.Context, path string, dest interface{}) error {
-	return c.do(ctx, http.MethodGet, path, nil, dest)
+	_, err := c.do(ctx, http.MethodGet, path, nil, dest)
+	return err
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body, dest interface{}) error {
+// extractProviderDetailsRaw pulls just the providerDetails object out of a raw
+// order response as a compact JSON string, for diagnostic logging. Returns ""
+// when it can't be isolated so callers never log the full (PII-bearing) body.
+func extractProviderDetailsRaw(raw []byte) string {
+	var envelope struct {
+		ProviderDetails json.RawMessage `json:"providerDetails"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.ProviderDetails) == 0 {
+		return ""
+	}
+	return string(envelope.ProviderDetails)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body, dest interface{}) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshal request: %w", err)
+			return nil, fmt.Errorf("marshal request: %w", err)
 		}
 		bodyReader = bytes.NewReader(b)
 	}
@@ -173,7 +207,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return nil, ctx.Err()
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
 			if body != nil {
@@ -184,7 +218,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 
 		req, err := http.NewRequestWithContext(ctx, method, c.cfg.BaseURL+path, bodyReader)
 		if err != nil {
-			return fmt.Errorf("create request: %w", err)
+			return nil, fmt.Errorf("create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("x-api-key", c.cfg.APIKey)
@@ -219,15 +253,15 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 				zap.String("path", path),
 				zap.String("error_code", extractErrorCode(respBody)),
 				zap.String("error_detail", extractErrorMessage(respBody)))
-			return &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
+			return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 
 		if dest != nil {
 			if err := json.Unmarshal(respBody, dest); err != nil {
-				return fmt.Errorf("unmarshal response: %w", err)
+				return nil, fmt.Errorf("unmarshal response: %w", err)
 			}
 		}
-		return nil
+		return respBody, nil
 	}
-	return fmt.Errorf("ramphub %s %s failed after %d attempts: %w", method, path, c.cfg.MaxRetries+1, lastErr)
+	return nil, fmt.Errorf("ramphub %s %s failed after %d attempts: %w", method, path, c.cfg.MaxRetries+1, lastErr)
 }

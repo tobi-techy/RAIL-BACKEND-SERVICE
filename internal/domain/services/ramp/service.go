@@ -448,24 +448,38 @@ func (s *Service) CreateOnramp(ctx context.Context, userID uuid.UUID, fiatAmount
 			order, err := s.createRampHubBuyOrder(ctx, userID, fiatAmount, cryptoAmount.InexactFloat64(), currency, settlementAsset, rampChain, walletAddress)
 			if err == nil {
 				acctNum, acctName, bankName := buyBankDetails(order)
-				if perr := s.persistOnrampOrder(ctx, userID, order, fiatAmount, cryptoAmount.InexactFloat64(), currency, settlementAsset, rampChain, acctNum, acctName, bankName); perr != nil {
-					s.logger.Error("CRITICAL: failed to persist ramphub onramp order", zap.Error(perr), zap.String("ramphub_tx_id", order.TransactionID))
-					return nil, fmt.Errorf("failed to create deposit order, please try again")
+				// RampHub can accept a buy order yet return no virtual account (no
+				// providerDetails.virtualAccount). Returning that as success lands
+				// the user on a "transfer to" screen with nothing to pay into, so
+				// they can neither pay nor be credited. Treat a missing pay-in
+				// account as a provider failure and fall through to the Paj
+				// fallback rather than persisting an unusable order.
+				if acctNum == "" || bankName == "" {
+					s.logger.Error("ramphub onramp returned no virtual account, falling back to Paj",
+						zap.String("ramphub_tx_id", order.TransactionID),
+						zap.String("user_id", userID.String()))
+					metrics.RecordRampFallback("onramp", "missing_virtual_account")
+				} else {
+					if perr := s.persistOnrampOrder(ctx, userID, order, fiatAmount, cryptoAmount.InexactFloat64(), currency, settlementAsset, rampChain, acctNum, acctName, bankName); perr != nil {
+						s.logger.Error("CRITICAL: failed to persist ramphub onramp order", zap.Error(perr), zap.String("ramphub_tx_id", order.TransactionID))
+						return nil, fmt.Errorf("failed to create deposit order, please try again")
+					}
+					metrics.RecordRampProvider("onramp", ProviderRampHub)
+					return &OnrampResult{
+						TransactionID: order.TransactionID,
+						Provider:      ProviderRampHub,
+						AccountNumber: acctNum,
+						AccountName:   acctName,
+						Bank:          bankName,
+						FiatAmount:    fiatAmount,
+						Rate:          order.BestRateUsed,
+						Asset:         settlementAsset,
+					}, nil
 				}
-				metrics.RecordRampProvider("onramp", ProviderRampHub)
-				return &OnrampResult{
-					TransactionID: order.TransactionID,
-					Provider:      ProviderRampHub,
-					AccountNumber: acctNum,
-					AccountName:   acctName,
-					Bank:          bankName,
-					FiatAmount:    fiatAmount,
-					Rate:          order.BestRateUsed,
-					Asset:         settlementAsset,
-				}, nil
+			} else {
+				s.logger.Warn("ramphub onramp failed, falling back to Paj", zap.Error(err), zap.String("user_id", userID.String()))
+				metrics.RecordRampFallback("onramp", "order_error")
 			}
-			s.logger.Warn("ramphub onramp failed, falling back to Paj", zap.Error(err), zap.String("user_id", userID.String()))
-			metrics.RecordRampFallback("onramp", "order_error")
 		} else {
 			s.logger.Warn("ramphub onramp quote unavailable, falling back to Paj", zap.String("user_id", userID.String()))
 			metrics.RecordRampFallback("onramp", "quote_unavailable")
@@ -477,6 +491,11 @@ func (s *Service) CreateOnramp(ctx context.Context, userID uuid.UUID, fiatAmount
 		pajOrder, err := s.pajFallback.CreateOnrampOrder(ctx, userID, fiatAmount, currency)
 		if err != nil {
 			return nil, err
+		}
+		if pajOrder.AccountNumber == "" || pajOrder.Bank == "" {
+			s.logger.Error("paj onramp returned no pay-in account",
+				zap.String("paj_order_id", pajOrder.ID), zap.String("user_id", userID.String()))
+			return nil, fmt.Errorf("deposit temporarily unavailable, please try again")
 		}
 		metrics.RecordRampProvider("onramp", ProviderPaj)
 		return &OnrampResult{
