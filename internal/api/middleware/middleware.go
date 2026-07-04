@@ -395,7 +395,14 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 			bl := blacklist[0]
 			h := sha256.Sum256([]byte(tokenString))
 			tokenHash := fmt.Sprintf("%x", h)
-			revoked, err := bl.IsBlacklisted(c.Request.Context(), tokenHash)
+			// Use a short independent timeout for the Redis call so a slow or
+			// pool-contended Redis doesn't block for the full 30s request deadline.
+			// Tokens seen in the last 15s are served from the in-process negative
+			// cache without hitting Redis at all, so this 300ms is only paid on
+			// first-seen tokens or after the neg-cache window expires.
+			blCtx, blCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			revoked, err := bl.IsBlacklisted(blCtx, tokenHash)
+			blCancel()
 			if err != nil {
 				// Redis unreachable AND no recent local cache for this token.
 				// Default is strict (deny). Set AUTH_BLACKLIST_FAIL_OPEN=true to

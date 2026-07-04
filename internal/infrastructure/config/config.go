@@ -605,6 +605,7 @@ type AlpacaConfig struct {
 	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
 	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
 	WebhookSecret string `mapstructure:"webhook_secret"`  // Secret for verifying Alpaca webhooks
+	TaxonomyFile  string `mapstructure:"taxonomy_file"`   // Path to market taxonomy YAML (default: configs/market_taxonomy.yaml)
 }
 
 // ReconciliationConfig contains reconciliation service configuration
@@ -992,6 +993,7 @@ func setDefaults() {
 	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
 	viper.SetDefault("alpaca.data_feed", "iex")
 	viper.SetDefault("alpaca.timeout", 30)
+	viper.SetDefault("alpaca.taxonomy_file", "configs/market_taxonomy.yaml")
 
 	// Bridge defaults
 	viper.SetDefault("bridge.environment", "production")

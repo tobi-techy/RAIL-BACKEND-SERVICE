@@ -99,7 +99,7 @@ func TestMarketDataService_CreateAlert(t *testing.T) {
 	alertRepo := &mockAlertRepo{}
 	notifier := &mockNotifier{}
 
-	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger)
+	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger, "")
 
 	alert, err := svc.CreateAlert(context.Background(), userID, "AAPL", "price_above", decimal.NewFromInt(200))
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestMarketDataService_CreateAlert_InvalidType(t *testing.T) {
 	alertRepo := &mockAlertRepo{}
 	notifier := &mockNotifier{}
 
-	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger)
+	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger, "")
 
 	_, err := svc.CreateAlert(context.Background(), userID, "AAPL", "invalid_type", decimal.NewFromInt(200))
 	require.Error(t, err)
@@ -140,7 +140,7 @@ func TestMarketDataService_GetUserAlerts(t *testing.T) {
 	}
 	notifier := &mockNotifier{}
 
-	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger)
+	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger, "")
 
 	alerts, err := svc.GetUserAlerts(context.Background(), userID)
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestMarketDataService_DeleteAlert(t *testing.T) {
 	}
 	notifier := &mockNotifier{}
 
-	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger)
+	svc := market.NewMarketDataService(nil, alertRepo, notifier, logger, "")
 
 	err := svc.DeleteAlert(context.Background(), userID, alertID)
 	require.NoError(t, err)

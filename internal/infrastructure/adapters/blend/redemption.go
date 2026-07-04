@@ -295,6 +295,12 @@ func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, e
 		if err != nil {
 			return nil, fmt.Errorf("blend: reset withdraw session: %w", err)
 		}
+		// Verify the reset actually produced a non-terminal session. If Blend
+		// returns the same CANCELLED session (e.g. forceReset is ignored for
+		// this account), returning it will cause an infinite retry loop.
+		if isTerminalIntent(session.Status) {
+			return nil, fmt.Errorf("blend: force-reset returned terminal session %s (%s); cannot proceed", session.IntentID, session.Status)
+		}
 	}
 	return session, nil
 }
@@ -324,13 +330,20 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 	case IntentStatusLocked, IntentStatusSubmitted, IntentStatusSettled:
 		// Already progressed by a prior attempt — continue.
 	case IntentStatusFailed, IntentStatusCancelled:
-		// Session expired — reset and let caller retry with a fresh session.
-		if _, err := r.db.ExecContext(ctx, `
-			UPDATE blend_yield_redemptions SET intent_id = NULL, intent_status = NULL,
-				quote_payload = NULL, status = $2, updated_at = NOW()
-			WHERE id = $1
-		`, red.ID, redemptionStatusPending); err != nil {
-			return fmt.Errorf("blend: reset cancelled withdraw session: %w", err)
+		// Session expired — if we've been retrying excessively, mark terminal.
+		if red.Attempts >= 10 {
+			reason := fmt.Sprintf("withdraw session %s is %s after %d attempts", intentID, current.Status, red.Attempts)
+			if rerr := r.markRedemptionFailed(ctx, red.IdempotencyKey, reason); rerr != nil {
+				r.logger.Error("Blend: failed to mark redemption terminal after repeated CANCELLED sessions",
+					zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
+			}
+			return fmt.Errorf("blend: %s; terminal", reason)
+		}
+		// Otherwise reset with backoff so the worker retries with a fresh session.
+		msg := fmt.Sprintf("withdraw session %s is %s", intentID, current.Status)
+		if rerr := r.resetRedemptionForRetry(ctx, red.ID, msg, 30*time.Second); rerr != nil {
+			r.logger.Error("Blend: failed to reset redemption after CANCELLED session",
+				zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
 		}
 		return fmt.Errorf("blend: withdraw session %s is %s; reset to retry", intentID, current.Status)
 	}
@@ -431,6 +444,17 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 				// not that the redemption can never settle. Reset to pending (fresh
 				// session + quote on retry) instead of terminally failing: the ledger
 				// may already have moved, and 'failed' rows are never retried.
+				//
+				// However, if this pattern repeats across many attempts, the session
+				// itself (or the account) is likely broken and retrying won't help.
+				if red.Attempts >= 15 {
+					reason := fmt.Sprintf("withdraw session %s ended in %s after %d attempts: %s", session.IntentID, session.Status, red.Attempts, msg)
+					if rerr := r.markRedemptionFailed(ctx, red.IdempotencyKey, reason); rerr != nil {
+						r.logger.Error("Blend: failed to mark redemption terminal after repeated poll failures",
+							zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
+					}
+					return fmt.Errorf("blend: %s; terminal", reason)
+				}
 				r.logger.Error("Blend: withdraw session failed — resetting redemption for worker retry",
 					zap.String("redemption_id", red.ID.String()),
 					zap.String("intent_id", session.IntentID),
