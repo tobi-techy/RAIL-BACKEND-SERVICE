@@ -1798,7 +1798,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// RampHub webhooks (HMAC-SHA256 signed; verified in the handler)
 			if container.RampHandlers != nil {
-				ramphubWebhooks := webhooks.Group("/ramphub")
+				ramphubPath := container.Config.RampHub.WebhookPath
+				if ramphubPath == "" {
+					ramphubPath = "/ramphub"
+				}
+				ramphubWebhooks := webhooks.Group(ramphubPath)
 				ramphubWebhooks.Use(middleware.RateLimit(100))
 				ramphubWebhooks.POST("", container.RampHandlers.HandleWebhook)
 			}

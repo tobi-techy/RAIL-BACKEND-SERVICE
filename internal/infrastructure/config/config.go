@@ -580,6 +580,7 @@ type RampHubConfig struct {
 	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.ramphub.io
 	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound webhooks
 	WebhookURL          string  `mapstructure:"webhook_url"`           // Rail's webhook endpoint URL registered with RampHub
+	WebhookPath         string  `mapstructure:"webhook_path"`          // webhook route mount point (e.g. "/ramphub" or "/ramphub-prod"); defaults to "/ramphub"
 	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's business fee % applied to every order (e.g. 0.5)
 	Sandbox             bool    `mapstructure:"sandbox"`               // when true, sandbox webhook events (livemode:false) are accepted; must be false in production
 }
@@ -1481,6 +1482,7 @@ func overrideFromEnv() {
 		{"ramphub.base_url", "RAMPHUB_BASE_URL"},
 		{"ramphub.webhook_secret", "RAMPHUB_WEBHOOK_SECRET"},
 		{"ramphub.webhook_url", "RAMPHUB_WEBHOOK_URL"},
+		{"ramphub.webhook_path", "RAMPHUB_WEBHOOK_PATH"},
 		{"ramphub.developer_fee_percent", "RAMPHUB_DEVELOPER_FEE_PERCENT"},
 	} {
 		viper.BindEnv(kv[0], kv[1])
