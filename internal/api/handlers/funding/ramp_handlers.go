@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/ramphub"
 	"go.uber.org/zap"
 )
+
+// digitReplacer masks runs of 6+ consecutive digits for PII-safe logging.
+var digitReplacer = regexp.MustCompile(`\d{6,}`)
 
 // RampHandlers exposes the unified (RampHub primary, Paj fallback) NGN on/off
 // ramp endpoints. Users never pick a provider — the service routes to the best
@@ -203,6 +207,7 @@ func (h *RampHandlers) GetOrderStatus(c *gin.Context) {
 func (h *RampHandlers) HandleWebhook(c *gin.Context) {
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if err != nil {
+		h.logger.Error("ramphub webhook: failed to read body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
@@ -216,10 +221,17 @@ func (h *RampHandlers) HandleWebhook(c *gin.Context) {
 
 	var event ramphub.WebhookEvent
 	if err := json.Unmarshal(body, &event); err != nil {
+		h.logger.Error("ramphub webhook: failed to unmarshal event body",
+			zap.Error(err),
+			zap.String("body", digitReplacer.ReplaceAllString(string(body), "***")))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
 	if event.Data.TransactionID == "" {
+		h.logger.Warn("ramphub webhook: missing transactionId in event body",
+			zap.String("event_id", event.ID),
+			zap.String("event_type", event.Type),
+			zap.String("body", digitReplacer.ReplaceAllString(string(body), "***")))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing transactionId"})
 		return
 	}

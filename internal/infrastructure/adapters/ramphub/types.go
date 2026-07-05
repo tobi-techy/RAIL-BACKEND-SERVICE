@@ -150,17 +150,22 @@ type VirtualAccount struct {
 type ProviderData struct {
 	Status  string           `json:"status,omitempty"`
 	Type    string           `json:"type,omitempty"`
-	Deposit *ProviderDeposit `json:"deposit,omitempty"` // buy: pay-in account
+	Deposit *ProviderDeposit `json:"deposit,omitempty"` // buy: pay-in account; sell: crypto deposit
 }
 
-// ProviderDeposit is the UseBread-style pay-in account (snake_case).
+// ProviderDeposit is the UseBread-style deposit details.
+//   - Buy: populated with fiat bank account details (account_number, account_name, bank_name, bank_code).
+//   - Sell: populated with crypto deposit details (address, asset, note).
 type ProviderDeposit struct {
-	AccountNumber string  `json:"account_number"`
-	AccountName   string  `json:"account_name"`
-	BankName      string  `json:"bank_name"`
-	BankCode      string  `json:"bank_code"`
-	Amount        float64 `json:"amount"`
-	ExpiresAt     string  `json:"expires_at"`
+	AccountNumber string   `json:"account_number,omitempty"`
+	AccountName   string   `json:"account_name,omitempty"`
+	BankName      string   `json:"bank_name,omitempty"`
+	BankCode      string   `json:"bank_code,omitempty"`
+	Amount        float64  `json:"amount"`
+	ExpiresAt     string   `json:"expires_at,omitempty"`
+	Address       string   `json:"address,omitempty"` // sell: crypto deposit address
+	Asset         string   `json:"asset,omitempty"`   // sell: e.g. "solana:usdc"
+	Note          []string `json:"note,omitempty"`    // sell: deposit instructions
 }
 
 // PayInAccount returns the fiat bank account a buy-order customer must transfer
@@ -178,6 +183,35 @@ func (r *OrderResponse) PayInAccount() (accountNumber, accountName, bankName str
 		return d.AccountNumber, d.AccountName, d.BankName
 	}
 	return "", "", ""
+}
+
+// CryptoDepositAddress returns the crypto deposit address for a sell order,
+// normalized across providers. Returns empty string when unavailable.
+//   - UseBread: providerDetails.data.deposit.address
+//   - Paycrest: providerDetails.depositAddress (handled by normalization in service)
+func (r *OrderResponse) CryptoDepositAddress() string {
+	if r.OurCryptoAddress != "" {
+		return r.OurCryptoAddress
+	}
+	if r.ProviderDetails.DepositAddress != "" {
+		return r.ProviderDetails.DepositAddress
+	}
+	if r.ProviderDetails.Data != nil && r.ProviderDetails.Data.Deposit != nil && r.ProviderDetails.Data.Deposit.Address != "" {
+		return r.ProviderDetails.Data.Deposit.Address
+	}
+	return ""
+}
+
+// CryptoDepositAmount returns the crypto amount to send for a sell order,
+// normalizing across providers. Returns 0 when unavailable.
+func (r *OrderResponse) CryptoDepositAmount() float64 {
+	if r.ProviderDetails.AmountToSend > 0 {
+		return r.ProviderDetails.AmountToSend
+	}
+	if r.ProviderDetails.Data != nil && r.ProviderDetails.Data.Deposit != nil && r.ProviderDetails.Data.Deposit.Amount > 0 {
+		return r.ProviderDetails.Data.Deposit.Amount
+	}
+	return 0
 }
 
 // --- Order intent (active payment window) ---

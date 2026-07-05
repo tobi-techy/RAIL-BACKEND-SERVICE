@@ -861,8 +861,9 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		return nil, err
 	}
 
-	// Normalize: top-level ourCryptoAddress takes precedence; fall back to
-	// providerDetails.depositAddress in case RampHub only populates the nested field.
+	// Normalize: extract the deposit address from whatever field the provider
+	// populated — ourCryptoAddress (top-level), providerDetails.depositAddress,
+	// or providerDetails.data.deposit.address (UseBread sell).
 	s.logger.Info("RampHub sell order response",
 		zap.String("ramphub_tx_id", order.TransactionID),
 		zap.String("selected_provider", order.SelectedProvider),
@@ -872,8 +873,11 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		zap.String("deposit_address", order.ProviderDetails.DepositAddress),
 		zap.Float64("amount_to_send", order.ProviderDetails.AmountToSend),
 		zap.String("provider_details", fmt.Sprintf("%+v", order.ProviderDetails)))
-	if order.OurCryptoAddress == "" && order.ProviderDetails.DepositAddress != "" {
-		order.OurCryptoAddress = order.ProviderDetails.DepositAddress
+	if order.CryptoDepositAddress() != "" {
+		order.OurCryptoAddress = order.CryptoDepositAddress()
+	}
+	if order.CryptoDepositAmount() > 0 {
+		order.ProviderDetails.AmountToSend = order.CryptoDepositAmount()
 	}
 	if order.OurCryptoAddress == "" {
 		s.logger.Error("RampHub sell order missing deposit address — reversing hold", zap.String("ramphub_tx_id", order.TransactionID))

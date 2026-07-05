@@ -117,10 +117,15 @@ func (c *Client) GetOrderIntent(ctx context.Context, customerID, token, network 
 // MonitorStatus syncs a transaction with the provider and returns the latest
 // server truth. Used for polling, the status endpoint, and recovery workers.
 func (c *Client) MonitorStatus(ctx context.Context, transactionID string) (*Transaction, error) {
+	path := "/api/developer/orders/" + url.PathEscape(transactionID) + "/monitor-status"
 	var resp Transaction
-	if err := c.post(ctx, "/api/developer/orders/"+url.PathEscape(transactionID)+"/monitor-status", struct{}{}, &resp); err != nil {
+	raw, err := c.postCapture(ctx, path, struct{}{}, &resp)
+	if err != nil {
 		return nil, fmt.Errorf("ramphub monitor-status: %w", err)
 	}
+	c.logger.Debug("RampHub monitor-status response",
+		zap.Int("body_len", len(raw)),
+		zap.String("body_safe", digitRun.ReplaceAllString(string(raw), "***")))
 	return &resp, nil
 }
 
