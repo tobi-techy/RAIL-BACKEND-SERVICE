@@ -863,6 +863,15 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 
 	// Normalize: top-level ourCryptoAddress takes precedence; fall back to
 	// providerDetails.depositAddress in case RampHub only populates the nested field.
+	s.logger.Info("RampHub sell order response",
+		zap.String("ramphub_tx_id", order.TransactionID),
+		zap.String("selected_provider", order.SelectedProvider),
+		zap.String("status", order.Status),
+		zap.String("provider_status", order.ProviderDetails.Status),
+		zap.String("our_crypto_address", order.OurCryptoAddress),
+		zap.String("deposit_address", order.ProviderDetails.DepositAddress),
+		zap.Float64("amount_to_send", order.ProviderDetails.AmountToSend),
+		zap.String("provider_details", fmt.Sprintf("%+v", order.ProviderDetails)))
 	if order.OurCryptoAddress == "" && order.ProviderDetails.DepositAddress != "" {
 		order.OurCryptoAddress = order.ProviderDetails.DepositAddress
 	}

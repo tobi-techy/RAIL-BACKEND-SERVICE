@@ -270,6 +270,14 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 			return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 
+		// Debug: log successful order response body (PII-masked) to diagnose
+		// missing deposit addresses on sell orders.
+		if path == "/api/developer/orders" {
+			c.logger.Debug("RampHub order response",
+				zap.Int("status", resp.StatusCode),
+				zap.String("body_safe", digitRun.ReplaceAllString(string(respBody), "***")))
+		}
+
 		if dest != nil {
 			if err := json.Unmarshal(respBody, dest); err != nil {
 				return nil, fmt.Errorf("unmarshal response: %w", err)
