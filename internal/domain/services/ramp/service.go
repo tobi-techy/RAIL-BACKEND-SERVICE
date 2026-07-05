@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -734,6 +735,12 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 	if quote.Rate < 100 || quote.Rate > 10000 {
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", quote.Rate)
+	}
+
+	// RampHub/RIO minimum: $1 USDC per order. Compute from the live rate.
+	minDollarFloor := 1.0 * quote.Rate
+	if fiatAmount < minDollarFloor {
+		return nil, fmt.Errorf("minimum withdrawal is ₦%.0f ($1.00 at current rate — try a larger amount)", math.Ceil(minDollarFloor))
 	}
 
 	// Verify the payout account before any money moves. RampHub requires the
