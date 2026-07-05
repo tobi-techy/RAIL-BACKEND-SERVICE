@@ -830,7 +830,7 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 
 	// A sell order requires the crypto amount (NGN payout is derived from it).
-	orderCrypto := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(2)
+	orderCrypto := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(6)
 	order, err := s.ramphubClient.CreateOrder(ctx, ramphub.OrderRequest{
 		Side:                "sell",
 		Amount:              orderCrypto.InexactFloat64(),
