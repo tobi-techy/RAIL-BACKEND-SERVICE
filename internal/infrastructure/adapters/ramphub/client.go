@@ -202,6 +202,18 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 		bodyReader = bytes.NewReader(b)
 	}
 
+	// Create PII-safe request body for debug logging
+	var bodySafe string
+	if body != nil {
+		if b, err := json.Marshal(body); err == nil {
+			bodySafe = digitRun.ReplaceAllString(string(b), "***")
+		}
+	}
+	c.logger.Debug("RampHub request",
+		zap.String("method", method),
+		zap.String("path", path),
+		zap.String("body_safe", bodySafe))
+
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -253,7 +265,8 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 				zap.String("path", path),
 				zap.String("error_code", extractErrorCode(respBody)),
 				zap.String("error_detail", extractErrorMessage(respBody)),
-				zap.String("field_errors", extractErrorDetails(respBody)))
+				zap.String("field_errors", extractErrorDetails(respBody)),
+				zap.String("body_safe", digitRun.ReplaceAllString(string(respBody), "***")))
 			return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 
