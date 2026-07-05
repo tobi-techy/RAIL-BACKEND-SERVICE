@@ -209,7 +209,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 			bodySafe = digitRun.ReplaceAllString(string(b), "***")
 		}
 	}
-	c.logger.Info("RampHub request",
+	c.logger.Debug("RampHub request",
 		zap.String("method", method),
 		zap.String("path", path),
 		zap.String("body_safe", bodySafe))

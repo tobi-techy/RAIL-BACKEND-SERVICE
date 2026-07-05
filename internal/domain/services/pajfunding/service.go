@@ -458,7 +458,11 @@ func (s *Service) GetBankAccounts(ctx context.Context, userID uuid.UUID) ([]paj.
 	return accounts, nil
 }
 
-const MinNGNTransactionAmount = 500
+// MinNGNTransactionAmount is the floor for both onramp (deposit) and offramp
+// (withdrawal) transactions. RampHub/Rio imposes a minimum of $1.00 USDC
+// per order; at current NGN rates (~1500–1600) this equates to ~₦1,500–1,600.
+// The 2,000 floor provides a comfortable buffer against rate depreciation.
+const MinNGNTransactionAmount = 2000
 
 // --- Onramp (NGN → USDC) ---
 
