@@ -1021,9 +1021,9 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 	// Delivery-level idempotency is recorded only on success so a failed
 	// credit/reversal does not permanently consume the delivery ID — RampHub
 	// can retry and the work will be attempted again.
-	credErr := s.creditOnrampIfCompleted(ctx, userID, txID, newStatus, event.Data.TokenAmount, event.Data.FiatAmount, event.Data.TxHash)
+	credErr := s.creditOnrampIfCompleted(ctx, userID, txID, newStatus, float64(event.Data.TokenAmount), float64(event.Data.FiatAmount), event.Data.TxHash)
 	revErr := s.reverseOfframpIfFailed(ctx, userID, txID, orderType, newStatus)
-	s.notifyTerminal(ctx, userID, txID, orderType, newStatus, event.Data.FiatAmount)
+	s.notifyTerminal(ctx, userID, txID, orderType, newStatus, float64(event.Data.FiatAmount))
 	if credErr != nil {
 		return credErr
 	}

@@ -1,6 +1,10 @@
 package ramphub
 
-import "strings"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // mapStatusLabel normalizes a RampHub status/stage label (e.g. "Awaiting
 // settlement", "settling", "Marked completed") to an internal status.
@@ -12,8 +16,6 @@ func mapStatusLabel(status string) string {
 	case strings.Contains(l, "fail"), strings.Contains(l, "cancel"), strings.Contains(l, "denied"):
 		return "failed"
 	case strings.Contains(l, "paid"), strings.Contains(l, "payment received"):
-		// Fiat received, conversion not yet done — lets the client's timeline
-		// advance past "payment received" instead of sitting on pending.
 		return "paid"
 	case strings.Contains(l, "settl"), strings.Contains(l, "forward"), strings.Contains(l, "process"), strings.Contains(l, "await"):
 		return "processing"
@@ -34,29 +36,47 @@ func MapEventStatus(eventType, status string) string {
 	return mapStatusLabel(status)
 }
 
-// --- Quotes ---
+// --- Quote ---
 
-// QuoteRequest is the body for POST /api/developer/quotes.
-// For buy (onramp) set FiatAmount; for sell (offramp) set TokenAmount.
 type QuoteRequest struct {
-	Side         string  `json:"side"` // "buy" or "sell"
-	FiatAmount   float64 `json:"fiatAmount,omitempty"`
-	TokenAmount  float64 `json:"tokenAmount,omitempty"`
-	FiatCurrency string  `json:"fiatCurrency"` // e.g. "NGN"
-	Asset        string  `json:"asset"`        // e.g. "USDC", "USDT"
-	Chain        string  `json:"chain"`        // e.g. "solana", "base"
+	Side         string  `json:"side"`                   // "buy" or "sell"
+	FiatAmount   float64 `json:"fiatAmount,omitempty"`   // buy: fiat to spend
+	TokenAmount  float64 `json:"tokenAmount,omitempty"`  // sell: crypto to sell
+	FiatCurrency string  `json:"fiatCurrency"`
+	Asset        string  `json:"asset"`
+	Chain        string  `json:"chain"`
 }
 
-// QuoteOption is a single provider route returned by the quotes endpoint.
 type QuoteOption struct {
-	Provider        string  `json:"provider"`
-	Rate            float64 `json:"rate"`
-	EstimatedOutput float64 `json:"estimatedOutput"`
-	Fee             float64 `json:"fee,omitempty"`
+	Provider            string      `json:"provider"`
+	Rate                float64     `json:"rate"`
+	EstimatedOutput     float64     `json:"estimatedOutput"`
+	Fee                 float64     `json:"fee,omitempty"`
+	GrossEstimatedOutput float64    `json:"grossEstimatedOutput,omitempty"`
+	ProviderFeeUsd      float64     `json:"providerFeeUsd,omitempty"`
+	ProviderFeeToken    float64     `json:"providerFeeToken,omitempty"`
+	ProviderFeeFiat     float64     `json:"providerFeeFiat,omitempty"`
+	FeeTreatment        string      `json:"feeTreatment,omitempty"`
+	RawResponse         interface{} `json:"rawResponse,omitempty"`
+	PlatformFeePercent  float64     `json:"platformFeePercent,omitempty"`
+	PlatformFeeToken    float64     `json:"platformFeeToken,omitempty"`
+	PlatformFeeFiat     float64     `json:"platformFeeFiat,omitempty"`
+	NetAfterPlatformFee float64     `json:"netAfterPlatformFee,omitempty"`
+	ProviderFee         *struct {
+		Usd       float64 `json:"usd,omitempty"`
+		Token     float64 `json:"token,omitempty"`
+		Fiat      float64 `json:"fiat,omitempty"`
+		Treatment string  `json:"treatment,omitempty"`
+	} `json:"providerFee,omitempty"`
+	RampHubFee *struct {
+		Enabled bool    `json:"enabled"`
+		Ratio   float64 `json:"ratio,omitempty"`
+		Percent float64 `json:"percent,omitempty"`
+		Token   float64 `json:"token,omitempty"`
+		Fiat    float64 `json:"fiat,omitempty"`
+	} `json:"rampHubFee,omitempty"`
 }
 
-// QuoteResponse is the response from the quotes endpoint. BestQuote is the
-// recommended route RampHub already selected; Quotes holds all options.
 type QuoteResponse struct {
 	BestQuote QuoteOption   `json:"bestQuote"`
 	Quotes    []QuoteOption `json:"quotes"`
@@ -309,14 +329,51 @@ type WebhookEvent struct {
 	Data      WebhookData `json:"data"`
 }
 
+// WebhookData maps the RampHub webhook data payload. RampHub sends numeric
+// fields (fiatAmount, cryptoAmount, exchangeRate) as JSON strings, so they
+// use a custom decoder that accepts both string and number inputs.
 type WebhookData struct {
-	TransactionID string  `json:"transactionId"`
-	Status        string  `json:"status"`
-	Provider      string  `json:"provider"`
-	Asset         string  `json:"asset"`
-	Chain         string  `json:"chain"`
-	FiatAmount    float64 `json:"fiatAmount,omitempty"`
-	TokenAmount   float64 `json:"tokenAmount,omitempty"`
-	Rate          float64 `json:"rate,omitempty"`
-	TxHash        string  `json:"txHash,omitempty"`
+	TransactionID string    `json:"id"`
+	Status        string    `json:"status"`
+	Provider      string    `json:"platformUsed"`
+	Asset         string    `json:"cryptoSymbol"`
+	Chain         string    `json:"network"`
+	FiatAmount    FlexFloat `json:"fiatAmount"`
+	TokenAmount   FlexFloat `json:"cryptoAmount"`
+	Rate          FlexFloat `json:"exchangeRate"`
+	TxHash        string    `json:"blockchainTxHash,omitempty"`
+}
+
+// FlexFloat accepts both JSON string and number for a float64 value.
+type FlexFloat float64
+
+func (f *FlexFloat) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*f = 0
+		return nil
+	}
+	// Try number first
+	if data[0] != '"' {
+		var v float64
+		if err := json.Unmarshal(data, &v); err != nil {
+			return err
+		}
+		*f = FlexFloat(v)
+		return nil
+	}
+	// Unquote string then parse
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		*f = 0
+		return nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return err
+	}
+	*f = FlexFloat(v)
+	return nil
 }

@@ -75,8 +75,7 @@ func (s *Service) executeCircleTransferToRampHub(ctx context.Context, userID uui
 
 	isSolana := strings.Contains(strings.ToUpper(blockchain), "SOL")
 	if isSolana {
-		idem := fmt.Sprintf("ramphub-offramp-sol-%s", order.TransactionID)
-		tx, txErr := s.circleTransfer.TransferUSDCWithIdempotency(ctx, walletID, tokenID, order.OurCryptoAddress, transferAmount.StringFixed(2), idem)
+		tx, txErr := s.circleTransfer.TransferUSDCWithIdempotency(ctx, walletID, tokenID, order.OurCryptoAddress, transferAmount.StringFixed(2), order.TransactionID)
 		if txErr != nil {
 			s.logger.Error("async: Circle SOL transfer to RampHub failed — reversing hold",
 				zap.Error(txErr), zap.String("ramphub_tx_id", order.TransactionID))
@@ -165,7 +164,7 @@ func (s *Service) executeCircleViaChainRails(ctx context.Context, userID uuid.UU
 		return
 	}
 
-	idem := fmt.Sprintf("ramphub-offramp-evm-%s", order.TransactionID)
+	idem := uuid.NewSHA1(uuid.NameSpaceOID, []byte("ramphub-evm-"+order.TransactionID)).String()
 	tx, txErr := s.circleTransfer.TransferUSDCWithIdempotency(ctx, walletID, tokenID, intent.IntentAddress, circleAmount, idem)
 	if txErr != nil {
 		s.logger.Error("Circle transfer to ChainRails intent for RampHub failed — reversing hold",
