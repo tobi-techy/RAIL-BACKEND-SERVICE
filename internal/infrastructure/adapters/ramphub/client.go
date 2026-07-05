@@ -252,7 +252,8 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 				zap.Int("status", resp.StatusCode),
 				zap.String("path", path),
 				zap.String("error_code", extractErrorCode(respBody)),
-				zap.String("error_detail", extractErrorMessage(respBody)))
+				zap.String("error_detail", extractErrorMessage(respBody)),
+				zap.String("field_errors", extractErrorDetails(respBody)))
 			return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 		}
 

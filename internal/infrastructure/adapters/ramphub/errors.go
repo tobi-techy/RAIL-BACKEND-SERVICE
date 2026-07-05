@@ -101,6 +101,40 @@ func extractErrorMessage(body []byte) string {
 	return truncateCode(digitRun.ReplaceAllString(msg, "***"))
 }
 
+// DetailItem represents one field-level validation error from RampHub.
+type DetailItem struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// extractErrorDetails returns a comma-separated summary of field-level
+// validation errors from the RampHub error body. The body shape is:
+//
+//	{"code":"Unprocessable Entity","message":"Validation failed","details":[{"field":"fiatAmount","message":"must be a positive number"}]}
+//
+// Returns "" when there are no details or the shape doesn't match.
+func extractErrorDetails(body []byte) string {
+	var envelope struct {
+		Details []DetailItem `json:"details"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || len(envelope.Details) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, d := range envelope.Details {
+		field := strings.TrimSpace(d.Field)
+		msg := strings.TrimSpace(d.Message)
+		if field == "" && msg == "" {
+			continue
+		}
+		parts = append(parts, field+":"+truncateCode(digitRun.ReplaceAllString(msg, "***")))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
 // truncateCode keeps error strings log-safe: short and single-line.
 func truncateCode(s string) string {
 	if idx := strings.IndexAny(s, "\r\n"); idx >= 0 {

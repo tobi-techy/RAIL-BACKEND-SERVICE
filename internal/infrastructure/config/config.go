@@ -1484,6 +1484,7 @@ func overrideFromEnv() {
 		{"ramphub.webhook_url", "RAMPHUB_WEBHOOK_URL"},
 		{"ramphub.webhook_path", "RAMPHUB_WEBHOOK_PATH"},
 		{"ramphub.developer_fee_percent", "RAMPHUB_DEVELOPER_FEE_PERCENT"},
+		{"ramphub.sandbox", "RAMPHUB_SANDBOX"},
 	} {
 		viper.BindEnv(kv[0], kv[1])
 		if v := os.Getenv(kv[1]); v != "" {

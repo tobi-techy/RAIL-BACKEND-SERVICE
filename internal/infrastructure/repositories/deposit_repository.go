@@ -265,6 +265,33 @@ func (r *DepositRepository) GetByIdempotencyKey(ctx context.Context, idempotency
 	return &deposit, nil
 }
 
+// GetRecentByUserIDAndAmount retrieves a deposit matching user + amount within
+// a time window. Used as a secondary idempotency check when the primary txHash
+// lookup misses (e.g. RampHub fallback credited with an empty txHash).
+func (r *DepositRepository) GetRecentByUserIDAndAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, within time.Duration) (*entities.Deposit, error) {
+	cutoff := time.Now().Add(-within)
+	query := `
+		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+		FROM deposits
+		WHERE user_id = $1 AND amount = $2 AND created_at > $3
+		ORDER BY created_at DESC LIMIT 1
+	`
+
+	var deposit entities.Deposit
+	err := r.db.GetContext(ctx, &deposit, query, userID, amount, cutoff)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get deposit by user and amount: %w", err)
+	}
+
+	return &deposit, nil
+}
+
 // UpdateStatus updates the status of a deposit
 func (r *DepositRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error {
 	query := `

@@ -150,6 +150,7 @@ type DepositRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status string, confirmedAt *time.Time) error
 	GetByTxHash(ctx context.Context, txHash string) (*entities.Deposit, error)
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
+	GetRecentByUserIDAndAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, within time.Duration) (*entities.Deposit, error)
 	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 }
 
@@ -643,6 +644,16 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 				return fmt.Errorf("confirm reconciled Circle deposit: %w", err)
 			}
 		}
+		return nil
+	}
+
+	// Secondary idempotency: RampHub fallback may have credited the same deposit
+	// with an empty or different txHash. Check for a recently confirmed deposit
+	// for the same user and amount to prevent double credit.
+	if recent, _ := s.depositRepo.GetRecentByUserIDAndAmount(ctx, userID, amount, 2*time.Hour); recent != nil {
+		s.logger.Info("Circle deposit skipped — duplicate by user+amount within window (likely RampHub fallback)",
+			"user_id", userID.String(), "amount", amount.String(), "tx_hash", txHash,
+			"existing_deposit_id", recent.ID.String())
 		return nil
 	}
 
