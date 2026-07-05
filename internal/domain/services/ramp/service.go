@@ -834,7 +834,6 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	order, err := s.ramphubClient.CreateOrder(ctx, ramphub.OrderRequest{
 		Side:                "sell",
 		Amount:              orderCrypto.InexactFloat64(),
-		FiatAmount:          fiatAmount,
 		FiatCurrency:        currency,
 		Asset:               settlementAsset,
 		Chain:               offrampSettlementChain,
