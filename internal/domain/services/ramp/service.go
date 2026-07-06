@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/ramphub"
@@ -976,8 +977,12 @@ func (s *Service) reverseInitialHold(ctx context.Context, userID uuid.UUID, amou
 // signs its webhooks, the verified payload is trusted directly. deliveryID is
 // the x-ramphub-delivery header used to dedupe retried deliveries.
 func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *ramphub.WebhookEvent) error {
-	txID := event.Data.TransactionID
-	if txID == "" {
+	// RampHub references the order under several possible keys across schema
+	// revisions (data.id, data.transactionId, data.reference, …). Collect every
+	// candidate and match on all of them so a change in which field carries the
+	// id does not break order matching.
+	candidates := event.Data.Identifiers()
+	if len(candidates) == 0 {
 		return nil
 	}
 
@@ -985,23 +990,22 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 	// been persisted yet (race with create path), return an error so RampHub
 	// retries the webhook instead of permanently consuming the delivery_id.
 	//
-	// RampHub's webhook data.transactionId can carry either the order's UUID
-	// (ramphub_transaction_id) or its RH-TX reference (request_reference), so
-	// match on both and then key every downstream query on the canonical UUID.
+	// A candidate can match either the order's UUID (ramphub_transaction_id) or
+	// its RH-TX reference (request_reference); after matching we key every
+	// downstream query on the canonical UUID.
 	var userID uuid.UUID
 	var currentStatus, orderType, canonicalTxID string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT user_id, status, order_type, ramphub_transaction_id FROM ramphub_orders
-		 WHERE ramphub_transaction_id = $1 OR request_reference = $1`, txID).
+		 WHERE ramphub_transaction_id = ANY($1) OR request_reference = ANY($1)`, pq.Array(candidates)).
 		Scan(&userID, &currentStatus, &orderType, &canonicalTxID)
 	if err == sql.ErrNoRows {
-		s.logger.Warn("ramphub webhook for unknown order — will retry", zap.String("ramphub_ref", txID))
-		return fmt.Errorf("order not yet persisted for tx %s", txID)
+		return s.handleUnmatchedWebhook(ctx, candidates)
 	}
 	if err != nil {
 		return fmt.Errorf("lookup ramphub order: %w", err)
 	}
-	txID = canonicalTxID
+	txID := canonicalTxID
 	if currentStatus == "completed" || currentStatus == "failed" {
 		return nil
 	}
@@ -1047,6 +1051,79 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 		}
 	}
 	return nil
+}
+
+const (
+	// ramphubWebhookMaxRetries bounds how many times an unmatched webhook is
+	// retried (via a 5xx) before we stop asking RampHub to redeliver. A genuine
+	// create-race resolves within seconds; beyond this the order does not exist
+	// for us, and the poll/recovery workers settle it if it ever does — so
+	// continuing to 500 only produces a retry storm.
+	ramphubWebhookMaxRetries = 6
+	// ramphubWebhookRetryTTL bounds the lifetime of the per-webhook attempt
+	// counter so a later, legitimately-delayed order still gets a fresh grace
+	// window rather than being permanently suppressed.
+	ramphubWebhookRetryTTL = 2 * time.Hour
+)
+
+// handleUnmatchedWebhook decides whether to keep asking RampHub to retry a
+// webhook whose order we cannot find (return error -> 5xx) or to give up and
+// acknowledge it (return nil -> 200) once the create-race grace window has
+// clearly passed. This prevents a permanent id mismatch or a stale/foreign
+// delivery from 500-storming forever while still tolerating the normal race
+// where a webhook arrives microseconds before the order row is committed.
+func (s *Service) handleUnmatchedWebhook(ctx context.Context, candidates []string) error {
+	retryErr := fmt.Errorf("order not yet persisted for tx %s", strings.Join(candidates, ","))
+
+	// No shared counter available (tests / degraded mode): keep the retry
+	// behaviour so a real early-race webhook is never dropped. Prod always has
+	// Redis.
+	if s.redis == nil {
+		s.logger.Warn("ramphub webhook for unknown order — will retry",
+			zap.Strings("ramphub_candidates", candidates))
+		return retryErr
+	}
+
+	key := "ramphub:webhook:unmatched:" + unmatchedWebhookKey(candidates)
+	attempts, incrErr := s.redis.Incr(ctx, key)
+	if incrErr != nil {
+		// Fail open to a retry: if we cannot track attempts we must not drop a
+		// potentially-real early-race webhook because Redis hiccuped.
+		s.logger.Warn("ramphub webhook: unmatched-retry counter failed — will retry",
+			zap.Error(incrErr), zap.Strings("ramphub_candidates", candidates))
+		return retryErr
+	}
+	if attempts == 1 {
+		if expErr := s.redis.Expire(ctx, key, ramphubWebhookRetryTTL); expErr != nil {
+			s.logger.Warn("ramphub webhook: failed to set unmatched-retry TTL",
+				zap.Error(expErr), zap.Strings("ramphub_candidates", candidates))
+		}
+	}
+
+	if attempts <= ramphubWebhookMaxRetries {
+		s.logger.Warn("ramphub webhook for unknown order — will retry",
+			zap.Strings("ramphub_candidates", candidates), zap.Int64("attempt", attempts))
+		return retryErr
+	}
+
+	// Grace window exhausted: acknowledge so RampHub stops retrying. If the order
+	// genuinely exists it is settled by the poll/recovery workers; if it never
+	// existed this was a stale or foreign delivery. Either way, surface loudly
+	// for manual reconciliation.
+	s.logger.Error("CRITICAL: ramphub webhook unmatched after max retries — acking to stop storm; verify order reconciliation",
+		zap.Strings("ramphub_candidates", candidates), zap.Int64("attempts", attempts))
+	return nil
+}
+
+// unmatchedWebhookKey builds a stable, bounded Redis key fragment from the
+// candidate identifiers so retries of the same logical webhook share a counter
+// regardless of identifier ordering.
+func unmatchedWebhookKey(candidates []string) string {
+	sorted := append([]string(nil), candidates...)
+	sort.Strings(sorted)
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(strings.Join(sorted, "|")))
+	return fmt.Sprintf("%x", h.Sum64())
 }
 
 // PollOrderStatus fetches the latest status from RampHub, verifying ownership.

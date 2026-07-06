@@ -227,8 +227,8 @@ func (h *RampHandlers) HandleWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
-	if event.Data.TransactionID == "" {
-		h.logger.Warn("ramphub webhook: missing transactionId in event body",
+	if len(event.Data.Identifiers()) == 0 {
+		h.logger.Warn("ramphub webhook: missing transaction identifier in event body",
 			zap.String("event_id", event.ID),
 			zap.String("event_type", event.Type),
 			zap.String("body", digitReplacer.ReplaceAllString(string(body), "***")))
@@ -249,7 +249,12 @@ func (h *RampHandlers) HandleWebhook(c *gin.Context) {
 
 	deliveryID := c.GetHeader("x-ramphub-delivery")
 	if err := h.service.HandleWebhook(c.Request.Context(), deliveryID, &event); err != nil {
-		h.logger.Error("ramphub webhook processing failed", zap.Error(err), zap.String("ramphub_tx_id", event.Data.TransactionID))
+		// Include the redacted raw body so any future id-mapping mismatch is
+		// diagnosable from the payload RampHub actually sent.
+		h.logger.Error("ramphub webhook processing failed",
+			zap.Error(err),
+			zap.Strings("ramphub_candidates", event.Data.Identifiers()),
+			zap.String("body", digitReplacer.ReplaceAllString(string(body), "***")))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
 		return
 	}

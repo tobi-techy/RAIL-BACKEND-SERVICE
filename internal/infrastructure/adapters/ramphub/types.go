@@ -39,30 +39,30 @@ func MapEventStatus(eventType, status string) string {
 // --- Quote ---
 
 type QuoteRequest struct {
-	Side         string  `json:"side"`                   // "buy" or "sell"
-	FiatAmount   float64 `json:"fiatAmount,omitempty"`   // buy: fiat to spend
-	TokenAmount  float64 `json:"tokenAmount,omitempty"`  // sell: crypto to sell
+	Side         string  `json:"side"`                  // "buy" or "sell"
+	FiatAmount   float64 `json:"fiatAmount,omitempty"`  // buy: fiat to spend
+	TokenAmount  float64 `json:"tokenAmount,omitempty"` // sell: crypto to sell
 	FiatCurrency string  `json:"fiatCurrency"`
 	Asset        string  `json:"asset"`
 	Chain        string  `json:"chain"`
 }
 
 type QuoteOption struct {
-	Provider            string      `json:"provider"`
-	Rate                float64     `json:"rate"`
-	EstimatedOutput     float64     `json:"estimatedOutput"`
-	Fee                 float64     `json:"fee,omitempty"`
-	GrossEstimatedOutput float64    `json:"grossEstimatedOutput,omitempty"`
-	ProviderFeeUsd      float64     `json:"providerFeeUsd,omitempty"`
-	ProviderFeeToken    float64     `json:"providerFeeToken,omitempty"`
-	ProviderFeeFiat     float64     `json:"providerFeeFiat,omitempty"`
-	FeeTreatment        string      `json:"feeTreatment,omitempty"`
-	RawResponse         interface{} `json:"rawResponse,omitempty"`
-	PlatformFeePercent  float64     `json:"platformFeePercent,omitempty"`
-	PlatformFeeToken    float64     `json:"platformFeeToken,omitempty"`
-	PlatformFeeFiat     float64     `json:"platformFeeFiat,omitempty"`
-	NetAfterPlatformFee float64     `json:"netAfterPlatformFee,omitempty"`
-	ProviderFee         *struct {
+	Provider             string      `json:"provider"`
+	Rate                 float64     `json:"rate"`
+	EstimatedOutput      float64     `json:"estimatedOutput"`
+	Fee                  float64     `json:"fee,omitempty"`
+	GrossEstimatedOutput float64     `json:"grossEstimatedOutput,omitempty"`
+	ProviderFeeUsd       float64     `json:"providerFeeUsd,omitempty"`
+	ProviderFeeToken     float64     `json:"providerFeeToken,omitempty"`
+	ProviderFeeFiat      float64     `json:"providerFeeFiat,omitempty"`
+	FeeTreatment         string      `json:"feeTreatment,omitempty"`
+	RawResponse          interface{} `json:"rawResponse,omitempty"`
+	PlatformFeePercent   float64     `json:"platformFeePercent,omitempty"`
+	PlatformFeeToken     float64     `json:"platformFeeToken,omitempty"`
+	PlatformFeeFiat      float64     `json:"platformFeeFiat,omitempty"`
+	NetAfterPlatformFee  float64     `json:"netAfterPlatformFee,omitempty"`
+	ProviderFee          *struct {
 		Usd       float64 `json:"usd,omitempty"`
 		Token     float64 `json:"token,omitempty"`
 		Fiat      float64 `json:"fiat,omitempty"`
@@ -333,15 +333,45 @@ type WebhookEvent struct {
 // fields (fiatAmount, cryptoAmount, exchangeRate) as JSON strings, so they
 // use a custom decoder that accepts both string and number inputs.
 type WebhookData struct {
-	TransactionID string    `json:"id"`
-	Status        string    `json:"status"`
-	Provider      string    `json:"platformUsed"`
-	Asset         string    `json:"cryptoSymbol"`
-	Chain         string    `json:"network"`
-	FiatAmount    FlexFloat `json:"fiatAmount"`
-	TokenAmount   FlexFloat `json:"cryptoAmount"`
-	Rate          FlexFloat `json:"exchangeRate"`
-	TxHash        string    `json:"blockchainTxHash,omitempty"`
+	// RampHub has referenced the order under different keys across schema
+	// revisions: data.id (current), data.transactionId (what order-create
+	// returns and we persist as ramphub_transaction_id), and data.reference /
+	// data.requestReference (persisted as request_reference). Capture all of
+	// them so the order lookup matches regardless of which key is populated —
+	// see Identifiers().
+	TransactionID    string    `json:"id"`
+	AltTransactionID string    `json:"transactionId"`
+	Reference        string    `json:"reference"`
+	RequestReference string    `json:"requestReference"`
+	Status           string    `json:"status"`
+	Provider         string    `json:"platformUsed"`
+	Asset            string    `json:"cryptoSymbol"`
+	Chain            string    `json:"network"`
+	FiatAmount       FlexFloat `json:"fiatAmount"`
+	TokenAmount      FlexFloat `json:"cryptoAmount"`
+	Rate             FlexFloat `json:"exchangeRate"`
+	TxHash           string    `json:"blockchainTxHash,omitempty"`
+}
+
+// Identifiers returns every distinct, non-empty identifier RampHub may use to
+// reference the order in a webhook payload. The order lookup matches on all of
+// them (against both ramphub_transaction_id and request_reference) so a schema
+// change in which field carries the id does not break order matching.
+func (d WebhookData) Identifiers() []string {
+	seen := make(map[string]struct{}, 4)
+	var ids []string
+	for _, v := range []string{d.TransactionID, d.AltTransactionID, d.Reference, d.RequestReference} {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		ids = append(ids, v)
+	}
+	return ids
 }
 
 // FlexFloat accepts both JSON string and number for a float64 value.

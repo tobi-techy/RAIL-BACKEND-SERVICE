@@ -3,17 +3,84 @@ package ramp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/ramphub"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+// fakeRedis is a minimal in-memory RedisClient for exercising the bounded
+// unmatched-webhook retry logic. Only Incr/Expire are used by that path.
+type fakeRedis struct {
+	counts  map[string]int64
+	incrErr error
+}
+
+func newFakeRedis() *fakeRedis { return &fakeRedis{counts: map[string]int64{}} }
+
+func (f *fakeRedis) Incr(ctx context.Context, key string) (int64, error) {
+	if f.incrErr != nil {
+		return 0, f.incrErr
+	}
+	f.counts[key]++
+	return f.counts[key], nil
+}
+func (f *fakeRedis) Expire(ctx context.Context, key string, ttl time.Duration) error { return nil }
+func (f *fakeRedis) Set(ctx context.Context, key string, v interface{}, ttl time.Duration) error {
+	return nil
+}
+func (f *fakeRedis) Get(ctx context.Context, key string, dest interface{}) error { return nil }
+func (f *fakeRedis) Del(ctx context.Context, key string) error                   { return nil }
+func (f *fakeRedis) Exists(ctx context.Context, key string) (bool, error)        { return false, nil }
+func (f *fakeRedis) Keys(ctx context.Context, pattern string) ([]string, error)  { return nil, nil }
+func (f *fakeRedis) Ping(ctx context.Context) error                              { return nil }
+func (f *fakeRedis) Close() error                                                { return nil }
+func (f *fakeRedis) Client() *redis.Client                                       { return nil }
+
+func TestHandleUnmatchedWebhook(t *testing.T) {
+	ctx := context.Background()
+	candidates := []string{"7a5fdfb8-8a35-4e11-bb9c-b8548b62302f"}
+
+	t.Run("retries through grace window then acks to stop storm", func(t *testing.T) {
+		s := &Service{redis: newFakeRedis(), logger: zap.NewNop()}
+		// The first ramphubWebhookMaxRetries attempts must return an error (5xx ->
+		// RampHub redelivers) to tolerate a genuine create-race.
+		for i := 1; i <= ramphubWebhookMaxRetries; i++ {
+			if err := s.handleUnmatchedWebhook(ctx, candidates); err == nil {
+				t.Fatalf("attempt %d: expected retry error, got nil", i)
+			}
+		}
+		// Beyond the window we ack (nil) so RampHub stops retrying.
+		if err := s.handleUnmatchedWebhook(ctx, candidates); err != nil {
+			t.Fatalf("post-grace attempt: expected ack (nil), got %v", err)
+		}
+	})
+
+	t.Run("fails open to retry when redis is nil", func(t *testing.T) {
+		s := &Service{redis: nil, logger: zap.NewNop()}
+		if err := s.handleUnmatchedWebhook(ctx, candidates); err == nil {
+			t.Fatal("expected retry error when redis is nil")
+		}
+	})
+
+	t.Run("fails open to retry when counter errors", func(t *testing.T) {
+		s := &Service{redis: &fakeRedis{counts: map[string]int64{}, incrErr: errFakeRedis}, logger: zap.NewNop()}
+		if err := s.handleUnmatchedWebhook(ctx, candidates); err == nil {
+			t.Fatal("expected retry error when Incr fails")
+		}
+	})
+}
+
+var errFakeRedis = errors.New("redis down")
 
 func TestRampCustomerID(t *testing.T) {
 	// externalCustomerId must be dash-free so the provider's derived pay-in
