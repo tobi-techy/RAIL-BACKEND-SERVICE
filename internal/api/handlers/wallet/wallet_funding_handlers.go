@@ -1090,6 +1090,41 @@ func (h *WalletFundingHandlers) GetBalances(c *gin.Context) {
 	c.JSON(http.StatusOK, balances)
 }
 
+// GetGasBalance returns the user's SOL balance for gas fees.
+// @Summary Get gas balance
+// @Description Get the authenticated user's SOL balance (used for gas fees on Solana transfers)
+// @Tags funding
+// @Produce json
+// @Success 200 {object} map[string]string
+// @Failure 401 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/v1/funding/gas-balance [get]
+func (h *WalletFundingHandlers) GetGasBalance(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		h.logger.Error("Failed to get user ID", "error", err)
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	if h.walletService == nil {
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{
+			Code:    "SERVICE_UNAVAILABLE",
+			Message: "Wallet service not configured",
+		})
+		return
+	}
+
+	balance, err := h.walletService.GetGasBalance(c.Request.Context(), userUUID)
+	if err != nil {
+		h.logger.Error("Failed to get gas balance", "error", err, "user_id", userUUID)
+		c.JSON(http.StatusOK, gin.H{"balance": "0", "currency": "SOL"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"balance": balance, "currency": "SOL"})
+}
+
 // GetVirtualAccounts retrieves virtual accounts for the authenticated user
 // GET /api/v1/funding/virtual-accounts
 func (h *WalletFundingHandlers) GetVirtualAccounts(c *gin.Context) {

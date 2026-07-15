@@ -1025,6 +1025,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Unified Balance route
 			protected.GET("/balances", middleware.TimeoutMiddleware(10*time.Second), walletFundingHandlers.GetUnifiedBalances)
 
+			// Gas balance route — SOL balance for Solana gas fees
+			protected.GET("/gas-balance", middleware.TimeoutMiddleware(10*time.Second), walletFundingHandlers.GetGasBalance)
+
 			// Unified Activity feed — single endpoint for all transaction history
 			if container.ActivityHandlers != nil {
 				protected.GET("/activity", middleware.TimeoutMiddleware(10*time.Second), container.ActivityHandlers.GetActivityFeed)

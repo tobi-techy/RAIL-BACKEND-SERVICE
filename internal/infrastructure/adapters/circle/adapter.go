@@ -181,6 +181,11 @@ func (a *Adapter) GetWalletBalance(ctx context.Context, walletID string) (string
 	return "0", nil
 }
 
+// GetNativeBalance returns the native gas token balance (e.g. SOL) for a Circle wallet.
+func (a *Adapter) GetNativeBalance(ctx context.Context, walletID string) (string, error) {
+	return a.client.GetNativeTokenBalance(ctx, walletID)
+}
+
 // ListWallets returns all wallets in a wallet set as domain entities.
 func (a *Adapter) ListWallets(ctx context.Context, walletSetID string, userID uuid.UUID) ([]*entities.ManagedWallet, error) {
 	wallets, err := a.client.ListWallets(ctx, walletSetID)

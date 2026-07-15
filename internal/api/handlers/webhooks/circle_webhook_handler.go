@@ -262,6 +262,19 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 	if err != nil {
 		return fmt.Errorf("circle token validation failed for wallet %s token %s: %w", tx.WalletID, tx.TokenID, err)
 	}
+
+	// SOL deposits are native gas tokens — they stay in the wallet for gas fees
+	// and must NOT be treated as unsupported assets (which would trigger a return).
+	if isNativeGasToken(tokenSymbol) {
+		h.logger.Info("SOL gas deposit accepted — stays in wallet for gas",
+			zap.String("userID", userID.String()),
+			zap.String("amount", amount.String()),
+			zap.String("chain", chain),
+			zap.String("tokenSymbol", tokenSymbol),
+			zap.String("txHash", tx.TxHash))
+		return nil
+	}
+
 	token := entities.Stablecoin(tokenSymbol)
 	if !token.IsValid() {
 		return h.handleUnsupportedInboundAsset(ctx, &event.Notification, userID, tokenSymbol)
@@ -376,6 +389,13 @@ func circleBlockchainToDomainChain(blockchain string) string {
 	default:
 		return bc
 	}
+}
+
+// isNativeGasToken returns true if the token symbol represents a native gas
+// token (e.g. SOL). These deposits stay in the wallet for gas fees and must
+// not be treated as unsupported assets or credited to the user's ledger.
+func isNativeGasToken(symbol string) bool {
+	return strings.EqualFold(strings.TrimSpace(symbol), "SOL")
 }
 
 // processOutboundTransaction handles completed/failed outbound Circle transfers (withdrawals).

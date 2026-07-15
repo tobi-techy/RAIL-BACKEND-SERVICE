@@ -22,6 +22,7 @@ type CircleWalletProvider interface {
 	CreateWalletForUser(ctx context.Context, userID uuid.UUID, walletSetID string, chain entities.WalletChain) (*entities.ManagedWallet, error)
 	CreateMultiChainWallets(ctx context.Context, userID uuid.UUID, walletSetID string, chains []entities.WalletChain) ([]*entities.ManagedWallet, error)
 	GetWalletBalance(ctx context.Context, circleWalletID string) (string, error)
+	GetNativeBalance(ctx context.Context, circleWalletID string) (string, error)
 }
 
 type CircleWalletListerByUser interface {
@@ -182,6 +183,25 @@ func (s *Service) GetCircleWalletBalance(ctx context.Context, userID uuid.UUID, 
 		return "", fmt.Errorf("wallet has no Circle ID (legacy Bridge wallet)")
 	}
 	return s.circleWallets.GetWalletBalance(ctx, wallet.CircleWalletID)
+}
+
+// GetGasBalance returns the native SOL balance for a user's Solana wallet.
+// This balance is used to pay gas fees for USDC transfers on Solana.
+func (s *Service) GetGasBalance(ctx context.Context, userID uuid.UUID) (string, error) {
+	if s.circleWallets == nil {
+		return "", fmt.Errorf("circle wallet provider not configured")
+	}
+	wallet, err := s.walletRepo.GetByUserAndChain(ctx, userID, entities.WalletChainSolana)
+	if err != nil {
+		return "", fmt.Errorf("wallet lookup failed: %w", err)
+	}
+	if wallet == nil {
+		return "", fmt.Errorf("no Solana wallet found for user")
+	}
+	if wallet.CircleWalletID == "" {
+		return "", fmt.Errorf("wallet has no Circle ID")
+	}
+	return s.circleWallets.GetNativeBalance(ctx, wallet.CircleWalletID)
 }
 
 // CreateWalletsForUser creates Circle wallets for a user across specified chains.

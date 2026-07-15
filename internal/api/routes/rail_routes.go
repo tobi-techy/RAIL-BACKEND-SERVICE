@@ -77,6 +77,13 @@ func SetupStackRoutes(db *sql.DB, cfg *config.Config, log *logger.Logger, zapLog
 			balances.GET("", walletFundingHandlers.GetBalances)
 		}
 
+		// Gas balance — SOL for Solana gas fees
+		gasBalance := v1.Group("/gas-balance")
+		gasBalance.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
+		{
+			gasBalance.GET("", walletFundingHandlers.GetGasBalance)
+		}
+
 		// === INVESTING ENDPOINTS ===
 		baskets := v1.Group("/baskets")
 		baskets.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))

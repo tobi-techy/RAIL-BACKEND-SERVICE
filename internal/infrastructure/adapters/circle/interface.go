@@ -20,6 +20,7 @@ type Client interface {
 	// bridge/contract. Required wherever correctness depends on bridge-delivered funds.
 	GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]TokenBalance, error)
 	GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error)
+	GetNativeTokenBalance(ctx context.Context, walletID string) (string, error)
 
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error)

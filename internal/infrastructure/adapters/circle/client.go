@@ -424,6 +424,21 @@ func usdcTokenID(balances []TokenBalance, err error) (string, error) {
 	return "", fmt.Errorf("no USDC token found in wallet balances")
 }
 
+// GetNativeTokenBalance returns the balance of the native gas token (e.g. SOL)
+// for the given wallet. Returns "0" if no native token is found.
+func (c *HTTPClient) GetNativeTokenBalance(ctx context.Context, walletID string) (string, error) {
+	balances, err := c.GetTokenBalance(ctx, walletID)
+	if err != nil {
+		return "0", fmt.Errorf("circle get native balance: %w", err)
+	}
+	for _, b := range balances {
+		if strings.EqualFold(b.Token.Symbol, NativeTokenSOL) {
+			return b.Amount, nil
+		}
+	}
+	return "0", nil
+}
+
 func (c *HTTPClient) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error) {
 	c.logger.Info("Circle CreateTransfer request",
 		zap.String("walletId", req.WalletID),

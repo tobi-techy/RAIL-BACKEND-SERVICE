@@ -350,6 +350,10 @@ func (p *fakeCircleWalletProvider) GetWalletBalance(context.Context, string) (st
 	return "0", nil
 }
 
+func (p *fakeCircleWalletProvider) GetNativeBalance(context.Context, string) (string, error) {
+	return "0", nil
+}
+
 func (p *fakeCircleWalletProvider) ListWalletsForUser(context.Context, uuid.UUID, string) ([]*entities.ManagedWallet, error) {
 	return p.listedWallets, nil
 }

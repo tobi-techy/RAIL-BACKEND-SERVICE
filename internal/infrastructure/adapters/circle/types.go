@@ -24,6 +24,12 @@ const (
 	BlockchainOPSepolia   Blockchain = "OP-SEPOLIA"
 )
 
+// Native token symbols for each chain — used to identify gas deposits that
+// should NOT be treated as unsupported assets or credited to the ledger.
+const (
+	NativeTokenSOL = "SOL"
+)
+
 // WalletState represents the state of a Circle wallet.
 type WalletState string
 
