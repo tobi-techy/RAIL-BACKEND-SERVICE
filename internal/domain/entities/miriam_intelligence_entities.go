@@ -13,7 +13,13 @@ const (
 	MiriamMandateStatusPaused  = "paused"
 	MiriamMandateStatusExpired = "expired"
 
-	MiriamMandateTransferToStash = "transfer_to_stash"
+	MiriamMandateTransferToStash  = "transfer_to_stash"
+	MiriamMandateTransferToSpend  = "transfer_to_spend"
+	MiriamMandateBillReservation  = "bill_reservation"
+	MiriamMandateSpendCooldown    = "spend_cooldown"
+	MiriamMandateGoalContribution = "goal_contribution"
+	MiriamMandateStashTopUp       = "stash_top_up"
+	MiriamMandateIdleSweep        = "idle_sweep"
 
 	MiriamReceiptStatusSuggested = "suggested"
 	MiriamReceiptStatusExecuted  = "executed"
@@ -24,7 +30,39 @@ const (
 	MiriamFeedbackIgnored   = "ignored"
 	MiriamFeedbackReversed  = "reversed"
 	MiriamFeedbackDismissed = "dismissed"
+
+	// Self-review action verdicts.
+	SelfReviewActionHelped  = "helped"
+	SelfReviewActionNeutral = "neutral"
+	SelfReviewActionHarmed  = "harmed"
+
+	// Nudge cadence hints produced by self-review.
+	NudgeCadenceNormal = "normal"
+	NudgeCadenceReduce = "reduce"
 )
+
+// ValidMandateActionTypes returns all recognized mandate action types.
+func ValidMandateActionTypes() []string {
+	return []string{
+		MiriamMandateTransferToStash,
+		MiriamMandateTransferToSpend,
+		MiriamMandateBillReservation,
+		MiriamMandateSpendCooldown,
+		MiriamMandateGoalContribution,
+		MiriamMandateStashTopUp,
+		MiriamMandateIdleSweep,
+	}
+}
+
+// IsValidMandateActionType returns true if the given action type is recognized.
+func IsValidMandateActionType(t string) bool {
+	for _, valid := range ValidMandateActionTypes() {
+		if t == valid {
+			return true
+		}
+	}
+	return false
+}
 
 // MiriamPredictionOutcome records whether a prediction materialized, enabling
 // accuracy tracking and confidence calibration over time.
@@ -62,12 +100,12 @@ type MiriamMoneyState struct {
 	UpdatedAt             time.Time       `json:"updated_at" db:"updated_at"`
 
 	// Computed during RefreshMoneyState and persisted for downstream consumers.
-	MonthlySpend      decimal.Decimal `json:"monthly_spend" db:"monthly_spend"`
-	MonthlySavings    decimal.Decimal `json:"monthly_savings" db:"monthly_savings"`
-	SpendBalance      decimal.Decimal `json:"spend_balance" db:"spend_balance"`
-	StashBalance      decimal.Decimal `json:"stash_balance" db:"stash_balance"`
-	CalibrationScore  decimal.Decimal `json:"calibration_score" db:"calibration_score"`
-	ActiveMonths      int             `json:"active_months" db:"active_months"`
+	MonthlySpend     decimal.Decimal `json:"monthly_spend" db:"monthly_spend"`
+	MonthlySavings   decimal.Decimal `json:"monthly_savings" db:"monthly_savings"`
+	SpendBalance     decimal.Decimal `json:"spend_balance" db:"spend_balance"`
+	StashBalance     decimal.Decimal `json:"stash_balance" db:"stash_balance"`
+	CalibrationScore decimal.Decimal `json:"calibration_score" db:"calibration_score"`
+	ActiveMonths     int             `json:"active_months" db:"active_months"`
 }
 
 // MiriamAutopilotMandate is a user-approved bounded permission for Miriam to
@@ -129,4 +167,28 @@ type MiriamLearningSignal struct {
 	Weight    decimal.Decimal `json:"weight" db:"weight"`
 	Metadata  json.RawMessage `json:"metadata" db:"metadata"`
 	CreatedAt time.Time       `json:"created_at" db:"created_at"`
+}
+
+// MiriamSelfReview is the audit record of a periodic pass where Miriam grades
+// her own recent actions and messaging and records the behavioral adjustments
+// she made as a result. It makes her accountable for her own work, not only her
+// predictions.
+type MiriamSelfReview struct {
+	ID              uuid.UUID       `json:"id" db:"id"`
+	UserID          uuid.UUID       `json:"user_id" db:"user_id"`
+	PeriodStart     time.Time       `json:"period_start" db:"period_start"`
+	PeriodEnd       time.Time       `json:"period_end" db:"period_end"`
+	ActionsReviewed int             `json:"actions_reviewed" db:"actions_reviewed"`
+	ActionsHelped   int             `json:"actions_helped" db:"actions_helped"`
+	ActionsNeutral  int             `json:"actions_neutral" db:"actions_neutral"`
+	ActionsHarmed   int             `json:"actions_harmed" db:"actions_harmed"`
+	NudgesSent      int             `json:"nudges_sent" db:"nudges_sent"`
+	NudgesDismissed int             `json:"nudges_dismissed" db:"nudges_dismissed"`
+	AvgHealthBefore int             `json:"avg_health_before" db:"avg_health_before"`
+	AvgHealthAfter  int             `json:"avg_health_after" db:"avg_health_after"`
+	CadenceHint     string          `json:"cadence_hint" db:"cadence_hint"`
+	Verdict         string          `json:"verdict" db:"verdict"`
+	Adjustments     json.RawMessage `json:"adjustments" db:"adjustments"`
+	NoteSent        bool            `json:"note_sent" db:"note_sent"`
+	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 }

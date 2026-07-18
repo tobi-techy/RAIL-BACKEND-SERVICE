@@ -31,6 +31,7 @@ const (
 	ActionNotify             = "notify"
 	ActionCustom             = "custom"
 	ActionPauseCardCooldown  = "pause_card_cooldown"
+	ActionPayUtilityBill     = "pay_utility_bill"
 )
 
 // MiriamAutomation represents a user-defined automation rule.
@@ -86,6 +87,31 @@ type ObligationDueTriggerConfig struct {
 type PauseCardCooldownConfig struct {
 	CooldownMinutes int    `json:"cooldown_minutes"` // how long to pause
 	Message         string `json:"message,omitempty"` // notification message
+}
+
+// PayBillActionConfig pays a bill to a real payee (Rail tag, email, or phone)
+// via P2P when the linked obligation comes due. Non-Rail payees receive a
+// claim link and can claim to their bank.
+type PayBillActionConfig struct {
+	PayeeIdentifier string  `json:"payee_identifier"` // RailTag, email, or phone
+	PayeeName       string  `json:"payee_name,omitempty"`
+	Amount          float64 `json:"amount"`
+	BillName        string  `json:"bill_name,omitempty"`
+}
+
+// PayUtilityBillActionConfig pays a Nigerian utility bill (airtime, data,
+// electricity, cable TV, betting, transport) via Airbills when the schedule or
+// linked obligation fires. Gated by the standard transfer-consent fields so a
+// recurring auto-pay runs only within the 90-day reauthorization window.
+type PayUtilityBillActionConfig struct {
+	Category      string     `json:"category"`                 // airtime, data, electricity, cable, betting, transport
+	Recipient     string     `json:"recipient"`                // phone / meter / smartcard / betting id
+	NetworkID     string     `json:"network_id,omitempty"`     // 01..04 for airtime/data
+	ProdID        string     `json:"prod_id,omitempty"`        // plan/provider id
+	ElectID       string     `json:"elect_id,omitempty"`       // electricity disco id
+	AmountNGN     float64    `json:"amount_ngn"`               // face value
+	BeneficiaryID *uuid.UUID `json:"beneficiary_id,omitempty"` // optional saved beneficiary
+	BillName      string     `json:"bill_name,omitempty"`
 }
 
 // NotifyActionConfig for notification-only automations.

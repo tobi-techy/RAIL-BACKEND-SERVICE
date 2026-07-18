@@ -79,6 +79,10 @@ func (w *Worker) run(ctx context.Context) {
 			var evalErr error
 			if w.brain != nil {
 				_, evalErr = w.brain.Evaluate(evalCtx, userID, miriamsvc.EventWorkerSweep)
+				// Self-review self-gates to once per day; safe to call every tick.
+				if srErr := w.brain.RunSelfReview(evalCtx, userID); srErr != nil {
+					w.logger.Debug("miriam worker: self-review failed", zap.String("user_id", userID.String()), zap.Error(srErr))
+				}
 			} else {
 				evalErr = w.service.EvaluateUser(evalCtx, userID, miriamsvc.EventWorkerSweep)
 			}

@@ -21,7 +21,7 @@ type KnowledgeSearcher interface {
 
 // SetKnowledge sets the knowledge search provider (optional).
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetKnowledge(k KnowledgeSearcher) {
+func (o *AgentAdapter) SetKnowledge(k KnowledgeSearcher) {
 	o.knowledge = k
 }
 
@@ -49,7 +49,7 @@ const MinKnowledgeSimilarity = 0.70
 
 // executeKnowledgeSearch handles the search_knowledge_base tool call.
 // It searches both the local knowledge base and Supermemory, merging results.
-func (o *Orchestrator) executeKnowledgeSearch(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeKnowledgeSearch(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")

@@ -164,18 +164,18 @@ func (p *inMemoryPendingActions) Delete(_ context.Context, convID uuid.UUID) {
 }
 
 // SetFundsTransferer wires the funds transfer dependency.
-func (o *Orchestrator) SetFundsTransferer(f FundsTransferer) {
+func (o *AgentAdapter) SetFundsTransferer(f FundsTransferer) {
 	o.fundsTransferer = f
 }
 
 // SetPendingActions replaces the default in-memory store with a custom implementation (e.g. Redis).
-func (o *Orchestrator) SetPendingActions(p PendingActionStore) {
+func (o *AgentAdapter) SetPendingActions(p PendingActionStore) {
 	o.pending = p
 }
 
 // SetActionAuditor wires the action audit dependency.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetActionAuditor(a ActionAuditor) {
+func (o *AgentAdapter) SetActionAuditor(a ActionAuditor) {
 	o.actionAuditor = a
 	if reader, ok := a.(ActionHistoryReader); ok {
 		o.actionHistory = reader
@@ -183,52 +183,52 @@ func (o *Orchestrator) SetActionAuditor(a ActionAuditor) {
 }
 
 // SetSavingsGoalStore wires the savings goal store dependency.
-func (o *Orchestrator) SetSavingsGoalStore(s SavingsGoalStore) {
+func (o *AgentAdapter) SetSavingsGoalStore(s SavingsGoalStore) {
 	o.savingsGoalStore = s
 }
 
 // SetSharedGoalCreator wires the shared goal creator for unified goal persistence.
-func (o *Orchestrator) SetSharedGoalCreator(c SharedGoalCreator) {
+func (o *AgentAdapter) SetSharedGoalCreator(c SharedGoalCreator) {
 	o.sharedGoalCreator = c
 }
 
-func (o *Orchestrator) SetAutomationCreator(a AutomationCreator) {
+func (o *AgentAdapter) SetAutomationCreator(a AutomationCreator) {
 	o.automationCreator = a
 }
 
-func (o *Orchestrator) SetObligationCreator(c ObligationCreator) {
+func (o *AgentAdapter) SetObligationCreator(c ObligationCreator) {
 	o.obligationCreator = c
 }
 
 // SetAccountChecker wires the user account checker dependency.
-func (o *Orchestrator) SetAccountChecker(c UserAccountChecker) {
+func (o *AgentAdapter) SetAccountChecker(c UserAccountChecker) {
 	o.accountChecker = c
 }
 
 // SetEmergencyWithdrawer wires the emergency stash withdrawal dependency.
-func (o *Orchestrator) SetEmergencyWithdrawer(e EmergencyWithdrawer) {
+func (o *AgentAdapter) SetEmergencyWithdrawer(e EmergencyWithdrawer) {
 	o.emergencyWithdrawer = e
 }
 
 // SetGoalProtectionProvider wires the goal protection provider for withdrawal warnings.
-func (o *Orchestrator) SetGoalProtectionProvider(g GoalProtectionProvider) {
+func (o *AgentAdapter) SetGoalProtectionProvider(g GoalProtectionProvider) {
 	o.goalProtection = g
 }
 
 // SetVoiceDailyLimiter wires the voice daily transfer cap.
-func (o *Orchestrator) SetVoiceDailyLimiter(l *VoiceDailyLimiter) {
+func (o *AgentAdapter) SetVoiceDailyLimiter(l *VoiceDailyLimiter) {
 	o.voiceLimiter = l
 }
 
 // SetRedisCache wires a Redis client used for short-TTL caching of voice
 // hot-path reads (realtime dynamic vars, cost-ceiling). Best-effort only —
 // every cached call falls back to direct computation if Redis is unavailable.
-func (o *Orchestrator) SetRedisCache(redis cache.RedisClient) {
+func (o *AgentAdapter) SetRedisCache(redis cache.RedisClient) {
 	o.redis = redis
 }
 
 // checkUserCanTransact verifies the user is active and not frozen before financial actions.
-func (o *Orchestrator) checkUserCanTransact(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) checkUserCanTransact(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.accountChecker == nil {
 		return nil, nil
 	}
@@ -296,9 +296,31 @@ func ActionTools() []ai.Tool {
 	}
 }
 
+// checkControlLevelGate returns an error result if the user's control level
+// prevents action execution. Returns nil if actions are allowed.
+func (o *AgentAdapter) checkControlLevelGate(ctx context.Context, userID uuid.UUID) map[string]interface{} {
+	if o.memory == nil {
+		return nil
+	}
+	level, err := o.memory.GetControlLevel(ctx, userID)
+	if err != nil || level == "" {
+		return nil
+	}
+	if level == entities.ControlLevelMonitor {
+		return map[string]interface{}{
+			"error": "You're in Monitor mode — I can only watch and advise, not take actions. If you want me to handle this, switch to Guided or Full Autopilot mode using set_control_level.",
+		}
+	}
+	return nil
+}
+
 // executeActionTool handles action tool calls by creating a pending action
 // instead of executing immediately. Returns a confirmation payload for the frontend.
-func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeActionTool(ctx context.Context, userID, convID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+	if blocked := o.checkControlLevelGate(ctx, userID); blocked != nil {
+		return blocked, nil
+	}
+
 	switch tc.Name {
 	case ToolTransferFunds:
 		return o.createTransferAction(ctx, userID, convID, tc.Arguments)
@@ -327,11 +349,14 @@ func (o *Orchestrator) executeActionTool(ctx context.Context, userID, convID uui
 	case ToolUpdateFinancialProfile:
 		return o.createFinancialProfileAction(ctx, userID, convID, tc.Arguments)
 	default:
+		if isExecutionActionTool(tc.Name) {
+			return o.createExecutionAction(ctx, userID, convID, tc)
+		}
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
 	}
 }
 
-func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createTransferAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	// R11-1: Check user account status before allowing transfer creation
 	if blocked, err := o.checkUserCanTransact(ctx, userID); blocked != nil || err != nil {
 		if err != nil {
@@ -501,7 +526,7 @@ func (o *Orchestrator) createTransferAction(ctx context.Context, userID, convID 
 	}, nil
 }
 
-func (o *Orchestrator) createSavingsGoalAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createSavingsGoalAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	name, _ := args["name"].(string)
 	targetF, _ := args["target"].(float64)
 	deadline, _ := args["deadline"].(string)
@@ -546,7 +571,7 @@ func (o *Orchestrator) createSavingsGoalAction(ctx context.Context, userID, conv
 // executing it, after verifying it belongs to userID. The API layer uses this
 // to decide whether passcode step-up is required before ConfirmAction (TM-004,
 // TM-006) without granting the model a way to self-confirm.
-func (o *Orchestrator) PeekPendingAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, bool) {
+func (o *AgentAdapter) PeekPendingAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, bool) {
 	action := o.pending.Get(ctx, convID)
 	if action == nil || action.UserID != userID {
 		return nil, false
@@ -559,7 +584,13 @@ func (o *Orchestrator) PeekPendingAction(ctx context.Context, userID, convID uui
 // stash-transfer routes enforce.
 func IsFundMovingAction(action string) bool {
 	switch action {
-	case ToolTransferFunds, ToolInitiateWithdrawal:
+	case ToolTransferFunds, ToolInitiateWithdrawal,
+		// Execution Engine tools that move real money get the same step-up.
+		// setup_bill_autopay creates a standing stash→spend transfer, which the
+		// app's own automation endpoints also gate behind passcode consent.
+		ToolExecuteInvestment, ToolOptimizeYield, ToolCopyTrader, ToolSetupBillAutopay,
+		// Airbills bill payments debit the user's Spend balance in USDC.
+		ToolPayBill, ToolAutomateBill:
 		return true
 	default:
 		return false
@@ -567,7 +598,7 @@ func IsFundMovingAction(action string) bool {
 }
 
 // ConfirmAction executes a pending action after user confirmation.
-func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, error) {
+func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, error) {
 	action := o.pending.Get(ctx, convID)
 	if action == nil {
 		// Check if it was expired (Get auto-deletes expired)
@@ -680,7 +711,11 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 			_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
 		}
 	default:
-		execErr = fmt.Errorf("unknown action: %s", action.Action)
+		if isExecutionActionTool(action.Action) {
+			execErr = o.executeConfirmedExecutionAction(ctx, userID, action)
+		} else {
+			execErr = fmt.Errorf("unknown action: %s", action.Action)
+		}
 	}
 
 	o.pending.Delete(ctx, convID)
@@ -715,7 +750,7 @@ func (o *Orchestrator) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 // already be cancelled by the time we get here (Gin may have flushed, the
 // voice client may have hung up); we still want the audit row to land — the
 // money already moved at the ledger.
-func (o *Orchestrator) auditVoiceTransfer(userID uuid.UUID, action, from, to string, amount decimal.Decimal, succeeded bool, errMsg string) {
+func (o *AgentAdapter) auditVoiceTransfer(userID uuid.UUID, action, from, to string, amount decimal.Decimal, succeeded bool, errMsg string) {
 	if o.actionAuditor == nil {
 		return
 	}
@@ -748,7 +783,7 @@ func (o *Orchestrator) auditVoiceTransfer(userID uuid.UUID, action, from, to str
 // notifyMoneyMoved fires a push notification on a confirmed Miriam money move.
 // Runs in a goroutine because the caller is the API request path and we don't
 // want notification latency on the response.
-func (o *Orchestrator) notifyMoneyMoved(userID uuid.UUID, action *entities.PendingAction, succeeded bool, errMsg string) {
+func (o *AgentAdapter) notifyMoneyMoved(userID uuid.UUID, action *entities.PendingAction, succeeded bool, errMsg string) {
 	if o.moneyMoveNotifier == nil {
 		return
 	}
@@ -779,7 +814,7 @@ func (o *Orchestrator) notifyMoneyMoved(userID uuid.UUID, action *entities.Pendi
 }
 
 // CancelAction discards a pending action.
-func (o *Orchestrator) CancelAction(ctx context.Context, userID, convID uuid.UUID) error {
+func (o *AgentAdapter) CancelAction(ctx context.Context, userID, convID uuid.UUID) error {
 	action := o.pending.Get(ctx, convID)
 	if action == nil {
 		return nil // Already gone or expired — safe to ignore
@@ -792,7 +827,7 @@ func (o *Orchestrator) CancelAction(ctx context.Context, userID, convID uuid.UUI
 	return nil
 }
 
-func (o *Orchestrator) executeTransfer(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
+func (o *AgentAdapter) executeTransfer(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
 	// R11-1: Re-check account status at execution time
 	if o.accountChecker != nil {
 		active, frozen, err := o.accountChecker.IsActiveAndUnfrozen(ctx, userID)
@@ -848,7 +883,7 @@ func (o *Orchestrator) executeTransfer(ctx context.Context, userID uuid.UUID, ac
 	return o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, action.ID)
 }
 
-func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID, action *entities.PendingAction, status, errMsg string) {
+func (o *AgentAdapter) auditAction(ctx context.Context, userID, convID uuid.UUID, action *entities.PendingAction, status, errMsg string) {
 	if o.actionAuditor == nil {
 		return
 	}
@@ -869,14 +904,29 @@ func (o *Orchestrator) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // executeActionToolDirect executes action tools immediately without the pending/confirm flow.
 // Used in voice mode where AssemblyAI handles confirmation conversationally.
-func (o *Orchestrator) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
 	if tc.Arguments == nil {
 		tc.Arguments = make(map[string]interface{})
+	}
+	if blocked := o.checkControlLevelGate(ctx, userID); blocked != nil {
+		return blocked, nil
 	}
 	o.logger.Info("executeActionToolDirect called",
 		zap.String("user_id", userID.String()),
 		zap.String("tool", tc.Name),
 		zap.Strings("arg_keys", toolArgumentKeys(tc.Arguments)))
+	// Execution Engine tools live in the core registry; their confirm-argument
+	// contract handles conversational confirmation in voice mode.
+	if isExecutionActionTool(tc.Name) {
+		if o.agent == nil {
+			return map[string]interface{}{"error": "This action isn't available right now."}, nil
+		}
+		data, err := o.agent.ExecuteToolStrict(ctx, userID, tc.Name, tc.Arguments)
+		if err != nil {
+			return map[string]interface{}{"error": err.Error()}, nil
+		}
+		return data, nil
+	}
 	switch tc.Name {
 	case ToolTransferFunds:
 		if o.fundsTransferer == nil {
@@ -1080,10 +1130,10 @@ func toolArgumentKeys(args map[string]interface{}) []string {
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal || isExecutionActionTool(name)
 }
 
-func (o *Orchestrator) canCreateActionTool(name string) bool {
+func (o *AgentAdapter) canCreateActionTool(name string) bool {
 	switch name {
 	case ToolTransferFunds, ToolSetSavingsGoal:
 		return o.fundsTransferer != nil
@@ -1110,6 +1160,10 @@ func (o *Orchestrator) canCreateActionTool(name string) bool {
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
 	default:
+		// Execution Engine tools run through the core registry on confirm.
+		if isExecutionActionTool(name) {
+			return o.agent != nil
+		}
 		return false
 	}
 }

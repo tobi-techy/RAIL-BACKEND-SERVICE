@@ -28,20 +28,20 @@ type StreamEvent struct {
 
 // ChatStream streams a chat response via SSE. Tool calls are executed
 // non-streaming (up to 3 rounds), then the final answer is streamed.
-func (o *Orchestrator) ChatStream(ctx context.Context, userID uuid.UUID, message string, history []ai.Message, emit func(StreamEvent)) error {
+func (o *AgentAdapter) ChatStream(ctx context.Context, userID uuid.UUID, message string, history []ai.Message, emit func(StreamEvent)) error {
 	return o.ChatStreamWithOptions(ctx, userID, message, history, ChatOptions{}, emit)
 }
 
-func (o *Orchestrator) ChatStreamWithOptions(ctx context.Context, userID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
+func (o *AgentAdapter) ChatStreamWithOptions(ctx context.Context, userID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	return o.chatStreamInternal(ctx, userID, uuid.Nil, message, history, opts, emit)
 }
 
 // ChatStreamInConversation streams a chat response within a persisted conversation.
-func (o *Orchestrator) ChatStreamInConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, emit func(StreamEvent)) error {
+func (o *AgentAdapter) ChatStreamInConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, emit func(StreamEvent)) error {
 	return o.ChatStreamInConversationWithOptions(ctx, userID, conv, message, ChatOptions{}, emit)
 }
 
-func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions, emit func(StreamEvent)) error {
+func (o *AgentAdapter) ChatStreamInConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions, emit func(StreamEvent)) error {
 	var history []ai.Message
 	if o.conversations != nil {
 		var err error
@@ -149,7 +149,7 @@ func (o *Orchestrator) ChatStreamInConversationWithOptions(ctx context.Context, 
 	return err
 }
 
-func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
+func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	// Trivial message bypass — skip LLM entirely for greetings/acknowledgements
 	if reply := trivialReply(message); reply != "" {
 		emitWithBubbleBreaks(reply, emit)
@@ -337,6 +337,21 @@ func (o *Orchestrator) chatStreamInternal(ctx context.Context, userID, convID uu
 			return fmt.Errorf("follow-up completion failed: %w", err)
 		}
 		cumulativeTokens += resp.TokensUsed
+	}
+
+	// Persist tool call/result messages for follow-up context reconstruction.
+	if len(allToolResults) > 0 && convID != uuid.Nil && o.conversations != nil {
+		var toolMsgs []ai.Message
+		for _, m := range messages {
+			if len(m.ToolCalls) > 0 || m.Role == "tool" {
+				toolMsgs = append(toolMsgs, m)
+			}
+		}
+		if len(toolMsgs) > 0 {
+			if pe := o.conversations.SaveToolMessages(context.Background(), convID, toolMsgs); pe != nil && o.logger != nil {
+				o.logger.Error("failed to persist stream tool messages", zap.Error(pe))
+			}
+		}
 	}
 
 	// Emit cards from tool results

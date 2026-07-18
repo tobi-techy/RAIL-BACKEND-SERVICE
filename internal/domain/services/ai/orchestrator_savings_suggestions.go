@@ -122,12 +122,12 @@ func (p *savingsSuggestionProvider) GetSuggestions(ctx context.Context, userID u
 		annualStash := potentialSavings.Mul(decimal.NewFromFloat(0.30)).Mul(decimal.NewFromInt(12)).Mul(decimal.NewFromFloat(1.035))
 
 		suggestions = append(suggestions, map[string]interface{}{
-			"category":           cat.Category,
-			"current_monthly":    projected.StringFixed(2),
-			"suggested_target":   suggestedTarget.StringFixed(2),
-			"potential_savings":  potentialSavings.StringFixed(2),
+			"category":            cat.Category,
+			"current_monthly":     projected.StringFixed(2),
+			"suggested_target":    suggestedTarget.StringFixed(2),
+			"potential_savings":   potentialSavings.StringFixed(2),
 			"annual_stash_impact": annualStash.StringFixed(2),
-			"tip":                tip.tip,
+			"tip":                 tip.tip,
 		})
 		totalPotentialSavings = totalPotentialSavings.Add(potentialSavings)
 	}
@@ -149,7 +149,7 @@ func (p *savingsSuggestionProvider) GetSuggestions(ctx context.Context, userID u
 }
 
 // SetSavingsSuggestions sets the savings suggestion provider.
-func (o *Orchestrator) SetSavingsSuggestions(p SavingsSuggestionProvider) {
+func (o *AgentAdapter) SetSavingsSuggestions(p SavingsSuggestionProvider) {
 	o.savingsSuggestions = p
 }
 
@@ -162,7 +162,7 @@ func SavingsSuggestionTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeSavingsSuggestions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSavingsSuggestions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.savingsSuggestions == nil {
 		return map[string]interface{}{"error": "savings suggestions not available"}, nil
 	}
@@ -171,9 +171,9 @@ func (o *Orchestrator) executeSavingsSuggestions(ctx context.Context, userID uui
 		return nil, fmt.Errorf("savings suggestions: %w", err)
 	}
 	return map[string]interface{}{
-		"suggestions":                   s.Suggestions,
+		"suggestions":                     s.Suggestions,
 		"total_potential_monthly_savings": s.TotalPotentialMonthlySav,
-		"annual_stash_growth_if_saved":   s.AnnualStashGrowth,
-		"message":                        s.Message,
+		"annual_stash_growth_if_saved":    s.AnnualStashGrowth,
+		"message":                         s.Message,
 	}, nil
 }

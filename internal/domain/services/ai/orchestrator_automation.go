@@ -39,7 +39,7 @@ type AutomationRequest struct {
 }
 
 // SetAutomationProvider wires the automation dependency.
-func (o *Orchestrator) SetAutomationProvider(a AutomationProvider) {
+func (o *AgentAdapter) SetAutomationProvider(a AutomationProvider) {
 	o.automationProvider = a
 }
 
@@ -116,7 +116,7 @@ Returns a recommended amount and the reasoning.`,
 	}
 }
 
-func (o *Orchestrator) createAutomationAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createAutomationAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	name, _ := args["name"].(string)
 	triggerType, _ := args["trigger_type"].(string)
 	actionType, _ := args["action_type"].(string)
@@ -169,7 +169,7 @@ func (o *Orchestrator) createAutomationAction(ctx context.Context, userID, convI
 	return map[string]interface{}{"action_required": true, "pending_action": action}, nil
 }
 
-func (o *Orchestrator) executeListAutomations(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeListAutomations(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.automationProvider == nil {
 		return map[string]interface{}{"automations": []interface{}{}, "count": 0}, nil
 	}
@@ -194,7 +194,7 @@ func (o *Orchestrator) executeListAutomations(ctx context.Context, userID uuid.U
 	return map[string]interface{}{"automations": items, "count": len(items)}, nil
 }
 
-func (o *Orchestrator) executeCreateAutomation(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeCreateAutomation(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (map[string]interface{}, error) {
 	if o.automationProvider == nil {
 		return nil, fmt.Errorf("automation service unavailable")
 	}
@@ -282,7 +282,7 @@ func validateTransferAutomationAuthorization(actionConfig map[string]interface{}
 	return nil
 }
 
-func (o *Orchestrator) executeSuggestSmartTiming(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSuggestSmartTiming(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.patterns == nil {
 		return map[string]interface{}{"error": "spending pattern analysis is unavailable"}, nil
 	}
@@ -318,7 +318,7 @@ func (o *Orchestrator) executeSuggestSmartTiming(ctx context.Context, userID uui
 	}, nil
 }
 
-func (o *Orchestrator) executeSuggestAdaptiveAmount(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSuggestAdaptiveAmount(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	end := time.Now().UTC()
 	start := end.AddDate(0, -1, 0)
 

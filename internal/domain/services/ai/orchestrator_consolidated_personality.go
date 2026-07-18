@@ -11,27 +11,45 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// buildConsolidatedPersonalityContext merges voice phase, tone calibration,
-// and per-request tone mode into a SINGLE system message.
-// This eliminates conflicting personality instructions competing for the LLM's attention.
+// buildConsolidatedPersonalityContext merges voice phase, control level,
+// personality mode, tone calibration, and per-request tone mode into a SINGLE
+// system message. This eliminates conflicting personality instructions competing
+// for the LLM's attention.
 //
 // Priority (highest wins on conflicts):
 //  1. Voice phase (earned from data density + prediction accuracy)
-//  2. Tone calibration (learned from user's messaging style)
-//  3. Per-request tone mode (gentle/direct/hard)
-func (o *Orchestrator) buildConsolidatedPersonalityContext(ctx context.Context, userID uuid.UUID, toneMode string) string {
+//  2. Control level (user-set autonomy level — Full/Guided/Monitor)
+//  3. Personality mode (user-chosen voice — Roast/Coach/Protector/Celebration/Quiet)
+//  4. Tone calibration (learned from user's messaging style)
+//  5. Per-request tone mode (gentle/hard)
+func (o *AgentAdapter) buildConsolidatedPersonalityContext(ctx context.Context, userID uuid.UUID, toneMode string) string {
 	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
 	var parts []string
 
 	// --- Voice Phase (highest priority — defines Miriam's confidence level) ---
+	// For text chat only the phase rules/bluntness are relevant; the VOICE EXAMPLES
+	// (voice-specific few-shot examples) are stripped to save tokens.
 	if o.miriamIntelligence != nil {
 		if state, err := o.miriamIntelligence.GetMoneyState(fetchCtx, userID); err == nil && state != nil {
 			if phaseCtx := miriam.PhaseContext(state); phaseCtx != "" {
+				if before, _, found := strings.Cut(phaseCtx, "VOICE EXAMPLES:"); found {
+					phaseCtx = strings.TrimSpace(before)
+				}
 				parts = append(parts, phaseCtx)
 			}
 		}
+	}
+
+	// --- Control Level (user-set autonomy — Full/Guided/Monitor) ---
+	if cl := o.buildControlLevelContext(fetchCtx, userID); cl != "" {
+		parts = append(parts, cl)
+	}
+
+	// --- Personality Mode (user-chosen voice — Roast/Coach/Protector/Celebration/Quiet) ---
+	if pm := o.buildPersonalityModeContext(fetchCtx, userID); pm != "" {
+		parts = append(parts, pm)
 	}
 
 	// --- Tone Calibration (style preferences — language, brevity, locale) ---

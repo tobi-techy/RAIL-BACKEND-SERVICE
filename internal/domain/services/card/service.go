@@ -93,6 +93,13 @@ type MoneyGuardTransactionInput struct {
 	Reference string
 }
 
+// SpendingCommitmentGuard enforces a user's self-imposed daily spending cap.
+type SpendingCommitmentGuard interface {
+	CheckOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+	RecordOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+	ReleaseOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+}
+
 // Service handles card business logic
 type Service struct {
 	repo                CardRepository
@@ -104,6 +111,7 @@ type Service struct {
 	notificationService CardNotificationService
 	moneyGuard          MoneyGuardEvaluator
 	moneyGuardSem       chan struct{}
+	commitment          SpendingCommitmentGuard
 	gameplayHooks       CardGameplayHooks
 	logger              *zap.Logger
 	defaultChain        string
@@ -144,6 +152,11 @@ func (s *Service) SetNotificationService(ns CardNotificationService) {
 
 func (s *Service) SetMoneyGuard(mg MoneyGuardEvaluator) {
 	s.moneyGuard = mg
+}
+
+// SetSpendingCommitment wires the self-imposed daily spending cap enforcer.
+func (s *Service) SetSpendingCommitment(g SpendingCommitmentGuard) {
+	s.commitment = g
 }
 
 // SetGameplayHooks sets the gameplay hooks (optional)
@@ -387,9 +400,23 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 		return false, "insufficient_funds", nil
 	}
 
+	if s.commitment != nil {
+		if err := s.commitment.CheckOutflow(ctx, card.UserID, amount, card.Currency); err != nil {
+			if metrics.Business != nil {
+				metrics.Business.CardTransactionsTotal.WithLabelValues("declined").Inc()
+			}
+			analytics.TrackEvent(ctx, card.UserID.String(), analytics.EventCardTransactionDeclined, map[string]any{
+				"decline_reason":    "commitment_exceeded",
+				"amount":            amount.InexactFloat64(),
+				"merchant_name":     merchantName,
+				"merchant_category": merchantCategory,
+			})
+			return false, "commitment_exceeded", nil
+		}
+	}
+
 	if s.moneyGuard != nil {
-		decision, err := s.moneyGuard.EvaluateCardAuthorization(ctx, card.UserID, MoneyGuardTransactionInput{
-			Amount:    amount,
+		decision, err := s.moneyGuard.EvaluateCardAuthorization(ctx, card.UserID, MoneyGuardTransactionInput{Amount: amount,
 			Currency:  card.Currency,
 			Merchant:  merchantName,
 			Category:  merchantCategory,
@@ -445,6 +472,13 @@ func (s *Service) ProcessCardAuthorization(ctx context.Context, bridgeCardID str
 	s.logger.Info("Card authorization approved",
 		zap.String("card_id", card.ID.String()),
 		zap.String("amount", amount.String()))
+
+	if s.commitment != nil {
+		if err := s.commitment.RecordOutflow(ctx, card.UserID, amount, card.Currency); err != nil {
+			s.logger.Warn("failed to record card outflow against commitment",
+				zap.String("user_id", card.UserID.String()), zap.Error(err))
+		}
+	}
 
 	if metrics.Business != nil {
 		metrics.Business.CardTransactionsTotal.WithLabelValues("approved").Inc()
@@ -712,6 +746,12 @@ func (s *Service) holdFundsForCardAuth(ctx context.Context, userID uuid.UUID, am
 
 // releaseCardHold returns held funds to spending_balance on authorization reversal or expiry
 func (s *Service) releaseCardHold(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, transactionID string) error {
+	if s.commitment != nil {
+		if err := s.commitment.ReleaseOutflow(ctx, userID, amount, "USD"); err != nil {
+			s.logger.Warn("failed to release card outflow against commitment",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
+	}
 	spendAccount, err := s.ledgerService.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
 	if err != nil {
 		return fmt.Errorf("failed to get spend account: %w", err)

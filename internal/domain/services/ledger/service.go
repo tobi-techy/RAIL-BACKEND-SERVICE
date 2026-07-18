@@ -987,6 +987,38 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 	return nil
 }
 
+// ChargeLimitIncreaseFee debits a flat fee from the user's spending_balance and
+// credits it to the limit-increase revenue account. Used when a user raises
+// their self-imposed daily spending commitment. Idempotent by key.
+func (s *Service) ChargeLimitIncreaseFee(ctx context.Context, userID uuid.UUID, fee decimal.Decimal, idempotencyKey string) error {
+	if !fee.IsPositive() {
+		return fmt.Errorf("fee must be positive")
+	}
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	revenueAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeLimitIncreaseRevenue)
+	if err != nil {
+		return fmt.Errorf("get limit increase revenue account: %w", err)
+	}
+	desc := fmt.Sprintf("Daily limit increase fee: %s", fee.String())
+	refType := "limit_increase_fee"
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: fee, Currency: "USD", Description: &desc},
+			{AccountID: revenueAccount.ID, EntryType: entities.EntryTypeDebit, Amount: fee, Currency: "USD", Description: &desc},
+		},
+	}
+	_, _, err = s.createTransaction(ctx, txReq)
+	return err
+}
+
 // CreditStash credits a user's stash_balance from the system USDC buffer.
 // Used for yield distribution payouts.
 func (s *Service) CreditStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {

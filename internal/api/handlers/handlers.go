@@ -52,6 +52,7 @@ type (
 	EnhancedNudgeHandler       = investing.EnhancedNudgeHandler
 	FinancialObligationHandler = investing.FinancialObligationHandler
 	MoneyGuardHandler          = investing.MoneyGuardHandler
+	SpendingCommitmentHandler  = investing.SpendingCommitmentHandler
 	MiriamIntelligenceHandler  = investing.MiriamIntelligenceHandler
 	StatementUploadHandler     = investing.StatementUploadHandler
 
@@ -143,9 +144,11 @@ var (
 	NewEnhancedNudgeHandler           = investing.NewEnhancedNudgeHandler
 	NewFinancialObligationHandler     = investing.NewFinancialObligationHandler
 	NewMoneyGuardHandler              = investing.NewMoneyGuardHandler
+	NewSpendingCommitmentHandler      = investing.NewSpendingCommitmentHandler
 	NewMiriamIntelligenceHandler      = investing.NewMiriamIntelligenceHandler
 	NewStatementUploadHandler         = investing.NewStatementUploadHandler
 	NewStatementUploadHandlerV2       = investing.NewStatementUploadHandlerV2
+	NewDocumentHandler                = investing.NewDocumentHandler
 )
 
 // Trading constructors

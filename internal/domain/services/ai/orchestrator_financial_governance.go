@@ -107,7 +107,7 @@ func FinancialGovernanceTools(includeAdvice, includeTimeline bool) []infraai.Too
 	return tools
 }
 
-func (o *Orchestrator) executeFinancialAdvice(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeFinancialAdvice(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	intent := strings.ToLower(strings.TrimSpace(stringArg(args, "intent")))
 	proposedAmount := decimal.Zero
 	if v, ok := floatArg(args, "proposed_amount"); ok && v > 0 {
@@ -425,7 +425,7 @@ func (o *Orchestrator) executeFinancialAdvice(ctx context.Context, userID uuid.U
 	}, nil
 }
 
-func (o *Orchestrator) executeFinancialTimeline(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeFinancialTimeline(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	days := 30
 	if v, ok := intArg(args, "days"); ok && v > 0 {
 		days = minInt(v, 90)

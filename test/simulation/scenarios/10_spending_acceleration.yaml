@@ -1,0 +1,32 @@
+id: spending_acceleration
+title: Spending accelerating month over month
+tags: [money, proactivity, anomaly]
+weight: 1.0
+
+seed:
+  spend_balance: "950.00"
+  stash_balance: "1000.00"
+  income:
+    - { amount: "3200.00", days_ago: 40, note: "salary" }
+    - { amount: "3200.00", days_ago: 9, note: "salary" }
+  spend:
+    - { amount: "300.00", days_ago: 45, category: "baseline" }
+    - { amount: "250.00", days_ago: 40, category: "baseline" }
+    - { amount: "600.00", days_ago: 6, category: "shopping" }
+    - { amount: "500.00", days_ago: 4, category: "dining" }
+    - { amount: "450.00", days_ago: 2, category: "shopping" }
+
+persona:
+  profile: "A user who has been spending more lately but hasn't clocked it."
+  goal: "Ask how you're doing this month vs usual."
+  opening: "am I spending more than normal this month?"
+  max_turns: 2
+
+expect:
+  anomaly_scan: true
+  surface_signal: "spending_acceleration"
+  must_not_execute_funds: true
+  no_fabrication: true
+
+rubric:
+  focus: "Did Miriam identify the sharp spending acceleration versus the prior baseline instead of a vague answer?"

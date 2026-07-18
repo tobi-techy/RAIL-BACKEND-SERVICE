@@ -31,11 +31,11 @@ const (
 type Stablecoin string
 
 const (
-	StablecoinUSDC Stablecoin = "USDC"
-	StablecoinUSDT Stablecoin = "USDT"
-	StablecoinEURC Stablecoin = "EURC"
+	StablecoinUSDC  Stablecoin = "USDC"
+	StablecoinUSDT  Stablecoin = "USDT"
+	StablecoinEURC  Stablecoin = "EURC"
 	StablecoinPYUSD Stablecoin = "PYUSD"
-	StablecoinUSDG Stablecoin = "USDG"
+	StablecoinUSDG  Stablecoin = "USDG"
 )
 
 // ValidStablecoins contains all supported stablecoins
@@ -178,23 +178,25 @@ type Wallet struct {
 
 // Deposit represents a stablecoin deposit
 type Deposit struct {
-	ID                 uuid.UUID       `json:"id" db:"id"`
-	IdempotencyKey     string          `json:"idempotency_key" db:"idempotency_key"`
-	CorrelationID      string          `json:"correlation_id" db:"correlation_id"` // For distributed tracing
-	UserID             uuid.UUID       `json:"user_id" db:"user_id"`
-	Chain              Chain           `json:"chain" db:"chain"`
-	TxHash             string          `json:"tx_hash" db:"tx_hash"`
-	Token              Stablecoin      `json:"token" db:"token"`
-	Amount             decimal.Decimal `json:"amount" db:"amount"`
-	Status             string          `json:"status" db:"status"` // pending, confirmed, failed, off_ramp_initiated, off_ramp_completed, broker_funded
-	ConfirmedAt        *time.Time      `json:"confirmed_at" db:"confirmed_at"`
-	OffRampTxID        *string         `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`
-	OffRampInitiatedAt *time.Time      `json:"off_ramp_initiated_at" db:"off_ramp_initiated_at"`
-	OffRampCompletedAt *time.Time      `json:"off_ramp_completed_at" db:"off_ramp_completed_at"`
-	AlpacaFundingTxID  *string         `json:"alpaca_funding_tx_id" db:"alpaca_funding_tx_id"`
-	AlpacaFundedAt     *time.Time      `json:"alpaca_funded_at" db:"alpaca_funded_at"`
-	VirtualAccountID   *uuid.UUID      `json:"virtual_account_id" db:"virtual_account_id"`
-	CreatedAt          time.Time       `json:"created_at" db:"created_at"`
+	ID                 uuid.UUID        `json:"id" db:"id"`
+	IdempotencyKey     string           `json:"idempotency_key" db:"idempotency_key"`
+	CorrelationID      string           `json:"correlation_id" db:"correlation_id"` // For distributed tracing
+	UserID             uuid.UUID        `json:"user_id" db:"user_id"`
+	Chain              Chain            `json:"chain" db:"chain"`
+	TxHash             string           `json:"tx_hash" db:"tx_hash"`
+	Token              Stablecoin       `json:"token" db:"token"`
+	Amount             decimal.Decimal  `json:"amount" db:"amount"`
+	SourceAmount       *decimal.Decimal `json:"source_amount,omitempty" db:"source_amount"`     // Original amount before conversion (e.g. raw NGN)
+	SourceCurrency     *string          `json:"source_currency,omitempty" db:"source_currency"` // Original currency (e.g. "NGN")
+	Status             string           `json:"status" db:"status"`                             // pending, confirmed, failed, off_ramp_initiated, off_ramp_completed, broker_funded
+	ConfirmedAt        *time.Time       `json:"confirmed_at" db:"confirmed_at"`
+	OffRampTxID        *string          `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`
+	OffRampInitiatedAt *time.Time       `json:"off_ramp_initiated_at" db:"off_ramp_initiated_at"`
+	OffRampCompletedAt *time.Time       `json:"off_ramp_completed_at" db:"off_ramp_completed_at"`
+	AlpacaFundingTxID  *string          `json:"alpaca_funding_tx_id" db:"alpaca_funding_tx_id"`
+	AlpacaFundedAt     *time.Time       `json:"alpaca_funded_at" db:"alpaca_funded_at"`
+	VirtualAccountID   *uuid.UUID       `json:"virtual_account_id" db:"virtual_account_id"`
+	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 }
 
 // Balance represents user's buying power and pending deposits

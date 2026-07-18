@@ -24,7 +24,7 @@ type FinancialObligationManager interface {
 	MarkCancelled(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error)
 }
 
-func (o *Orchestrator) SetFinancialObligationManager(m FinancialObligationManager) {
+func (o *AgentAdapter) SetFinancialObligationManager(m FinancialObligationManager) {
 	o.obligationManager = m
 }
 
@@ -66,7 +66,7 @@ func FinancialObligationTools() []infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeListFinancialObligations(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeListFinancialObligations(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.obligationManager == nil {
 		return map[string]interface{}{"error": "financial obligation service is unavailable"}, nil
 	}
@@ -130,7 +130,7 @@ func (o *Orchestrator) executeListFinancialObligations(ctx context.Context, user
 	}, nil
 }
 
-func (o *Orchestrator) createMarkObligationPaidAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createMarkObligationPaidAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.obligationManager == nil {
 		return map[string]interface{}{"error": "financial obligation service is unavailable"}, nil
 	}
@@ -164,7 +164,7 @@ func (o *Orchestrator) createMarkObligationPaidAction(ctx context.Context, userI
 	return map[string]interface{}{"action_required": true, "pending_action": action}, nil
 }
 
-func (o *Orchestrator) executeMarkObligationPaid(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
+func (o *AgentAdapter) executeMarkObligationPaid(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
 	if o.obligationManager == nil {
 		return nil, fmt.Errorf("financial obligation service is unavailable")
 	}
@@ -176,7 +176,7 @@ func (o *Orchestrator) executeMarkObligationPaid(ctx context.Context, userID uui
 	return o.obligationManager.MarkPaid(ctx, userID, id)
 }
 
-func (o *Orchestrator) executeFindObligationPaymentMatches(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeFindObligationPaymentMatches(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.obligationManager == nil {
 		return map[string]interface{}{"error": "financial obligation service is unavailable"}, nil
 	}

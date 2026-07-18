@@ -152,6 +152,7 @@ type DepositRepository interface {
 	GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (*entities.Deposit, error)
 	GetRecentByUserIDAndAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, within time.Duration) (*entities.Deposit, error)
 	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
+	UpdateDepositAmount(ctx context.Context, id uuid.UUID, amount decimal.Decimal) error
 }
 
 // WalletRepository interface for wallet operations

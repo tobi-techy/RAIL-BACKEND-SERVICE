@@ -13,34 +13,34 @@ import (
 
 // SetConversations sets the conversation persistence layer (optional).
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetConversations(c ConversationPersister) {
+func (o *AgentAdapter) SetConversations(c ConversationPersister) {
 	o.conversations = c
 }
 
 // SetMemory sets the long-term memory service (optional).
-func (o *Orchestrator) SetMemory(m *MemoryService) {
+func (o *AgentAdapter) SetMemory(m *MemoryService) {
 	o.memory = m
 }
 
 // SetSupermemory sets the Supermemory client (optional).
-func (o *Orchestrator) SetSupermemory(s SupermemoryClient) {
+func (o *AgentAdapter) SetSupermemory(s SupermemoryClient) {
 	o.supermemory = s
 }
 
 // SetUsageTracker sets the usage tracking layer (optional).
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetUsageTracker(u UsageTracker) {
+func (o *AgentAdapter) SetUsageTracker(u UsageTracker) {
 	o.usage = u
 }
 
 // ChatWithConversation handles a chat message using a persisted conversation
 // for context. It loads summary + recent messages, calls the LLM, and persists
 // the exchange. Tracks usage for cost monitoring.
-func (o *Orchestrator) ChatWithConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string) (*ChatResponse, error) {
+func (o *AgentAdapter) ChatWithConversation(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string) (*ChatResponse, error) {
 	return o.ChatWithConversationWithOptions(ctx, userID, conv, message, ChatOptions{})
 }
 
-func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions) (*ChatResponse, error) {
+func (o *AgentAdapter) ChatWithConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts ChatOptions) (*ChatResponse, error) {
 	if o.conversations == nil {
 		return o.ChatInContextWithOptions(ctx, userID, uuid.Nil, message, nil, opts)
 	}
@@ -91,7 +91,6 @@ func (o *Orchestrator) ChatWithConversationWithOptions(ctx context.Context, user
 
 		// Extract facts and calibrate tone from this exchange
 		if o.memory != nil {
-			o.memory.ProcessExchange(userID, message, resp.Content)
 			o.memory.ExtractMoment(userID, message, resp.Content)
 		}
 
@@ -115,43 +114,6 @@ const voiceCostCeilingKeyPrefix = "voice_cost_ceiling:"
 const voiceCostCeilingTTL = 60 * time.Second
 
 // IsUserOverCostCeiling checks if a user has exceeded their monthly cost ceiling.
-// Returns false if no usage tracker is configured.
-//
-// The boolean is cached per-user in Redis for a short TTL (60s) to avoid a
-// usage lookup on every voice session start. The short TTL ensures a user who
-// crosses (or drops back under) the ceiling isn't trapped for long. Caching is
-// best-effort: any Redis error falls back to computing directly.
-func (o *Orchestrator) IsUserOverCostCeiling(ctx context.Context, userID uuid.UUID) bool {
-	if o.usage == nil {
-		return false
-	}
-
-	key := voiceCostCeilingKeyPrefix + userID.String()
-	if o.redis != nil {
-		var cached bool
-		if err := o.redis.Get(ctx, key, &cached); err == nil {
-			return cached
-		}
-	}
-
-	over, err := o.usage.IsOverCostCeiling(ctx, userID)
-	if err != nil {
-		o.logger.Warn("failed to check cost ceiling", zap.Error(err))
-		return false
-	}
-	if over {
-		observeCostCeilingHit()
-	}
-
-	if o.redis != nil {
-		if err := o.redis.Set(ctx, key, over, voiceCostCeilingTTL); err != nil {
-			o.logger.Debug("voice_cost_ceiling: cache store failed", zap.Error(err))
-		}
-	}
-
-	return over
-}
-
 // CostCeilingResponse is returned when a user is over the cost ceiling.
 // The handler can use this to inform the client about degraded mode.
 type CostCeilingResponse struct {
@@ -179,7 +141,7 @@ func generateTitleFromMessage(msg string) string {
 }
 
 // TrackVisionUsage records token usage from a vision API call.
-func (o *Orchestrator) TrackVisionUsage(ctx context.Context, userID uuid.UUID, tokens int) {
+func (o *AgentAdapter) TrackVisionUsage(ctx context.Context, userID uuid.UUID, tokens int) {
 	if o.usage == nil || tokens <= 0 {
 		return
 	}
@@ -190,7 +152,14 @@ func (o *Orchestrator) TrackVisionUsage(ctx context.Context, userID uuid.UUID, t
 
 // IngestVoiceTranscripts sends voice session transcripts to Supermemory.
 // Runs async — caller does not wait.
-func (o *Orchestrator) IngestVoiceTranscripts(userID uuid.UUID, pairs [][2]string) {
+// This is the ChatEngine-compatible version with a context parameter.
+func (o *AgentAdapter) IngestVoiceTranscripts(ctx context.Context, userID uuid.UUID, pairs [][2]string) error {
+	o.IngestVoiceTranscriptsOld(userID, pairs)
+	return nil
+}
+
+// IngestVoiceTranscriptsOld sends voice session transcripts to Supermemory (legacy, no context).
+func (o *AgentAdapter) IngestVoiceTranscriptsOld(userID uuid.UUID, pairs [][2]string) {
 	if o.supermemory == nil || len(pairs) == 0 {
 		return
 	}

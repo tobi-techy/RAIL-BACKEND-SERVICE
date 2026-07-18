@@ -34,11 +34,11 @@ type ReportEmailSender interface {
 
 // SetUserProfile sets the user profile provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetUserProfile(p UserProfileProvider) { o.userProfile = p }
+func (o *AgentAdapter) SetUserProfile(p UserProfileProvider) { o.userProfile = p }
 
 // SetReportEmailSender sets the email sender for reports.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetReportEmailSender(s ReportEmailSender) { o.reportEmail = s }
+func (o *AgentAdapter) SetReportEmailSender(s ReportEmailSender) { o.reportEmail = s }
 
 // TaxAndReportTools returns tool definitions for tax, email, and goals.
 func TaxAndReportTools(hasProfile, hasEmail bool) []infraai.Tool {
@@ -69,8 +69,8 @@ func TaxAndReportTools(hasProfile, hasEmail bool) []infraai.Tool {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"report_type": map[string]interface{}{
-						"type": "string",
-						"enum": []string{"spending", "tax_summary", "deposit_history"},
+						"type":        "string",
+						"enum":        []string{"spending", "tax_summary", "deposit_history"},
 						"description": "Type of report to send",
 					},
 				},
@@ -89,7 +89,7 @@ func TaxAndReportTools(hasProfile, hasEmail bool) []infraai.Tool {
 }
 
 // executeTaxSummary builds a tax-relevant financial summary.
-func (o *Orchestrator) executeTaxSummary(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeTaxSummary(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	year := time.Now().Year()
 	if y, ok := args["year"].(float64); ok && y > 2020 && y <= float64(year) {
 		year = int(y)
@@ -202,7 +202,7 @@ var taxDeadlines = map[string][]struct {
 	},
 }
 
-func (o *Orchestrator) executeTaxCalendar(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeTaxCalendar(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	country := ""
 	if o.userProfile != nil {
 		country, _ = o.userProfile.GetCountry(ctx, userID)
@@ -246,7 +246,7 @@ func (o *Orchestrator) executeTaxCalendar(ctx context.Context, userID uuid.UUID)
 }
 
 // executeSendReport creates a pending action to email a report.
-func (o *Orchestrator) executeSendReport(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSendReport(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	reportType, _ := args["report_type"].(string)
 	if reportType == "" {
 		return map[string]interface{}{"error": "report_type is required"}, nil
@@ -281,7 +281,7 @@ func (o *Orchestrator) executeSendReport(ctx context.Context, userID, convID uui
 	}, nil
 }
 
-func (o *Orchestrator) executeGetSavingsGoals(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetSavingsGoals(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	// Get stash balance as progress toward any goal
 	stash := decimal.Zero
 	if o.aggregateStats != nil {
@@ -316,7 +316,7 @@ func (o *Orchestrator) executeGetSavingsGoals(ctx context.Context, userID uuid.U
 }
 
 // executeSendReportAction sends the actual email after user confirmation.
-func (o *Orchestrator) executeSendReportAction(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
+func (o *AgentAdapter) executeSendReportAction(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
 	if o.reportEmail == nil {
 		return fmt.Errorf("email service not configured")
 	}
@@ -382,11 +382,11 @@ func buildReportHTML(title string, fields []reportField) string {
 
 // deductionCategory maps keywords to potential tax deduction categories.
 var deductionCategories = map[string][]string{
-	"Education":  {"tuition", "books", "course", "school", "university", "training", "udemy", "coursera"},
-	"Health":     {"medical", "pharmacy", "hospital", "clinic", "doctor", "health", "dental"},
-	"Transport":  {"fuel", "uber", "bolt", "taxi", "petrol", "diesel", "transport"},
-	"Services":   {"software", "subscription", "professional", "consulting", "saas", "cloud"},
-	"Equipment":  {"electronics", "office", "laptop", "computer", "printer", "supplies"},
+	"Education": {"tuition", "books", "course", "school", "university", "training", "udemy", "coursera"},
+	"Health":    {"medical", "pharmacy", "hospital", "clinic", "doctor", "health", "dental"},
+	"Transport": {"fuel", "uber", "bolt", "taxi", "petrol", "diesel", "transport"},
+	"Services":  {"software", "subscription", "professional", "consulting", "saas", "cloud"},
+	"Equipment": {"electronics", "office", "laptop", "computer", "printer", "supplies"},
 }
 
 func categorizeDeductions(receipts []*entities.ReceiptScan) []map[string]interface{} {

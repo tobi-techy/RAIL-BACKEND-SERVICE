@@ -21,27 +21,49 @@ func NewVirtualAccountRepository(db *sqlx.DB) *VirtualAccountRepository {
 	return &VirtualAccountRepository{db: db}
 }
 
+// vaColumns is the shared SELECT column list for virtual_accounts, with
+// COALESCE on nullable/text columns so scans into non-pointer fields are safe.
+const vaColumns = `
+	id, user_id, COALESCE(provider, 'bridge') as provider,
+	bridge_customer_id, alpaca_account_id, bridge_account_id,
+	graph_person_id, graph_account_id,
+	account_number, routing_number, COALESCE(bank_code, '') as bank_code,
+	COALESCE(bank_name, '') as bank_name,
+	COALESCE(beneficiary_name, '') as beneficiary_name,
+	COALESCE(bank_address, '') as bank_address,
+	COALESCE(beneficiary_address, '') as beneficiary_address,
+	COALESCE(payment_rails, '{}') as payment_rails,
+	status, currency, created_at, updated_at`
+
 // Create creates a new virtual account
 func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities.VirtualAccount) error {
+	if account.Provider == "" {
+		account.Provider = entities.VirtualAccountProviderBridge
+	}
 	query := `
 		INSERT INTO virtual_accounts (
-			id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			account_number, routing_number, bank_name, beneficiary_name,
+			id, user_id, provider, bridge_customer_id, alpaca_account_id, bridge_account_id,
+			graph_person_id, graph_account_id,
+			account_number, routing_number, bank_code, bank_name, beneficiary_name,
 			bank_address, beneficiary_address, payment_rails,
 			status, currency, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		)
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		account.ID,
 		account.UserID,
+		account.Provider,
 		account.BridgeCustomerID,
 		account.AlpacaAccountID,
 		account.BridgeAccountID,
+		account.GraphPersonID,
+		account.GraphAccountID,
 		account.AccountNumber,
 		account.RoutingNumber,
+		account.BankCode,
 		account.BankName,
 		account.BeneficiaryName,
 		account.BankAddress,
@@ -62,14 +84,7 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 
 // GetByID retrieves a virtual account by ID
 func (r *VirtualAccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name, 
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
-		FROM virtual_accounts
-		WHERE id = $1
-	`
+	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE id = $1`
 
 	var account entities.VirtualAccount
 	err := r.db.GetContext(ctx, &account, query, id)
@@ -83,16 +98,9 @@ func (r *VirtualAccountRepository) GetByID(ctx context.Context, id uuid.UUID) (*
 	return &account, nil
 }
 
-// GetByBridgeCustomerID retrieves a virtual account by Due account ID
+// GetByBridgeCustomerID retrieves a virtual account by Bridge customer ID
 func (r *VirtualAccountRepository) GetByBridgeCustomerID(ctx context.Context, dueAccountID string) (*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
-		FROM virtual_accounts
-		WHERE bridge_customer_id = $1
-	`
+	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE bridge_customer_id = $1`
 
 	var account entities.VirtualAccount
 	err := r.db.GetContext(ctx, &account, query, dueAccountID)
@@ -108,15 +116,7 @@ func (r *VirtualAccountRepository) GetByBridgeCustomerID(ctx context.Context, du
 
 // GetByUserID retrieves all virtual accounts for a user
 func (r *VirtualAccountRepository) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
-		FROM virtual_accounts
-		WHERE user_id = $1
-		ORDER BY created_at DESC
-	`
+	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE user_id = $1 ORDER BY created_at DESC`
 
 	var accounts []*entities.VirtualAccount
 	err := r.db.SelectContext(ctx, &accounts, query, userID)
@@ -134,11 +134,16 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 		SET bridge_customer_id = $2,
 			alpaca_account_id = $3,
 			bridge_account_id = $4,
-			account_number = $5,
-			routing_number = $6,
-			status = $7,
-			currency = $8,
-			updated_at = $9
+			graph_person_id = $5,
+			graph_account_id = $6,
+			account_number = $7,
+			routing_number = $8,
+			bank_code = $9,
+			bank_name = $10,
+			beneficiary_name = $11,
+			status = $12,
+			currency = $13,
+			updated_at = $14
 		WHERE id = $1
 	`
 
@@ -147,8 +152,13 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 		account.BridgeCustomerID,
 		account.AlpacaAccountID,
 		account.BridgeAccountID,
+		account.GraphPersonID,
+		account.GraphAccountID,
 		account.AccountNumber,
 		account.RoutingNumber,
+		account.BankCode,
+		account.BankName,
+		account.BeneficiaryName,
 		account.Status,
 		account.Currency,
 		account.UpdatedAt,
@@ -163,14 +173,7 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 
 // GetByAlpacaAccountID retrieves a virtual account by Alpaca account ID
 func (r *VirtualAccountRepository) GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
-		FROM virtual_accounts
-		WHERE alpaca_account_id = $1
-	`
+	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE alpaca_account_id = $1`
 
 	var account entities.VirtualAccount
 	err := r.db.GetContext(ctx, &account, query, alpacaAccountID)
@@ -220,14 +223,7 @@ func (r *VirtualAccountRepository) ExistsByUserAndAlpacaAccount(ctx context.Cont
 
 // GetByBridgeAccountID retrieves a virtual account by Bridge account ID
 func (r *VirtualAccountRepository) GetByBridgeAccountID(ctx context.Context, bridgeAccountID string) (*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
-		FROM virtual_accounts
-		WHERE bridge_account_id = $1
-	`
+	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE bridge_account_id = $1`
 
 	var account entities.VirtualAccount
 	err := r.db.GetContext(ctx, &account, query, bridgeAccountID)
@@ -241,13 +237,25 @@ func (r *VirtualAccountRepository) GetByBridgeAccountID(ctx context.Context, bri
 	return &account, nil
 }
 
+// GetByGraphAccountID retrieves a virtual account by Graph bank account ID
+func (r *VirtualAccountRepository) GetByGraphAccountID(ctx context.Context, graphAccountID string) (*entities.VirtualAccount, error) {
+	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE graph_account_id = $1`
+
+	var account entities.VirtualAccount
+	err := r.db.GetContext(ctx, &account, query, graphAccountID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("virtual account not found")
+		}
+		return nil, fmt.Errorf("failed to get virtual account by graph id: %w", err)
+	}
+
+	return &account, nil
+}
+
 // GetAccountsForMigration retrieves Due virtual accounts that need Bridge migration
 func (r *VirtualAccountRepository) GetAccountsForMigration(ctx context.Context, limit int) ([]*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
+	query := `SELECT ` + vaColumns + `
 		FROM virtual_accounts
 		WHERE bridge_customer_id IS NOT NULL 
 		  AND bridge_customer_id != ''
@@ -284,11 +292,7 @@ func (r *VirtualAccountRepository) UpdateBridgeAccountID(ctx context.Context, id
 
 // GetActiveByUserIDAndCurrency retrieves active virtual accounts for a user by currency
 func (r *VirtualAccountRepository) GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
-	query := `
-		SELECT id, user_id, bridge_customer_id, alpaca_account_id, bridge_account_id,
-			   account_number, routing_number, COALESCE(bank_name, '') as bank_name,
-			   COALESCE(beneficiary_name, '') as beneficiary_name, COALESCE(bank_address, '') as bank_address, COALESCE(beneficiary_address, '') as beneficiary_address, COALESCE(payment_rails, '{}') as payment_rails, status, currency,
-			   created_at, updated_at
+	query := `SELECT ` + vaColumns + `
 		FROM virtual_accounts
 		WHERE user_id = $1 AND currency = $2 AND status = 'active'
 		ORDER BY 

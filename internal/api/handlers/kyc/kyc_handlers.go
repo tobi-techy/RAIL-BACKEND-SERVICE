@@ -416,3 +416,89 @@ func (h *Handler) RepairBridgeGovID(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
+
+// SproutUpgrade handles POST /api/v1/kyc/sprout/upgrade.
+// Upgrades a user to Sprout tier (Tier 2) — creates Graph person + NGN account + Bridge KYC.
+func (h *Handler) SproutUpgrade(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req entities.SproutUpgradeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid Sprout upgrade request",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		return
+	}
+
+	response, err := h.kycService.SproutUpgrade(ctx, userID, &req)
+	if err != nil {
+		h.logger.Error("Sprout upgrade failed",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+
+		switch {
+		case errors.Is(err, kyc.ErrNoBridgeCustomer):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete onboarding first"})
+		case strings.Contains(err.Error(), "phone number is required"),
+			strings.Contains(err.Error(), "invalid date_of_birth"),
+			strings.Contains(err.Error(), "invalid BVN"),
+			strings.Contains(err.Error(), "missing request"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Sprout upgrade failed. Please try again."})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// BloomUpgrade handles POST /api/v1/kyc/bloom/upgrade.
+// Upgrades a user to Bloom tier (Tier 3) — unlimited limits, USD/EUR accounts, investing.
+func (h *Handler) BloomUpgrade(c *gin.Context) {
+	ctx := c.Request.Context()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var req entities.BloomUpgradeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid Bloom upgrade request",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		return
+	}
+
+	response, err := h.kycService.BloomUpgrade(ctx, userID, &req)
+	if err != nil {
+		h.logger.Error("Bloom upgrade failed",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+
+		switch {
+		case errors.Is(err, kyc.ErrNoBridgeCustomer):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete onboarding first"})
+		case strings.Contains(err.Error(), "must be at Sprout"),
+			strings.Contains(err.Error(), "Bridge adapter not available"),
+			strings.Contains(err.Error(), "Bridge KYC submission failed"),
+			strings.Contains(err.Error(), "missing request"):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Bloom upgrade failed. Please try again."})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}

@@ -39,6 +39,7 @@ func NewMiriamIntelligenceHandler(
 
 type createMiriamMandateRequest struct {
 	Name               string           `json:"name"`
+	ActionType         string           `json:"action_type"`
 	MaxAmountPerAction *decimal.Decimal `json:"max_amount_per_action" binding:"required"`
 	MaxAmountPerDay    *decimal.Decimal `json:"max_amount_per_day" binding:"required"`
 	MinSpendBalance    decimal.Decimal  `json:"min_spend_balance"`
@@ -111,8 +112,9 @@ func (h *MiriamIntelligenceHandler) CreateMandate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cooldown_minutes must be non-negative"})
 		return
 	}
-	mandate, err := h.service.CreateTransferToStashMandate(c.Request.Context(), userID, miriamservice.CreateMandateRequest{
-		Name: req.Name, MaxAmountPerAction: *req.MaxAmountPerAction, MaxAmountPerDay: *req.MaxAmountPerDay,
+	mandate, err := h.service.CreateMandate(c.Request.Context(), userID, miriamservice.CreateMandateRequest{
+		ActionType: req.ActionType, Name: req.Name,
+		MaxAmountPerAction: *req.MaxAmountPerAction, MaxAmountPerDay: *req.MaxAmountPerDay,
 		MinSpendBalance: req.MinSpendBalance, MinSafeToSpend: req.MinSafeToSpend, CooldownMinutes: req.CooldownMinutes,
 	})
 	if err != nil {

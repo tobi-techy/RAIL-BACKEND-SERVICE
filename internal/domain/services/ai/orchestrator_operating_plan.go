@@ -26,11 +26,11 @@ type CurrencyRateProvider interface {
 
 // SetFinancialObligationProvider wires manual obligations into Miriam planning.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetFinancialObligationProvider(p FinancialObligationProvider) {
+func (o *AgentAdapter) SetFinancialObligationProvider(p FinancialObligationProvider) {
 	o.obligations = p
 }
 
-func (o *Orchestrator) SetCurrencyRateProvider(p CurrencyRateProvider) {
+func (o *AgentAdapter) SetCurrencyRateProvider(p CurrencyRateProvider) {
 	o.currencyRates = p
 }
 
@@ -42,7 +42,7 @@ func MoneyOperatingPlanTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeMoneyOperatingPlan(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeMoneyOperatingPlan(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	profile, err := o.financialProfile.GetByUserID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get financial profile: %w", err)
@@ -303,7 +303,7 @@ func calculateFamilySupportCap(profile *entities.FinancialProfile, monthlyIncome
 	return monthlyIncome.Mul(decimal.NewFromFloat(0.10))
 }
 
-func calculateSafeSpend(ctx context.Context, o *Orchestrator, userID uuid.UUID, spend, monthOut, obligations, taxReserve decimal.Decimal, now time.Time) safeSpendPlan {
+func calculateSafeSpend(ctx context.Context, o *AgentAdapter, userID uuid.UUID, spend, monthOut, obligations, taxReserve decimal.Decimal, now time.Time) safeSpendPlan {
 	daysLeft := daysRemainingInMonth(now)
 	if daysLeft < 1 {
 		daysLeft = 1
@@ -479,7 +479,7 @@ func actionDescription(actionType string, profile *entities.FinancialProfile) st
 	}
 }
 
-func (o *Orchestrator) fxContext(ctx context.Context, profile *entities.FinancialProfile, monthlyIncome, spend, stash decimal.Decimal) map[string]interface{} {
+func (o *AgentAdapter) fxContext(ctx context.Context, profile *entities.FinancialProfile, monthlyIncome, spend, stash decimal.Decimal) map[string]interface{} {
 	from := profile.EarningCurrency
 	to := profile.SpendingCurrency
 	if from == "" || to == "" || from == to {

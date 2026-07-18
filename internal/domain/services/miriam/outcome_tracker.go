@@ -76,11 +76,12 @@ func (t *OutcomeTracker) RecordPredictions(ctx context.Context, userID uuid.UUID
 }
 
 // EvaluateOutcomes checks all pending outcomes whose horizon has expired and
-// records whether the predicted event actually occurred.
+// records whether the predicted event actually occurred. It returns the outcomes
+// resolved during this sweep so callers can close the loop with the user.
 // Called periodically (e.g., once per hour or on each worker sweep).
-func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID) {
+func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID) []entities.MiriamPredictionOutcome {
 	if t.repo == nil {
-		return
+		return nil
 	}
 
 	pending, err := t.repo.GetPendingPredictionOutcomes(ctx, userID)
@@ -89,7 +90,7 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 			t.logger.Warn("failed to fetch pending outcomes",
 				zap.String("user_id", userID.String()), zap.Error(err))
 		}
-		return
+		return nil
 	}
 
 	now := time.Now().UTC()
@@ -98,6 +99,7 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 		spend = b
 	}
 
+	var resolved []entities.MiriamPredictionOutcome
 	for _, o := range pending {
 		deadline := o.CreatedAt.Add(time.Duration(o.HorizonDays) * 24 * time.Hour)
 		if now.Before(deadline) {
@@ -110,8 +112,14 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 				zap.String("user_id", userID.String()),
 				zap.String("prediction_id", o.PredictionID.String()),
 				zap.Error(err))
+			continue
 		}
+		settled := outcome
+		o.ActualOutcome = &settled
+		o.OutcomeObservedAt = &now
+		resolved = append(resolved, o)
 	}
+	return resolved
 }
 
 func (t *OutcomeTracker) evaluatePrediction(ctx context.Context, userID uuid.UUID, o entities.MiriamPredictionOutcome, currentSpend decimal.Decimal) bool {
@@ -246,5 +254,41 @@ func predictionHorizonDays(horizon string) int {
 		return 30
 	default:
 		return 7
+	}
+}
+
+// LoopClosingMessage turns a freshly resolved prediction into a short, human
+// "I remember what I said, here's how it turned out" line. Returns "" for
+// informational prediction types that were never a warning worth revisiting.
+// This is what makes Miriam feel accountable rather than noisy.
+func LoopClosingMessage(o entities.MiriamPredictionOutcome) string {
+	if o.ActualOutcome == nil {
+		return ""
+	}
+	materialized := *o.ActualOutcome
+
+	switch o.PredictionType {
+	case entities.PredictionCashShortfall:
+		if materialized {
+			return "Earlier I flagged that Spend might run short this stretch. It did tighten, so worth keeping an eye on the next few days."
+		}
+		return "Earlier I flagged Spend might run short. It held up fine, you handled it."
+	case entities.PredictionBillPressure:
+		if materialized {
+			return "I'd warned bills would press on your balance. They did land heavy, but you got through them."
+		}
+		return "I'd warned bills might squeeze you this week. Turned out smoother than I expected. Nicely managed."
+	case entities.PredictionIncomeGap:
+		if materialized {
+			return "I'd flagged income might come in light this month. It did trail a bit, so I'm factoring that into what's next."
+		}
+		return "I'd flagged income might come in light. It landed where it needed to. Good."
+	case entities.PredictionSpendingAnomaly:
+		if materialized {
+			return "I'd noticed spending picking up pace. It did keep climbing, so I'll watch the categories with you."
+		}
+		return "I'd noticed spending edging up. It settled back down. False alarm, which is the good kind."
+	default:
+		return ""
 	}
 }

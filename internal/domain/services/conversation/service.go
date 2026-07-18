@@ -235,6 +235,43 @@ func (s *Service) RecordExchange(ctx context.Context, convID uuid.UUID, userMsg,
 	return nil
 }
 
+// SaveToolMessages persists tool-call and tool-result messages so the next turn
+// can reconstruct the full conversation context including tool interactions.
+func (s *Service) SaveToolMessages(ctx context.Context, convID uuid.UUID, messages []ai.Message) error {
+	for _, msg := range messages {
+		if msg.Role != "assistant" && msg.Role != "tool" {
+			continue
+		}
+		metadata := make(map[string]interface{})
+		if msg.ToolCallID != "" {
+			metadata["tool_call_id"] = msg.ToolCallID
+		}
+		if msg.Name != "" {
+			metadata["name"] = msg.Name
+		}
+		if len(msg.ToolCalls) > 0 {
+			tcs := make([]map[string]interface{}, len(msg.ToolCalls))
+			for i, tc := range msg.ToolCalls {
+				tcs[i] = map[string]interface{}{
+					"id":   tc.ID,
+					"name": tc.Name,
+					"arguments": tc.Arguments,
+				}
+			}
+			metadata["tool_calls"] = tcs
+		}
+		if err := s.repo.CreateMessage(ctx, &entities.AIMessage{
+			ConversationID: convID,
+			Role:           msg.Role,
+			Content:        msg.Content,
+			Metadata:       metadata,
+		}); err != nil {
+			return fmt.Errorf("save tool message: %w", err)
+		}
+	}
+	return nil
+}
+
 // generateTitle creates a short title from the first user message.
 func (s *Service) generateTitle(convID uuid.UUID, firstMessage string) {
 	if s.summarizer == nil {

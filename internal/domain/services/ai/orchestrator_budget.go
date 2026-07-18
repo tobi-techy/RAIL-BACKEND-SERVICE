@@ -24,7 +24,7 @@ type BudgetProvider interface {
 
 // SetBudgetProvider sets the budget provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetBudgetProvider(b BudgetProvider) {
+func (o *AgentAdapter) SetBudgetProvider(b BudgetProvider) {
 	o.budgetProvider = b
 }
 
@@ -50,7 +50,7 @@ func BudgetTools() []infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeGetBudget(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetBudget(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.budgetProvider == nil {
 		return map[string]interface{}{"error": "budgets not available"}, nil
 	}
@@ -95,13 +95,13 @@ func (o *Orchestrator) executeGetBudget(ctx context.Context, userID uuid.UUID) (
 	}
 
 	return map[string]interface{}{
-		"has_budget":     true,
-		"monthly_limit":  budget.MonthlyLimit.StringFixed(2),
-		"spent_so_far":   monthlySpend.StringFixed(2),
-		"remaining":      remaining.StringFixed(2),
-		"percent_used":   pctUsed.StringFixed(1),
-		"status":         status,
-		"days_left":      daysLeft,
+		"has_budget":    true,
+		"monthly_limit": budget.MonthlyLimit.StringFixed(2),
+		"spent_so_far":  monthlySpend.StringFixed(2),
+		"remaining":     remaining.StringFixed(2),
+		"percent_used":  pctUsed.StringFixed(1),
+		"status":        status,
+		"days_left":     daysLeft,
 		"daily_allowance": func() string {
 			if daysLeft > 0 && remaining.IsPositive() {
 				return remaining.Div(decimal.NewFromInt(int64(daysLeft))).StringFixed(2)
@@ -111,7 +111,7 @@ func (o *Orchestrator) executeGetBudget(ctx context.Context, userID uuid.UUID) (
 	}, nil
 }
 
-func (o *Orchestrator) createSetBudgetAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createSetBudgetAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	limit, ok := args["monthly_limit"].(float64)
 	if !ok || limit <= 0 {
 		return map[string]interface{}{"error": "monthly_limit must be a positive number"}, nil
@@ -138,7 +138,7 @@ func (o *Orchestrator) createSetBudgetAction(ctx context.Context, userID, convID
 	}, nil
 }
 
-func (o *Orchestrator) executeSetBudget(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSetBudget(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.budgetProvider == nil {
 		return map[string]interface{}{"error": "budgets not available"}, nil
 	}

@@ -145,6 +145,54 @@ func (c *Client) DeleteKYCDocument(ctx context.Context, objectKey string) error 
 	return nil
 }
 
+// PutObject uploads arbitrary bytes to R2 under the given object key.
+// Unlike UploadKYCDocument it does not impose a key layout — the caller owns
+// the key namespace (e.g. "documents/{user_id}/{id}.pdf").
+func (c *Client) PutObject(ctx context.Context, objectKey string, data []byte, contentType string) (*UploadResult, error) {
+	if c == nil {
+		return nil, fmt.Errorf("R2 client is not configured")
+	}
+
+	url := fmt.Sprintf("https://%s.r2.cloudflarestorage.com/%s/%s", c.config.AccountID, c.config.Bucket, objectKey)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create R2 request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("x-amz-acl", "private")
+	c.signRequest(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("R2 upload failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("R2 API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	return &UploadResult{
+		URL:        fmt.Sprintf("%s/%s", c.publicURL, objectKey),
+		ObjectKey:  objectKey,
+		ETag:       resp.Header.Get("ETag"),
+		UploadedAt: time.Now(),
+	}, nil
+}
+
+// GetObject downloads bytes for an arbitrary object key.
+func (c *Client) GetObject(ctx context.Context, objectKey string) ([]byte, error) {
+	// GetKYCDocument is namespace-agnostic; reuse it for any key.
+	return c.GetKYCDocument(ctx, objectKey)
+}
+
+// DeleteObject removes an arbitrary object key.
+func (c *Client) DeleteObject(ctx context.Context, objectKey string) error {
+	return c.DeleteKYCDocument(ctx, objectKey)
+}
+
 func (c *Client) GetSignedURL(ctx context.Context, objectKey string, expiryMinutes int) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("R2 client is not configured")

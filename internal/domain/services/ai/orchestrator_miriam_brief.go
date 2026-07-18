@@ -53,7 +53,7 @@ type miriamAction struct {
 	RequiresConfirmation bool                   `json:"requires_confirmation"`
 }
 
-func (o *Orchestrator) executeMiriamBrief(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeMiriamBrief(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	loc, timezone, country := o.resolveMiriamLocation(ctx, userID, args)
 	localNow := time.Now().In(loc)
 	monthStartLocal := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, loc)
@@ -468,7 +468,7 @@ func suggestedStashMove(spend decimal.Decimal) decimal.Decimal {
 	return amount.RoundBank(2)
 }
 
-func (o *Orchestrator) resolveMiriamLocation(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (*time.Location, string, string) {
+func (o *AgentAdapter) resolveMiriamLocation(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (*time.Location, string, string) {
 	country := strings.ToUpper(strings.TrimSpace(stringArg(args, "country")))
 	if country == "" && o.userProfile != nil {
 		if c, err := o.userProfile.GetCountry(ctx, userID); err == nil {
@@ -512,7 +512,7 @@ func timezoneForCountry(country string) string {
 	}
 }
 
-func (o *Orchestrator) upcomingObligationPressure(ctx context.Context, userID uuid.UUID, localNow time.Time, days int, loc *time.Location) (decimal.Decimal, int, []string) {
+func (o *AgentAdapter) upcomingObligationPressure(ctx context.Context, userID uuid.UUID, localNow time.Time, days int, loc *time.Location) (decimal.Decimal, int, []string) {
 	if o.obligations == nil {
 		return decimal.Zero, 0, nil
 	}
@@ -563,7 +563,7 @@ func obligationDueInWindow(obligation entities.FinancialObligation, start, end t
 	return !due.Before(start) && !due.After(end)
 }
 
-func (o *Orchestrator) buildUserTimeContext(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) buildUserTimeContext(ctx context.Context, userID uuid.UUID) string {
 	loc, timezone, _ := o.resolveMiriamLocation(ctx, userID, nil)
 	if loc == nil {
 		loc = time.Local
@@ -573,7 +573,7 @@ func (o *Orchestrator) buildUserTimeContext(ctx context.Context, userID uuid.UUI
 	return buildTimeContextAt(now, timezone)
 }
 
-func (o *Orchestrator) currentBalancesForMiriamBrief(ctx context.Context, userID uuid.UUID) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
+func (o *AgentAdapter) currentBalancesForMiriamBrief(ctx context.Context, userID uuid.UUID) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
 	if o.aggregateStats == nil {
 		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("aggregate stats service unavailable")
 	}
@@ -588,7 +588,7 @@ func (o *Orchestrator) currentBalancesForMiriamBrief(ctx context.Context, userID
 	return spend, stash, spend.Add(stash), nil
 }
 
-func (o *Orchestrator) moneyFlowForMiriamBrief(ctx context.Context, userID uuid.UUID, start, end time.Time, label string) (*entities.MoneyFlowSummary, error) {
+func (o *AgentAdapter) moneyFlowForMiriamBrief(ctx context.Context, userID uuid.UUID, start, end time.Time, label string) (*entities.MoneyFlowSummary, error) {
 	if o.spending == nil {
 		return nil, fmt.Errorf("spending service unavailable")
 	}
@@ -601,5 +601,3 @@ func (o *Orchestrator) moneyFlowForMiriamBrief(ctx context.Context, userID uuid.
 	}
 	return flow, nil
 }
-
-

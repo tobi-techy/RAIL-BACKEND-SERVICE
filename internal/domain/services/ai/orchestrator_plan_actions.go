@@ -12,7 +12,7 @@ import (
 
 // StageOperatingPlanAction converts a structured operating-plan proposal into
 // the existing pending-action confirmation flow.
-func (o *Orchestrator) StageOperatingPlanAction(ctx context.Context, userID, convID uuid.UUID, actionType string, params map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) StageOperatingPlanAction(ctx context.Context, userID, convID uuid.UUID, actionType string, params map[string]interface{}) (map[string]interface{}, error) {
 	switch actionType {
 	case "set_budget":
 		return o.createSetBudgetAction(ctx, userID, convID, params)
@@ -49,7 +49,7 @@ func (o *Orchestrator) StageOperatingPlanAction(ctx context.Context, userID, con
 	}
 }
 
-func (o *Orchestrator) createObligationReminderAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createObligationReminderAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.obligationCreator == nil {
 		return map[string]interface{}{"error": "financial obligation service is unavailable"}, nil
 	}
@@ -78,7 +78,7 @@ func (o *Orchestrator) createObligationReminderAction(ctx context.Context, userI
 	return map[string]interface{}{"action_required": true, "pending_action": action}, nil
 }
 
-func (o *Orchestrator) executeCreateObligationReminder(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
+func (o *AgentAdapter) executeCreateObligationReminder(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
 	if o.obligationCreator == nil {
 		return nil, fmt.Errorf("financial obligation service is unavailable")
 	}

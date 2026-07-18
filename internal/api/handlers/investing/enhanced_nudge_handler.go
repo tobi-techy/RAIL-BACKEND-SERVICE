@@ -14,11 +14,11 @@ import (
 
 // EnhancedNudgeHandler handles context-aware nudge requests.
 type EnhancedNudgeHandler struct {
-	orchestrator *aiservice.Orchestrator
+	orchestrator aiservice.ChatEngine
 	logger       *zap.Logger
 }
 
-func NewEnhancedNudgeHandler(orchestrator *aiservice.Orchestrator, logger *zap.Logger) *EnhancedNudgeHandler {
+func NewEnhancedNudgeHandler(orchestrator aiservice.ChatEngine, logger *zap.Logger) *EnhancedNudgeHandler {
 	return &EnhancedNudgeHandler{orchestrator: orchestrator, logger: logger}
 }
 

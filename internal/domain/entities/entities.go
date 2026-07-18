@@ -54,6 +54,7 @@ type Transaction struct {
 	Status          string          `json:"status" db:"status"` // pending, confirmed, failed
 	Type            string          `json:"type" db:"type"`     // deposit, withdrawal, swap, transfer
 	Description     string          `json:"description" db:"description"`
+	Currency        string          `json:"currency" db:"currency"` // resolved from token symbol (USD, EUR, NGN, etc.)
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 	ConfirmedAt     *time.Time      `json:"confirmed_at" db:"confirmed_at"`
 }

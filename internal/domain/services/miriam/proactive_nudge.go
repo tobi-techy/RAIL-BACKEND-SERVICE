@@ -43,6 +43,13 @@ type ProactiveNudgeStore interface {
 	HasRecentNudgeByType(ctx context.Context, userID uuid.UUID, triggerType string, since time.Time) (bool, error)
 }
 
+// CadenceReader exposes the latest nudge cadence hint produced by self-review,
+// letting the nudge engine throttle low-priority messages when Miriam has
+// noticed the user tuning her out.
+type CadenceReader interface {
+	LatestCadenceHint(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
 // ProactiveNudgeEngine generates context-aware push notifications.
 type ProactiveNudgeEngine struct {
 	store       ProactiveNudgeStore
@@ -50,6 +57,8 @@ type ProactiveNudgeEngine struct {
 	balances    BalanceProvider
 	memory      MemoryReader
 	notifier    Notifier
+	chatSender  ProactiveChatSender
+	cadence     CadenceReader
 	logger      *zap.Logger
 }
 
@@ -75,6 +84,16 @@ func (e *ProactiveNudgeEngine) SetMemory(m MemoryReader) {
 // SetNotifier injects a Notifier after construction (deferred wiring).
 func (e *ProactiveNudgeEngine) SetNotifier(n Notifier) {
 	e.notifier = n
+}
+
+// SetChatSender injects a ProactiveChatSender after construction (deferred wiring).
+func (e *ProactiveNudgeEngine) SetChatSender(s ProactiveChatSender) {
+	e.chatSender = s
+}
+
+// SetCadenceReader injects a CadenceReader after construction (deferred wiring).
+func (e *ProactiveNudgeEngine) SetCadenceReader(c CadenceReader) {
+	e.cadence = c
 }
 
 // GenerateProactiveNudges evaluates a user's state and produces 0–3 nudges.
@@ -126,6 +145,14 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	phase := ResolvePhase(state)
 	nudges = selectTopNudges(nudges, NudgeFrequencyLimit(phase))
 
+	// Respect self-review's cadence hint: when Miriam has noticed the user
+	// dismissing her, hold back all but the most important nudges.
+	if e.cadence != nil {
+		if hint, err := e.cadence.LatestCadenceHint(ctx, userID); err == nil && hint == entities.NudgeCadenceReduce {
+			nudges = filterHighPriorityNudges(nudges, nudgeReduceMinPriority)
+		}
+	}
+
 	dedupWindow := 12 * time.Hour
 
 	var delivered []entities.ProactiveNudge
@@ -140,11 +167,13 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 				continue
 			}
 		}
-		if e.notifier != nil {
+		if e.chatSender != nil {
+			_ = e.chatSender.SendChatMessage(ctx, userID, n.Message)
+		} else if e.notifier != nil {
 			_ = e.notifier.SendGenericNotification(ctx, userID, "Miriam", n.Message)
-			if e.store != nil {
-				_ = e.store.MarkDelivered(ctx, n.ID)
-			}
+		}
+		if e.store != nil {
+			_ = e.store.MarkDelivered(ctx, n.ID)
 		}
 		delivered = append(delivered, n)
 	}
@@ -425,5 +454,20 @@ func selectTopNudges(nudges []entities.ProactiveNudge, max int) []entities.Proac
 		}
 	}
 
+	return result
+}
+
+// nudgeReduceMinPriority is the floor a nudge must meet to still be delivered
+// when self-review has set the cadence hint to "reduce".
+const nudgeReduceMinPriority = 7
+
+// filterHighPriorityNudges drops nudges below the given priority floor.
+func filterHighPriorityNudges(nudges []entities.ProactiveNudge, minPriority int) []entities.ProactiveNudge {
+	result := nudges[:0]
+	for _, n := range nudges {
+		if n.Priority >= minPriority {
+			result = append(result, n)
+		}
+	}
 	return result
 }

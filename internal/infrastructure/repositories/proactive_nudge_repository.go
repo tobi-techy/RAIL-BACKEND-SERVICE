@@ -53,6 +53,22 @@ func (r *ProactiveNudgeRepository) ListPendingNudges(ctx context.Context, userID
 	return nudges, nil
 }
 
+// ListNudgesSince returns nudges created at or after the given time so
+// self-review can measure messaging engagement (delivered vs dismissed).
+func (r *ProactiveNudgeRepository) ListNudgesSince(ctx context.Context, userID uuid.UUID, since time.Time) ([]entities.ProactiveNudge, error) {
+	var nudges []entities.ProactiveNudge
+	err := r.db.SelectContext(ctx, &nudges, `
+		SELECT id, user_id, trigger_type, priority, message, action_suggestion,
+		       expires_at, delivered_at, dismissed_at, created_at
+		FROM proactive_nudges
+		WHERE user_id = $1 AND created_at >= $2
+		ORDER BY created_at ASC`, userID, since)
+	if err != nil {
+		return nil, fmt.Errorf("list nudges since: %w", err)
+	}
+	return nudges, nil
+}
+
 func (r *ProactiveNudgeRepository) MarkDelivered(ctx context.Context, nudgeID uuid.UUID) error {
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE proactive_nudges SET delivered_at = NOW() WHERE id = $1`, nudgeID)

@@ -77,6 +77,8 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               graph_person_id, COALESCE(kyc_tier, 1) AS kyc_tier, bvn_verified_at, bvn_last4,
+	               nin_verified_at, nin_last4,
 	               is_active, COALESCE(withdrawals_frozen, false) AS withdrawals_frozen, created_at, updated_at
 	        FROM users 
 	        WHERE id = $1`
@@ -86,6 +88,11 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
+	var graphPersonID, bvnLast4 sql.NullString
+	var kycTier sql.NullInt64
+	var bvnVerifiedAt sql.NullTime
+	var ninVerifiedAt sql.NullTime
+	var ninLast4 sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
@@ -111,6 +118,12 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 		&kycRejectionReason,
 		&bridgeCustomerID,
 		&alpacaAccountID,
+		&graphPersonID,
+		&kycTier,
+		&bvnVerifiedAt,
+		&bvnLast4,
+		&ninVerifiedAt,
+		&ninLast4,
 		&user.IsActive,
 		&user.WithdrawalsFrozen,
 		&user.CreatedAt,
@@ -169,6 +182,26 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	}
 	if alpacaAccountID.Valid {
 		user.AlpacaAccountID = &alpacaAccountID.String
+	}
+	if graphPersonID.Valid {
+		user.GraphPersonID = &graphPersonID.String
+	}
+	if kycTier.Valid {
+		user.KYCTier = int(kycTier.Int64)
+	} else {
+		user.KYCTier = 1
+	}
+	if bvnVerifiedAt.Valid {
+		user.BVNVerifiedAt = &bvnVerifiedAt.Time
+	}
+	if bvnLast4.Valid {
+		user.BVNLast4 = &bvnLast4.String
+	}
+	if ninVerifiedAt.Valid {
+		user.NINVerifiedAt = &ninVerifiedAt.Time
+	}
+	if ninLast4.Valid {
+		user.NINLast4 = &ninLast4.String
 	}
 
 	return user, nil
@@ -387,6 +420,7 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               COALESCE(kyc_tier, 1) AS kyc_tier, bvn_verified_at, nin_verified_at,
 	               is_active, created_at, updated_at
 	        FROM users 
 	        WHERE bridge_customer_id = $1`
@@ -396,6 +430,8 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 	var kycProviderRef, kycRejectionReason, bridgeCustomerIDVal, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
+	var kycTier sql.NullInt64
+	var bvnVerifiedAt, ninVerifiedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, query, bridgeCustomerID).Scan(
 		&user.ID,
@@ -421,6 +457,9 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 		&kycRejectionReason,
 		&bridgeCustomerIDVal,
 		&alpacaAccountID,
+		&kycTier,
+		&bvnVerifiedAt,
+		&ninVerifiedAt,
 		&user.IsActive,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -434,6 +473,17 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
+	if kycTier.Valid {
+		user.KYCTier = int(kycTier.Int64)
+	} else {
+		user.KYCTier = 1
+	}
+	if bvnVerifiedAt.Valid {
+		user.BVNVerifiedAt = &bvnVerifiedAt.Time
+	}
+	if ninVerifiedAt.Valid {
+		user.NINVerifiedAt = &ninVerifiedAt.Time
+	}
 	if firstName.Valid {
 		user.FirstName = &firstName.String
 	}
@@ -594,6 +644,48 @@ func (r *UserRepository) UpdateKYCProvider(ctx context.Context, userID uuid.UUID
 		zap.String("provider_ref", providerRef),
 		zap.String("status", string(status)))
 
+	return nil
+}
+
+// UpdateGraphPersonID stores the Graph (useoval.com) person ID for a user.
+func (r *UserRepository) UpdateGraphPersonID(ctx context.Context, userID uuid.UUID, personID string) error {
+	query := `UPDATE users SET graph_person_id = $2, updated_at = $3 WHERE id = $1`
+	if _, err := r.db.ExecContext(ctx, query, userID, personID, time.Now()); err != nil {
+		r.logger.Error("Failed to update graph person id", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to update graph person id: %w", err)
+	}
+	return nil
+}
+
+// UpdateKYCTier sets the persisted KYC tier (1=non_kyc, 2=basic, 3=advanced).
+func (r *UserRepository) UpdateKYCTier(ctx context.Context, userID uuid.UUID, tier int) error {
+	query := `UPDATE users SET kyc_tier = $2, updated_at = $3 WHERE id = $1`
+	if _, err := r.db.ExecContext(ctx, query, userID, tier, time.Now()); err != nil {
+		r.logger.Error("Failed to update kyc tier", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to update kyc tier: %w", err)
+	}
+	return nil
+}
+
+// MarkBVNVerified records that a user's BVN was verified. The BVN itself is
+// never stored — only the verification timestamp and last-4 digits.
+func (r *UserRepository) MarkBVNVerified(ctx context.Context, userID uuid.UUID, last4 string) error {
+	query := `UPDATE users SET bvn_verified_at = $2, bvn_last4 = $3, updated_at = $2 WHERE id = $1`
+	if _, err := r.db.ExecContext(ctx, query, userID, time.Now(), last4); err != nil {
+		r.logger.Error("Failed to mark bvn verified", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to mark bvn verified: %w", err)
+	}
+	return nil
+}
+
+// MarkNINVerified records that a user's NIN was verified. The NIN itself is
+// never stored — only the verification timestamp and last-4 digits.
+func (r *UserRepository) MarkNINVerified(ctx context.Context, userID uuid.UUID, last4 string) error {
+	query := `UPDATE users SET nin_verified_at = $2, nin_last4 = $3, updated_at = $2 WHERE id = $1`
+	if _, err := r.db.ExecContext(ctx, query, userID, time.Now(), last4); err != nil {
+		r.logger.Error("Failed to mark nin verified", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to mark nin verified: %w", err)
+	}
 	return nil
 }
 
@@ -945,7 +1037,8 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 			       email_verified, phone_verified, onboarding_status, kyc_status,
 			       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 			       role, is_active, last_login_at, created_at, updated_at,
-			       bridge_customer_id, alpaca_account_id, bridge_kyc_status, bridge_kyc_link
+			       bridge_customer_id, alpaca_account_id, bridge_kyc_status, bridge_kyc_link,
+			       COALESCE(kyc_tier, 1) AS kyc_tier
 			FROM users 
 			WHERE id = $1 AND is_active = true`
 
@@ -984,6 +1077,7 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 		&alpacaAccountID,
 		&bridgeKYCStatus,
 		&bridgeKYCLink,
+		&user.KYCTier,
 	)
 
 	if err != nil {
@@ -1165,6 +1259,18 @@ func (r *UserRepository) UpdatePassword(ctx context.Context, userID uuid.UUID, n
 		return fmt.Errorf("failed to update password: %w", err)
 	}
 	r.logger.Debug("Password updated", zap.String("user_id", userID.String()))
+	return nil
+}
+
+// UpdateSourceOfFunds persists employment, source of funds, and account purpose data.
+func (r *UserRepository) UpdateSourceOfFunds(ctx context.Context, userID uuid.UUID, employmentStatus, sourceOfFunds, accountPurpose *string) error {
+	query := `UPDATE users SET employment_status = $2, source_of_funds = $3, account_purpose = $4, updated_at = $5 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID, employmentStatus, sourceOfFunds, accountPurpose, time.Now())
+	if err != nil {
+		r.logger.Error("Failed to update source of funds", zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to update source of funds: %w", err)
+	}
+	r.logger.Debug("Source of funds updated", zap.String("user_id", userID.String()))
 	return nil
 }
 

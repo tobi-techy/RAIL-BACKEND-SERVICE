@@ -22,6 +22,11 @@ func CheckResponseQuality(response string) QualityVerdict {
 
 	var failures []string
 
+	// 0. Fabrication: states specific dollar amounts without hedging — likely hallucinated
+	if looksFabricated(response) {
+		failures = append(failures, "possible_fabrication")
+	}
+
 	// 1. Starts with banned AI slop phrases
 	if startsWithSlop(response) {
 		failures = append(failures, "starts_with_slop")
@@ -77,6 +82,8 @@ func QualityCorrectionHint(failures []string) string {
 	// Only retry for the most impactful issues — don't stack corrections
 	for _, f := range failures {
 		switch f {
+		case "possible_fabrication":
+			return "CRITICAL: Your response contains dollar amounts you did not get from a tool call. You are making up numbers. REWRITE: Remove ALL specific dollar figures you invented. Call the relevant tools first to get real data, or say you don't have that information. Never state a number unless a tool gave it to you."
 		case "starts_with_slop":
 			return "Rewrite. Skip the greeting/filler — just react and answer directly like you're mid-conversation."
 		case "contains_banned_phrase":
@@ -110,7 +117,6 @@ var slopPrefixes = []string{
 	"sure thing",
 	"of course!",
 	"let me help you",
-	"let me check that",
 	"based on the data",
 	"based on your data",
 	"according to my",
@@ -215,10 +221,15 @@ func isEmotionallyFlat(response string) bool {
 	lower := strings.ToLower(response)
 
 	// Skip action confirmations — these are transactional, personality isn't expected.
-	for _, marker := range []string{"done.", "moved", "created", "set to", "automation", "confirmed", "cancelled"} {
+	for _, marker := range []string{"done.", "moved", "created", "set to", "automation", "confirmed", "cancelled", "flagged", "dispute", "refund"} {
 		if strings.Contains(lower, marker) {
 			return false
 		}
+	}
+
+	// Skip data-heavy responses that cite specific numbers — informational answers don't need personality
+	if dollarAmountPattern.MatchString(response) {
+		return false
 	}
 
 	// If it has personality signals, it's not flat.
@@ -261,7 +272,6 @@ func isEmotionallyFlat(response string) bool {
 	return personalitySignals <= 1
 }
 
-
 // isMonoBubble detects responses >200 chars with no paragraph break (\n\n).
 // Long single blocks don't feel like texting.
 func isMonoBubble(response string) bool {
@@ -270,10 +280,14 @@ func isMonoBubble(response string) bool {
 	}
 	// Skip action confirmations
 	lower := strings.ToLower(response)
-	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed"} {
+	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed", "flagged", "dispute"} {
 		if strings.Contains(lower, m) {
 			return false
 		}
+	}
+	// Skip data-heavy responses — informational answers can be longer
+	if dollarAmountPattern.MatchString(response) {
+		return false
 	}
 	return !strings.Contains(response, "\n\n")
 }
@@ -285,10 +299,14 @@ func hasNoHook(response string) bool {
 	}
 	// Skip action confirmations
 	lower := strings.ToLower(response)
-	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed"} {
+	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed", "flagged", "dispute", "refund"} {
 		if strings.Contains(lower, m) {
 			return false
 		}
+	}
+	// Skip data-heavy responses that cite specific numbers (these are informational, not conversational)
+	if dollarAmountPattern.MatchString(response) {
+		return false
 	}
 	return !strings.Contains(response, "?")
 }
@@ -310,7 +328,6 @@ func hasCurrencyConfusion(response string) bool {
 	return true
 }
 
-
 // hasMarkdownOrLists detects markdown formatting or numbered lists in the response.
 var numberedListPattern = regexp.MustCompile(`(?m)^\s*\d+[\.\)]\s`)
 
@@ -328,4 +345,60 @@ func hasMarkdownOrLists(response string) bool {
 		return true
 	}
 	return false
+}
+
+// dollarAmountPattern matches dollar amounts like $64, $1,234.56, $64.00
+var dollarAmountPattern = regexp.MustCompile(`\$[\d,]+(?:\.\d{1,2})?`)
+
+// looksFabricated flags responses that state specific dollar amounts as facts
+// without grounding from tool calls. It is deliberately conservative: the quality
+// gate doesn't see the conversation transcript, so it can only flag the clearest
+// cases. Multi-amount responses that look like math/comparison/confirmation are
+// allowed through (the user often provides numbers that Miriam repeats back).
+func looksFabricated(response string) bool {
+	matches := dollarAmountPattern.FindAllString(response, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	// Deduplicate amounts.
+	seen := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		seen[m] = true
+	}
+	distinct := len(seen)
+
+	// Single amount: flag only if the response is very short and the number
+	// looks invented (not a round number the user likely provided).
+	if distinct == 1 && len(response) < 120 {
+		for amount := range seen {
+			if !isRoundAmount(amount) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 3+ distinct amounts in a short response: suspicious, but allow if the
+	// response is doing math or confirming a user-provided calculation.
+	if distinct >= 3 && len(response) < 300 {
+		calcWords := strings.Contains(response, "adding") ||
+			strings.Contains(response, "total") ||
+			strings.Contains(response, "brings") ||
+			strings.Contains(response, "new total") ||
+			strings.Contains(response, "that's right")
+		return !calcWords
+	}
+
+	return false
+}
+
+// isRoundAmount returns true for amounts that look user-provided (round numbers
+// or small amounts that are unlikely to be hallucinated).
+func isRoundAmount(amount string) bool {
+	clean := strings.TrimPrefix(amount, "$")
+	clean = strings.ReplaceAll(clean, ",", "")
+	// Treat amounts ending in .00, .50, or with no decimal as round.
+	return strings.HasSuffix(clean, ".00") ||
+		strings.HasSuffix(clean, ".50") ||
+		!strings.Contains(clean, ".")
 }

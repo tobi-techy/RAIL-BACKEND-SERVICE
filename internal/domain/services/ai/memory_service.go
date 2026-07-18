@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/memory"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -24,12 +26,16 @@ type MemoryStore interface {
 	GetToneProfile(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error)
 	UpsertToneProfile(ctx context.Context, userID uuid.UUID, formality, directness, warmth, humor, brevity decimal.Decimal, preferredName, languageStyle, localeStyle string) error
 	SetPersonalityMode(ctx context.Context, userID uuid.UUID, mode string) error
+	GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error)
+	SetControlLevel(ctx context.Context, userID uuid.UUID, level string) error
 	// Staleness
 	DecayStaleFacts(ctx context.Context, staleDuration time.Duration, decayAmount decimal.Decimal) (int64, error)
 	ExpireLowConfidenceFacts(ctx context.Context, threshold decimal.Decimal) (int64, error)
 	// Embeddings
 	SetFactEmbedding(ctx context.Context, factID uuid.UUID, embedding []float32) error
 	FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]entities.SimilarFact, error)
+	// Importance
+	SetFactImportance(ctx context.Context, factID uuid.UUID, importance int) error
 	// Summary
 	GetMemorySummary(ctx context.Context, userID uuid.UUID) (*entities.MiriamMemorySummary, error)
 	UpsertMemorySummary(ctx context.Context, userID uuid.UUID, summary string, factCount int) error
@@ -47,11 +53,38 @@ type MemoryService struct {
 	store      MemoryStore
 	aiProvider infraai.AIProvider
 	embedder   Embedder
+	ranker     *memory.Ranker
 	logger     *zap.Logger
+
+	// bgWrites tracks the fire-and-forget extraction goroutines so a caller can
+	// drain them before tearing down the user (the simulation harness). It's a
+	// no-op in production, where nothing waits.
+	bgWrites sync.WaitGroup
 }
 
 func NewMemoryService(store MemoryStore, aiProvider infraai.AIProvider, logger *zap.Logger) *MemoryService {
-	return &MemoryService{store: store, aiProvider: aiProvider, logger: logger}
+	return &MemoryService{
+		store:      store,
+		aiProvider: aiProvider,
+		ranker:     &memory.Ranker{},
+		logger:     logger,
+	}
+}
+
+// WaitForPendingWrites blocks until all in-flight extraction goroutines finish,
+// or the context is done. Returns ctx.Err() if it timed out first.
+func (m *MemoryService) WaitForPendingWrites(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		m.bgWrites.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SetEmbedder enables semantic dedup (optional — works without it).
@@ -80,6 +113,19 @@ Extract facts in these categories:
 - risk_preference: conservative vs aggressive with investments, willingness to try new products
 - stash_behavior: how they treat savings (set-and-forget, frequent adjuster, target-saver)
 
+For EACH fact, assign an importance score (0-10):
+- 0 = trivial filler ("likes pizza", "watched a movie", "hello")
+- 2 = minor preference ("prefers short messages")
+- 5 = moderate context ("uses Uber frequently")
+- 7 = significant financial fact ("saving for a wedding by December", "gets paid monthly")
+- 10 = critical — Miriam MUST remember this ("never recommend loans", "salary arrives 27th", "supports 3 siblings")
+
+Rules for importance:
+- Financial facts (goals, income, salary, risk, habits) default to 5+
+- "Never" / "always" / "don't" statements are 8-10 (strong preferences)
+- Casual chat with no financial relevance = 0
+- If unsure, err toward higher importance (5) — it's better to remember something useful than to lose it
+
 Also detect the user's communication style for tone calibration:
 - formality: 0.0 (very casual, slang, abbreviations) to 1.0 (formal, proper grammar)
 - directness: 0.0 (indirect, hedging) to 1.0 (blunt, to the point)
@@ -93,7 +139,7 @@ Also detect the user's communication style for tone calibration:
 Return ONLY valid JSON with this structure (no markdown, no explanation):
 {
   "facts": [
-    {"category": "goal", "fact": "wants to save for a car by December", "confidence": 0.9}
+    {"category": "goal", "fact": "wants to save for a car by December", "confidence": 0.9, "importance": 8}
   ],
   "tone": {
     "formality": 0.3,
@@ -112,13 +158,15 @@ Rules:
 - If no facts are present, return empty "facts" array.
 - Always return tone analysis based on the user's writing style.
 - Keep facts concise (under 100 chars each).
-- Confidence: 1.0 = user explicitly stated it, 0.7 = strongly implied, 0.5 = loosely implied.`
+- Confidence: 1.0 = user explicitly stated it, 0.7 = strongly implied, 0.5 = loosely implied.
+- Importance: 0-10 scale as described above.`
 
 type extractionResult struct {
 	Facts []struct {
 		Category   string  `json:"category"`
 		Fact       string  `json:"fact"`
 		Confidence float64 `json:"confidence"`
+		Importance int     `json:"importance"`
 	} `json:"facts"`
 	Tone struct {
 		Formality     float64 `json:"formality"`
@@ -135,7 +183,9 @@ type extractionResult struct {
 // ProcessExchange extracts facts and calibrates tone from a user message + assistant response.
 // Runs asynchronously — errors are logged, not returned to the user.
 func (m *MemoryService) ProcessExchange(userID uuid.UUID, userMessage, assistantResponse string) {
+	m.bgWrites.Add(1)
 	go func() {
+		defer m.bgWrites.Done()
 		processCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -201,8 +251,14 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 		"conversation_moment": true,
 	}
 
+	const minImportance = 5
+
 	for _, f := range result.Facts {
 		if f.Fact == "" || f.Confidence < 0.5 {
+			continue
+		}
+		// Filter by importance — only persist facts that matter.
+		if f.Importance < minImportance {
 			continue
 		}
 		// Truncate fact text to keep memory context compact
@@ -212,6 +268,15 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 		}
 		if !validCategories[f.Category] {
 			continue
+		}
+
+		// Clamp importance to valid range.
+		importance := f.Importance
+		if importance < 0 {
+			importance = 0
+		}
+		if importance > 10 {
+			importance = 10
 		}
 
 		// Check for existing facts in the same category that this might supersede
@@ -230,9 +295,13 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 				if len(similar) > 0 && similar[0].Distance < 0.3 {
 					// Distance < 0.3 = semantically similar enough to be the same fact
 					if similar[0].Distance < 0.15 {
-						// Very similar — just confirm the existing fact
+						// Very similar — just confirm the existing fact and boost importance if new is higher.
 						if err := m.store.ConfirmFact(ctx, similar[0].ID, userID); err != nil {
 							m.logger.Warn("failed to confirm fact", zap.Error(err))
+						}
+						// If new fact has higher importance, update it.
+						if importance > similar[0].Importance {
+							m.store.SetFactImportance(ctx, similar[0].ID, importance)
 						}
 						goto nextFact
 					}
@@ -241,13 +310,14 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 						supersedes = &similar[0].ID
 					}
 				}
-				// Save fact with embedding
+				// Save fact with embedding and importance
 				fact := &entities.MiriamUserFact{
 					UserID:     userID,
 					Category:   f.Category,
 					Fact:       factText,
 					Source:     entities.FactSourceConversation,
 					Confidence: decimal.NewFromFloat(f.Confidence),
+					Importance: importance,
 				}
 				if err := m.store.SaveFact(ctx, fact, supersedes); err != nil {
 					m.logger.Warn("failed to save fact", zap.Error(err), zap.String("category", f.Category))
@@ -264,6 +334,10 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 				if err := m.store.ConfirmFact(ctx, ex.ID, userID); err != nil {
 					m.logger.Warn("failed to confirm fact", zap.Error(err))
 				}
+				// Boost importance if new fact rates higher.
+				if importance > ex.Importance {
+					m.store.SetFactImportance(ctx, ex.ID, importance)
+				}
 				goto nextFact
 			}
 		}
@@ -279,6 +353,7 @@ func (m *MemoryService) saveFacts(ctx context.Context, userID uuid.UUID, result 
 				Fact:       factText,
 				Source:     entities.FactSourceConversation,
 				Confidence: decimal.NewFromFloat(f.Confidence),
+				Importance: importance,
 			}
 			if err := m.store.SaveFact(ctx, fact, supersedes); err != nil {
 				m.logger.Warn("failed to save fact", zap.Error(err), zap.String("category", f.Category))
@@ -344,8 +419,11 @@ func clampDecimal(v float64) decimal.Decimal {
 	return decimal.NewFromFloat(v)
 }
 
-// BuildMemoryContext assembles all remembered facts into a system prompt injection.
-func (m *MemoryService) BuildMemoryContext(ctx context.Context, userID uuid.UUID) string {
+// BuildMemoryContext assembles the most relevant facts into a system prompt injection.
+// Uses composite ranking (similarity + importance + recency + confidence) instead
+// of dumping all facts. This keeps prompts compact while maximizing relevance.
+// The user's current message is used to compute query similarity when embeddings are available.
+func (m *MemoryService) BuildMemoryContext(ctx context.Context, userID uuid.UUID, message string) string {
 	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -354,11 +432,22 @@ func (m *MemoryService) BuildMemoryContext(ctx context.Context, userID uuid.UUID
 		return ""
 	}
 
+	// Compute query embedding from the user's message if possible.
+	var queryEmb []float32
+	if message != "" && m.embedder != nil {
+		if emb, embErr := m.embedder.Embed(ctx, message); embErr == nil && len(emb) > 0 {
+			queryEmb = emb
+		}
+	}
+
+	// Rank facts by composite score — most relevant first.
+	ranked := m.ranker.RankFacts(facts, queryEmb, time.Now().UTC(), 15)
+
 	var sb strings.Builder
 	sb.WriteString("[MIRIAM'S MEMORY — things you know about this user from past conversations. Use these naturally, don't list them back. Reference them when relevant to make the user feel known.]\n")
 
 	grouped := make(map[string][]string)
-	for _, f := range facts {
+	for _, f := range ranked {
 		grouped[f.Category] = append(grouped[f.Category], f.Fact)
 	}
 
@@ -473,6 +562,16 @@ func (m *MemoryService) SetPersonalityMode(ctx context.Context, userID uuid.UUID
 	return m.store.SetPersonalityMode(ctx, userID, mode)
 }
 
+// GetControlLevel returns the user's control level, defaulting to "full".
+func (m *MemoryService) GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error) {
+	return m.store.GetControlLevel(ctx, userID)
+}
+
+// SetControlLevel updates the user's control level.
+func (m *MemoryService) SetControlLevel(ctx context.Context, userID uuid.UUID, level string) error {
+	return m.store.SetControlLevel(ctx, userID, level)
+}
+
 // --- Memory Summarization ---
 
 const memorySummarizationPrompt = `Compress these user facts into a concise narrative paragraph (under 150 words). Write in third person. Include: who they are, what they do, their financial goals, habits, concerns, and personality. This will be used as context for a financial coaching AI.
@@ -509,18 +608,42 @@ func (m *MemoryService) SummarizeMemory(ctx context.Context, userID uuid.UUID) e
 	return m.store.UpsertMemorySummary(ctx, userID, summary, len(facts))
 }
 
-// BuildMemoryContextWithSummary uses the summary when available, falling back to individual facts.
-func (m *MemoryService) BuildMemoryContextWithSummary(ctx context.Context, userID uuid.UUID) string {
+// BuildMemoryContextWithSummary uses the summary when available, supplemented
+// by ranked facts so newly added facts are never invisible.
+func (m *MemoryService) BuildMemoryContextWithSummary(ctx context.Context, userID uuid.UUID, message string) string {
 	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	// Try summary first (more compact for users with many facts)
-	if summary, err := m.store.GetMemorySummary(fetchCtx, userID); err == nil && summary != nil && summary.Summary != "" {
-		return fmt.Sprintf("[MIRIAM'S MEMORY — what you know about this user. Use naturally, never list back.]\n%s", summary.Summary)
+	summary, _ := m.store.GetMemorySummary(fetchCtx, userID)
+	facts, _ := m.store.GetActiveFacts(fetchCtx, userID)
+
+	if (summary == nil || summary.Summary == "") && len(facts) == 0 {
+		return ""
 	}
 
-	// Fall back to individual facts
-	return m.BuildMemoryContext(ctx, userID)
+	var sb strings.Builder
+
+	if summary != nil && summary.Summary != "" {
+		sb.WriteString("[MIRIAM'S MEMORY — what you know about this user. Use naturally, never list back.]\n")
+		sb.WriteString(summary.Summary)
+		sb.WriteString("\n")
+	}
+
+	// Always include top-ranked facts (catches new facts added after last summary)
+	if len(facts) > 0 {
+		var queryEmb []float32
+		if message != "" && m.embedder != nil {
+			if emb, embErr := m.embedder.Embed(ctx, message); embErr == nil && len(emb) > 0 {
+				queryEmb = emb
+			}
+		}
+		ranked := m.ranker.RankFacts(facts, queryEmb, time.Now().UTC(), 10)
+		for _, f := range ranked {
+			sb.WriteString(fmt.Sprintf("- [%s] %s\n", f.Category, f.Fact))
+		}
+	}
+
+	return sb.String()
 }
 
 // --- Memory Decay ---
@@ -596,12 +719,14 @@ func (m *MemoryService) SaveTransactionPattern(ctx context.Context, userID uuid.
 		supersedes = &existing[0].ID
 	}
 
+	// Transaction patterns are inferred — importance defaults to 6 (above the filter threshold).
 	fact := &entities.MiriamUserFact{
 		UserID:     userID,
 		Category:   category,
 		Fact:       pattern,
 		Source:     entities.FactSourceTransactionPattern,
 		Confidence: decimal.NewFromFloat(confidence),
+		Importance: 6,
 	}
 	return m.store.SaveFact(ctx, fact, supersedes)
 }

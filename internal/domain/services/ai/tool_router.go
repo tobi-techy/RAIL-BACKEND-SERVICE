@@ -10,7 +10,7 @@ import (
 type ToolCategory int
 
 const (
-	CategoryOverview    ToolCategory = iota // "how am I doing", general check-ins
+	CategoryOverview   ToolCategory = iota // "how am I doing", general check-ins
 	CategorySpending                       // "how much did I spend", "where did my money go"
 	CategoryAction                         // "move money", "set budget", "create automation"
 	CategoryPlanning                       // "advice", "audit me", "forecast", "plan"
@@ -21,7 +21,7 @@ const (
 
 // RouteTools classifies the user's message and returns only the tools relevant
 // to that category. Falls back to the full set for ambiguous queries.
-func (o *Orchestrator) RouteTools(message string) []ai.Tool {
+func (o *AgentAdapter) RouteTools(message string) []ai.Tool {
 	category := classifyMessage(message)
 	allTools := o.GetTools()
 
@@ -76,6 +76,9 @@ var actionPatterns = []string{
 	"to stash", "lock", "set up", "set goal", "savings goal",
 	"remind me", "protect", "cancel subscription",
 	"withdraw $", "withdraw from", "withdraw to",
+	"block", "unblock", "pay my bill", "autopay", "auto-pay",
+	"buy $", "sell $", "invest $", "copy trad", "copy trade", "stop copying",
+	"pause copying", "cancel my",
 }
 
 var automationPatterns = []string{
@@ -89,6 +92,7 @@ var planningPatterns = []string{
 	"health score", "what should i do", "reality check", "hard mode",
 	"operating plan", "tax", "how can i save", "suggestions",
 	"invest", "investment", "where to put", "grow my money",
+	"subscriptions", "bills", "yield", "idle cash",
 }
 
 var spendingPatterns = []string{
@@ -111,15 +115,19 @@ var overviewPatterns = []string{
 // toolCategoryMap defines which tools belong to which category.
 var toolCategoryMap = map[ToolCategory]map[string]bool{
 	CategoryOverview: {
-		ToolGetAccountSummary:  true,
-		ToolGetMiriamBrief:     true,
-		ToolGetStreak:          true,
-		ToolGetBudget:          true,
-		ToolSearchKnowledge:    true,
-		ToolGetMoneyFlow:       true,
+		ToolGetAccountSummary: true,
+		ToolGetYieldStatus:    true,
+		ToolGetUpcomingBills:  true,
+		ToolGetMiriamBrief:    true,
+		ToolGetStreak:         true,
+		ToolGetBudget:         true,
+		ToolSearchKnowledge:   true,
+		ToolGetMoneyFlow:      true,
 	},
 	CategorySpending: {
 		ToolGetMoneyFlow:          true,
+		ToolAuditSubscriptions:    true,
+		ToolListBlockedMerchants:  true,
 		ToolGetSpendingSummary:    true,
 		ToolGetSpendingChart:      true,
 		ToolGetRecentTransactions: true,
@@ -132,6 +140,23 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 	},
 	CategoryAction: {
 		ToolTransferFunds:            true,
+		ToolSetupBillAutopay:         true,
+		ToolGetUpcomingBills:         true,
+		ToolCancelSubscription:       true,
+		ToolExecuteInvestment:        true,
+		ToolGetInvestmentOptions:     true,
+		ToolOptimizeYield:            true,
+		ToolGetYieldStatus:           true,
+		ToolBlockMerchant:            true,
+		ToolUnblockMerchant:          true,
+		ToolListBlockedMerchants:     true,
+		ToolCopyTrader:               true,
+		ToolListTradeConductors:      true,
+		ToolResearchTrader:           true,
+		ToolGetCopyTradingStatus:     true,
+		ToolPauseTradeCopying:        true,
+		ToolResumeTradeCopying:       true,
+		ToolStopTradeCopying:         true,
 		ToolSetSavingsGoal:           true,
 		ToolSetBudget:                true,
 		ToolCreateAutomation:         true,
@@ -145,6 +170,12 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 	},
 	CategoryPlanning: {
 		ToolGetFinancialAdvice:     true,
+		ToolGetUpcomingBills:       true,
+		ToolAuditSubscriptions:     true,
+		ToolGetYieldStatus:         true,
+		ToolGetInvestmentOptions:   true,
+		ToolListTradeConductors:    true,
+		ToolResearchTrader:         true,
 		ToolGetFinancialAudit:      true,
 		ToolGetFinancialHealth:     true,
 		ToolGetFinancialPlan:       true,
@@ -154,12 +185,12 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolGetPersonaMoneyContext: true,
 		ToolGetSavingsSuggestions:  true,
 		ToolGetRunway:              true,
-		ToolGetTaxSummary:         true,
+		ToolGetTaxSummary:          true,
 		ToolGetAccountSummary:      true,
 		ToolGetMiriamBrief:         true,
 		ToolSearchKnowledge:        true,
 		ToolGetInvestmentProducts:  true,
-		ToolWebSearch:             true,
+		ToolWebSearch:              true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,
@@ -194,10 +225,11 @@ func filterToolsByCategory(tools []ai.Tool, category ToolCategory) []ai.Tool {
 	}
 	filtered := make([]ai.Tool, 0, len(allowed)+1)
 	for _, t := range tools {
-		// Expressive/engagement tools are intent-agnostic: Miriam can use them in
-		// any conversation, so they bypass category filtering.
+		// Expressive/engagement/settings tools are intent-agnostic: Miriam can use them
+		// in any conversation, so they bypass category filtering.
 		if allowed[t.Name] || t.Name == ToolSendMeme || t.Name == ToolSendVoiceMessage ||
-			t.Name == ToolCelebrate || t.Name == ToolSendPoll {
+			t.Name == ToolCelebrate || t.Name == ToolSendPoll ||
+			t.Name == ToolSetPersonalityMode || t.Name == ToolSetControlLevel {
 			filtered = append(filtered, t)
 		}
 	}

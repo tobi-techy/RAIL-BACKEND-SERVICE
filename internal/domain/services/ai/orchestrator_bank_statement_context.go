@@ -23,7 +23,7 @@ type BankStatementContextProvider struct {
 }
 
 // SetBankStatementContext wires the bank statement context provider into the orchestrator.
-func (o *Orchestrator) SetBankStatementContext(p *BankStatementContextProvider) {
+func (o *AgentAdapter) SetBankStatementContext(p *BankStatementContextProvider) {
 	o.bankStatementCtx = p
 }
 

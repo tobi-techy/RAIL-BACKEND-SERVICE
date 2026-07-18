@@ -58,6 +58,7 @@ type UserRepository interface {
 	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error
 	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
 	UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error
+	UpdateSourceOfFunds(ctx context.Context, userID uuid.UUID, employmentStatus, sourceOfFunds, accountPurpose *string) error
 }
 
 type OnboardingFlowRepository interface {
@@ -97,6 +98,7 @@ type BridgeAdapter interface {
 	CreateCustomer(ctx context.Context, req *entities.CreateAccountRequest) (*entities.CreateAccountResponse, error)
 	GetCustomerByEmail(ctx context.Context, email string) (*entities.CreateAccountResponse, error)
 	DeleteCustomer(ctx context.Context, customerID string) error
+	UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error)
 }
 
 type AlpacaAdapter interface {
@@ -383,7 +385,7 @@ func (s *Service) CompleteEmailVerification(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
-// BasicCompleteOnboarding handles the slim signup — saves name + password, transitions to basic_complete
+// BasicCompleteOnboarding handles the slim signup — saves name, transitions to basic_complete (OTP-only auth, no password)
 func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.BasicCompleteRequest) (*entities.BasicCompleteResponse, error) {
 	s.logger.Info("Basic complete onboarding", zap.String("user_id", req.UserID.String()))
 
@@ -403,22 +405,10 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 		return basicCompleteResponse(req.UserID, user.OnboardingStatus), nil
 	}
 
-	if err := crypto.ValidatePasswordStrength(req.Password); err != nil {
-		return nil, fmt.Errorf("invalid password: %w", err)
-	}
-
-	// Hash and set password
-	passwordHash, err := crypto.HashPassword(req.Password)
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
-	}
-	if err := s.userRepo.UpdatePassword(ctx, req.UserID, passwordHash); err != nil {
-		return nil, fmt.Errorf("failed to set password: %w", err)
-	}
-
-	// Update name
+	// Update name (no password — OTP-only auth)
 	user.FirstName = &req.FirstName
 	user.LastName = &req.LastName
+	user.MiddleName = req.MiddleName
 	user.UpdatedAt = time.Now()
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return nil, fmt.Errorf("failed to update user profile: %w", err)
@@ -435,10 +425,15 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 	}
 
 	// Identify user in Mixpanel now that we have their name
+	fullName := req.FirstName
+	if req.MiddleName != nil && *req.MiddleName != "" {
+		fullName += " " + *req.MiddleName
+	}
+	fullName += " " + req.LastName
 	analytics.IdentifyUser(ctx, req.UserID.String(), map[string]any{
 		"$first_name": req.FirstName,
 		"$last_name":  req.LastName,
-		"$name":       req.FirstName + " " + req.LastName,
+		"$name":       fullName,
 		"$email":      user.Email,
 		"$created":    user.CreatedAt.UTC().Format(time.RFC3339),
 	})
@@ -491,6 +486,77 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 	return basicCompleteResponse(req.UserID, entities.OnboardingStatusBasicComplete), nil
 }
 
+// ProvisionPhoneFirstUser completes Tier 1 (non_kyc) setup for a user created
+// from a phone-verified messaging onboarding flow (e.g. iMessage). It saves the
+// name/country, marks the phone verified, drops the user to non_kyc, and kicks
+// off async wallet provisioning — the same wallet path BasicCompleteOnboarding
+// uses. No password is set; these users authenticate with phone OTP. Tier 2/3
+// KYC is handled later in the app, so onboarding status stays "started".
+func (s *Service) ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID, firstName, country string) error {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	firstName = strings.TrimSpace(firstName)
+	if firstName != "" {
+		user.FirstName = &firstName
+	}
+	if c := strings.ToUpper(strings.TrimSpace(country)); c != "" {
+		user.Country = &c
+	}
+	user.PhoneVerified = true
+	user.UpdatedAt = time.Now()
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to update user profile: %w", err)
+	}
+
+	// Tier 1: non_kyc unlocks limited crypto + NGN ramp without full KYC.
+	if err := s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusNonKYC, nil, nil); err != nil {
+		s.logger.Warn("Failed to set non_kyc status for phone-first user",
+			zap.Error(err), zap.String("user_id", userID.String()))
+	}
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventSignupStarted, map[string]any{
+		"signup_method": "imessage",
+	})
+
+	if s.walletService != nil {
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			var walletErr error
+			for attempt := 0; attempt < 3; attempt++ {
+				if walletErr = s.walletService.CreateWalletsForUser(bgCtx, userID, nil); walletErr == nil {
+					break
+				}
+				s.logger.Warn("Wallet creation attempt failed, retrying",
+					zap.Error(walletErr), zap.Int("attempt", attempt+1), zap.String("user_id", userID.String()))
+				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			}
+			if walletErr != nil {
+				s.logger.Error("Failed to create wallets during phone-first onboarding after retries",
+					zap.Error(walletErr), zap.String("user_id", userID.String()))
+				return
+			}
+			if s.allocationService != nil {
+				if allocErr := s.allocationService.EnableMode(bgCtx, userID, entities.AllocationRatios{SpendingRatio: entities.DefaultSpendingRatio, StashRatio: entities.DefaultStashRatio}); allocErr != nil {
+					s.logger.Warn("Failed to set allocation mode during phone-first onboarding",
+						zap.Error(allocErr), zap.String("user_id", userID.String()))
+				}
+			}
+		}()
+	}
+
+	if err := s.auditService.LogOnboardingEvent(ctx, userID, "imessage_onboarding_completed", "user", nil, map[string]any{
+		"tier": 1,
+	}); err != nil {
+		s.logger.Warn("Failed to log phone-first onboarding event", zap.Error(err))
+	}
+
+	return nil
+}
+
 func isBasicOnboardingAlreadyComplete(user *entities.UserProfile) bool {
 	if user.FirstName == nil || strings.TrimSpace(*user.FirstName) == "" {
 		return false
@@ -517,6 +583,64 @@ func basicCompleteResponse(userID uuid.UUID, status entities.OnboardingStatus) *
 		UserID:           userID,
 		OnboardingStatus: string(status),
 		Message:          "Basic signup completed. Complete your profile to unlock all features.",
+	}
+}
+
+// SourceOfFundsRequest is the request payload for saving source of funds data.
+type SourceOfFundsRequest struct {
+	UserID            uuid.UUID `json:"-"`
+	EmploymentStatus  string    `json:"employment_status" validate:"required"`
+	SourceOfFunds     string    `json:"source_of_funds" validate:"required"`
+	AccountPurpose    string    `json:"account_purpose" validate:"required"`
+}
+
+// SourceOfFundsResponse is returned after saving source of funds data.
+type SourceOfFundsResponse struct {
+	Message string `json:"message"`
+}
+
+// SaveSourceOfFunds stores employment and source of funds data locally and forwards to Bridge.
+func (s *Service) SaveSourceOfFunds(ctx context.Context, req *SourceOfFundsRequest) (*SourceOfFundsResponse, error) {
+	s.logger.Info("Saving source of funds", zap.String("user_id", req.UserID.String()))
+
+	// Get user profile
+	profile, err := s.userRepo.GetByID(ctx, req.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	// Store locally
+	if err := s.userRepo.UpdateSourceOfFunds(ctx, req.UserID,
+		&req.EmploymentStatus, &req.SourceOfFunds, &req.AccountPurpose); err != nil {
+		s.logger.Error("Failed to save source of funds locally", zap.Error(err))
+		return nil, fmt.Errorf("failed to save source of funds: %w", err)
+	}
+
+	// Forward to Bridge if customer exists (best-effort, non-blocking failure)
+	if s.bridgeAdapter != nil && profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
+		bridgeReq := &bridge.UpdateCustomerRequest{
+			EmploymentStatus: req.EmploymentStatus,
+			SourceOfFunds:    normalizeSourceOfFunds(req.SourceOfFunds),
+			AccountPurpose:   req.AccountPurpose,
+		}
+		if _, err := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeReq); err != nil {
+			s.logger.Warn("Failed to forward source of funds to Bridge (non-fatal)",
+				zap.Error(err), zap.String("user_id", req.UserID.String()))
+		}
+	}
+
+	return &SourceOfFundsResponse{Message: "Source of funds saved"}, nil
+}
+
+// normalizeSourceOfFunds maps client values to valid Bridge API enum values.
+func normalizeSourceOfFunds(value string) string {
+	switch value {
+	case "business_income":
+		return "company_funds"
+	case "freelance_income":
+		return "salary"
+	default:
+		return value
 	}
 }
 
@@ -550,6 +674,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 
 	// Update user with personal information
 	user.FirstName = &req.FirstName
+	user.MiddleName = req.MiddleName
 	user.LastName = &req.LastName
 	user.Phone = req.Phone
 	user.DateOfBirth = req.DateOfBirth
@@ -562,14 +687,19 @@ func (s *Service) CompleteOnboarding(ctx context.Context, req *entities.Onboardi
 	user.UpdatedAt = time.Now()
 
 	// Identify user in Mixpanel with full profile data
+	fullName := req.FirstName
+	if req.MiddleName != nil && *req.MiddleName != "" {
+		fullName += " " + *req.MiddleName
+	}
+	fullName += " " + req.LastName
 	identifyProps := map[string]any{
-		"$first_name":    req.FirstName,
-		"$last_name":     req.LastName,
-		"$name":          req.FirstName + " " + req.LastName,
-		"$email":         user.Email,
-		"$created":       user.CreatedAt.UTC().Format(time.RFC3339),
-		"$country_code":  strings.ToUpper(strings.TrimSpace(req.Country)),
-		"country":        strings.ToUpper(strings.TrimSpace(req.Country)),
+		"$first_name":   req.FirstName,
+		"$last_name":    req.LastName,
+		"$name":         fullName,
+		"$email":        user.Email,
+		"$created":      user.CreatedAt.UTC().Format(time.RFC3339),
+		"$country_code": strings.ToUpper(strings.TrimSpace(req.Country)),
+		"country":       strings.ToUpper(strings.TrimSpace(req.Country)),
 	}
 	if req.Address.City != "" {
 		identifyProps["$city"] = req.Address.City
@@ -1083,7 +1213,7 @@ func (s *Service) GetOnboardingProgress(ctx context.Context, userID uuid.UUID) (
 
 	// Determine capabilities
 	kycApproved := entities.KYCStatus(user.KYCStatus) == entities.KYCStatusApproved
-	tier := entities.DeriveKYCTier(user.KYCStatus)
+	tier := entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus)
 	canInvest := user.OnboardingStatus == entities.OnboardingStatusCompleted && kycApproved
 	// Non-KYC users can withdraw crypto at limited amounts ($100/tx) — don't require full KYC
 	canWithdraw := tier != entities.KYCTierUnverified

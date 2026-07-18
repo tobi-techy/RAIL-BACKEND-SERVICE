@@ -45,7 +45,7 @@ func CelebrateTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeCelebrate(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeCelebrate(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	level := strings.ToLower(strings.TrimSpace(stringArg(args, "level")))
 	switch level {
 	case "small", "big", "epic":
@@ -93,7 +93,7 @@ func SendPollTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeSendPoll(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSendPoll(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	question := strings.TrimSpace(stringArg(args, "question"))
 	options := make([]string, 0, 4)
 	if raw, ok := args["options"].([]interface{}); ok {

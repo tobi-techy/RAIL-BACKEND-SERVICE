@@ -27,3 +27,7 @@ func (a *KYCUserRepositoryAdapter) GetProfileByUserID(ctx context.Context, userI
 func (a *KYCUserRepositoryAdapter) Update(ctx context.Context, user *entities.User) error {
 	return a.userRepo.UpdateUserEntity(ctx, user)
 }
+
+func (a *KYCUserRepositoryAdapter) UpdateKYCTier(ctx context.Context, userID uuid.UUID, tier int) error {
+	return a.userRepo.UpdateKYCTier(ctx, userID, tier)
+}

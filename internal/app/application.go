@@ -23,11 +23,14 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
+	ledger_service "github.com/rail-service/rail_service/internal/domain/services/ledger"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
+	documentsvc "github.com/rail-service/rail_service/internal/domain/services/document"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
+	r2adapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/r2"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -37,14 +40,19 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
+	airbills_recovery "github.com/rail-service/rail_service/internal/workers/airbills_recovery"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
+	autopilot_worker "github.com/rail-service/rail_service/internal/workers/autopilot_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
+	document_processor "github.com/rail-service/rail_service/internal/workers/document_processor"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
+	copy_trading_worker "github.com/rail-service/rail_service/internal/workers/copy_trading_worker"
 	daily_pulse "github.com/rail-service/rail_service/internal/workers/daily_pulse"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	graph_ngn_recovery "github.com/rail-service/rail_service/internal/workers/graph_ngn_recovery"
 	growth_engine "github.com/rail-service/rail_service/internal/workers/growth_engine"
 	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
@@ -55,6 +63,7 @@ import (
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	public_trades_worker "github.com/rail-service/rail_service/internal/workers/public_trades_worker"
 	ramphub_offramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_offramp_recovery"
 	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
@@ -83,12 +92,16 @@ type Application struct {
 	scheduler                    *walletprovisioning.Scheduler
 	webhookManager               *funding_webhook.Manager
 	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
+	copyTradingWorker            *copy_trading_worker.Worker
+	publicTradesWorker           *public_trades_worker.Worker
 	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
 	depositAllocationWorker      *deposit_allocation_recovery.Worker
 	pajOfframpRecoveryWorker     *paj_offramp_recovery.Worker
 	pajOnrampRecoveryWorker      *paj_onramp_recovery.Worker
 	ramphubOfframpRecoveryWorker *ramphub_offramp_recovery.Worker
 	ramphubOnrampRecoveryWorker  *ramphub_onramp_recovery.Worker
+	graphNGNRecoveryWorker       *graph_ngn_recovery.Worker
+	airbillsRecoveryWorker       *airbills_recovery.Worker
 	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
 	rebalancingWorker            *rebalancing_worker.Worker
@@ -108,6 +121,8 @@ type Application struct {
 	memoryWorker                 *memory_worker.Worker
 	miriamWorker                 *miriam_worker.Worker
 	miriamWorkerCancel           context.CancelFunc
+	autopilotWorker              *autopilot_worker.Worker
+	autopilotCancel              context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
 	growthEngineWorker           *growth_engine.Worker
 	growthEngineCancel           context.CancelFunc
@@ -266,6 +281,26 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Scheduled investment worker started")
 	}
 
+	// Copy trading signal worker — replicates conductor trades into drafter
+	// accounts. Without it, drafts exist but pending signals never execute.
+	if app.container.CopyTradingService != nil && app.container.CopyTradingRepo != nil {
+		app.copyTradingWorker = copy_trading_worker.NewWorker(
+			app.container.CopyTradingService,
+			app.container.CopyTradingRepo,
+			app.log.Zap(),
+		)
+		app.copyTradingWorker.Start(context.Background())
+		app.log.Info("Copy trading worker started")
+
+		// Public-figure disclosures → pending signals for the worker above.
+		app.publicTradesWorker = public_trades_worker.NewWorker(
+			app.container.CopyTradingService,
+			app.log.Zap(),
+		)
+		app.publicTradesWorker.Start(context.Background())
+		app.log.Info("Public trades worker started")
+	}
+
 	// Portfolio snapshot worker
 	if app.container.GetPortfolioAnalyticsService() != nil {
 		app.portfolioSnapshotWorker = portfolio_snapshot_worker.NewWorker(
@@ -334,6 +369,24 @@ func (app *Application) initializeWorkers() error {
 		app.ramphubOnrampRecoveryWorker = ramphub_onramp_recovery.NewWorker(app.container.DB, app.log.Zap())
 		go app.ramphubOnrampRecoveryWorker.Start(context.Background())
 		app.log.Info("RampHub onramp recovery worker started")
+	}
+
+	// Graph NGN deposit recovery worker — re-drives stuck NGN deposits (missed
+	// webhook, transient conversion/rate outage, or crash between the idempotency
+	// claim and the ledger commit); resume is idempotent.
+	if app.container.DB != nil && app.container.GraphVirtualAccountService != nil {
+		app.graphNGNRecoveryWorker = graph_ngn_recovery.NewWorker(app.container.DB, app.container.GraphVirtualAccountService, app.log.Zap())
+		go app.graphNGNRecoveryWorker.Start(context.Background())
+		app.log.Info("Graph NGN recovery worker started")
+	}
+
+	// Airbills bill-pay recovery worker — reverses abandoned holds and reconciles
+	// 'sent' orders against Circle's terminal state; ChainRails bridges finalize
+	// once the bridge has had time to arrive.
+	if app.container.BillPayService != nil {
+		app.airbillsRecoveryWorker = airbills_recovery.NewWorker(app.container.BillPayService, app.log.Zap())
+		go app.airbillsRecoveryWorker.Start(context.Background())
+		app.log.Info("Airbills recovery worker started")
 	}
 
 	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals and
@@ -549,30 +602,79 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	if app.container.UserRepo != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil {
-		var pushSender daily_pulse.PushSender
-		if app.container.SNSPushService != nil {
-			pushSender = app.container.SNSPushService
-		} else if app.container.ExpoPushService != nil {
-			pushSender = app.container.ExpoPushService
+		// iMessage-only: the daily pulse briefing goes to the user's iMessage
+		// thread via the bridge dispatcher, never push. With no bridge wired it
+		// falls back to a no-op (nothing is sent).
+		var pushSender daily_pulse.PushSender = noopPushSender{}
+		if app.container.MiriamBridgeDispatcher != nil {
+			pushSender = app.container.MiriamBridgeDispatcher
 		}
-		if pushSender != nil {
-			app.dailyPulseWorker = daily_pulse.NewWorker(
-				&dailyPulseUserRepoAdapter{repo: app.container.UserRepo},
-				app.container.LedgerService,
-				app.container.LedgerSpendingRepo,
-				app.container.BudgetRepo,
-				nil,
+		app.dailyPulseWorker = daily_pulse.NewWorker(
+			&dailyPulseUserRepoAdapter{repo: app.container.UserRepo},
+			app.container.LedgerService,
+			app.container.LedgerSpendingRepo,
+			app.container.BudgetRepo,
+			nil,
+			pushSender,
+			app.log.Zap(),
+		)
+		if app.container.AIOrchestrator != nil {
+			app.dailyPulseWorker.SetBriefProvider(&dailyPulseBriefProvider{orchestrator: app.container.AIOrchestrator})
+		}
+		if app.container.AIProviderManager != nil {
+			app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
+		}
+		go app.dailyPulseWorker.Start(context.Background())
+		app.log.Info("Miriam daily pulse worker started (iMessage-only)")
+	}
+
+	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
+	var anomalyEngine *aiservice.AnomalyEngine
+	if app.container.LedgerSpendingRepo != nil {
+		anomalyEngine = aiservice.NewAnomalyEngine(
+			app.container.LedgerSpendingRepo,
+			app.container.LedgerSpendingRepo,
+			app.container.LedgerSpendingRepo,
+			app.container.LedgerSpendingRepo,
+			app.log.Zap(),
+		)
+		if app.container.EvalHandler != nil {
+			app.container.EvalHandler.SetAnomalyEngine(anomalyEngine, app.container.AnomalyStore)
+		}
+	}
+
+	if app.container.UserRepo != nil && app.container.MemoryService != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil && getBoolEnvOrDefault("AUTOPILOT_ENABLED", false) {
+		// iMessage-only: autopilot summaries/alerts go to iMessage via the bridge
+		// dispatcher. Money moves still execute even without a bridge, so we fall
+		// back to a no-op sender rather than skipping the worker.
+		var pushSender aiservice.MorningPushSender = noopPushSender{}
+		if app.container.MiriamBridgeDispatcher != nil {
+			pushSender = app.container.MiriamBridgeDispatcher
+		}
+		{
+			redisQueue := aiservice.NewRedisAutopilotQueue(app.container.RedisClient, app.log.Zap())
+			autopilotSvc := aiservice.NewAutopilotService(
+				&autopilotUserRepoAdapter{repo: app.container.UserRepo},
+				&autopilotControlLevelAdapter{svc: app.container.MemoryService},
+				redisQueue,
 				pushSender,
+				app.container.LedgerSpendingRepo,
+				app.container.LedgerService,
+				app.container.BudgetRepo,
+				&autopilotTransferAdapter{svc: app.container.LedgerService},
+				app.container.RedisClient,
 				app.log.Zap(),
+				anomalyEngine,
+				app.container.AnomalyStore,
 			)
-			if app.container.AIOrchestrator != nil {
-				app.dailyPulseWorker.SetBriefProvider(&dailyPulseBriefProvider{orchestrator: app.container.AIOrchestrator})
+			app.autopilotWorker = autopilot_worker.NewWorker(autopilotSvc, app.log.Zap())
+			ctx, cancel := context.WithCancel(context.Background())
+			app.autopilotCancel = cancel
+			go app.autopilotWorker.Start(ctx)
+			if app.container.EvalHandler != nil {
+				app.container.EvalHandler.SetAutopilot(autopilotSvc)
 			}
-			if app.container.AIProviderManager != nil {
-				app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
-			}
-			go app.dailyPulseWorker.Start(context.Background())
-			app.log.Info("Miriam daily pulse worker started")
+			app.log.Info("Miriam autopilot worker started")
 		}
 	}
 
@@ -732,6 +834,46 @@ func (app *Application) initializeWorkers() error {
 
 			// Reconcile orphaned pending uploads (stuck from a prior crash)
 			go app.reconcileOrphanedStatements(context.Background())
+		}
+	}
+
+	// Document intelligence pipeline: PaddleOCR sidecar + R2 storage.
+	if app.container.DocumentRepo != nil && app.container.JobQueueInstance != nil {
+		docCfg := app.container.Config.Document
+		cf := app.container.Config.Cloudflare
+		if docCfg.EnablePythonOCR && docCfg.OCRServiceURL != "" && cf.R2Bucket != "" {
+			r2Client := r2adapter.NewClient(r2adapter.Config{
+				AccountID: cf.AccountID,
+				AccessKey: cf.AccessKey,
+				SecretKey: cf.SecretKey,
+				Bucket:    cf.R2Bucket,
+				PublicURL: cf.R2PublicURL,
+			}, app.log.Zap())
+			docStore, storeErr := documentsvc.NewR2FileStore(r2Client)
+			ocrEngine := documentsvc.NewPythonOCRClient(docCfg.OCRServiceURL, app.log.Zap())
+			if storeErr != nil {
+				app.log.Warn("document R2 store init failed, pipeline disabled", "error", storeErr)
+			} else if ocrEngine == nil {
+				app.log.Warn("document OCR client not configured, pipeline disabled")
+			} else {
+				var enricher documentsvc.Enricher
+				if app.container.Config.AI.OpenAI.APIKey != "" {
+					enricher = documentsvc.NewLLMEnricher(
+						app.container.Config.AI.OpenAI.APIKey, "", "gpt-4o-mini", app.log.Zap())
+				}
+				docPipeline := documentsvc.NewPipeline(documentsvc.PipelineConfig{
+					OCR:              ocrEngine,
+					Enricher:         enricher,
+					MinOCRConfidence: docCfg.MinOCRConfidence,
+					Logger:           app.log.Zap(),
+				})
+				docWorker := document_processor.NewWorker(app.container.DocumentRepo, docPipeline, docStore, app.log.Zap())
+				docJQ := jobqueue.NewWorker(app.container.JobQueueInstance, app.log.Zap(), 5)
+				docJQ.RegisterHandler(document_processor.JobType, docWorker.Handler())
+				go docJQ.Start(context.Background())
+				app.container.DocumentFileStore = docStore
+				app.log.Info("Document processor started (PaddleOCR + R2 pipeline)")
+			}
 		}
 	}
 
@@ -1164,6 +1306,18 @@ func (app *Application) stopWorkers() {
 		app.scheduledInvestmentWorker.Stop()
 	}
 
+	// Stop public trades worker
+	if app.publicTradesWorker != nil {
+		app.log.Info("Stopping public trades worker...")
+		app.publicTradesWorker.Stop()
+	}
+
+	// Stop copy trading worker
+	if app.copyTradingWorker != nil {
+		app.log.Info("Stopping copy trading worker...")
+		app.copyTradingWorker.Stop()
+	}
+
 	// Stop portfolio snapshot worker
 	if app.portfolioSnapshotWorker != nil {
 		app.log.Info("Stopping portfolio snapshot worker...")
@@ -1189,6 +1343,12 @@ func (app *Application) stopWorkers() {
 	}
 	if app.ramphubOnrampRecoveryWorker != nil {
 		app.ramphubOnrampRecoveryWorker.Stop()
+	}
+	if app.graphNGNRecoveryWorker != nil {
+		app.graphNGNRecoveryWorker.Stop()
+	}
+	if app.airbillsRecoveryWorker != nil {
+		app.airbillsRecoveryWorker.Stop()
 	}
 
 	// Stop KYC auto-invest worker
@@ -1247,6 +1407,9 @@ func (app *Application) stopWorkers() {
 	if app.miriamWorkerCancel != nil {
 		app.miriamWorkerCancel()
 	}
+	if app.autopilotCancel != nil {
+		app.autopilotCancel()
+	}
 	if app.growthEngineCancel != nil {
 		app.growthEngineCancel()
 	}
@@ -1264,8 +1427,18 @@ type dailyPulseUserRepoAdapter struct {
 	repo *repositories.UserRepository
 }
 
+// noopPushSender is used when no iMessage bridge is wired: Miriam's proactive
+// output is iMessage-only, so with no bridge there is simply nowhere to deliver.
+// It keeps the surrounding worker (e.g. autopilot money moves) running while
+// silently dropping would-be push notifications.
+type noopPushSender struct{}
+
+func (noopPushSender) SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error {
+	return nil
+}
+
 type dailyPulseBriefProvider struct {
-	orchestrator *aiservice.Orchestrator
+	orchestrator *aiservice.AgentAdapter
 }
 
 func (p *dailyPulseBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {
@@ -1311,6 +1484,53 @@ func (a *dailyPulseUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]st
 		}{ID: user.ID, Country: user.Country})
 	}
 	return out, nil
+}
+
+// --- Autopilot adapters ---
+
+type autopilotUserRepoAdapter struct {
+	repo *repositories.UserRepository
+}
+
+func (a *autopilotUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]struct {
+	ID      uuid.UUID
+	Country string
+}, error) {
+	users, err := a.repo.GetAllActiveUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]struct {
+		ID      uuid.UUID
+		Country string
+	}, 0, len(users))
+	for _, u := range users {
+		out = append(out, struct {
+			ID      uuid.UUID
+			Country string
+		}{ID: u.ID, Country: u.Country})
+	}
+	return out, nil
+}
+
+type autopilotControlLevelAdapter struct {
+	svc *aiservice.MemoryService
+}
+
+func (a *autopilotControlLevelAdapter) GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error) {
+	return a.svc.GetControlLevel(ctx, userID)
+}
+
+type autopilotTransferAdapter struct {
+	svc *ledger_service.Service
+}
+
+func (a *autopilotTransferAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
+	return a.svc.AutomationTransferSpendToStash(ctx, userID, amount, idempotencyKey, "autopilot")
+}
+
+func (a *autopilotTransferAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
+	return a.svc.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 }
 
 // WaitForShutdown waits for interrupt signal

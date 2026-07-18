@@ -189,6 +189,12 @@ type SessionAnomalyChecker interface {
 	GetRecentCriticalAnomalies(ctx context.Context, userID uuid.UUID) (hasCritical bool, reason string, err error)
 }
 
+// SpendingCommitmentGuard enforces a user's self-imposed daily spending cap.
+type SpendingCommitmentGuard interface {
+	CheckOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+	RecordOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+}
+
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
 	withdrawalRepo      WithdrawalRepository
@@ -211,6 +217,7 @@ type WithdrawalService struct {
 	tieredLimits        TieredWithdrawalLimitChecker
 	fraudChecker        FraudChecker
 	sessionAnomaly      SessionAnomalyChecker
+	commitment          SpendingCommitmentGuard
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -330,6 +337,11 @@ func (s *WithdrawalService) SetFraudChecker(f FraudChecker) {
 // SetSessionAnomalyChecker wires the session anomaly detector for impossible travel blocking.
 func (s *WithdrawalService) SetSessionAnomalyChecker(a SessionAnomalyChecker) {
 	s.sessionAnomaly = a
+}
+
+// SetSpendingCommitment wires the self-imposed daily spending cap enforcer.
+func (s *WithdrawalService) SetSpendingCommitment(g SpendingCommitmentGuard) {
+	s.commitment = g
 }
 
 // IsStashLocked returns true if the user has no open withdrawal window.
@@ -689,7 +701,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	// TODO: Re-enable whitelist once testing is complete
 	if false && s.addressWhitelist != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
-		skipWhitelist := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		skipWhitelist := userErr == nil && user != nil && entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipWhitelist {
 			if err := s.addressWhitelist.ValidateWithdrawalAddress(ctx, req.UserID, req.DestinationChain, req.DestinationAddress); err != nil {
 				s.logger.Warn("Address whitelist validation failed", "error", err.Error(), "address", req.DestinationAddress)
@@ -723,6 +735,14 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 			s.logger.Warn("Withdrawal blocked due to session anomaly",
 				"user_id", req.UserID.String(), "reason", reason)
 			return nil, fmt.Errorf("withdrawal temporarily blocked: unusual login activity detected. Please contact support if this was you")
+		}
+	}
+
+	// Step 3.4: Enforce user's self-imposed daily spending commitment
+	if s.commitment != nil {
+		if err := s.commitment.CheckOutflow(ctx, req.UserID, req.Amount, string(req.Currency)); err != nil {
+			s.logger.Warn("Withdrawal blocked by daily spending commitment", "user_id", req.UserID.String())
+			return nil, entities.ErrCommitmentExceeded
 		}
 	}
 
@@ -824,7 +844,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	// transaction webhook can resume it after manual approval.
 	if s.complianceScreener != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
-		skipCompliance := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		skipCompliance := userErr == nil && user != nil && entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipCompliance {
 			if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusComplianceReview); err != nil {
 				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to hold for compliance review")
@@ -1389,6 +1409,14 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 			s.logger.Warn("Fiat withdrawal blocked due to session anomaly",
 				"user_id", req.UserID.String(), "reason", reason)
 			return nil, fmt.Errorf("withdrawal temporarily blocked: unusual login activity detected. Please contact support if this was you")
+		}
+	}
+
+	// Step 4.2: Enforce user's self-imposed daily spending commitment
+	if s.commitment != nil {
+		if err := s.commitment.CheckOutflow(ctx, req.UserID, req.Amount, string(req.Currency)); err != nil {
+			s.logger.Warn("Fiat withdrawal blocked by daily spending commitment", "user_id", req.UserID.String())
+			return nil, entities.ErrCommitmentExceeded
 		}
 	}
 
@@ -2622,6 +2650,9 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 		return fmt.Errorf("failed to complete withdrawal: %w", err)
 	}
+	if s.commitment != nil {
+		_ = s.commitment.RecordOutflow(ctx, withdrawal.UserID, withdrawal.Amount, string(withdrawal.Currency))
+	}
 	// #region agent log
 	writeWithdrawalDebugLog("withdrawal/service.go:settleCompletedCryptoWithdrawal", "withdrawal completed; fee awaits revenue sweep", "H3", map[string]interface{}{
 		"withdrawal_id": withdrawal.ID.String(), "user_id": withdrawal.UserID.String(),
@@ -2679,6 +2710,9 @@ func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, w
 		if err := s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount); err != nil {
 			s.logger.Error("Failed to record fiat withdrawal against limits", "error", err, "withdrawal_id", withdrawal.ID.String())
 		}
+	}
+	if s.commitment != nil {
+		_ = s.commitment.RecordOutflow(ctx, withdrawal.UserID, withdrawal.Amount, string(withdrawal.Currency))
 	}
 
 	if metrics.Business != nil {

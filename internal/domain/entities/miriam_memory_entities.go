@@ -46,6 +46,7 @@ type MiriamUserFact struct {
 	Fact            string          `json:"fact" db:"fact"`
 	Source          string          `json:"source" db:"source"`
 	Confidence      decimal.Decimal `json:"confidence" db:"confidence"`
+	Importance      int             `json:"importance" db:"importance"`
 	SupersededBy    *uuid.UUID      `json:"superseded_by,omitempty" db:"superseded_by"`
 	Embedding       []byte          `json:"-" db:"-"`
 	FirstObservedAt time.Time       `json:"first_observed_at" db:"first_observed_at"`
@@ -80,7 +81,8 @@ type MiriamToneProfile struct {
 	PreferredName   string          `json:"preferred_name" db:"preferred_name"`
 	LanguageStyle   string          `json:"language_style" db:"language_style"`
 	LocaleStyle     string          `json:"locale_style" db:"locale_style"`
-	PersonalityMode string          `json:"personality_mode" db:"personality_mode"` // "default", "hype", "savage", "big_sister"
+	PersonalityMode string          `json:"personality_mode" db:"personality_mode"` // "default", "roast", "coach", "protector", "celebration", "quiet"
+	ControlLevel    string          `json:"control_level" db:"control_level"`       // "full", "guided", "monitor"
 	SampleCount     int             `json:"sample_count" db:"sample_count"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`
@@ -88,8 +90,49 @@ type MiriamToneProfile struct {
 
 // Personality mode constants
 const (
-	PersonalityModeDefault   = "default"
-	PersonalityModeHype      = "hype"
-	PersonalityModeSavage    = "savage"
-	PersonalityModeBigSister = "big_sister"
+	PersonalityModeDefault      = "default"
+	PersonalityModeRoast        = "roast"
+	PersonalityModeCoach        = "coach"
+	PersonalityModeProtector    = "protector"
+	PersonalityModeCelebration  = "celebration"
+	PersonalityModeQuiet        = "quiet"
 )
+
+// ControlLevel constants control how autonomous Miriam is for a user.
+const (
+	ControlLevelFull    = "full"    // Full Autopilot — act on all pre-approved actions, ask on new ones
+	ControlLevelGuided  = "guided"  // Guided — suggest actions, wait for approval
+	ControlLevelMonitor = "monitor" // Manual — only alert and advise, never create actions
+)
+
+// --- Financial Event Timeline ---
+
+// EventType constants for miriam_user_events.
+const (
+	EventSalaryReceived     = "salary_received"
+	EventBudgetExceeded     = "budget_exceeded"
+	EventGoalCompleted      = "goal_completed"
+	EventGoalCreated        = "goal_created"
+	EventLargePurchase      = "large_purchase"
+	EventSavingsMilestone   = "savings_milestone"
+	EventBillPaid           = "bill_paid"
+	EventSubscriptionCancelled = "subscription_cancelled"
+	EventAccountLinked      = "account_linked"
+	EventInvestmentCreated  = "investment_created"
+	EventStashTransfer      = "stash_transfer"
+	EventAnomalyDetected    = "anomaly_detected"
+)
+
+// MiriamUserEvent is a structured financial event on the user's timeline.
+type MiriamUserEvent struct {
+	ID         uuid.UUID       `json:"id" db:"id"`
+	UserID     uuid.UUID       `json:"user_id" db:"user_id"`
+	EventType  string          `json:"event_type" db:"event_type"`
+	Title      string          `json:"title" db:"title"`
+	Detail     string          `json:"detail" db:"detail"`
+	Amount     decimal.Decimal `json:"amount" db:"amount"`
+	Currency   string          `json:"currency" db:"currency"`
+	Metadata   []byte          `json:"metadata" db:"metadata"`
+	OccurredAt time.Time       `json:"occurred_at" db:"occurred_at"`
+	CreatedAt  time.Time       `json:"created_at" db:"created_at"`
+}

@@ -90,8 +90,11 @@ type receiptMemoryAdapter struct {
 	}
 }
 
-func (a *receiptMemoryAdapter) StoreMemory(ctx context.Context, userID string, content string) error {
-	return a.client.CreateMemories(ctx, userID, []supermemoryclient.Memory{{Content: content}})
+func (a *receiptMemoryAdapter) StoreMemory(ctx context.Context, userID string, content string, eventDate string, metadata map[string]string) error {
+	return a.client.CreateMemories(ctx, userID, []supermemoryclient.Memory{{
+		Content:  content,
+		Metadata: metadata,
+	}})
 }
 
 // SetupRoutes configures all application routes
@@ -627,6 +630,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	if container.ComplianceService != nil {
 		kycService.SetAMLScreener(container.ComplianceService)
 	}
+	if container.GraphVirtualAccountService != nil {
+		kycService.SetGraphVAService(container.GraphVirtualAccountService)
+	}
 	kycEligibilityMiddleware := middleware.NewKYCMiddleware(container.UserRepo, container.Logger)
 
 	// Create session validator adapter
@@ -659,9 +665,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			{
 				authRateLimited.POST("/login", authHandlers.Login)
 				authRateLimited.POST("/passcode-login", authHandlers.PasscodeLogin)
-				authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
-				authRateLimited.POST("/verify-reset-code", authHandlers.VerifyResetCode)
-				authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
+
+				// Passwordless email login (OTP-only)
+				authRateLimited.POST("/email/start", authHandlers.EmailOTPStart)
+				authRateLimited.POST("/email/login", authHandlers.EmailOTPLogin)
+
+				// Deprecated password endpoints — removed (OTP-only auth)
+				// authRateLimited.POST("/forgot-password", authHandlers.ForgotPassword)
+				// authRateLimited.POST("/verify-reset-code", authHandlers.VerifyResetCode)
+				// authRateLimited.POST("/reset-password", authHandlers.ResetPassword)
 			}
 
 			// Social auth routes
@@ -747,8 +759,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 			{
-				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
-				authenticatedOnboarding.GET("/kyc/missing-fields", authHandlers.GetMissingKycFields)
+			authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
+			authenticatedOnboarding.POST("/source-of-funds", authHandlers.SaveSourceOfFunds)
+			authenticatedOnboarding.GET("/kyc/missing-fields", authHandlers.GetMissingKycFields)
 				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
 				// Catches fraud rings using purchased KYC identities from the same device.
 				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
@@ -826,7 +839,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			{
 				users.GET("/me", authHandlers.GetProfile)
 				users.PUT("/me", authHandlers.UpdateProfile)
-				users.POST("/me/change-password", authHandlers.ChangePassword)
+				// Deprecated: password-based change-password removed (OTP-only auth)
+				// users.POST("/me/change-password", authHandlers.ChangePassword)
 				users.DELETE("/me", middleware.AuthRateLimit(3), authHandlers.DeleteAccount)
 				users.POST("/me/enable-2fa", authHandlers.Enable2FA)
 				users.POST("/me/disable-2fa", authHandlers.Disable2FA)
@@ -834,18 +848,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.POST("/me/tos", authHandlers.AcceptTOS)
 			}
 
-			// KYC status utilities (auth required but no KYC gate)
-			kycProtected := protected.Group("/kyc")
-			{
-				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
-				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
-				kycProtected.POST("/didit/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateDiditSession)
-				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
-				kycProtected.GET("/status", kycHTTPHandlers.GetKYCStatus)
-				// Bridge KYC - optimized for sub-2-minute verification
-				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
-				kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
-			}
+		// KYC status utilities (auth required but no KYC gate)
+		kycProtected := protected.Group("/kyc")
+		{
+			kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
+			kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
+			kycProtected.POST("/didit/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateDiditSession)
+			kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
+			kycProtected.GET("/status", kycHTTPHandlers.GetKYCStatus)
+			// Bridge KYC - optimized for sub-2-minute verification
+			kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
+			kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
+
+			// Tier upgrade endpoints
+			kycProtected.POST("/sprout/upgrade", middleware.AuthRateLimit(3), kycHTTPHandlers.SproutUpgrade)
+			kycProtected.POST("/bloom/upgrade", middleware.AuthRateLimit(3), kycHTTPHandlers.BloomUpgrade)
+		}
 
 			// Security routes for passcode management
 			security := protected.Group("/security")

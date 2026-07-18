@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	ToolProtectSubscription      = "protect_subscription"
+	ToolProtectSubscription       = "protect_subscription"
 	ToolMarkSubscriptionCancelled = "mark_subscription_cancelled"
-	ToolIgnoreSubscription       = "ignore_subscription"
+	ToolIgnoreSubscription        = "ignore_subscription"
 )
 
-func (o *Orchestrator) createProtectSubscriptionAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createProtectSubscriptionAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.obligationCreator == nil {
 		return map[string]interface{}{"error": "financial obligation service is unavailable"}, nil
 	}
@@ -43,7 +43,7 @@ func (o *Orchestrator) createProtectSubscriptionAction(ctx context.Context, user
 	return map[string]interface{}{"action_required": true, "pending_action": action}, nil
 }
 
-func (o *Orchestrator) executeProtectSubscription(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
+func (o *AgentAdapter) executeProtectSubscription(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
 	if o.obligationCreator == nil {
 		return nil, fmt.Errorf("financial obligation service is unavailable")
 	}
@@ -68,7 +68,7 @@ func (o *Orchestrator) executeProtectSubscription(ctx context.Context, userID uu
 	return o.obligationCreator.CreateObligationFromAI(ctx, userID, req)
 }
 
-func (o *Orchestrator) createMarkSubscriptionCancelledAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createMarkSubscriptionCancelledAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.obligationManager == nil && o.obligationCreator == nil {
 		return map[string]interface{}{"error": "financial obligation service is unavailable"}, nil
 	}
@@ -104,7 +104,7 @@ func (o *Orchestrator) createMarkSubscriptionCancelledAction(ctx context.Context
 	return map[string]interface{}{"action_required": true, "pending_action": action}, nil
 }
 
-func (o *Orchestrator) executeMarkSubscriptionCancelled(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
+func (o *AgentAdapter) executeMarkSubscriptionCancelled(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (*entities.FinancialObligation, error) {
 	if obligationID := valueStringArg(params["obligation_id"]); obligationID != "" {
 		if o.obligationManager == nil {
 			return nil, fmt.Errorf("financial obligation service is unavailable")
@@ -134,7 +134,7 @@ func (o *Orchestrator) executeMarkSubscriptionCancelled(ctx context.Context, use
 	})
 }
 
-func (o *Orchestrator) createIgnoreSubscriptionAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createIgnoreSubscriptionAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	name := subscriptionNameArg(args)
 	if name == "" {
 		return map[string]interface{}{"error": "name is required"}, nil

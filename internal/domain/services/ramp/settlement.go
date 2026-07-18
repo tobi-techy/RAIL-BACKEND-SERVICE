@@ -86,6 +86,12 @@ func (s *Service) executeCircleTransferToRampHub(ctx context.Context, userID uui
 			s.reverseHold(ctx, userID, order.TransactionID, totalHold, railFee, "circle_transfer_"+string(tx.State))
 			return
 		}
+		if tx.ID == "" {
+			s.logger.Error("async: Circle returned empty transaction ID — reversing hold",
+				zap.String("ramphub_tx_id", order.TransactionID))
+			s.reverseHold(ctx, userID, order.TransactionID, totalHold, railFee, "empty_circle_tx_id")
+			return
+		}
 		s.logger.Info("Circle SOL transfer to RampHub initiated",
 			zap.String("circle_tx_id", tx.ID), zap.String("ramphub_tx_id", order.TransactionID))
 		s.markBridgeTransfer(ctx, order.TransactionID, "circle:"+tx.ID)

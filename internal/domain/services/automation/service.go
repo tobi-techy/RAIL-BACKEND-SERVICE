@@ -74,6 +74,19 @@ type TotalSavingsProvider interface {
 	GetTotalSavingsBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 }
 
+// BillPayer sends real money to a payee (Rail tag, email, or phone) for
+// pay-bill automations. Returns a transfer reference for the receipt.
+type BillPayer interface {
+	SendP2P(ctx context.Context, senderID uuid.UUID, identifier, amount, note, idempotencyKey string) (string, error)
+}
+
+// UtilityBillPayer pays a Nigerian utility bill (airtime, data, electricity,
+// cable TV, betting, transport) via Airbills for recurring auto-pay
+// automations. Returns the provider transaction id for the receipt.
+type UtilityBillPayer interface {
+	PayUtilityBill(ctx context.Context, userID uuid.UUID, automationID uuid.UUID, category, recipient, networkID, prodID, electID string, amountNGN float64, beneficiaryID *uuid.UUID) (reference string, amountUSDC string, err error)
+}
+
 // Service manages automation CRUD and execution.
 type Service struct {
 	repo            *repositories.AutomationRepository
@@ -87,6 +100,8 @@ type Service struct {
 	notifier        NotificationSender
 	obligations     ObligationProvider
 	goals           GoalChecker
+	billPayer       BillPayer
+	utilityBills    UtilityBillPayer
 	logger          *zap.Logger
 }
 
@@ -117,6 +132,13 @@ func (s *Service) SetYieldSnapshotRecorder(r YieldSnapshotRecorder) { s.yieldSna
 
 // SetTotalSavingsProvider sets the total savings balance provider.
 func (s *Service) SetTotalSavingsProvider(p TotalSavingsProvider) { s.totalSavings = p }
+
+// SetBillPayer sets the P2P sender for pay-bill automations.
+func (s *Service) SetBillPayer(b BillPayer) { s.billPayer = b }
+
+// SetUtilityBillPayer sets the Airbills utility-bill payer for recurring
+// utility auto-pay automations.
+func (s *Service) SetUtilityBillPayer(u UtilityBillPayer) { s.utilityBills = u }
 
 // Create creates a new automation rule.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateAutomationRequest) (*entities.MiriamAutomation, error) {
@@ -174,7 +196,7 @@ func validateCreateRequest(req *CreateAutomationRequest) error {
 	if req.CooldownMinutes < 0 || req.CooldownMinutes > 10080 {
 		return fmt.Errorf("cooldown_minutes must be between 1 and 10080")
 	}
-	if req.ActionType == entities.ActionTransferToStash || req.ActionType == entities.ActionTransferToSpend {
+	if req.ActionType == entities.ActionTransferToStash || req.ActionType == entities.ActionTransferToSpend || req.ActionType == entities.ActionSendP2P {
 		amount, ok := numericConfig(req.ActionConfig, "amount")
 		if !ok || amount <= 0 {
 			return fmt.Errorf("transfer automation requires a positive action_config.amount")
@@ -188,6 +210,12 @@ func validateCreateRequest(req *CreateAutomationRequest) error {
 		}
 		if _, err := transferConsentWindow(req.ActionConfig, time.Now().UTC()); err != nil {
 			return err
+		}
+		if req.ActionType == entities.ActionSendP2P {
+			payee, _ := req.ActionConfig["payee_identifier"].(string)
+			if strings.TrimSpace(payee) == "" {
+				return fmt.Errorf("pay-bill automation requires action_config.payee_identifier")
+			}
 		}
 	}
 	return nil
@@ -205,8 +233,8 @@ func validTrigger(value string) bool {
 
 func validAction(value string) bool {
 	switch value {
-	case entities.ActionTransferToStash, entities.ActionTransferToSpend, entities.ActionNotify, entities.ActionCustom,
-		entities.ActionPauseCard, entities.ActionResumeCard, entities.ActionPauseCardCooldown:
+	case entities.ActionTransferToStash, entities.ActionTransferToSpend, entities.ActionSendP2P, entities.ActionNotify, entities.ActionCustom,
+		entities.ActionPauseCard, entities.ActionResumeCard, entities.ActionPauseCardCooldown, entities.ActionPayUtilityBill:
 		return true
 	default:
 		return false
@@ -475,13 +503,31 @@ func (s *Service) executeAction(ctx context.Context, a *entities.MiriamAutomatio
 			return nil
 		}
 
-		return s.transfer.TransferBetweenStashes(ctx, a.UserID, "spend", "stash", amount)
+		if err := s.transfer.TransferBetweenStashes(ctx, a.UserID, "spend", "stash", amount); err != nil {
+			return err
+		}
+		s.notifyTransferHandled(ctx, a, "stash", amount)
+		return nil
 	case entities.ActionTransferToSpend:
 		if err := ensureTransferReauthorization(raw, time.Now().UTC()); err != nil {
 			return err
 		}
 		amount := decimal.NewFromFloat(cfg.Amount)
-		return s.transfer.TransferBetweenStashes(ctx, a.UserID, "stash", "spend", amount)
+		if err := s.transfer.TransferBetweenStashes(ctx, a.UserID, "stash", "spend", amount); err != nil {
+			return err
+		}
+		s.notifyTransferHandled(ctx, a, "spend", amount)
+		return nil
+	case entities.ActionSendP2P:
+		if err := ensureTransferReauthorization(raw, time.Now().UTC()); err != nil {
+			return err
+		}
+		return s.executePayBill(ctx, a)
+	case entities.ActionPayUtilityBill:
+		if err := ensureTransferReauthorization(raw, time.Now().UTC()); err != nil {
+			return err
+		}
+		return s.executePayUtilityBill(ctx, a)
 	case entities.ActionNotify:
 		return s.executeNotify(ctx, a)
 	case entities.ActionPauseCard:
@@ -492,6 +538,180 @@ func (s *Service) executeAction(ctx context.Context, a *entities.MiriamAutomatio
 		return s.executePauseCardCooldown(ctx, a)
 	default:
 		return fmt.Errorf("unsupported action type: %s", a.ActionType)
+	}
+}
+
+// executePayBill sends the bill amount to the configured payee via P2P and
+// pushes a payment receipt to the user. The idempotency key is scoped to the
+// automation and trigger count so retries of one due date never double-pay.
+func (s *Service) executePayBill(ctx context.Context, a *entities.MiriamAutomation) error {
+	if s.billPayer == nil {
+		return fmt.Errorf("bill payer not configured")
+	}
+	var cfg entities.PayBillActionConfig
+	if err := json.Unmarshal(a.ActionConfig, &cfg); err != nil {
+		return fmt.Errorf("invalid pay-bill config: %w", err)
+	}
+	if cfg.PayeeIdentifier == "" || cfg.Amount <= 0 {
+		return fmt.Errorf("pay-bill config requires payee_identifier and a positive amount")
+	}
+	amount := decimal.NewFromFloat(cfg.Amount)
+	billName := cfg.BillName
+	if billName == "" {
+		billName = a.Name
+	}
+	note := fmt.Sprintf("Bill payment: %s", billName)
+	idempotencyKey := fmt.Sprintf("automation-billpay-%s-%d", a.ID, a.TriggerCount+1)
+
+	transferRef, err := s.billPayer.SendP2P(ctx, a.UserID, cfg.PayeeIdentifier, amount.StringFixed(2), note, idempotencyKey)
+	if err != nil {
+		if s.notifier != nil {
+			_ = s.notifier.SendPush(ctx, a.UserID, "Bill payment failed",
+				fmt.Sprintf("Could not pay %s ($%s to %s): %v", billName, amount.StringFixed(2), payeeLabel(cfg), err),
+				automationPushData("bill_payment_failed", fmt.Sprintf("My %s bill payment failed. Help me fix it.", billName)))
+		}
+		return fmt.Errorf("bill payment failed: %w", err)
+	}
+
+	if s.notifier != nil {
+		receipt := fmt.Sprintf("Paid $%s to %s for %s. Ref: %s", amount.StringFixed(2), payeeLabel(cfg), billName, transferRef)
+		_ = s.notifier.SendPush(ctx, a.UserID, "Bill paid ✓", receipt,
+			automationPushData("bill_payment_receipt", fmt.Sprintf("Show me the receipt for my %s payment.", billName)))
+	}
+	s.logger.Info("bill payment executed",
+		zap.String("automation_id", a.ID.String()),
+		zap.String("user_id", a.UserID.String()),
+		zap.String("amount", amount.StringFixed(2)),
+		zap.String("transfer_ref", transferRef))
+	return nil
+}
+
+func payeeLabel(cfg entities.PayBillActionConfig) string {
+	if cfg.PayeeName != "" {
+		return cfg.PayeeName
+	}
+	return cfg.PayeeIdentifier
+}
+
+// executePayUtilityBill pays a recurring Nigerian utility bill via Airbills and
+// pushes a receipt. The billpay service enforces its own idempotency + mandate
+// caps; the reauthorization gate above ensures consent is still fresh.
+func (s *Service) executePayUtilityBill(ctx context.Context, a *entities.MiriamAutomation) error {
+	if s.utilityBills == nil {
+		return fmt.Errorf("utility bill payer not configured")
+	}
+	var cfg entities.PayUtilityBillActionConfig
+	if err := json.Unmarshal(a.ActionConfig, &cfg); err != nil {
+		return fmt.Errorf("invalid pay-utility-bill config: %w", err)
+	}
+	if cfg.Category == "" || cfg.Recipient == "" || cfg.AmountNGN <= 0 {
+		return fmt.Errorf("pay-utility-bill config requires category, recipient and a positive amount")
+	}
+	billName := cfg.BillName
+	if billName == "" {
+		billName = a.Name
+	}
+	ref, amountUSDC, err := s.utilityBills.PayUtilityBill(ctx, a.UserID, a.ID,
+		cfg.Category, cfg.Recipient, cfg.NetworkID, cfg.ProdID, cfg.ElectID, cfg.AmountNGN, cfg.BeneficiaryID)
+	if err != nil {
+		if s.notifier != nil {
+			_ = s.notifier.SendPush(ctx, a.UserID, "Bill payment failed",
+				fmt.Sprintf("Could not pay %s (₦%.0f): %v", billName, cfg.AmountNGN, err),
+				automationPushData("bill_payment_failed", fmt.Sprintf("My %s bill payment failed. Help me fix it.", billName)))
+		}
+		return fmt.Errorf("utility bill payment failed: %w", err)
+	}
+	if s.notifier != nil {
+		receipt := fmt.Sprintf("Paid ₦%.0f (%s USDC) for %s. Ref: %s", cfg.AmountNGN, amountUSDC, billName, ref)
+		_ = s.notifier.SendPush(ctx, a.UserID, "Bill paid ✓", receipt,
+			automationPushData("bill_payment_receipt", fmt.Sprintf("Show me the receipt for my %s payment.", billName)))
+	}
+	s.logger.Info("utility bill payment executed",
+		zap.String("automation_id", a.ID.String()), zap.String("user_id", a.UserID.String()),
+		zap.String("category", cfg.Category), zap.Float64("amount_ngn", cfg.AmountNGN), zap.String("ref", ref))
+	return nil
+}
+
+// notifyTransferHandled closes the loop after Miriam moves money on her own —
+// the "I handled it, nothing for you to do" moment that makes her feel like
+// infrastructure rather than an app. It only speaks when the move is tied to an
+// obligation (e.g. rent covered ahead of its due date); routine savings sweeps
+// stay silent so proactive pushes keep clearing a "worth saying" bar.
+func (s *Service) notifyTransferHandled(ctx context.Context, a *entities.MiriamAutomation, direction string, amount decimal.Decimal) {
+	if s.notifier == nil {
+		return
+	}
+	bill, due := s.obligationContext(ctx, a)
+	// Only surface obligation-linked moves. A recurring top-up to Stash with no
+	// bill behind it is not worth a notification.
+	if bill == "" && a.TriggerType != entities.TriggerObligationDue {
+		return
+	}
+
+	amt := amount.StringFixed(2)
+	var title, body string
+	switch direction {
+	case "spend":
+		// Money moved into Spend to cover something — the classic "rent's handled".
+		if bill != "" {
+			title = fmt.Sprintf("%s is handled", bill)
+			body = fmt.Sprintf("Moved $%s to Spend for %s%s.\n\nNothing for you to do.", amt, bill, dueSuffix(due))
+		} else {
+			title = "Handled it"
+			body = fmt.Sprintf("Moved $%s to Spend to cover what's due%s.\n\nNothing for you to do.", amt, dueSuffix(due))
+		}
+	default:
+		// Money moved into Stash ahead of an obligation (setting it aside early).
+		if bill != "" {
+			title = fmt.Sprintf("%s is covered", bill)
+			body = fmt.Sprintf("Set aside $%s in Stash for %s%s.\n\nNothing for you to do.", amt, bill, dueSuffix(due))
+		} else {
+			title = "Set aside"
+			body = fmt.Sprintf("Moved $%s into Stash ahead of what's due.\n\nNothing for you to do.", amt)
+		}
+	}
+
+	preload := "Show me what you just handled."
+	if bill != "" {
+		preload = fmt.Sprintf("Show me the details on my %s payment.", bill)
+	}
+	_ = s.notifier.SendPush(ctx, a.UserID, title, body, automationPushData("transfer_handled", preload))
+}
+
+// obligationContext resolves the bill name and due date behind an automation, if
+// it is linked to a financial obligation. Best-effort: returns empties on miss.
+func (s *Service) obligationContext(ctx context.Context, a *entities.MiriamAutomation) (string, *time.Time) {
+	if a.ObligationID == nil || s.obligations == nil {
+		return "", nil
+	}
+	obligations, err := s.obligations.ListActive(ctx, a.UserID)
+	if err != nil {
+		return "", nil
+	}
+	for i := range obligations {
+		if obligations[i].ID == *a.ObligationID {
+			return obligations[i].Name, obligations[i].DueDate
+		}
+	}
+	return "", nil
+}
+
+// dueSuffix renders a natural ", ready for Thursday" style tail for a due date.
+func dueSuffix(due *time.Time) string {
+	if due == nil {
+		return ""
+	}
+	now := time.Now().UTC()
+	days := int(due.Sub(now).Hours() / 24)
+	switch {
+	case days <= 0:
+		return ", ready for today"
+	case days == 1:
+		return ", ready for tomorrow"
+	case days <= 6:
+		return ", ready for " + due.Weekday().String()
+	default:
+		return ", ready for " + due.Format("Jan 2")
 	}
 }
 

@@ -221,6 +221,75 @@ func (s *Service) ListCaps(ctx context.Context, userID uuid.UUID) ([]entities.Sp
 	return s.repo.ListCaps(ctx, userID, false)
 }
 
+// merchantBlockLimit is a sentinel cap limit: a merchant decline cap at this
+// amount trips on effectively every charge, functioning as a full block
+// (CreateCap requires a positive limit, so zero is not an option).
+var merchantBlockLimit = decimal.NewFromFloat(0.01)
+
+func (s *Service) isMerchantBlockCap(cap entities.SpendingCap) bool {
+	return cap.Scope == entities.CapScopeMerchant &&
+		cap.EnforcementAction == entities.CapActionDecline &&
+		cap.LimitAmount.LessThanOrEqual(merchantBlockLimit)
+}
+
+// BlockMerchant declines all future card charges from the merchant by creating
+// a sentinel decline cap. Idempotent: an existing block is returned as-is.
+func (s *Service) BlockMerchant(ctx context.Context, userID uuid.UUID, merchant string) (*entities.SpendingCap, error) {
+	merchant = strings.TrimSpace(merchant)
+	if merchant == "" {
+		return nil, fmt.Errorf("%w: merchant is required", ErrValidation)
+	}
+	caps, err := s.ListCaps(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range caps {
+		if s.isMerchantBlockCap(caps[i]) && strings.EqualFold(caps[i].ScopeValue, merchant) {
+			return &caps[i], nil
+		}
+	}
+	return s.CreateCap(ctx, userID, CreateCapRequest{
+		Scope:             entities.CapScopeMerchant,
+		ScopeValue:        merchant,
+		Period:            entities.CapPeriodMonth,
+		LimitAmount:       merchantBlockLimit,
+		EnforcementAction: entities.CapActionDecline,
+	})
+}
+
+// UnblockMerchant removes a merchant block created by BlockMerchant.
+func (s *Service) UnblockMerchant(ctx context.Context, userID uuid.UUID, merchant string) error {
+	merchant = strings.TrimSpace(merchant)
+	if merchant == "" {
+		return fmt.Errorf("%w: merchant is required", ErrValidation)
+	}
+	caps, err := s.ListCaps(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for i := range caps {
+		if s.isMerchantBlockCap(caps[i]) && strings.EqualFold(caps[i].ScopeValue, merchant) {
+			return s.DeleteCap(ctx, userID, caps[i].ID)
+		}
+	}
+	return fmt.Errorf("%w: no block found for merchant %q", ErrValidation, merchant)
+}
+
+// ListBlockedMerchants returns the merchant blocks created by BlockMerchant.
+func (s *Service) ListBlockedMerchants(ctx context.Context, userID uuid.UUID) ([]entities.SpendingCap, error) {
+	caps, err := s.ListCaps(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	blocked := make([]entities.SpendingCap, 0, len(caps))
+	for i := range caps {
+		if s.isMerchantBlockCap(caps[i]) {
+			blocked = append(blocked, caps[i])
+		}
+	}
+	return blocked, nil
+}
+
 func (s *Service) DeleteCap(ctx context.Context, userID, id uuid.UUID) error {
 	err := s.repo.DeleteCap(ctx, userID, id)
 	if err == sql.ErrNoRows {
@@ -574,6 +643,11 @@ func (s *Service) triggeredCaps(ctx context.Context, userID uuid.UUID, caps []en
 		case entities.CapScopeDaily, entities.CapScopeWeekly, entities.CapScopeMonthly:
 			used = summary.Total
 		case entities.CapScopeCategory:
+			// Scoped caps only apply when the incoming transaction is in scope;
+			// otherwise unrelated purchases would trip them.
+			if !scopeValueMatches(input.Category, cap.ScopeValue) {
+				continue
+			}
 			for _, category := range summary.Categories {
 				if strings.EqualFold(category.Category, cap.ScopeValue) {
 					used = category.Total
@@ -581,6 +655,9 @@ func (s *Service) triggeredCaps(ctx context.Context, userID uuid.UUID, caps []en
 				}
 			}
 		case entities.CapScopeMerchant:
+			if !scopeValueMatches(input.Merchant, cap.ScopeValue) {
+				continue
+			}
 			for _, merchant := range summary.Merchants {
 				if strings.EqualFold(merchant.Merchant, cap.ScopeValue) {
 					used = merchant.Total
@@ -593,6 +670,18 @@ func (s *Service) triggeredCaps(ctx context.Context, userID uuid.UUID, caps []en
 		}
 	}
 	return triggered
+}
+
+// scopeValueMatches reports whether a transaction's merchant/category matches a
+// cap's scope value. Card networks send noisy descriptors ("BET9JA LAGOS NG"),
+// so fold-insensitive containment in either direction counts as a match.
+func scopeValueMatches(txnValue, scopeValue string) bool {
+	txn := strings.ToLower(strings.TrimSpace(txnValue))
+	scope := strings.ToLower(strings.TrimSpace(scopeValue))
+	if txn == "" || scope == "" {
+		return false
+	}
+	return txn == scope || strings.Contains(txn, scope) || strings.Contains(scope, txn)
 }
 
 func (s *Service) protectedObligations(ctx context.Context, userID uuid.UUID, now time.Time, days int) decimal.Decimal {

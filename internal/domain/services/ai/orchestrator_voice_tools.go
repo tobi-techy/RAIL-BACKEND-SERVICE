@@ -153,7 +153,7 @@ func voiceActionToolNames() []string {
 	}
 }
 
-func (o *Orchestrator) executeVoiceMoneyLookup(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeVoiceMoneyLookup(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	target := strings.TrimSpace(stringArg(args, "tool"))
 	if target == "" {
 		return map[string]interface{}{"error": "tool is required"}, nil
@@ -198,7 +198,7 @@ func (o *Orchestrator) executeVoiceMoneyLookup(ctx context.Context, userID uuid.
 	return tr.data, nil
 }
 
-func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeVoiceMoneyAction(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	action := strings.TrimSpace(stringArg(args, "action"))
 	if action == "" {
 		return map[string]interface{}{"error": "action is required"}, nil
@@ -249,7 +249,7 @@ func (o *Orchestrator) executeVoiceMoneyAction(ctx context.Context, userID uuid.
 // instead of executing immediately. It enforces the same safety rails as the
 // immediate voice path and reuses the chat action builders (executeActionTool),
 // which store the pending action under convID.
-func (o *Orchestrator) PrepareVoiceAction(ctx context.Context, userID, convID uuid.UUID, action string, params map[string]interface{}) (*entities.PendingAction, error) {
+func (o *AgentAdapter) PrepareVoiceAction(ctx context.Context, userID, convID uuid.UUID, action string, params map[string]interface{}) (*entities.PendingAction, error) {
 	action = strings.TrimSpace(action)
 	if action == "" {
 		return nil, fmt.Errorf("action is required")
@@ -338,7 +338,7 @@ func normalizeVoiceToolName(name string) string {
 
 // voiceSupermemoryContext searches Supermemory for relevant user memory based on
 // the tool being called, enriching voice responses with personal history and context.
-func (o *Orchestrator) voiceSupermemoryContext(ctx context.Context, userID uuid.UUID, tool string, args map[string]interface{}) string {
+func (o *AgentAdapter) voiceSupermemoryContext(ctx context.Context, userID uuid.UUID, tool string, args map[string]interface{}) string {
 	if o.supermemory == nil {
 		return ""
 	}
@@ -449,7 +449,7 @@ func voiceForwardArgs(args map[string]interface{}, excludedKeys ...string) map[s
 	return forwarded
 }
 
-func (o *Orchestrator) voiceLookupUnavailable(tool string) string {
+func (o *AgentAdapter) voiceLookupUnavailable(tool string) string {
 	switch tool {
 	case ToolGetPortfolioStats, ToolGetTopMovers, ToolGetAllocations:
 		if o.portfolioProvider == nil {

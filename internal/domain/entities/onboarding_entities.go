@@ -110,6 +110,7 @@ type UserProfile struct {
 	AuthProviderID     *string          `json:"auth_provider_id" db:"auth_provider_id"`
 	Email              string           `json:"email" db:"email" validate:"required,email"`
 	FirstName          *string          `json:"first_name" db:"first_name"`
+	MiddleName         *string          `json:"middle_name,omitempty" db:"middle_name"`
 	LastName           *string          `json:"last_name" db:"last_name"`
 	DateOfBirth        *time.Time       `json:"date_of_birth" db:"date_of_birth"`
 	Phone              *string          `json:"phone" db:"phone" validate:"omitempty,e164"`
@@ -130,6 +131,15 @@ type UserProfile struct {
 	KYCRejectionReason *string          `json:"kyc_rejection_reason" db:"kyc_rejection_reason"`
 	BridgeCustomerID   *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
 	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
+	GraphPersonID      *string          `json:"graph_person_id,omitempty" db:"graph_person_id"`
+	KYCTier            int              `json:"kyc_tier" db:"kyc_tier"`
+	BVNVerifiedAt      *time.Time       `json:"bvn_verified_at,omitempty" db:"bvn_verified_at"`
+	BVNLast4           *string          `json:"bvn_last4,omitempty" db:"bvn_last4"`
+	NINVerifiedAt      *time.Time       `json:"nin_verified_at,omitempty" db:"nin_verified_at"`
+	NINLast4           *string          `json:"nin_last4,omitempty" db:"nin_last4"`
+	EmploymentStatus   *string          `json:"employment_status,omitempty" db:"employment_status"`
+	SourceOfFunds      *string          `json:"source_of_funds,omitempty" db:"source_of_funds"`
+	AccountPurpose     *string          `json:"account_purpose,omitempty" db:"account_purpose"`
 	IsActive           bool             `json:"is_active" db:"is_active"`
 	WithdrawalsFrozen  bool             `json:"withdrawals_frozen" db:"withdrawals_frozen"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
@@ -370,12 +380,12 @@ type Address struct {
 	Country    string `json:"country" validate:"required,len=2"`
 }
 
-// BasicCompleteRequest represents the slim signup request — name + password only
+// BasicCompleteRequest represents the slim signup request — name only (no password, OTP-only auth)
 type BasicCompleteRequest struct {
-	UserID    uuid.UUID `json:"-" validate:"-"`
-	FirstName string    `json:"firstName" validate:"required"`
-	LastName  string    `json:"lastName" validate:"required"`
-	Password  string    `json:"password" validate:"required,min=8"`
+	UserID     uuid.UUID `json:"-" validate:"-"`
+	FirstName  string    `json:"firstName" validate:"required"`
+	MiddleName *string   `json:"middleName,omitempty" validate:"-"`
+	LastName   string    `json:"lastName" validate:"required"`
 }
 
 // BasicCompleteResponse represents the response after basic signup completion
@@ -391,6 +401,7 @@ type OnboardingCompleteRequest struct {
 	Email             *string    `json:"email,omitempty" validate:"omitempty,email"`
 	Password          string     `json:"password,omitempty" validate:"omitempty,min=8"` // Optional for passkey users
 	FirstName         string     `json:"firstName" validate:"required"`
+	MiddleName        *string    `json:"middleName,omitempty"`
 	LastName          string     `json:"lastName" validate:"required"`
 	DateOfBirth       *time.Time `json:"dateOfBirth" validate:"required"`
 	Country           string     `json:"country" validate:"required,len=2"`

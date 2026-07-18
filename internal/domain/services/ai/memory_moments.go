@@ -38,7 +38,9 @@ Keep summary under 60 chars. Topic should be a snake_case category.`
 // ExtractMoment checks if a conversation exchange contains a memorable moment.
 // Runs async after each exchange alongside fact extraction.
 func (m *MemoryService) ExtractMoment(userID uuid.UUID, userMessage, assistantResponse string) {
+	m.bgWrites.Add(1)
 	go func() {
+		defer m.bgWrites.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 

@@ -36,8 +36,8 @@ func init() {
 // NudgeRequest describes the screen context for an ambient nudge.
 type NudgeRequest struct {
 	Screen   string `json:"screen"`             // "home", "withdraw", "send", "stash"
-	Amount   string `json:"amount,omitempty"`    // transaction amount being entered
-	Currency string `json:"currency,omitempty"`  // e.g. "USDC"
+	Amount   string `json:"amount,omitempty"`   // transaction amount being entered
+	Currency string `json:"currency,omitempty"` // e.g. "USDC"
 }
 
 // NudgeResponse is the lightweight nudge returned to the client.
@@ -50,7 +50,7 @@ type NudgeResponse struct {
 
 // GenerateNudge gathers financial context and asks the LLM for a short,
 // conversational nudge. It is designed to be fast (<3s) and cheap (small prompt).
-func (o *Orchestrator) GenerateNudge(ctx context.Context, userID uuid.UUID, req NudgeRequest) (*NudgeResponse, error) {
+func (o *AgentAdapter) GenerateNudge(ctx context.Context, userID uuid.UUID, req NudgeRequest) (*NudgeResponse, error) {
 	// Deduplication: skip if same user+screen was nudged within cooldown window
 	cooldownKey := fmt.Sprintf("nudge:%s:%s", userID.String(), req.Screen)
 	if lastTime, ok := nudgeCooldowns.Load(cooldownKey); ok {

@@ -37,7 +37,7 @@ type PatternAnalyzer interface {
 
 // SetPatterns sets the pattern analyzer.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetPatterns(p PatternAnalyzer) {
+func (o *AgentAdapter) SetPatterns(p PatternAnalyzer) {
 	o.patterns = p
 }
 
@@ -54,7 +54,7 @@ func SpendingPatternsTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeSpendingPatterns(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSpendingPatterns(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.patterns == nil {
 		return map[string]interface{}{"error": "pattern analysis not available"}, nil
 	}
@@ -100,6 +100,13 @@ func (o *Orchestrator) executeSpendingPatterns(ctx context.Context, userID uuid.
 			merchant = *t.MerchantName
 		}
 		bigTx[i] = map[string]interface{}{"amount": t.Amount.String(), "merchant": merchant, "date": t.CreatedAt.Format("Jan 2")}
+	}
+
+	// Enrich largest transactions with plain descriptions and context
+	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		for _, tx := range bigTx {
+			enrichMerchantEntry(tx, enrichmentMap)
+		}
 	}
 
 	// Week-over-week comparison

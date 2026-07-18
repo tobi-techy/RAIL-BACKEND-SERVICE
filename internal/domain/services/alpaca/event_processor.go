@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -34,6 +34,12 @@ type EventRepository interface {
 	GetUnprocessed(ctx context.Context, limit int) ([]*entities.AlpacaEvent, error)
 }
 
+// SignalGenerator turns a conductor's filled trade into a copy-trading signal.
+// Implementations must no-op for users who are not active conductors.
+type SignalGenerator interface {
+	CreateSignalFromConductorTrade(ctx context.Context, conductorUserID uuid.UUID, ticker, side string, quantity, price decimal.Decimal, orderID string) (*entities.Signal, error)
+}
+
 // EventProcessor handles Alpaca webhook and SSE events
 type EventProcessor struct {
 	accountRepo  AccountRepository
@@ -41,7 +47,15 @@ type EventProcessor struct {
 	positionRepo PositionRepository
 	eventRepo    EventRepository
 	balanceRepo  BalanceRepository
+	signalGen    SignalGenerator
 	logger       *zap.Logger
+}
+
+// SetSignalGenerator wires copy-trading signal generation into order fills.
+// Optional: set after construction because the copy trading service is built
+// later in the container.
+func (p *EventProcessor) SetSignalGenerator(g SignalGenerator) {
+	p.signalGen = g
 }
 
 func NewEventProcessor(
@@ -92,6 +106,17 @@ func (p *EventProcessor) ProcessOrderFill(ctx context.Context, event *entities.A
 	if status == entities.AlpacaOrderStatusFilled || status == entities.AlpacaOrderStatusPartiallyFilled {
 		if err := p.updatePositionFromFill(ctx, order, event); err != nil {
 			p.logger.Error("Failed to update position from fill", zap.Error(err))
+		}
+	}
+
+	// On a full fill, publish a copy-trading signal if this user is an active
+	// conductor (no-op otherwise). Failures must not break fill processing.
+	if p.signalGen != nil && status == entities.AlpacaOrderStatusFilled {
+		if _, err := p.signalGen.CreateSignalFromConductorTrade(ctx, order.UserID, event.Symbol, event.Side, event.FilledQty, event.FilledAvgPrice, event.OrderID); err != nil {
+			p.logger.Error("Failed to create copy-trading signal from conductor fill",
+				zap.String("order_id", event.OrderID),
+				zap.String("user_id", order.UserID.String()),
+				zap.Error(err))
 		}
 	}
 
