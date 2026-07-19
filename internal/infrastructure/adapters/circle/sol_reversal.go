@@ -73,7 +73,6 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		WalletID:       walletID,
 		RawTransaction: rawB64,
 		Memo:           "Rail: reversal of accidental SOL deposit",
-		Blockchain:     BlockchainSOL,
 	})
 	if err != nil {
 		return "", fmt.Errorf("sign transaction: %w", err)
