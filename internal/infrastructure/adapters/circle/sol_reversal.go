@@ -37,6 +37,17 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		return "", fmt.Errorf("get recent blockhash: %w", err)
 	}
 
+	// 2a. Check current SOL balance — wallet must keep ~0.001 SOL for rent-exempt minimum
+	bal, err := rpcClient.GetBalance(ctx, fromAddress, rpc.CommitmentFinalized)
+	if err != nil {
+		return "", fmt.Errorf("get SOL balance: %w", err)
+	}
+	const rentExemptBuffer uint64 = 1_000_000 // 0.001 SOL
+	if bal.Value < lamports+rentExemptBuffer {
+		return "", fmt.Errorf("insufficient balance: have %d lamports, need %d (amount + 0.001 rent buffer)", bal.Value, lamports+rentExemptBuffer)
+	}
+	lamports = bal.Value - rentExemptBuffer
+
 	// 3. Build SOL transfer instruction
 	ix := system.NewTransferInstruction(
 		lamports,
