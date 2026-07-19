@@ -217,9 +217,33 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 		intentID = session.IntentID
 	}
 
+	// 2. Cap to Blend's live available balance to handle vault share price drift.
+	//    Our DB tracks principal_amount (what we deposited), but Blend's redeemable
+	//    value = shares × current_share_price, which can be slightly less (~0.07%).
+	//    Without this cap, QuoteWithdraw fails with "Insufficient balance".
+	if balance, balErr := r.blend.GetBalance(ctx, acct.BlendAccountID); balErr == nil {
+		if available := aggregateUnderlying(balance); available.IsPositive() && amount.GreaterThan(available) {
+			r.logger.Warn("Blend: capping redemption to live available balance (vault share drift)",
+				zap.String("redemption_id", red.ID.String()),
+				zap.String("requested", amount.StringFixed(6)),
+				zap.String("available", available.StringFixed(6)),
+				zap.String("diff", amount.Sub(available).StringFixed(6)))
+			amount = available
+			// Persist the cap so the worker uses the corrected amount on retry.
+			if _, dbErr := r.db.ExecContext(ctx, `
+				UPDATE blend_yield_redemptions
+				SET amount = $2, updated_at = NOW()
+				WHERE id = $1
+			`, red.ID, amount); dbErr != nil {
+				r.logger.Error("Blend: failed to persist capped redemption amount",
+					zap.String("redemption_id", red.ID.String()), zap.Error(dbErr))
+			}
+		}
+	}
+
 	micro := USDCMicroUnits(amount)
 
-	// 2. Quote the withdraw (idempotent: re-quoting an OPEN session is safe).
+	// 3. Quote the withdraw (idempotent: re-quoting an OPEN session is safe).
 	if red.Status == redemptionStatusPending {
 		quote, err := r.blend.QuoteWithdraw(ctx, acct.BlendAccountID, intentID, r.chainID, micro, false)
 		if err != nil {
