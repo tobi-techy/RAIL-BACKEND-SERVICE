@@ -418,6 +418,7 @@ blend:
     - "0x2207189bAB0f177df87d77b7575102f2dF925754" # SwapAdapter (Base v1.5)
     - "0x0A55aa9881b64bF370738F088154f997B975f718" # Guard (Base v1.5)
     - "0xfd5CE759D38b112DeE44Ad7b2F509ce658b32A50" # Multisend (Base)
+    - "0x92fc5c7FA50f82138FE641D5d40cE280018683a5" # Blend vault router (Base)
   redeem_timeout_secs: 180
   worker_interval_secs: 30
   worker_batch_size: 25
