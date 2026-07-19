@@ -343,20 +343,24 @@ func (c *Client) GetSession(ctx context.Context, accountID, intentID string) (*S
 
 // Balance is the aggregated Safe balance across all chains, with per-chain breakdown.
 type Balance struct {
-	AccountID   string             `json:"accountId"`
-	SafeAddress string             `json:"safeAddress"`
-	PerChain    []PerChainBalance  `json:"perChain"`
-	Total       map[string]float64 `json:"total"`
-	HeldAssets  []HeldAsset        `json:"heldAssets"`
+	AccountID   string            `json:"accountId"`
+	SafeAddress string            `json:"safeAddress"`
+	PerChain    []PerChainBalance `json:"perChain"`
+	// Total changed from map[string]float64 to raw JSON because Blend's API
+	// now returns nested objects like {"USD": {"value": "..."}} instead of
+	// flat {"USD": 123.45}. We never read this field — aggregateUnderlying
+	// uses TotalUnderlying instead.
+	Total      json.RawMessage `json:"total"`
+	HeldAssets []HeldAsset     `json:"heldAssets"`
 }
 
 type PerChainBalance struct {
-	ChainID                 int64              `json:"chainId"`
-	VaultAddress            string             `json:"vaultAddress"`
-	Total                   map[string]float64 `json:"total"`
-	TotalUnderlying         string             `json:"totalUnderlying"`
-	TotalUnderlyingDecimals int                `json:"totalUnderlyingDecimals"`
-	HeldAssets              []HeldAsset        `json:"heldAssets"`
+	ChainID                 int64           `json:"chainId"`
+	VaultAddress            string          `json:"vaultAddress"`
+	Total                   json.RawMessage `json:"total"`
+	TotalUnderlying         string          `json:"totalUnderlying"`
+	TotalUnderlyingDecimals int             `json:"totalUnderlyingDecimals"`
+	HeldAssets              []HeldAsset     `json:"heldAssets"`
 }
 
 type HeldAsset struct {
