@@ -3,6 +3,7 @@ package blend
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -107,6 +108,7 @@ func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 	r.retryPendingSweeps(ctx)
 	r.detectStaleRoutes(ctx)
 	r.detectStrandedRedemptions(ctx)
+	r.detectStuckRedemptions(ctx)
 	r.detectSweepDoubleCredits(ctx)
 }
 
@@ -258,6 +260,48 @@ func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
 	}
 }
 
+// detectStuckRedemptions force-resets redemptions stuck in executing/submitted for
+// >30 minutes. These likely failed silently (Blend session expired while the redemption
+// was held under a lease) and need a fresh session + quote to recover. Without this
+// detector they stay stuck until the 2-minute lease window expires and even then may
+// re-enter the same broken state.
+func (r *DepositRouter) detectStuckRedemptions(ctx context.Context) {
+	type stuckRow struct {
+		ID        uuid.UUID `db:"id"`
+		UserID    uuid.UUID `db:"user_id"`
+		Status    string    `db:"status"`
+		Amount    string    `db:"amount"`
+		Attempts  int       `db:"attempts"`
+	}
+	var rows []stuckRow
+	if err := r.db.SelectContext(ctx, &rows, `
+		SELECT id, user_id, status, amount::text AS amount, attempts
+		FROM blend_yield_redemptions
+		WHERE status IN ('executing', 'submitted')
+		  AND updated_at < NOW() - INTERVAL '30 minutes'
+		LIMIT 10
+	`); err != nil {
+		r.logger.Warn("Blend: stuck redemption query failed", zap.Error(err))
+		return
+	}
+	for _, row := range rows {
+		if !r.shouldAlert("stuck-redemption:" + row.ID.String()) {
+			continue
+		}
+		r.logger.Warn("Blend: stuck redemption detected — resetting for fresh session",
+			zap.String("redemption_id", row.ID.String()),
+			zap.String("user_id", row.UserID.String()),
+			zap.String("status", row.Status),
+			zap.String("amount", row.Amount),
+			zap.Int("attempts", row.Attempts))
+		if err := r.resetRedemptionForRetry(ctx, row.ID,
+			fmt.Sprintf("stuck in %s for >30m", row.Status), time.Minute); err != nil {
+			r.logger.Error("Blend: failed to reset stuck redemption",
+				zap.String("redemption_id", row.ID.String()), zap.Error(err))
+		}
+	}
+}
+
 // retryPendingSweeps retries the Base→Solana bridge for complete redemptions whose
 // sweep failed or never ran. Uses a 5-minute grace period after settlement so we
 // don't race with a crypto transfer that may still be spending from the Base EOA.
@@ -274,6 +318,7 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 		WHERE status = 'complete'
 		  AND swept_at IS NULL
 		  AND settled_at < NOW() - INTERVAL '5 minutes'
+		  AND attempts < 20
 		ORDER BY settled_at
 		LIMIT $1
 	`, r.getBatchSize()); err != nil || len(rows) == 0 {

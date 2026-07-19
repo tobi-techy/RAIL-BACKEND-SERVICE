@@ -274,6 +274,7 @@ func extractSignature(c *gin.Context) string {
 		"X-Bridge-Signature",
 		"Bridge-Signature",
 		"X-Alpaca-Signature",
+		"X-RampHub-Signature",
 	}
 	for _, h := range headers {
 		if sig := c.GetHeader(h); sig != "" {

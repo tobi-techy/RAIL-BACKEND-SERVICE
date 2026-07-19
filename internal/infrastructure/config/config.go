@@ -54,6 +54,7 @@ type Config struct {
 	Enrichment     EnrichmentConfig     `mapstructure:"enrichment"`
 	Statement      StatementConfig      `mapstructure:"statement"`
 	Document       DocumentConfig       `mapstructure:"document"`
+	AdminAlertEmail string             `mapstructure:"admin_alert_email"`
 }
 
 // DocumentConfig configures the document-intelligence pipeline (PaddleOCR sidecar + R2).
@@ -1406,6 +1407,11 @@ func overrideFromEnv() {
 	}
 	if replyTo := os.Getenv("EMAIL_REPLY_TO"); replyTo != "" {
 		viper.Set("email.reply_to", replyTo)
+	}
+
+	// Admin error alert email
+	if adminAlertEmail := os.Getenv("ADMIN_ALERT_EMAIL"); adminAlertEmail != "" {
+		viper.Set("admin_alert_email", adminAlertEmail)
 	}
 
 	// AI Providers

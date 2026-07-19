@@ -551,6 +551,89 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 	return err
 }
 
+func (a *WithdrawalLedgerAdapter) CreatePendingTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error {
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return err
+	}
+
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return err
+	}
+	feeAmount, err := withdrawalPlatformFeeFromMetadata(metadata, amount)
+	if err != nil {
+		return err
+	}
+	if feeAmount.IsPositive() {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["fee_revenue_posted"] = true
+	}
+	principalAmount := amount.Sub(feeAmount)
+	if principalAmount.IsNegative() {
+		return fmt.Errorf("withdrawal fee %s exceeds total amount %s", feeAmount.String(), amount.String())
+	}
+
+	desc := "Withdrawal transaction (pending)"
+
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   userAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &desc,
+		},
+	}
+	if principalAmount.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      principalAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+	if feeAmount.IsPositive() {
+		revenueAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeWithdrawalFeeRevenue)
+		if err != nil {
+			return fmt.Errorf("get withdrawal fee revenue account: %w", err)
+		}
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   revenueAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      feeAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: txType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        metadata,
+		Entries:         entries,
+	}
+
+	return a.ledgerService.CreatePendingTransaction(ctx, req)
+}
+
+func (a *WithdrawalLedgerAdapter) CommitPendingTransaction(ctx context.Context, idempotencyKey string) error {
+	return a.ledgerService.CommitPendingTransaction(ctx, idempotencyKey)
+}
+
+func (a *WithdrawalLedgerAdapter) FailPendingTransaction(ctx context.Context, idempotencyKey string) error {
+	return a.ledgerService.FailPendingTransaction(ctx, idempotencyKey)
+}
+
+func (a *WithdrawalLedgerAdapter) GetLedgerTransactionStatus(ctx context.Context, idempotencyKey string) (entities.TransactionStatus, error) {
+	return a.ledgerService.GetLedgerTransactionStatus(ctx, idempotencyKey)
+}
+
 func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error {
 	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
 	if err != nil {
@@ -3079,6 +3162,12 @@ func (c *Container) initializeDomainServices() error {
 	}
 	if c.SpendingCommitmentService != nil {
 		c.WithdrawalService.SetSpendingCommitment(c.SpendingCommitmentService)
+	}
+
+	// Wire admin error alert emails
+	if c.EmailService != nil && c.Config.AdminAlertEmail != "" {
+		c.WithdrawalService.SetAdminAlerter(adapters.NewAdminAlertService(c.EmailService, c.Config.AdminAlertEmail, c.ZapLog))
+		c.ZapLog.Info("Admin error alert emails configured", zap.String("email", c.Config.AdminAlertEmail))
 	}
 
 	// Wire Circle webhook handler to withdrawal service now that it's initialized

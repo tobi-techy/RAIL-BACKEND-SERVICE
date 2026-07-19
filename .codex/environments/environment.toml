@@ -32,10 +32,13 @@ until docker compose exec -T db pg_isready -U postgres >/dev/null 2>&1; do
 done
 
 echo "🗄 Running database migrations..."
+set -a
+. .env
+set +a
 migrate \
     -path migrations \
     -database "$DATABASE_URL" \
-    up || true
+    up
 
 echo "🧹 Cleaning old test cache..."
 go clean -testcache
@@ -59,7 +62,6 @@ docker compose down --remove-orphans
 
 go clean -cache
 go clean -testcache
-go clean -modcache
 
 rm -rf tmp
 rm -rf coverage

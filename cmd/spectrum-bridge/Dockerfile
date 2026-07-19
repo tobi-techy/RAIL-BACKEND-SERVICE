@@ -11,7 +11,9 @@ COPY package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY src/ ./src/
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && chown -R bun:bun /app
+
+USER bun
 
 EXPOSE 3000
 

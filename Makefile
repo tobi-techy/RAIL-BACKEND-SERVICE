@@ -39,7 +39,7 @@ sim-live:
 	@echo "Requires SIM_DATABASE_URL and AI keys. Writes sim-out/card.txt for sharing."
 	go run ./cmd/miriam-sim --scenarios test/simulation/scenarios --out ./sim-out \
 		--live --share ./sim-out/card.txt \
-		--git-sha $(shell git rev-parse --short HEAD 2>/dev/null) $(SIM_ARGS)
+		--git-sha "$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)" $(SIM_ARGS)
 
 sim-stub:
 	@echo "Running Miriam simulation harness self-test (offline stub, no API keys)..."
@@ -49,7 +49,7 @@ sim-soak:
 	@echo "Running Miriam continuous soak (generated scenarios, budget-governed)..."
 	@echo "Requires SIM_DATABASE_URL and AI keys. Set a stop condition via SOAK_ARGS."
 	@echo "Example: make sim-soak SOAK_ARGS='--soak-duration 120h --budget-usd 40 --soak-workers 3'"
-	go run ./cmd/miriam-sim --soak --soak-out ./sim-out --git-sha $(shell git rev-parse --short HEAD 2>/dev/null) $(SOAK_ARGS)
+	go run ./cmd/miriam-sim --soak --soak-out ./sim-out --git-sha "$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)" $(SOAK_ARGS)
 
 security-scan:
 	@echo "Running security scans..."
