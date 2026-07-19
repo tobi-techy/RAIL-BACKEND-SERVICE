@@ -217,8 +217,7 @@ func run(p suiteParams) error {
 	if p.baselinePath != "" {
 		baseline, err = simulation.LoadBaseline(p.baselinePath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "miriam-sim: could not load baseline %s: %v\n", p.baselinePath, err)
-			os.Exit(1)
+			return fmt.Errorf("load baseline %s: %w", p.baselinePath, err)
 		}
 	}
 

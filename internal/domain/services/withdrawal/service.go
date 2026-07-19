@@ -1095,7 +1095,13 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 				"withdrawal_id", withdrawal.ID.String(),
 				"user_id", withdrawal.UserID.String(),
 				"stack", string(stack))
-			_ = s.withdrawalRepo.MarkFailed(context.Background(), withdrawal.ID, fmt.Sprintf("internal panic: %v", r))
+			// Use failWithdrawal (not MarkFailed) so the ledger is properly
+			// handled: if Circle already confirmed, settle; if pending, fail it;
+			// if committed, reverse it. MarkFailed alone would orphan the ledger.
+			if failErr := s.failWithdrawal(context.Background(), withdrawal, fmt.Sprintf("internal panic: %v", r)); failErr != nil {
+				s.logger.Error("async: failed to mark withdrawal as failed after panic",
+					"error", failErr, "withdrawal_id", withdrawal.ID.String())
+			}
 			s.alertAdmin(AdminErrorPayload{
 				UserID:    withdrawal.UserID.String(),
 				Operation: "crypto_withdrawal",
