@@ -20,7 +20,7 @@ type AggregateStatsProvider interface {
 
 // SetAggregateStats sets the aggregate stats provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetAggregateStats(a AggregateStatsProvider) {
+func (o *AgentAdapter) SetAggregateStats(a AggregateStatsProvider) {
 	o.aggregateStats = a
 }
 
@@ -37,7 +37,7 @@ func ComparativeContextTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeComparativeContext(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeComparativeContext(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.aggregateStats == nil {
 		return map[string]interface{}{"error": "comparative data not available"}, nil
 	}

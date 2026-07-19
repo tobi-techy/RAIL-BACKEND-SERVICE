@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	ToolListMemory   = "list_memory"
-	ToolForgetFact   = "forget_fact"
+	ToolListMemory     = "list_memory"
+	ToolForgetFact     = "forget_fact"
 	ToolForgetCategory = "forget_category"
 )
 
@@ -50,7 +50,7 @@ func MemoryTools() []infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeListMemory(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeListMemory(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.memory == nil {
 		return map[string]interface{}{"facts": []interface{}{}, "message": "Memory not available"}, nil
 	}
@@ -74,7 +74,7 @@ func (o *Orchestrator) executeListMemory(ctx context.Context, userID uuid.UUID) 
 	return map[string]interface{}{"facts": items, "count": len(items)}, nil
 }
 
-func (o *Orchestrator) executeForgetFact(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeForgetFact(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.memory == nil {
 		return map[string]interface{}{"error": "Memory not available"}, nil
 	}
@@ -92,7 +92,7 @@ func (o *Orchestrator) executeForgetFact(ctx context.Context, userID uuid.UUID, 
 	return map[string]interface{}{"success": true, "message": "Done — I've forgotten that."}, nil
 }
 
-func (o *Orchestrator) executeForgetCategory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeForgetCategory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.memory == nil {
 		return map[string]interface{}{"error": "Memory not available"}, nil
 	}

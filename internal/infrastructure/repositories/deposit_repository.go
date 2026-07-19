@@ -29,9 +29,10 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 			id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			tx_hash, chain, token, confirmed_at,
 			off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			alpaca_funding_tx_id, alpaca_funded_at, created_at
+			alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			source_amount, source_currency
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 	`
 
@@ -53,12 +54,24 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 		deposit.AlpacaFundingTxID,
 		deposit.AlpacaFundedAt,
 		deposit.CreatedAt,
+		deposit.SourceAmount,
+		deposit.SourceCurrency,
 	)
 
 	if err != nil {
 		return fmt.Errorf("failed to create deposit: %w", err)
 	}
 
+	return nil
+}
+
+// UpdateDepositAmount sets the resolved settlement amount on a deposit row. Used
+// by the NGN flow to persist the converted USDC amount after the idempotency row
+// was claimed (with a zero placeholder) prior to conversion.
+func (r *DepositRepository) UpdateDepositAmount(ctx context.Context, id uuid.UUID, amount decimal.Decimal) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE deposits SET amount = $2 WHERE id = $1`, id, amount); err != nil {
+		return fmt.Errorf("failed to update deposit amount: %w", err)
+	}
 	return nil
 }
 

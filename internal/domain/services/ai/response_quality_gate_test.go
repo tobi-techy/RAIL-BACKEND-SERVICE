@@ -27,9 +27,9 @@ func TestQualityGateCatchesSlop(t *testing.T) {
 		"I'd be happy to help you with that.",
 		"Absolutely! Here's your balance breakdown.",
 		"Based on the data, you spent $342 this month.",
-		"Let me check that for you. Your balance is...",
 		"Certainly! Your stash is at $735.",
 		"Here's what I found in your account.",
+		"Thanks for asking! Your income is $3200.",
 	}
 	for _, r := range slop {
 		v := CheckResponseQuality(r)

@@ -2,6 +2,7 @@ package miriam
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -40,36 +41,52 @@ var (
 		Name: "miriam_nudges_delivered_total",
 		Help: "Total proactive nudges delivered",
 	})
+	// miriamMandatesGated counts autonomous mandate evaluations skipped because
+	// the user's control level does not permit autonomous execution. The reason
+	// label distinguishes guided/monitor/unknown so we can see the mix.
+	miriamMandatesGated = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "miriam_mandates_gated_total",
+		Help: "Autonomous mandate evaluations skipped due to control level",
+	}, []string{"reason"})
 )
 
-// New mandate action types for autonomous money intelligence.
+// ControlLevelReader reads a user's autonomy/control level ("full", "guided",
+// "monitor"). Only "full" permits autonomous money movement.
+type ControlLevelReader interface {
+	GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// Mandate action types (canonical definitions in entities package).
 const (
-	MiriamMandateTransferToStash  = entities.MiriamMandateTransferToStash // existing
-	MiriamMandateTransferToSpend  = "transfer_to_spend"                   // stash → spend for bills
-	MiriamMandateBillReservation  = "bill_reservation"                    // set aside for upcoming bills
-	MiriamMandateSpendCooldown    = "spend_cooldown"                      // suggest spending restriction
-	MiriamMandateGoalContribution = "goal_contribution"                   // auto-save to goals
-	MiriamMandateStashTopUp       = "stash_top_up"                        // surplus → stash
-	MiriamMandateIdleSweep        = "idle_sweep"                          // sweep excess above threshold
+	MiriamMandateTransferToStash  = entities.MiriamMandateTransferToStash
+	MiriamMandateTransferToSpend  = entities.MiriamMandateTransferToSpend
+	MiriamMandateBillReservation  = entities.MiriamMandateBillReservation
+	MiriamMandateSpendCooldown    = entities.MiriamMandateSpendCooldown
+	MiriamMandateGoalContribution = entities.MiriamMandateGoalContribution
+	MiriamMandateStashTopUp       = entities.MiriamMandateStashTopUp
+	MiriamMandateIdleSweep        = entities.MiriamMandateIdleSweep
 )
 
 // IntelligenceOrchestrator is Miriam's unified brain — a single evaluation pass
 // that coordinates predictions, decisions, memory, learning, and actions.
 type IntelligenceOrchestrator struct {
-	service      *Service
-	decisions    *DecisionEngine
-	nudges       *ProactiveNudgeEngine
-	predictions  *PredictiveEngine
-	signals      *SignalDetector
-	suggestions  *MandateSuggestionEngine
-	obDetector   *ObligationAutoDetector
-	enricher     *TransactionEnricher
-	dispatcher   *NotificationDispatcher
-	memory       MemoryReader
-	notifier     Notifier
-	healthScore  *HealthScoreTracker
-	outcomeTrack *OutcomeTracker
-	logger       *zap.Logger
+	service       *Service
+	decisions     *DecisionEngine
+	nudges        *ProactiveNudgeEngine
+	predictions   *PredictiveEngine
+	signals       *SignalDetector
+	suggestions   *MandateSuggestionEngine
+	obDetector    *ObligationAutoDetector
+	enricher      *TransactionEnricher
+	patternAnalyzer *TransactionPatternAnalyzer
+	dispatcher    *NotificationDispatcher
+	memory        MemoryReader
+	notifier      Notifier
+	healthScore   *HealthScoreTracker
+	outcomeTrack  *OutcomeTracker
+	selfReview    *SelfReviewEngine
+	controlLevel  ControlLevelReader
+	logger        *zap.Logger
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -110,6 +127,34 @@ func (o *IntelligenceOrchestrator) SetNotifier(n Notifier) {
 // SetEnricher injects a TransactionEnricher after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetEnricher(e *TransactionEnricher) {
 	o.enricher = e
+}
+
+// SetPatternAnalyzer injects a TransactionPatternAnalyzer after construction (deferred wiring).
+func (o *IntelligenceOrchestrator) SetPatternAnalyzer(a *TransactionPatternAnalyzer) {
+	o.patternAnalyzer = a
+}
+
+// SetSelfReview injects the self-review engine after construction (deferred wiring).
+func (o *IntelligenceOrchestrator) SetSelfReview(s *SelfReviewEngine) {
+	o.selfReview = s
+}
+
+// SetControlLevel injects the control-level reader after construction (deferred
+// wiring). When set, autonomous mandate execution only runs for users in Full
+// Autopilot; guided/monitor users still receive predictions, nudges, and
+// suggestions but no money moves without their explicit approval.
+func (o *IntelligenceOrchestrator) SetControlLevel(r ControlLevelReader) {
+	o.controlLevel = r
+}
+
+// RunSelfReview runs Miriam's meta-review of her own recent work for a user. It
+// self-gates to once per day, so it is safe to call on every worker tick.
+func (o *IntelligenceOrchestrator) RunSelfReview(ctx context.Context, userID uuid.UUID) error {
+	if o.selfReview == nil {
+		return nil
+	}
+	_, err := o.selfReview.Run(ctx, userID)
+	return err
 }
 
 // HealthScoreTracker returns the health score tracker for maintenance operations.
@@ -170,29 +215,96 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 			})
 	}
 
-	// 2. Generate predictions
+	// 2. Enrich transactions early so predictions, decisions, and nudges
+	// have access to fresh categorization data this cycle.
+	if o.enricher != nil && o.enricher.transactions != nil && eventType == EventWorkerSweep {
+		txns, txnErr := o.enricher.transactions.GetUserTransactions(ctx, userID, 50, 0)
+		if txnErr == nil && len(txns) > 0 {
+			enriched, err := o.enricher.EnrichBatch(ctx, txns)
+			if err != nil && o.logger != nil {
+				o.logger.Debug("transaction enrichment batch failed", zap.String("user_id", userID.String()), zap.Error(err))
+			}
+
+			// Bridge enrichment facts directly from results into miriam_user_facts
+			// so Miriam's memory ranker can surface them without tool calls.
+			if o.enricher.store != nil && len(enriched) > 0 {
+				var allFacts []entities.TransactionFact
+				for _, et := range enriched {
+					if len(et.Facts) == 0 {
+						continue
+					}
+					var facts []entities.TransactionFact
+					if err := json.Unmarshal(et.Facts, &facts); err == nil {
+						allFacts = append(allFacts, facts...)
+					}
+				}
+				if len(allFacts) > 0 {
+					if n, bridgeErr := o.enricher.store.BridgeFactsToMemory(ctx, userID, allFacts); bridgeErr == nil && n > 0 && o.logger != nil {
+						o.logger.Debug("enrichment facts bridged to memory",
+							zap.String("user_id", userID.String()), zap.Int("count", n))
+					}
+				}
+			}
+		}
+	}
+
+	// 2b. Analyze transfer patterns — family detection, recurring recipients,
+	// behavioral clusters. Runs after enrichment so counterparty names are resolved.
+	if o.patternAnalyzer != nil && eventType == EventWorkerSweep {
+		patterns, patErr := o.patternAnalyzer.AnalyzePatterns(ctx, userID)
+		if patErr != nil && o.logger != nil {
+			o.logger.Debug("pattern analysis failed", zap.String("user_id", userID.String()), zap.Error(patErr))
+		} else if patterns != nil && patterns.TotalRecipients > 0 {
+			// Store pattern summary as a fact so Miriam can reference it
+			if o.enricher != nil && o.enricher.store != nil && patterns.Summary != "" {
+				fact := entities.TransactionFact{
+					Type:       "transfer_pattern",
+					Value:      patterns.Summary,
+					Confidence: 0.9,
+					Category:   "financial_behavior",
+				}
+				if _, err := o.enricher.store.BridgeFactsToMemory(ctx, userID, []entities.TransactionFact{fact}); err == nil && o.logger != nil {
+					o.logger.Debug("transfer patterns stored as memory fact",
+						zap.String("user_id", userID.String()),
+						zap.Int("recipients", patterns.TotalRecipients))
+				}
+			}
+		}
+	}
+
+	// 3. Generate predictions
 	predictions, err := o.predictions.GeneratePredictions(ctx, userID, state)
 	if err != nil && o.logger != nil {
 		o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
 	}
 	result.Predictions = predictions
 
-	// 2b. Record prediction outcomes (pending) and evaluate expired ones
+	// 3b. Record prediction outcomes (pending) and evaluate expired ones. When a
+	// prediction resolves, close the loop with the user so Miriam is accountable
+	// for what she said rather than only ever raising new alarms.
 	if o.outcomeTrack != nil {
 		if predictions != nil {
 			o.outcomeTrack.RecordPredictions(ctx, userID, predictions.ActivePredictions)
 		}
-		o.outcomeTrack.EvaluateOutcomes(ctx, userID)
+		resolved := o.outcomeTrack.EvaluateOutcomes(ctx, userID)
+		if o.notifier != nil {
+			for _, out := range resolved {
+				if msg := LoopClosingMessage(out); msg != "" {
+					_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
+					break // one loop-closing line per sweep — she's discreet, not chatty
+				}
+			}
+		}
 	}
 
-	// 3. Detect and upsert context signals
+	// 4. Detect and upsert context signals
 	if o.signals != nil {
 		if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
 			o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
 		}
 	}
 
-	// 4. Load memory context
+	// 5. Load memory context
 	var memoryFacts []entities.MiriamUserFact
 	if o.memory != nil {
 		facts, err := o.memory.GetActiveFacts(ctx, userID)
@@ -201,7 +313,7 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 4. Get learning bias
+	// 5b. Get learning bias
 	learningBias := decimal.Zero
 	if o.service.repo != nil {
 		bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
@@ -210,10 +322,31 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 5. Evaluate mandates with decision engine
+	// 5. Evaluate mandates with decision engine.
+	//
+	// Autonomous money movement is gated on the user's control level: only Full
+	// Autopilot ("full") permits Miriam to execute mandates on her own. In guided
+	// or monitor mode the user has explicitly asked to approve actions first (or to
+	// be advised only), so we skip execution entirely while still running every
+	// advisory output above and below (predictions, nudges, suggestions, health,
+	// loop-closing). This mirrors AutopilotService.loadFullAutopilotUsers, so both
+	// autonomous paths honour the same contract. Fail closed: on any error reading
+	// the level, we do NOT execute.
 	decisionsMade := 0
 	actionsExecuted := 0
-	if eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual {
+	mandateEvent := eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual
+	gateReason := ""
+	if mandateEvent {
+		gateReason = o.autonomyGateReason(ctx, userID)
+	}
+	if mandateEvent && gateReason != "" {
+		miriamMandatesGated.WithLabelValues(gateReason).Inc()
+		if o.logger != nil {
+			o.logger.Debug("miriam: autonomous mandate execution gated by control level",
+				zap.String("user_id", userID.String()), zap.String("reason", gateReason))
+		}
+	}
+	if mandateEvent && gateReason == "" {
 		mandates, err := o.service.repo.ListActiveMandates(ctx, userID)
 		if err == nil {
 			for _, mandate := range mandates {
@@ -259,15 +392,6 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	suggestions, err := o.suggestions.GenerateSuggestions(ctx, userID, state, memoryFacts)
 	if err == nil {
 		result.SuggestionsMade = len(suggestions)
-	}
-
-	// 8. Enrich transactions for improved categorization
-	if o.enricher != nil && o.enricher.transactions != nil && eventType == EventWorkerSweep {
-		if txns, err := o.enricher.transactions.GetUserTransactions(ctx, userID, 50, 0); err == nil && len(txns) > 0 {
-			if _, err := o.enricher.EnrichBatch(ctx, txns); err != nil && o.logger != nil {
-				o.logger.Debug("transaction enrichment batch failed", zap.String("user_id", userID.String()), zap.Error(err))
-			}
-		}
 	}
 
 	// 9. Detect recurring obligations from transactions (weekly check)
@@ -328,7 +452,12 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		analytics.TrackEvent(ctx, userID.String(), analytics.EventMiriamNudgeSent, map[string]any{
 			"nudge_count": result.NudgesGenerated,
 			"event_type":  eventType,
-			"risk_score":  func() int { if result.Predictions != nil { return result.Predictions.RiskScore }; return 0 }(),
+			"risk_score": func() int {
+				if result.Predictions != nil {
+					return result.Predictions.RiskScore
+				}
+				return 0
+			}(),
 		})
 	}
 	if result.SuggestionsMade > 0 {
@@ -357,6 +486,34 @@ func (o *IntelligenceOrchestrator) EvaluateBatch(ctx context.Context, userIDs []
 	return
 }
 
+// autonomyGateReason decides whether autonomous mandate execution may run for a
+// user. It returns "" when execution is permitted (Full Autopilot) and a short
+// reason label otherwise, used for metrics and logs. It fails closed: if no
+// control-level reader is wired or the lookup errors, execution is blocked so a
+// transient read failure can never move a user's money without their consent.
+func (o *IntelligenceOrchestrator) autonomyGateReason(ctx context.Context, userID uuid.UUID) string {
+	if o.controlLevel == nil {
+		return "unwired"
+	}
+	lvlCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	level, err := o.controlLevel.GetControlLevel(lvlCtx, userID)
+	if err != nil {
+		return "lookup_error"
+	}
+	switch level {
+	case entities.ControlLevelFull:
+		return ""
+	case entities.ControlLevelGuided:
+		return "guided"
+	case entities.ControlLevelMonitor:
+		return "monitor"
+	default:
+		// Unknown/blank value — fail closed rather than assume full autonomy.
+		return "unknown"
+	}
+}
+
 func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, userID uuid.UUID, mandate entities.MiriamAutopilotMandate, amount decimal.Decimal) error {
 	var err error
 	switch mandate.ActionType {
@@ -367,11 +524,23 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 	case MiriamMandateStashTopUp, MiriamMandateIdleSweep:
 		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
 	case MiriamMandateBillReservation:
-		err = o.recordBillReservation(ctx, userID, amount, mandate)
+		if err = o.recordBillReservation(ctx, userID, amount, mandate); err == nil {
+			if o.notifier != nil {
+				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("$%s noted for upcoming bills.", amount.StringFixed(2)))
+			}
+		}
 	case MiriamMandateSpendCooldown:
-		err = o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
+		o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
+		if o.notifier != nil {
+			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", "Spending cooldown is on. Paused non-essential spending for now.")
+		}
 	case MiriamMandateGoalContribution:
-		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
+		if err = o.executeTransferToStash(ctx, userID, amount, mandate.ID); err == nil {
+			o.recordReceipt(ctx, userID, amount, mandate, "goal_contribution", fmt.Sprintf("Auto-contributed $%s to savings goals.", amount.StringFixed(2)))
+			if o.notifier != nil {
+				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("$%s moved to Stash for your savings goals.", amount.StringFixed(2)))
+			}
+		}
 	default:
 		return fmt.Errorf("unknown mandate action type: %s", mandate.ActionType)
 	}

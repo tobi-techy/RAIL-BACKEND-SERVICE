@@ -937,6 +937,282 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+type PhoneOTPStartRequest struct {
+	Phone string `json:"phone" binding:"required"`
+}
+
+type PhoneOTPLoginRequest struct {
+	Phone string `json:"phone" binding:"required"`
+	Code  string `json:"code" binding:"required"`
+}
+
+// PhoneOTPStart sends a login OTP to a phone-first account.
+// @Summary Start passwordless phone login
+// @Description Sends a one-time code to a registered, phone-verified account. Always returns 202 to avoid account enumeration.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body PhoneOTPStartRequest true "Phone number"
+// @Success 202 {object} entities.SignUpResponse
+// @Router /api/v1/auth/phone/start [post]
+func (h *AuthHandlers) PhoneOTPStart(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
+
+	var req PhoneOTPStartRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+		return
+	}
+
+	phone := normalizeAuthIdentifier("phone", req.Phone)
+	genericResp := entities.SignUpResponse{
+		Message:    "If that number has a RAIL account, a login code is on its way.",
+		Identifier: phone,
+	}
+	if phone == "" {
+		c.JSON(http.StatusAccepted, genericResp)
+		return
+	}
+
+	// Only send a code for an existing, active, phone-verified account. Failures
+	// still return the same generic response so callers can't probe for accounts.
+	user, err := h.userRepo.GetByPhone(ctx, phone)
+	if err != nil || user == nil || !user.IsActive || !user.PhoneVerified {
+		c.JSON(http.StatusAccepted, genericResp)
+		return
+	}
+
+	if _, err := h.verificationService.GenerateAndSendCode(ctx, "phone", phone); err != nil {
+		lowered := strings.ToLower(err.Error())
+		if strings.Contains(lowered, "too many") {
+			c.JSON(http.StatusTooManyRequests, entities.ErrorResponse{Code: "TOO_MANY_REQUESTS", Message: "Too many code requests. Please wait before retrying."})
+			return
+		}
+		h.logger.Error("Failed to send phone login code", zap.Error(err))
+		// Still avoid leaking existence on transient send failures.
+	}
+
+	c.JSON(http.StatusAccepted, genericResp)
+}
+
+// PhoneOTPLogin verifies a phone login OTP and issues tokens.
+// @Summary Complete passwordless phone login
+// @Description Verifies the phone OTP and returns JWT tokens for a phone-first account.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body PhoneOTPLoginRequest true "Phone and code"
+// @Success 200 {object} entities.AuthResponse
+// @Failure 401 {object} entities.ErrorResponse
+// @Router /api/v1/auth/phone/login [post]
+func (h *AuthHandlers) PhoneOTPLogin(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
+
+	var req PhoneOTPLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+		return
+	}
+
+	phone := normalizeAuthIdentifier("phone", req.Phone)
+	code := strings.TrimSpace(req.Code)
+	if phone == "" || code == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "VALIDATION_ERROR", Message: "Phone and code are required"})
+		return
+	}
+
+	isValid, err := h.verificationService.VerifyCode(ctx, "phone", phone, code)
+	if err != nil || !isValid {
+		h.recordLoginFailure(c, phone)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CREDENTIALS", Message: "Invalid or expired code"})
+		return
+	}
+
+	user, err := h.userRepo.GetUserByPhoneForLogin(ctx, phone)
+	if err != nil || user == nil {
+		h.recordLoginFailure(c, phone)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CREDENTIALS", Message: "Invalid or expired code"})
+		return
+	}
+	if !user.IsActive {
+		h.recordLoginFailure(c, phone)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "ACCOUNT_INACTIVE", Message: "Account is inactive. Please contact support."})
+		return
+	}
+
+	tokens, err := auth.GenerateTokenPair(user.ID, user.Email, user.Role, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL, h.cfg.JWT.RefreshTTL)
+	if err != nil {
+		h.logger.Error("Failed to generate tokens for phone login", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate authentication tokens"})
+		return
+	}
+
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after phone login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+	}
+
+	if err := h.userRepo.UpdateLastLogin(ctx, user.ID); err != nil {
+		h.logger.Warn("Failed to update last login after phone login", zap.Error(err), zap.String("user_id", user.ID.String()))
+	}
+
+	h.recordLoginSuccess(c, phone)
+
+	analytics.TrackEvent(ctx, user.ID.String(), analytics.EventSessionStarted, map[string]any{
+		"login_method": "phone_otp",
+	})
+
+	h.logger.Info("User logged in via phone OTP", zap.String("user_id", user.ID.String()))
+	c.JSON(http.StatusOK, entities.AuthResponse{
+		User:             user.ToUserInfo(),
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
+	})
+}
+
+type EmailOTPStartRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+type EmailOTPLoginRequest struct {
+	Email string `json:"email" binding:"required,email"`
+	Code  string `json:"code" binding:"required"`
+}
+
+// EmailOTPStart sends a login OTP to an email account.
+// @Summary Start passwordless email login
+// @Description Sends a one-time code to a registered, email-verified account. Always returns 202 to avoid account enumeration.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body EmailOTPStartRequest true "Email address"
+// @Success 202 {object} entities.SignUpResponse
+// @Router /auth/email/start [post]
+func (h *AuthHandlers) EmailOTPStart(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
+
+	var req EmailOTPStartRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+		return
+	}
+
+	email := normalizeAuthIdentifier("email", req.Email)
+	genericResp := entities.SignUpResponse{
+		Message:    "If that email has a RAIL account, a login code is on its way.",
+		Identifier: email,
+	}
+	if email == "" {
+		c.JSON(http.StatusAccepted, genericResp)
+		return
+	}
+
+	user, err := h.userRepo.GetByEmail(ctx, email)
+	if err != nil || user == nil || !user.IsActive || !user.EmailVerified {
+		c.JSON(http.StatusAccepted, genericResp)
+		return
+	}
+
+	if _, err := h.verificationService.GenerateAndSendCode(ctx, "email", email); err != nil {
+		lowered := strings.ToLower(err.Error())
+		if strings.Contains(lowered, "too many") {
+			c.JSON(http.StatusTooManyRequests, entities.ErrorResponse{Code: "TOO_MANY_REQUESTS", Message: "Too many code requests. Please wait before retrying."})
+			return
+		}
+		h.logger.Error("Failed to send email login code", zap.Error(err))
+	}
+
+	c.JSON(http.StatusAccepted, genericResp)
+}
+
+// EmailOTPLogin verifies an email OTP and issues JWT tokens.
+// @Summary Complete passwordless email login
+// @Description Verifies the OTP code sent to the email and returns access/refresh tokens.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body EmailOTPLoginRequest true "Email and verification code"
+// @Success 200 {object} entities.AuthResponse
+// @Router /auth/email/login [post]
+func (h *AuthHandlers) EmailOTPLogin(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), authFlowTimeout)
+	defer cancel()
+
+	var req EmailOTPLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+		return
+	}
+
+	email := normalizeAuthIdentifier("email", req.Email)
+	code := strings.TrimSpace(req.Code)
+	if email == "" || code == "" {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "VALIDATION_ERROR", Message: "Email and code are required"})
+		return
+	}
+
+	isValid, err := h.verificationService.VerifyCode(ctx, "email", email, code)
+	if err != nil || !isValid {
+		h.recordLoginFailure(c, email)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CREDENTIALS", Message: "Invalid or expired code"})
+		return
+	}
+
+	user, err := h.userRepo.GetUserByEmailForLogin(ctx, email)
+	if err != nil || user == nil {
+		h.recordLoginFailure(c, email)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "INVALID_CREDENTIALS", Message: "Invalid or expired code"})
+		return
+	}
+	if !user.IsActive {
+		h.recordLoginFailure(c, email)
+		c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "ACCOUNT_INACTIVE", Message: "Account is inactive. Please contact support."})
+		return
+	}
+
+	tokens, err := auth.GenerateTokenPair(user.ID, user.Email, user.Role, h.cfg.JWT.Secret, h.cfg.JWT.AccessTTL, h.cfg.JWT.RefreshTTL)
+	if err != nil {
+		h.logger.Error("Failed to generate tokens for email login", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TOKEN_GENERATION_FAILED", Message: "Failed to generate authentication tokens"})
+		return
+	}
+
+	if h.sessionService != nil {
+		ipAddress, userAgent, fingerprint, location := extractSessionDetails(c)
+		sessionExpiresAt := h.sessionExpiryFromRefreshTTL()
+		if _, err := h.sessionService.CreateSession(ctx, user.ID, tokens.AccessToken, tokens.RefreshToken, ipAddress, userAgent, fingerprint, location, sessionExpiresAt); err != nil {
+			h.logger.Warn("Failed to create session after email login", zap.Error(err), zap.String("user_id", user.ID.String()))
+		}
+	}
+
+	if err := h.userRepo.UpdateLastLogin(ctx, user.ID); err != nil {
+		h.logger.Warn("Failed to update last login after email login", zap.Error(err), zap.String("user_id", user.ID.String()))
+	}
+
+	h.recordLoginSuccess(c, email)
+
+	analytics.TrackEvent(ctx, user.ID.String(), analytics.EventSessionStarted, map[string]any{
+		"login_method": "email_otp",
+	})
+
+	h.logger.Info("User logged in via email OTP", zap.String("user_id", user.ID.String()))
+	c.JSON(http.StatusOK, entities.AuthResponse{
+		User:             user.ToUserInfo(),
+		AccessToken:      tokens.AccessToken,
+		RefreshToken:     tokens.RefreshToken,
+		ExpiresAt:        tokens.ExpiresAt,
+		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
+	})
+}
+
 type PasscodeLoginRequest struct {
 	Email        *string `json:"email"`
 	Phone        *string `json:"phone"`
@@ -1962,6 +2238,39 @@ func (h *AuthHandlers) BasicCompleteOnboarding(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "ONBOARDING_FAILED", Message: "Failed to complete basic signup"})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// SaveSourceOfFunds handles POST /onboarding/source-of-funds
+func (h *AuthHandlers) SaveSourceOfFunds(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_USER_ID", Message: "Invalid or missing user ID"})
+		return
+	}
+
+	var req onboarding.SourceOfFundsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "INVALID_REQUEST", Message: "Invalid request payload"})
+		return
+	}
+	req.UserID = userID
+
+	if err := h.validator.Struct(req); err != nil {
+		c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "VALIDATION_ERROR", Message: "Request validation failed"})
+		return
+	}
+
+	response, err := h.onboardingService.SaveSourceOfFunds(ctx, &req)
+	if err != nil {
+		h.logger.Error("Failed to save source of funds", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "SOURCE_OF_FUNDS_FAILED", Message: "Failed to save source of funds"})
 		return
 	}
 

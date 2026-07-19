@@ -15,6 +15,21 @@ services:
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
       - ENRICHMENT_SERVICE_URL=http://enrichment:8090
+      - DOCUMENT_OCR_SERVICE_URL=${DOCUMENT_OCR_SERVICE_URL:-http://ocr:8091}
+      - DOCUMENT_ENABLE_PYTHON_OCR=${DOCUMENT_ENABLE_PYTHON_OCR:-false}
+      - PLATFORM_ENABLED=${PLATFORM_ENABLED:-false}
+      - PLATFORM_AMQP_URL=${PLATFORM_AMQP_URL:-amqp://rail:rail@rabbitmq:5672}
+      - PLATFORM_AMQP_EXCHANGE=${PLATFORM_AMQP_EXCHANGE:-miriam}
+      - PLATFORM_BRIDGE_HMAC_SECRET=${PLATFORM_BRIDGE_HMAC_SECRET:-dev-hmac-secret-change-in-prod}
+      - PLATFORM_BRIDGE_BASE_URL=http://spectrum-bridge:3000
+      - PLATFORM_BRIDGE_MESSAGING_ADDRESS=${PLATFORM_BRIDGE_MESSAGING_ADDRESS:-}
+      - PLATFORM_APP_DEEP_LINK_BASE_URL=${PLATFORM_APP_DEEP_LINK_BASE_URL:-rail://}
+      - PLATFORM_HANDSHAKE_TOKEN_TTL_SECONDS=${PLATFORM_HANDSHAKE_TOKEN_TTL_SECONDS:-900}
+      - EMAIL_PROVIDER=${EMAIL_PROVIDER:-resend}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - EMAIL_FROM_EMAIL=${EMAIL_FROM_EMAIL:-noreply@mail.userail.money}
+      - EMAIL_FROM_NAME=${EMAIL_FROM_NAME:-RAIL Staging}
+      - EMAIL_REPLY_TO=${EMAIL_REPLY_TO:-support@userail.money}
     depends_on:
       db:
         condition: service_healthy
@@ -80,6 +95,52 @@ services:
       -c wal_buffers=16MB
       -c default_statistics_target=100
 
+  # RabbitMQ (messaging bus for platform bridge)
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"  # AMQP
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: rail
+      RABBITMQ_DEFAULT_PASS: rail
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - rail-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Spectrum Bridge (platform messaging — iMessage, voice)
+  spectrum-bridge:
+    build:
+      context: ./cmd/spectrum-bridge
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - SPECTRUM_PROJECT_ID=${SPECTRUM_PROJECT_ID:-}
+      - SPECTRUM_PROJECT_SECRET=${SPECTRUM_PROJECT_SECRET:-}
+      - AMQP_URL=${PLATFORM_AMQP_URL:-amqp://rail:rail@rabbitmq:5672}
+      - AMQP_EXCHANGE=${PLATFORM_AMQP_EXCHANGE:-miriam}
+      - RAIL_HMAC_SECRET=${PLATFORM_BRIDGE_HMAC_SECRET:-dev-hmac-secret-change-in-prod}
+      - BRIDGE_PORT=3000
+      - NODE_ENV=development
+      - LOG_LEVEL=info
+    volumes:
+      - spectrum_bridge_data:/app/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - rail-network
+    restart: unless-stopped
+
   # Redis Cache
   redis:
     image: redis:7-alpine
@@ -108,7 +169,7 @@ services:
     image: dpage/pgadmin4:latest
     environment:
       - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@railservice.com}
-      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:?PGADMIN_PASSWORD is required}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
       - PGADMIN_CONFIG_SERVER_MODE=False
     ports:
       - "5050:80"
@@ -153,11 +214,36 @@ services:
           memory: 512M
           cpus: '0.5'
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # Document OCR Service (PaddleOCR + OpenCV) — internal only, no public port
+  ocr:
+    build:
+      context: ./services/ocr
+      dockerfile: Dockerfile
+    expose:
+      - "8091"
+    networks:
+      - rail-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8091/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
   # Mailpit (Email Testing)
   mailpit:
@@ -196,7 +282,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD is required}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_SECURITY_DISABLE_GRAVATAR=true
       - GF_ANALYTICS_REPORTING_ENABLED=false
@@ -232,7 +318,11 @@ services:
 volumes:
   postgres_data:
     driver: local
+  rabbitmq_data:
+    driver: local
   redis_data:
+    driver: local
+  spectrum_bridge_data:
     driver: local
   pgadmin_data:
     driver: local

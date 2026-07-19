@@ -51,6 +51,54 @@ func scanMessage(row interface{ Scan(...interface{}) error }, m *entities.AIMess
 	return nil
 }
 
+// GetOrCreatePlatformConversation returns a stable conversation id for a
+// messaging-platform thread (iMessage/WhatsApp/Telegram), creating one on first
+// contact. The id keys the orchestrator's pending-action store, so tap-to-confirm
+// postbacks resolve to the same conversation that staged the action.
+func (r *ConversationRepository) GetOrCreatePlatformConversation(ctx context.Context, userID uuid.UUID, platform, threadID string, platformIdentityID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id FROM ai_conversations WHERE platform = $1 AND platform_thread_id = $2 AND user_id = $3 LIMIT 1`,
+		platform, threadID, userID,
+	).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if err != sql.ErrNoRows {
+		return uuid.Nil, fmt.Errorf("lookup platform conversation: %w", err)
+	}
+
+	id = uuid.New()
+	now := time.Now()
+	if _, err := r.db.ExecContext(ctx,
+		`INSERT INTO ai_conversations
+			(id, user_id, title, summary_context, message_count, total_tokens, total_estimated_cost_usd,
+			 created_at, updated_at, platform, platform_thread_id, platform_identity_id)
+		 VALUES ($1, $2, $3, '', 0, 0, 0, $4, $4, $5, $6, $7)`,
+		id, userID, "Miriam on "+platform, now, platform, threadID, platformIdentityID,
+	); err != nil {
+		return uuid.Nil, fmt.Errorf("create platform conversation: %w", err)
+	}
+	return id, nil
+}
+
+// GetLastPlatformThread returns the most recent platform_thread_id for a user
+// on the given platform. Returns empty string if none found.
+func (r *ConversationRepository) GetLastPlatformThread(ctx context.Context, userID uuid.UUID, platform string) (string, error) {
+	var threadID string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT platform_thread_id FROM ai_conversations WHERE user_id = $1 AND platform = $2 ORDER BY updated_at DESC LIMIT 1`,
+		userID, platform,
+	).Scan(&threadID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last platform thread: %w", err)
+	}
+	return threadID, nil
+}
+
 // CreateConversation inserts a new conversation.
 func (r *ConversationRepository) CreateConversation(ctx context.Context, conv *entities.AIConversation) error {
 	query := `INSERT INTO ai_conversations (` + conversationColumns + `) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`

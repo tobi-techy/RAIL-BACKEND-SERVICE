@@ -72,7 +72,7 @@ type WebSearcher interface {
 }
 
 // SetWebSearcher wires the web search provider.
-func (o *Orchestrator) SetWebSearcher(s WebSearcher) {
+func (o *AgentAdapter) SetWebSearcher(s WebSearcher) {
 	o.webSearcher = s
 }
 
@@ -102,7 +102,7 @@ func WebSearchTool() infraai.Tool {
 
 // executeWebSearch runs a Tavily search and returns results with budget context
 // plus a card-ready "display" directive for the Miriam Canvas frontend.
-func (o *Orchestrator) executeWebSearch(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeWebSearch(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.webSearcher == nil {
 		return map[string]interface{}{"error": "web search is not available right now"}, nil
 	}

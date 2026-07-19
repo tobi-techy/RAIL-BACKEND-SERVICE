@@ -19,7 +19,7 @@ type FullUserProfileProvider interface {
 	GetProfile(ctx context.Context, userID uuid.UUID) (*entities.UserProfile, error)
 }
 
-func (o *Orchestrator) buildUserProfileContext(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) buildUserProfileContext(ctx context.Context, userID uuid.UUID) string {
 	provider, ok := o.userProfile.(FullUserProfileProvider)
 	if !ok || provider == nil {
 		return ""
@@ -73,7 +73,7 @@ func (o *Orchestrator) buildUserProfileContext(ctx context.Context, userID uuid.
 
 // BuildRealtimeGreeting returns the short spoken opener AssemblyAI uses when
 // the voice session starts. Keep it calm, contextual, and privacy-aware.
-func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) BuildRealtimeGreeting(ctx context.Context, userID uuid.UUID) string {
 	nameCh := make(chan string, 1)
 	locCh := make(chan *time.Location, 1)
 	insightCh := make(chan string, 1)
@@ -125,7 +125,7 @@ func (o *Orchestrator) BuildRealtimeGreeting(ctx context.Context, userID uuid.UU
 
 // realtimeProactiveInsight builds a short, actionable opener based on real account state.
 // Priority: balance info > spending spike > failed txns > generic.
-func (o *Orchestrator) realtimeProactiveInsight(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) realtimeProactiveInsight(ctx context.Context, userID uuid.UUID) string {
 	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -227,7 +227,7 @@ func formatBalanceShortNGN(d decimal.Decimal) string {
 var onePointFive = decimal.NewFromFloat(1.5)
 var hundred = decimal.NewFromInt(100)
 
-func (o *Orchestrator) realtimeFirstName(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) realtimeFirstName(ctx context.Context, userID uuid.UUID) string {
 	provider, ok := o.userProfile.(FullUserProfileProvider)
 	if !ok || provider == nil {
 		return ""
@@ -250,7 +250,7 @@ func (o *Orchestrator) realtimeFirstName(ctx context.Context, userID uuid.UUID) 
 	return fields[0]
 }
 
-func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uuid.UUID) bool {
+func (o *AgentAdapter) realtimeHasBalanceContext(ctx context.Context, userID uuid.UUID) bool {
 	if o.aggregateStats == nil {
 		return false
 	}
@@ -268,7 +268,7 @@ func (o *Orchestrator) realtimeHasBalanceContext(ctx context.Context, userID uui
 
 // BuildRealtimeInstructions returns Miriam's voice prompt with the same personal context
 // used by text chat. It is best-effort: missing context is skipped.
-func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) BuildRealtimeInstructions(ctx context.Context, userID uuid.UUID) string {
 	ch := make(chan string, 7)
 	localeCh := make(chan string, 1)
 
@@ -303,7 +303,7 @@ func (o *Orchestrator) BuildRealtimeInstructions(ctx context.Context, userID uui
 // buildYearFinancialContext fetches the last 12 months of money flow data and returns
 // a grounded financial snapshot string. This prevents Miriam from hallucinating numbers
 // when asked about historical spending, deposits, or totals.
-func (o *Orchestrator) buildYearFinancialContext(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) buildYearFinancialContext(ctx context.Context, userID uuid.UUID) string {
 	if o.spending == nil {
 		return ""
 	}
@@ -382,7 +382,7 @@ func (o *Orchestrator) buildYearFinancialContext(ctx context.Context, userID uui
 
 // buildRecentConversationContext pulls the last 3 conversation summaries
 // so Miriam can reference what was discussed recently.
-func (o *Orchestrator) buildRecentConversationContext(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) buildRecentConversationContext(ctx context.Context, userID uuid.UUID) string {
 	provider, ok := o.conversations.(RecentConversationLister)
 	if !ok || provider == nil {
 		return ""
@@ -415,7 +415,7 @@ type RecentConversationLister interface {
 }
 
 // resolveLocaleStyle fetches the user's locale_style for voice instruction selection.
-func (o *Orchestrator) resolveLocaleStyle(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) resolveLocaleStyle(ctx context.Context, userID uuid.UUID) string {
 	provider, ok := o.userProfile.(FullUserProfileProvider)
 	if !ok || provider == nil {
 		return "global"
@@ -763,7 +763,7 @@ func compactStrings(values ...string) []string {
 
 // GetProactiveVoiceInsight returns a short proactive insight for mid-session voice injection.
 // Returns empty string if nothing notable found.
-func (o *Orchestrator) GetProactiveVoiceInsight(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) GetProactiveVoiceInsight(ctx context.Context, userID uuid.UUID) string {
 	return o.realtimeProactiveInsight(ctx, userID)
 }
 
@@ -777,7 +777,7 @@ const voiceDynVarsTTL = 90 * time.Second
 // The assembled map is cached per-user in Redis for a short TTL to avoid
 // re-running the full parallel fan-out on every signed-URL / session init.
 // Caching is best-effort: any Redis/marshal error falls back to a fresh build.
-func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
+func (o *AgentAdapter) BuildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
 	if o.redis != nil {
 		key := voiceDynVarsKeyPrefix + userID.String()
 		var cached map[string]interface{}
@@ -795,7 +795,7 @@ func (o *Orchestrator) BuildRealtimeDynamicVars(ctx context.Context, userID uuid
 }
 
 // buildRealtimeDynamicVars performs the uncached assembly of dynamic variables.
-func (o *Orchestrator) buildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
+func (o *AgentAdapter) buildRealtimeDynamicVars(ctx context.Context, userID uuid.UUID) map[string]interface{} {
 	vars := map[string]interface{}{
 		"user_id":              userID.String(),
 		"user_name":            "there",
@@ -1075,7 +1075,7 @@ func timeOfDayLabel(hour int) string {
 
 // buildVoicePhaseContext fetches money state and returns the phase-appropriate
 // voice instruction block for Miriam's personality arc.
-func (o *Orchestrator) buildVoicePhaseContext(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) buildVoicePhaseContext(ctx context.Context, userID uuid.UUID) string {
 	if o.miriamIntelligence == nil {
 		return ""
 	}

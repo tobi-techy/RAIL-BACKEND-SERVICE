@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,9 +17,11 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
+	evalhandlers "github.com/rail-service/rail_service/internal/api/handlers/eval"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	opportunityhandlers "github.com/rail-service/rail_service/internal/api/handlers/opportunities"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
+	platformhandlers "github.com/rail-service/rail_service/internal/api/handlers/platform"
 	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -25,6 +29,9 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/account"
 	activitysvc "github.com/rail-service/rail_service/internal/domain/services/activity"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	aicore "github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	aimemory "github.com/rail-service/rail_service/internal/domain/services/ai/memory"
+	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
@@ -32,6 +39,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
+	"github.com/rail-service/rail_service/internal/domain/services/billpay"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
@@ -43,6 +51,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
+	"github.com/rail-service/rail_service/internal/domain/services/document"
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
@@ -65,6 +74,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/sharedgoal"
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
+	spendingcommitmentservice "github.com/rail-service/rail_service/internal/domain/services/spendingcommitment"
 	"github.com/rail-service/rail_service/internal/domain/services/stashlock"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
@@ -77,6 +87,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/airbills"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
@@ -84,15 +95,20 @@ import (
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
+	graphadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/graph"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/publictrades"
 	ramphubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/ramphub"
 	superteamadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/superteam"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/umbra"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
+	"github.com/rail-service/rail_service/internal/infrastructure/enrichment"
+	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
+	"github.com/rail-service/rail_service/internal/infrastructure/vector"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
 	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
@@ -533,6 +549,89 @@ func (a *WithdrawalLedgerAdapter) CreateTransaction(ctx context.Context, userID 
 
 	_, err = a.ledgerService.CreateTransaction(ctx, req)
 	return err
+}
+
+func (a *WithdrawalLedgerAdapter) CreatePendingTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error {
+	userAccount, err := a.ledgerService.GetOrCreateUserAccount(ctx, userID, accountType)
+	if err != nil {
+		return err
+	}
+
+	systemAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeSystemBufferUSDC)
+	if err != nil {
+		return err
+	}
+	feeAmount, err := withdrawalPlatformFeeFromMetadata(metadata, amount)
+	if err != nil {
+		return err
+	}
+	if feeAmount.IsPositive() {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["fee_revenue_posted"] = true
+	}
+	principalAmount := amount.Sub(feeAmount)
+	if principalAmount.IsNegative() {
+		return fmt.Errorf("withdrawal fee %s exceeds total amount %s", feeAmount.String(), amount.String())
+	}
+
+	desc := "Withdrawal transaction (pending)"
+
+	entries := []entities.CreateEntryRequest{
+		{
+			AccountID:   userAccount.ID,
+			EntryType:   entities.EntryTypeCredit,
+			Amount:      amount,
+			Currency:    "USDC",
+			Description: &desc,
+		},
+	}
+	if principalAmount.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   systemAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      principalAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+	if feeAmount.IsPositive() {
+		revenueAccount, err := a.ledgerService.GetSystemAccount(ctx, entities.AccountTypeWithdrawalFeeRevenue)
+		if err != nil {
+			return fmt.Errorf("get withdrawal fee revenue account: %w", err)
+		}
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID:   revenueAccount.ID,
+			EntryType:   entities.EntryTypeDebit,
+			Amount:      feeAmount,
+			Currency:    "USDC",
+			Description: &desc,
+		})
+	}
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: txType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Metadata:        metadata,
+		Entries:         entries,
+	}
+
+	return a.ledgerService.CreatePendingTransaction(ctx, req)
+}
+
+func (a *WithdrawalLedgerAdapter) CommitPendingTransaction(ctx context.Context, idempotencyKey string) error {
+	return a.ledgerService.CommitPendingTransaction(ctx, idempotencyKey)
+}
+
+func (a *WithdrawalLedgerAdapter) FailPendingTransaction(ctx context.Context, idempotencyKey string) error {
+	return a.ledgerService.FailPendingTransaction(ctx, idempotencyKey)
+}
+
+func (a *WithdrawalLedgerAdapter) GetLedgerTransactionStatus(ctx context.Context, idempotencyKey string) (entities.TransactionStatus, error) {
+	return a.ledgerService.GetLedgerTransactionStatus(ctx, idempotencyKey)
 }
 
 func (a *WithdrawalLedgerAdapter) ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error {
@@ -1107,6 +1206,10 @@ func (a *BridgeOnboardingAdapter) DeleteCustomer(ctx context.Context, customerID
 	return a.adapter.Client().DeleteCustomer(ctx, customerID)
 }
 
+func (a *BridgeOnboardingAdapter) UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error) {
+	return a.adapter.UpdateCustomer(ctx, customerID, req)
+}
+
 // FundingNotificationAdapter adapts NotificationService to funding.FundingNotificationService
 type FundingNotificationAdapter struct {
 	svc *services.NotificationService
@@ -1252,8 +1355,11 @@ type Container struct {
 	WithdrawalRepo            *repositories.WithdrawalRepository
 	ReceiptRepo               *repositories.ReceiptRepository
 	BankStatementRepo         *repositories.BankStatementRepository
+	DocumentRepo              *repositories.DocumentRepository
+	DocumentFileStore         document.FileStore
 	MiriamMemoryRepo          *repositories.MiriamMemoryRepository
 	BudgetRepo                *repositories.BudgetRepository
+	BankAccountRepo           *repositories.BankAccountRepository
 	FinancialProfileRepo      *repositories.FinancialProfileRepository
 	FinancialObligationRepo   *repositories.FinancialObligationRepository
 	AutomationRepo            *repositories.AutomationRepository
@@ -1283,6 +1389,7 @@ type Container struct {
 	AuditService       *adapters.AuditService
 	RedisClient        cache.RedisClient
 	SupermemoryClient  *supermemoryclient.Client
+	QdrantStore        *vector.QdrantStore
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
@@ -1340,9 +1447,13 @@ type Container struct {
 	MiriamMandateSuggestionEngine  *miriamservice.MandateSuggestionEngine
 	MiriamHealthScoreTracker       *miriamservice.HealthScoreTracker
 	MiriamOutcomeTracker           *miriamservice.OutcomeTracker
+	MiriamSelfReviewEngine         *miriamservice.SelfReviewEngine
 	MiriamNotificationDispatcher   *miriamservice.NotificationDispatcher
 	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
+	MiriamProactiveChatSender      miriamservice.ProactiveChatSender
+	MiriamBridgeDispatcher         *platform.BridgeDispatcher
 	AutomationService              *automation.Service
+	BillPayService                 *billpay.Service
 	SharedGoalService              *sharedgoal.Service
 	GrowthMailService              *growthmail.Service
 	GrowthEngineService            *growthengine.Service
@@ -1350,13 +1461,18 @@ type Container struct {
 	SocialAuthService              *socialauth.Service
 	WebAuthnService                *webauthn.Service
 	LimitsService                  *limits.Service
+	SpendingCommitmentService      *spendingcommitmentservice.Service
 	DomainAuditService             *audit.Service
 	WithdrawalService              *services.WithdrawalService
 	StashLockService               *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProviderManager      *ai.ProviderManager
-	AIOrchestrator         *aiservice.Orchestrator
+	AIOrchestrator         *aiservice.AgentAdapter
+	NewAgent               *aicore.Agent
+	AgentDeps              *aicore.Dependencies
+	NewAgentAdapter        *aiservice.AgentAdapter
+	NewToolRegistry        *aitools.Registry
 	DiditClient            *didit.Client
 	ComplianceService      *compliancesvc.Service
 	AIRecommender          *aiservice.Recommender
@@ -1371,7 +1487,11 @@ type Container struct {
 	KnowledgeRepo          *repositories.KnowledgeRepository
 	KnowledgeService       *knowledgesvc.Service
 	MemoryService          *aiservice.MemoryService
+	WorkingMemoryStore     *aimemory.WorkingMemoryStore
+	EventStore             *aimemory.EventStore
+	MemoryMetrics          *aimemory.Metrics
 	MiriamIntelligenceRepo *repositories.MiriamIntelligenceRepository
+	AnomalyStore           aiservice.AnomalyStore
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
@@ -1412,6 +1532,7 @@ type Container struct {
 	// Copy Trading Services
 	CopyTradingRepo    *repositories.CopyTradingRepository
 	CopyTradingService *copytrading.Service
+	PublicTradesClient *publictrades.Client
 
 	// Card Services
 	CardRepo    *repositories.CardRepository
@@ -1460,16 +1581,20 @@ type Container struct {
 	AdaptiveRateLimiter *ratelimit.AdaptiveRateLimiter
 
 	// Instant Funding Services
-	InstantFundingRepo     *repositories.InstantFundingRepository
-	UserAccountRepo        *repositories.UserAccountRepository
-	InstantFundingService  *funding.InstantFundingService
-	InstantFundingHandlers *fundinghandlers.InstantFundingHandlers
-	ChainRailsHandlers     *fundinghandlers.ChainRailsHandlers
-	ChainRailsClient       *chainrails.Client
-	DepositSweepRepo       *repositories.DepositSweepRepository
-	PajHandlers            *fundinghandlers.PajHandlers
-	RampHandlers           *fundinghandlers.RampHandlers
-	ActivityHandlers       *activityhandlers.Handlers
+	InstantFundingRepo         *repositories.InstantFundingRepository
+	UserAccountRepo            *repositories.UserAccountRepository
+	InstantFundingService      *funding.InstantFundingService
+	InstantFundingHandlers     *fundinghandlers.InstantFundingHandlers
+	ChainRailsHandlers         *fundinghandlers.ChainRailsHandlers
+	ChainRailsClient           *chainrails.Client
+	DepositSweepRepo           *repositories.DepositSweepRepository
+	PajHandlers                *fundinghandlers.PajHandlers
+	RampHandlers               *fundinghandlers.RampHandlers
+	NGNHandlers                *fundinghandlers.NGNHandlers
+	GraphVirtualAccountService *funding.GraphVirtualAccountService
+	GraphWebhookHandler        *webhooks.GraphWebhookHandler
+	BillPayHandlers            *fundinghandlers.BillPayHandlers
+	ActivityHandlers           *activityhandlers.Handlers
 
 	// Security Stores
 	WithdrawalSecurityStore *repositories.WithdrawalSecurityStore
@@ -1535,6 +1660,15 @@ type Container struct {
 	// Admin Analytics
 	AdminAnalyticsRepo    *repositories.AnalyticsRepository
 	AdminAnalyticsService *analyticsservice.Service
+
+	// Platform Messaging (iMessage, WhatsApp, Telegram)
+	PlatformIdentityRepo   *repositories.PlatformIdentityRepository
+	PlatformHandler        *platformhandlers.PlatformHandler
+	PlatformConsumer       *platform.Consumer
+	PlatformActionConsumer *platform.ActionConsumer
+	platformProcessor      *platform.Processor
+	platformLinking        *platform.LinkingService
+	EvalHandler            *evalhandlers.Handler
 }
 
 // NewContainer creates a new dependency injection container
@@ -1555,6 +1689,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	withdrawalRepo := repositories.NewWithdrawalRepository(sqlxDB)
 	receiptRepo := repositories.NewReceiptRepository(sqlxDB)
 	bankStatementRepo := repositories.NewBankStatementRepository(sqlxDB)
+	documentRepo := repositories.NewDocumentRepository(sqlxDB)
 	budgetRepo := repositories.NewBudgetRepository(sqlxDB)
 	financialProfileRepo := repositories.NewFinancialProfileRepository(sqlxDB)
 	financialObligationRepo := repositories.NewFinancialObligationRepository(sqlxDB)
@@ -1711,6 +1846,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		WithdrawalRepo:            withdrawalRepo,
 		ReceiptRepo:               receiptRepo,
 		BankStatementRepo:         bankStatementRepo,
+		DocumentRepo:              documentRepo,
 		BudgetRepo:                budgetRepo,
 		FinancialProfileRepo:      financialProfileRepo,
 		FinancialObligationRepo:   financialObligationRepo,
@@ -1798,6 +1934,146 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	container.AdminAnalyticsRepo = repositories.NewAnalyticsRepository(db, zapLog)
 	container.AdminAnalyticsService = analyticsservice.NewService(container.AdminAnalyticsRepo, container.RedisClient, zapLog)
 
+	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
+	container.PlatformIdentityRepo = repositories.NewPlatformIdentityRepository(db, zapLog)
+
+	if cfg.Platform.Enabled && container.AIOrchestrator != nil {
+		platformIdentityRepo := container.PlatformIdentityRepo
+		linkingSvc := platform.NewLinkingService(
+			platformIdentityRepo,
+			cfg.Platform.HandshakeTokenTTL,
+		)
+		container.PlatformHandler = platformhandlers.NewPlatformHandler(linkingSvc, cfg.Platform.BridgeMessagingAddress)
+
+		if cfg.Platform.AMQPURL != "" {
+			userResolver := platform.NewUserResolver(platformIdentityRepo)
+			respBuilder := platform.NewResponseBuilder()
+			platformOrchestrator := &orchestratorAdapter{
+				orchestrator: container.AIOrchestrator,
+				convRepo:     container.ConversationRepo,
+				deepLinkBase: cfg.Platform.AppDeepLinkBaseURL,
+			}
+
+			var consumer *platform.Consumer
+
+			sendFunc := func(ctx context.Context, msg *platform.OutboundMessage) error {
+				data, err := respBuilder.JSON(msg)
+				if err != nil {
+					return err
+				}
+				if consumer == nil {
+					return fmt.Errorf("platform outbound publisher not ready")
+				}
+				if pubErr := consumer.Publish(ctx, cfg.Platform.AMQPExchange, "message.outbound", data); pubErr != nil {
+					// Surface as an error so the caller does not ack the inbound
+					// message; it will be requeued and the reply retried.
+					zapLog.Warn("AMQP outbound publish failed", zap.Error(pubErr))
+					return fmt.Errorf("publish outbound: %w", pubErr)
+				}
+				return nil
+			}
+
+			bridgeDispatcher := platform.NewBridgeDispatcher(sendFunc, container.ConversationRepo, entities.PlatformIMessage, zapLog)
+
+			// Quiet-hours + daily-frequency guard so Miriam stays a discreet
+			// presence, not a notification machine. Timezone resolved per user
+			// from their stored country; defaults to Lagos for the core base.
+			if container.RedisClient != nil && container.UserRepo != nil {
+				userRepo := container.UserRepo
+				tzResolver := platform.NewUserTimezoneResolver(func(ctx context.Context, userID uuid.UUID) string {
+					u, err := userRepo.GetByID(ctx, userID)
+					if err != nil || u == nil || u.Country == nil {
+						return ""
+					}
+					return *u.Country
+				})
+				guard := platform.NewProactiveGuard(container.RedisClient, tzResolver, "Africa/Lagos", 6, 22, 7, zapLog)
+				bridgeDispatcher.SetGuard(guard)
+			}
+
+			container.MiriamBridgeDispatcher = bridgeDispatcher
+			container.MiriamProactiveChatSender = bridgeDispatcher
+
+			// Voice notes (TTS out / STT in) via ElevenLabs, when configured.
+			var voiceTranscoder platform.VoiceTranscoder
+			if el := cfg.AI.ElevenLabs; el.APIKey != "" && el.VoiceID != "" {
+				voiceTranscoder = &platformVoiceAdapter{rest: ai.NewElevenLabsREST(ai.ELVoiceConfig{
+					APIKey:          el.APIKey,
+					VoiceID:         el.VoiceID,
+					Stability:       el.Stability,
+					SimilarityBoost: el.SimilarityBoost,
+					Style:           el.Style,
+					UseSpeakerBoost: el.UseSpeakerBoost,
+				}, zapLog)}
+				zapLog.Info("Platform voice notes enabled (ElevenLabs)")
+			}
+
+			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
+			// Onboarder needs OnboardingService, wired after domain services init.
+			container.platformProcessor = proc
+			container.platformLinking = linkingSvc
+
+			var cErr error
+			consumer, cErr = platform.NewConsumer(
+				cfg.Platform.AMQPURL,
+				cfg.Platform.AMQPExchange,
+				cfg.Platform.AMQPQueue,
+				cfg.Platform.AMQPRoutingKey,
+				proc,
+			)
+			if cErr != nil {
+				zapLog.Warn("Platform consumer init failed (AMQP), platform disabled", zap.Error(cErr))
+			} else {
+				container.PlatformConsumer = consumer
+				if err := consumer.Start(); err != nil {
+					zapLog.Warn("Platform consumer start failed", zap.Error(err))
+				} else {
+					zapLog.Info("Platform messaging consumer started",
+						zap.String("exchange", cfg.Platform.AMQPExchange),
+						zap.String("queue", cfg.Platform.AMQPQueue),
+					)
+				}
+			}
+
+			actionQueue := cfg.Platform.AMQPActionQueue
+			if actionQueue == "" {
+				actionQueue = "miriam.actions"
+			}
+			actionRoutingKey := cfg.Platform.AMQPActionRoutingKey
+			if actionRoutingKey == "" {
+				actionRoutingKey = "action.postback"
+			}
+			actionConsumer, aErr := platform.NewActionConsumer(
+				cfg.Platform.AMQPURL,
+				cfg.Platform.AMQPExchange,
+				actionQueue,
+				actionRoutingKey,
+				proc,
+			)
+			if aErr != nil {
+				zapLog.Warn("Platform action consumer init failed, action postbacks disabled", zap.Error(aErr))
+			} else {
+				container.PlatformActionConsumer = actionConsumer
+				if err := actionConsumer.Start(); err != nil {
+					zapLog.Warn("Platform action consumer start failed", zap.Error(err))
+				} else {
+					zapLog.Info("Platform action consumer started",
+						zap.String("exchange", cfg.Platform.AMQPExchange),
+						zap.String("queue", actionQueue),
+					)
+				}
+			}
+		}
+	}
+
+	// Miriam evaluation endpoint (terminal test harness). Gated + token-guarded.
+	if cfg.Eval.Enabled && container.AIOrchestrator != nil && cfg.Eval.Token != "" {
+		container.EvalHandler = evalhandlers.NewHandler(
+			container.AIOrchestrator, container.ConversationService, cfg.Eval.Token, zapLog,
+		)
+		zapLog.Warn("Miriam eval endpoint ENABLED — do not enable in production")
+	}
+
 	return container, nil
 }
 
@@ -1852,6 +2128,23 @@ func (c *Container) initializeDomainServices() error {
 
 	// Inject onboarding service back into wallet service to complete circular dependency
 	c.WalletService.SetOnboardingService(c.OnboardingService)
+
+	// Enable chat-first onboarding for unlinked messaging senders now that the
+	// onboarding service (Tier 1 provisioning) exists.
+	if c.Config.Platform.OnboardingEnabled && c.platformProcessor != nil && c.platformLinking != nil &&
+		c.RedisClient != nil && c.VerificationService != nil && c.UserRepo != nil {
+		onboarder := platform.NewChatOnboarder(
+			c.RedisClient,
+			c.VerificationService,
+			c.UserRepo,
+			c.OnboardingService,
+			c.platformLinking,
+			c.Config.Platform.AppDownloadURL,
+			c.ZapLog,
+		)
+		c.platformProcessor.SetOnboarder(onboarder)
+		c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
+	}
 
 	// Initialize passcode service for transaction security
 	c.PasscodeService = passcode.NewService(
@@ -1944,6 +2237,13 @@ func (c *Container) initializeDomainServices() error {
 	)
 	c.LedgerService.SetStashRaidObserver(c.MoneyGuardService)
 	c.MiriamIntelligenceRepo = repositories.NewMiriamIntelligenceRepository(sqlxDB)
+	// All of Miriam's proactive output goes to iMessage only — no push. When the
+	// bridge dispatcher is wired it is the notifier; otherwise fall back to the
+	// in-app notification service (dev/no-bridge environments).
+	var miriamNotifier miriamservice.Notifier = c.NotificationService
+	if c.MiriamBridgeDispatcher != nil {
+		miriamNotifier = c.MiriamBridgeDispatcher
+	}
 	c.MiriamIntelligenceService = miriamservice.NewService(
 		c.MiriamIntelligenceRepo,
 		c.LedgerService, // BalanceProvider
@@ -1952,7 +2252,7 @@ func (c *Container) initializeDomainServices() error {
 		c.FinancialProfileRepo,
 		c.MoneyGuardService,
 		c.LedgerService, // TransferExecutor — same service, different interface
-		c.NotificationService,
+		miriamNotifier,
 		c.ZapLog,
 	)
 
@@ -1994,9 +2294,12 @@ func (c *Container) initializeDomainServices() error {
 		c.MiriamPredictiveEngine,
 		c.LedgerService, // BalanceProvider
 		nil,             // MemoryReader — deferred via SetMemory after memory service init
-		c.NotificationService,
+		miriamNotifier,
 		c.ZapLog,
 	)
+	if c.MiriamProactiveChatSender != nil {
+		c.MiriamProactiveNudgeEngine.SetChatSender(c.MiriamProactiveChatSender)
+	}
 	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
 		suggestionRepo,
 		c.MiriamIntelligenceService, // MandateProvider
@@ -2039,13 +2342,25 @@ func (c *Container) initializeDomainServices() error {
 		c.MiriamObligationDetector,
 		c.MiriamNotificationDispatcher,
 		nil, // MemoryReader — deferred via SetMemory after memory service init
-		c.NotificationService,
+		miriamNotifier,
 		c.MiriamHealthScoreTracker,
 		c.MiriamOutcomeTracker,
 		c.ZapLog,
 	)
 
-	// Yield service (provider-agnostic). Backs balance/estimate reads. Blend is the
+	// Self-review: Miriam grades her own recent actions and messaging, feeds the
+	// verdict back into the learning-bias (money) and nudge-cadence (messaging)
+	// levers, and records an audit trail. Money influence flows only through the
+	// existing learning-signal → decision-engine path.
+	c.MiriamSelfReviewEngine = miriamservice.NewSelfReviewEngine(
+		c.MiriamIntelligenceRepo,
+		nudgeRepo,
+		c.MiriamHealthScoreTracker,
+		miriamNotifier,
+		c.ZapLog,
+	)
+	c.MiriamIntelligenceOrchestrator.SetSelfReview(c.MiriamSelfReviewEngine)
+	c.MiriamProactiveNudgeEngine.SetCadenceReader(c.MiriamIntelligenceRepo)
 	// yield provider; per-user yield accrues in each user's Safe and is surfaced via
 	// the Blend overview endpoint rather than a shared exchange-rate distribution.
 	c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
@@ -2386,11 +2701,19 @@ func (c *Container) initializeDomainServices() error {
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
 
 	// Defer-wire Notifier into Miriam intelligence services (initialized before this point).
+	// iMessage-only: prefer the bridge dispatcher, fall back to in-app notifications.
+	var deferredMiriamNotifier miriamservice.Notifier = c.NotificationService
+	if c.MiriamBridgeDispatcher != nil {
+		deferredMiriamNotifier = c.MiriamBridgeDispatcher
+	}
 	if c.MiriamProactiveNudgeEngine != nil {
-		c.MiriamProactiveNudgeEngine.SetNotifier(c.NotificationService)
+		c.MiriamProactiveNudgeEngine.SetNotifier(deferredMiriamNotifier)
 	}
 	if c.MiriamIntelligenceOrchestrator != nil {
-		c.MiriamIntelligenceOrchestrator.SetNotifier(c.NotificationService)
+		c.MiriamIntelligenceOrchestrator.SetNotifier(deferredMiriamNotifier)
+	}
+	if c.MiriamSelfReviewEngine != nil {
+		c.MiriamSelfReviewEngine.SetNotifier(deferredMiriamNotifier)
 	}
 
 	// Wire push notification service. Expo is the only delivery path — AWS/SNS
@@ -2516,6 +2839,22 @@ func (c *Container) initializeDomainServices() error {
 	c.LimitsService = limits.NewService(c.UserRepo, usageRepo, c.Logger)
 	c.LimitsService.SetRateProvider(NewPajRateProvider(c.RedisClient))
 
+	// Initialize self-imposed daily spending commitment service
+	commitmentFee := entities.DefaultSpendingCommitmentIncreaseFee
+	if raw := os.Getenv("SPENDING_COMMITMENT_INCREASE_FEE"); raw != "" {
+		if parsed, err := decimal.NewFromString(raw); err == nil && parsed.IsPositive() {
+			commitmentFee = parsed
+		}
+	}
+	c.SpendingCommitmentService = spendingcommitmentservice.NewService(
+		repositories.NewSpendingCommitmentRepository(sqlxDB),
+		c.LedgerService,
+		c.LedgerService,
+		commitmentFee,
+		c.ZapLog,
+	)
+	c.SpendingCommitmentService.SetRateProvider(NewPajRateProvider(c.RedisClient))
+
 	// Initialize domain audit service for compliance logging
 	auditRepo := repositories.NewAuditRepository(sqlxDB)
 	c.DomainAuditService = audit.NewService(auditRepo, c.ZapLog)
@@ -2634,6 +2973,7 @@ func (c *Container) initializeDomainServices() error {
 
 	// Create bank account repository
 	bankAccountRepo := repositories.NewBankAccountRepository(sqlxDB)
+	c.BankAccountRepo = bankAccountRepo
 
 	// Create adapters for withdrawal service
 	withdrawalLedgerAdapter := &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}
@@ -2820,6 +3160,15 @@ func (c *Container) initializeDomainServices() error {
 	if c.SessionAnomalyService != nil {
 		c.WithdrawalService.SetSessionAnomalyChecker(c.SessionAnomalyService)
 	}
+	if c.SpendingCommitmentService != nil {
+		c.WithdrawalService.SetSpendingCommitment(c.SpendingCommitmentService)
+	}
+
+	// Wire admin error alert emails
+	if c.EmailService != nil && c.Config.AdminAlertEmail != "" {
+		c.WithdrawalService.SetAdminAlerter(adapters.NewAdminAlertService(c.EmailService, c.Config.AdminAlertEmail, c.ZapLog))
+		c.ZapLog.Info("Admin error alert emails configured", zap.String("email", c.Config.AdminAlertEmail))
+	}
 
 	// Wire Circle webhook handler to withdrawal service now that it's initialized
 	if c.CircleWebhookHandler != nil {
@@ -2848,6 +3197,9 @@ func (c *Container) initializeDomainServices() error {
 	c.P2PService.SetUserUpdater(c.UserRepo)
 	c.P2PService.SetWalletLookup(c.WalletRepo)
 	c.P2PService.SetTapIntentStore(c.RedisClient)
+	if c.SpendingCommitmentService != nil {
+		c.P2PService.SetSpendingCommitment(c.SpendingCommitmentService)
+	}
 	if c.BridgeClient != nil {
 		c.P2PService.SetBridgeOfframp(NewP2PBridgeOfframpAdapter(bridge.NewAdapter(c.BridgeClient, c.ZapLog)))
 	}
@@ -2855,6 +3207,11 @@ func (c *Container) initializeDomainServices() error {
 
 	// Wire P2P service to onboarding for auto-claim
 	c.OnboardingService.SetP2PService(c.P2PService)
+
+	// Pay-bill automations send real money to a payee via P2P on the due day.
+	if c.AutomationService != nil {
+		c.AutomationService.SetBillPayer(&p2pBillPayerAdapter{p2p: c.P2PService})
+	}
 
 	// Wire wallet provider to virtual account service for on-demand provisioning
 	if c.BridgeVirtualAccountService != nil && c.WalletService != nil {
@@ -3540,16 +3897,18 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		positionRepo,
 		c.ZapLog,
 	)
+	// AgentAdapter wraps core.Agent (new) and all legacy services.
 
-	// Initialize AI orchestrator (wired to ProviderManager for failover)
-	c.AIOrchestrator = aiservice.NewOrchestratorWithDeps(
+	// All Set* calls below wire providers into AgentAdapter.
+	adapter := aiservice.NewAgentAdapter(
+		nil, // wired below after the agent is built
 		c.AIProviderManager,
 		c.PortfolioDataProvider,
 		c.ActivityDataProvider,
 		&newsProviderAdapter{svc: c.NewsService},
 		c.ZapLog,
-		aiservice.OrchestratorDeps{},
 	)
+	c.AIOrchestrator = adapter
 
 	// Initialize basket recommender
 	c.AIRecommender = aiservice.NewRecommender(
@@ -3580,16 +3939,35 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	if c.MiriamIntelligenceOrchestrator != nil {
 		c.MiriamIntelligenceOrchestrator.SetMemory(memorySvc)
+		// Gate autonomous mandate execution on the user's control level. Only Full
+		// Autopilot users get money moved for them by the 15-min worker sweep;
+		// guided/monitor users still receive advice. memorySvc.GetControlLevel
+		// backs both this and the chat-path gate, so they stay consistent.
+		c.MiriamIntelligenceOrchestrator.SetControlLevel(memorySvc)
 	}
 
-	// Wire transaction enrichment sidecar into Miriam (WIP — uncomment when config + service methods are ready)
-	// if c.Config.Enrichment.Enabled && c.Config.Enrichment.ServiceURL != "" && c.MiriamIntelligenceOrchestrator != nil {
-	// 	enrichClient := enrichment.NewClient(c.Config.Enrichment.ServiceURL)
-	// 	txnRepo := repositories.NewTransactionRepository(sqlxDB)
-	// 	txnProvider := repositories.NewTransactionProviderAdapter(txnRepo)
-	// 	enricher := miriamservice.NewTransactionEnricher(enrichClient, c.AIProviderManager, nil, txnProvider, c.ZapLog)
-	// 	c.MiriamIntelligenceOrchestrator.SetEnricher(enricher)
-	// }
+	// Wire transaction enrichment sidecar into Miriam
+	if c.Config.Enrichment.Enabled && c.Config.Enrichment.ServiceURL != "" && c.MiriamIntelligenceOrchestrator != nil {
+		enrichClient := enrichment.NewClient(c.Config.Enrichment.ServiceURL)
+		enrichSQLx := sqlx.NewDb(c.DB, "postgres")
+		enrichRepo := repositories.NewEnrichmentRepository(enrichSQLx)
+		txnRepo := repositories.NewTransactionRepository(enrichSQLx)
+		txnProvider := repositories.NewTransactionProviderAdapter(txnRepo)
+		enricher := miriamservice.NewTransactionEnricher(enrichClient, c.AIProviderManager, enrichRepo, txnProvider, c.ZapLog)
+		c.MiriamIntelligenceOrchestrator.SetEnricher(enricher)
+
+		// Wire spending enricher into the AI orchestrator for plain-English transaction descriptions
+		spendingEnricher := miriamservice.NewSpendingEnricher(enrichClient, c.ZapLog)
+		c.AIOrchestrator.SetSpendingEnricher(spendingEnricher)
+
+		// Wire transaction pattern analyzer — detects family relationships,
+		// recurring recipients, and behavioral clusters from P2P transfers.
+		patternDB := sqlx.NewDb(c.DB, "postgres")
+		userProvider := repositories.NewPatternUserProvider(patternDB)
+		transferProvider := repositories.NewPatternTransferProvider(patternDB)
+		patternAnalyzer := miriamservice.NewTransactionPatternAnalyzer(userProvider, transferProvider, c.ZapLog)
+		c.MiriamIntelligenceOrchestrator.SetPatternAnalyzer(patternAnalyzer)
+	}
 
 	// Initialize usage tracking
 	c.UsageRepo = repositories.NewAIUsageRepository(c.DB, c.ZapLog)
@@ -3614,6 +3992,23 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	if smKey := strings.TrimSpace(c.Config.AI.Supermemory.APIKey); smKey != "" {
 		c.SupermemoryClient = supermemoryclient.New(smKey)
 		c.AIOrchestrator.SetSupermemory(&supermemoryAdapter{client: c.SupermemoryClient})
+	}
+
+	// Wire Qdrant vector store for episodic + fact memory (replaces Supermemory when configured)
+	if baseURL := strings.TrimSpace(c.Config.AI.Qdrant.BaseURL); baseURL != "" && c.EmbeddingsClient != nil {
+		qCfg := c.Config.AI.Qdrant
+		dim := qCfg.DefaultDim
+		if dim == 0 {
+			dim = 768
+		}
+		c.QdrantStore = vector.NewQdrantStore(&vector.QdrantConfig{
+			BaseURL:          baseURL,
+			APIKey:           strings.TrimSpace(qCfg.APIKey),
+			DefaultDim:       dim,
+			CollectionPrefix: strings.TrimSpace(qCfg.CollectionPrefix),
+		}, c.EmbeddingsClient, c.ZapLog)
+		// QdrantStore is used by the memory adapter (agent_wiring.go) for SearchEpisodic/SearchFacts
+		c.ZapLog.Info("Qdrant vector store initialized", zap.String("base_url", baseURL))
 	}
 
 	// Wire Tavily web search (powers web_search: places, flights, products, recs)
@@ -3677,7 +4072,20 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		// Redis client for best-effort short-TTL caching of voice hot-path reads
 		// (realtime dynamic vars, cost-ceiling).
 		c.AIOrchestrator.SetRedisCache(c.RedisClient)
+
+		// Working memory: Redis-backed conversation state cache for continuity.
+		wm := aimemory.NewWorkingMemoryStore(c.RedisClient, c.ZapLog)
+		c.AIOrchestrator.SetWorkingMemory(wm)
+		c.WorkingMemoryStore = wm
 	}
+
+	// Financial event timeline store
+	eventStore := aimemory.NewEventStore(sqlxDB)
+	c.AIOrchestrator.SetEventStore(eventStore)
+	c.EventStore = eventStore
+
+	// Memory quality metrics
+	c.MemoryMetrics = aimemory.NewMetrics(sqlxDB)
 
 	// Push notifications when Miriam moves money on the user's behalf
 	if c.NotificationService != nil {
@@ -3752,6 +4160,151 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		zap.Int("fallback_count", len(fallbacks)),
 	)
 
+	// --- New Agent initialization ---
+	{
+		toolRegistry := aitools.NewRegistry()
+
+		// Register all tools (nil-checked internally)
+		aitools.RegisterPortfolioTools(toolRegistry)
+		aitools.RegisterAllSpendingAndTransactionTools(toolRegistry)
+		aitools.RegisterAllRemainingTools(toolRegistry)
+		aitools.RegisterExecutionTools(toolRegistry)
+		aitools.RegisterBillTools(toolRegistry)
+
+		c.NewToolRegistry = toolRegistry
+
+		memSvc := buildNewMemoryService(c)
+		agentDeps := &aicore.Dependencies{
+			AIProvider:          c.AIProviderManager,
+			ToolRegistry:        toolRegistry,
+			Memory:              memSvc,
+			State:               buildStateService(c),
+			Conversations:       buildConversationService(c),
+			Usage:               buildUsageService(c),
+			Portfolio:           buildPortfolioProvider(c),
+			Spending:            buildSpendingProvider(c),
+			Transactions:        buildTransactionProvider(c),
+			FundsTransfer:       buildFundsTransferer(c),
+			Budget:              buildBudgetProvider(c),
+			Goals:               buildGoalStore(c),
+			Obligations:         buildObligationProvider(c),
+			Automation:          buildAutomationProvider(c),
+			Profile:             buildProfileProvider(c),
+			CurrencyRates:       buildCurrencyRateProvider(c),
+			WebSearch:           nil, // wired below when available
+			VoiceLimiter:        nil,
+			Notifier:            nil,
+			NairaCtx:            buildNairaContextProvider(c),
+			BankStatement:       buildBankStatementProvider(c),
+			Signals:             buildSignalProvider(c),
+			MiriamIntell:        buildMiriamIntelligenceProvider(c),
+			Investment:          buildInvestmentProvider(c),
+			Receipt:             buildReceiptProvider(c),
+			Warranty:            buildWarrantyProvider(c),
+			PriceTracker:        buildPriceTracker(c),
+			Merchant:            buildMerchantProvider(c),
+			Cache:               buildCacheClient(c),
+			Logger:              c.ZapLog,
+			Config:              aicore.DefaultConfig(),
+			AccountChecker:      buildAccountChecker(c),
+			ActionAuditor:       buildActionAuditor(c),
+			WithdrawalInitiator: buildWithdrawalInitiator(c),
+			GoalProtector:       buildGoalProtector(c),
+			Subscription:        buildSubscriptionProvider(c),
+			RecurringExpense:    buildRecurringExpenseProvider(c),
+			SavingsSuggestion:   buildSavingsSuggestionProvider(c),
+			ReceiptChallenge:    buildReceiptChallengeProvider(c),
+			ReportEmail:         buildReportEmailSender(c),
+			Knowledge:           buildKnowledgeSearcher(c),
+			Simulator:           buildSimulator(c),
+			Comparative:         buildComparativeProvider(c),
+			Tax:                 buildTaxProvider(c),
+			EmergencyWithdraw:   buildEmergencyWithdrawer(c),
+			FinancialGovernance: buildFinancialGovernance(c),
+			Nudge:               nil,
+			WorkingMemory:       &workingMemoryAdapter{store: c.WorkingMemoryStore},
+			EventStoreFn: func(ctx context.Context, userID uuid.UUID) string {
+				if c.EventStore == nil {
+					return ""
+				}
+				return c.EventStore.BuildEventsContext(ctx, userID)
+			},
+		}
+
+		// Execution Engine (spec 5.2) providers — wrap the same domain
+		// services the app endpoints use, so Miriam's actions inherit their
+		// balance, ownership, and KYC checks.
+		agentDeps.BillPay = buildBillPayProvider(c)
+		agentDeps.SubscriptionAudit = buildSubscriptionAuditProvider(c, recurringRepo)
+		agentDeps.InvestmentExec = buildInvestmentExecProvider(c)
+		if c.LedgerService != nil {
+			agentDeps.YieldOpt = buildYieldOptProvider(c, &fundsTransfererAdapter{ledger: c.LedgerService, blendRouter: c.BlendDepositRouter, logger: c.ZapLog})
+		}
+		agentDeps.MerchantBlock = buildMerchantBlockProvider(c)
+		agentDeps.TradeCopy = buildTradeCopyProvider(c)
+		// agentDeps.Bills is wired later (after Airbills/billpay init) via
+		// c.AgentDeps, since Circle/ChainRails come up after AI services.
+
+		// Wire the same InMemoryAnomalyStore to both the agent and the old adapter
+		// so recent anomaly detections appear in context regardless of chat path.
+		c.AnomalyStore = aiservice.NewInMemoryAnomalyStore()
+		agentDeps.AnomalyContextFn = func(ctx context.Context, userID uuid.UUID) string {
+			results, err := c.AnomalyStore.Get(ctx, userID)
+			if err != nil || len(results) == 0 {
+				return ""
+			}
+			text := "[ANOMALIES DETECTED — YOU MUST MENTION THESE PROACTIVELY. The user may not know about them yet. Lead with the most severe one, be specific about amounts and merchants.]"
+			for _, r := range results {
+				text += fmt.Sprintf("\n[%s] %s — %s", strings.ToUpper(string(r.Severity)), r.Title, r.Description)
+			}
+			return text
+		}
+		if c.AIOrchestrator != nil {
+			c.AIOrchestrator.SetAnomalyStore(c.AnomalyStore)
+		}
+
+		// Wire enrichment summary into both the core agent and the streaming adapter
+		// so Miriam has proactive awareness of spending patterns without tool calls.
+		if c.Config.Enrichment.Enabled && c.Config.Enrichment.ServiceURL != "" {
+			enrichSQLx := sqlx.NewDb(c.DB, "postgres")
+		enrichRepo := repositories.NewEnrichmentRepositoryWithLogger(enrichSQLx, c.ZapLog)
+			agentDeps.EnrichmentSummaryFn = enrichRepo.GetUserEnrichmentSummary
+			if c.AIOrchestrator != nil {
+				c.AIOrchestrator.SetEnrichmentSummaryFn(enrichRepo.GetUserEnrichmentSummary)
+				c.AIOrchestrator.SetMerchantEnricher(enrichRepo)
+			}
+		}
+
+		// Reuse the same quality gate as the streaming path so core's non-streaming
+		// responses are held to the same standard (not a weaker length heuristic).
+		agentDeps.QualityGate = func(response string) (bool, string) {
+			v := aiservice.CheckResponseQuality(response)
+			return v.Pass, aiservice.QualityCorrectionHint(v.Failures)
+		}
+
+		// Deterministic pre-delivery guard: strips ungrounded currency figures,
+		// surfaces a missed anomaly, and sanitizes formatting. Only fires when the
+		// ai.response_guard flag is on (default off in prod; on in the simulation).
+		agentDeps.ResponseGuard = func(content, grounding, anomalies string) string {
+			return aiservice.GuardResponse(content, grounding, anomalies)
+		}
+
+		// Core had no base system prompt — non-streaming Miriam ran with no persona.
+		// Give it the same base as the streaming path (persona + tool rules).
+		agentConfig := aicore.DefaultConfig()
+		agentConfig.SystemPrompt = aiservice.SystemPromptV2 + "\n\n" + aiservice.SystemPromptTools
+		agentConfig.ResponseGuard = c.Config.AI.ResponseGuard
+
+		agent := aicore.NewAgent(agentDeps, agentConfig, c.ZapLog)
+		c.NewAgent = agent
+		c.AgentDeps = agentDeps
+
+		if c.AIOrchestrator != nil {
+			c.AIOrchestrator.SetAgent(agent)
+			c.NewAgentAdapter = c.AIOrchestrator
+		}
+	}
+
 	return nil
 }
 
@@ -3813,8 +4366,8 @@ func (a *alpacaNewsAdapter) GetNews(ctx context.Context, req *entities.AlpacaNew
 	return a.client.GetNews(ctx, req)
 }
 
-// GetAIOrchestrator returns the AI orchestrator
-func (c *Container) GetAIOrchestrator() *aiservice.Orchestrator {
+// GetAIOrchestrator returns the AgentAdapter (satisfies aiservice.ChatEngine).
+func (c *Container) GetAIOrchestrator() *aiservice.AgentAdapter {
 	return c.AIOrchestrator
 }
 
@@ -3992,6 +4545,19 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 		&copyTradingTradingAdapter{alpacaClient: c.AlpacaClient, accountRepo: c.AlpacaAccountRepo},
 		c.ZapLog,
 	)
+	// Conductor order fills become copy-trading signals; the copy trading
+	// worker then replicates them into drafter accounts.
+	if c.AlpacaEventProcessor != nil {
+		c.AlpacaEventProcessor.SetSignalGenerator(c.CopyTradingService)
+	}
+	// Public-figure copy trading: FMP congressional disclosure feeds power the
+	// same signal pipeline. Without FMP_API_KEY the tools report the data
+	// source as unavailable instead of failing silently.
+	c.PublicTradesClient = publictrades.NewClient(publictrades.Config{APIKey: os.Getenv("FMP_API_KEY")}, c.ZapLog)
+	if !c.PublicTradesClient.Configured() {
+		c.ZapLog.Warn("FMP_API_KEY not set — public-figure copy trading data unavailable")
+	}
+	c.CopyTradingService.SetPublicTradesSource(&publicTradesSourceAdapter{client: c.PublicTradesClient})
 
 	// Initialize Card Service
 	c.CardRepo = repositories.NewCardRepository(sqlxDB)
@@ -4013,6 +4579,9 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	}
 	if c.MoneyGuardService != nil && c.CardService != nil {
 		c.CardService.SetMoneyGuard(&cardMoneyGuardAdapter{service: c.MoneyGuardService})
+	}
+	if c.SpendingCommitmentService != nil && c.CardService != nil {
+		c.CardService.SetSpendingCommitment(c.SpendingCommitmentService)
 	}
 
 	// Rewire Bridge webhook service now that card service is available.
@@ -4911,10 +5480,126 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		c.RampHandlers = fundinghandlers.NewRampHandlers(rampService, c.ZapLog)
 		c.ZapLog.Info("RampHub on/off ramp initialized (primary, Paj fallback)")
+
+		// Wire live FX rate from RampHub instead of the empty DB-backed repo.
+		// This ensures Miriam always quotes the current interbank rate.
+		getQuote := func(ctx context.Context, side string, fiatAmount, tokenAmount float64, currency string) (float64, error) {
+			q, err := rampService.GetBestQuote(ctx, side, fiatAmount, tokenAmount, currency)
+			if err != nil {
+				return 0, err
+			}
+			return q.Rate, nil
+		}
+		c.AIOrchestrator.SetCurrencyRateProvider(aiservice.NewRampHubRateProvider(getQuote))
 	} else if c.Config.RampHub.APIKey != "" {
 		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is required when RampHub API key is configured — refusing to start with unauthenticated webhooks")
 	} else {
 		c.ZapLog.Warn("RampHub API key is empty, skipping initialization")
+	}
+
+	// --- Graph (useoval.com) NGN named virtual accounts ---
+	// Provides Nigerian Naira bank accounts. Each inbound NGN deposit is
+	// auto-converted to USDC and runs the standard 70/30 spend/stash split.
+	if c.Config.Graph.Enabled && c.Config.Graph.APIKey != "" {
+		if c.Config.Graph.WebhookSecret == "" {
+			c.ZapLog.Fatal("SECURITY: Graph webhook_secret is required when Graph is enabled — refusing to start with unauthenticated webhooks")
+		}
+		graphSandbox := !strings.EqualFold(c.Config.Graph.Environment, "production")
+		graphClient, err := graphadapter.NewClient(graphadapter.Config{
+			APIKey:        c.Config.Graph.APIKey,
+			BaseURL:       c.Config.Graph.BaseURL,
+			WebhookSecret: c.Config.Graph.WebhookSecret,
+			Sandbox:       graphSandbox,
+		}, c.ZapLog)
+		if err != nil {
+			c.ZapLog.Fatal("failed to initialize Graph client", zap.Error(err))
+		}
+
+		graphVARepo := repositories.NewVirtualAccountRepository(sqlxDB)
+		graphLedger := integration.NewLedgerIntegration(c.LedgerService, c.BalanceRepo, c.Logger, false, false)
+		graphLedgerAdapter := &LedgerIntegrationAdapter{integration: graphLedger}
+
+		graphVAService := funding.NewGraphVirtualAccountService(
+			graphClient,
+			graphVARepo,
+			c.DepositRepo,
+			c.UserRepo,
+			c.AllocationService,
+			graphLedgerAdapter,
+			c.Config.Graph.DeveloperFeePercent,
+			c.Logger,
+		)
+		if c.ComplianceService != nil {
+			graphVAService.SetComplianceScreener(c.ComplianceService)
+		}
+		if c.NotificationService != nil {
+			graphVAService.SetNotificationService(&FundingNotificationAdapter{svc: c.NotificationService})
+		}
+		if c.GameplayHooks != nil {
+			graphVAService.SetGameplayHooks(c.GameplayHooks)
+		}
+		if c.ExchangeRateRepo != nil {
+			graphVAService.SetCurrencyRates(c.ExchangeRateRepo)
+		}
+
+		c.GraphVirtualAccountService = graphVAService
+		c.NGNHandlers = fundinghandlers.NewNGNHandlers(graphVAService, c.Logger)
+		c.GraphWebhookHandler = webhooks.NewGraphWebhookHandler(
+			graphVAService,
+			c.Config.Graph.WebhookSecret,
+			graphSandbox,
+			c.ZapLog,
+		)
+		c.ZapLog.Info("Graph NGN virtual accounts initialized")
+	} else {
+		c.ZapLog.Warn("Graph disabled or API key empty, skipping NGN virtual accounts")
+	}
+
+	// --- Airbills (Nigerian bill payments: airtime, data, electricity, cable,
+	// betting, transport). Settlement mirrors the RampHub off-ramp path. ---
+	if c.Config.Airbills.SecretKey != "" && c.Config.Airbills.WebhookSecret != "" {
+		airbillsClient, err := airbills.NewClient(airbills.Config{
+			SecretKey:     c.Config.Airbills.SecretKey,
+			BaseURL:       c.Config.Airbills.BaseURL,
+			CallbackURL:   c.Config.Airbills.CallbackURL,
+			WebhookSecret: c.Config.Airbills.WebhookSecret,
+		}, c.ZapLog)
+		if err != nil {
+			c.ZapLog.Fatal("failed to initialize Airbills client", zap.Error(err))
+		}
+		billPayService := billpay.NewService(sqlxDB, airbillsClient, billpay.Config{
+			DeveloperFeePercent: c.Config.Airbills.DeveloperFeePercent,
+			DefaultToken:        c.Config.Airbills.DefaultToken,
+			MaxAmountNGN:        c.Config.Airbills.MaxAmountNGN,
+		}, c.ZapLog)
+		if c.LedgerService != nil {
+			billPayService.SetLedger(&WithdrawalLedgerAdapter{ledgerService: c.LedgerService})
+		}
+		if c.CircleAdapter != nil {
+			billPayService.SetCircleTransfer(c.CircleAdapter)
+		}
+		if c.ChainRailsClient != nil {
+			billPayService.SetChainRails(c.ChainRailsClient)
+		}
+		if c.ExchangeRateRepo != nil {
+			billPayService.SetCurrencyRates(c.ExchangeRateRepo)
+		}
+		if c.NotificationService != nil {
+			billPayService.SetNotifier(&automationNotificationAdapter{svc: c.NotificationService, logger: c.ZapLog})
+		}
+		c.BillPayService = billPayService
+		c.BillPayHandlers = fundinghandlers.NewBillPayHandlers(billPayService, c.ZapLog)
+		if c.AutomationService != nil {
+			c.AutomationService.SetUtilityBillPayer(billPayService)
+		}
+		if c.AgentDeps != nil {
+			c.AgentDeps.Bills = buildBillsProvider(c)
+		}
+		c.ZapLog.Info("Airbills bill payments initialized")
+	} else if c.Config.Airbills.SecretKey != "" {
+		c.ZapLog.Fatal("SECURITY: Airbills webhook_secret is required when Airbills secret key is configured — refusing to start with unauthenticated callbacks")
+	} else {
+		c.ZapLog.Warn("Airbills secret key is empty, skipping bill payments initialization")
 	}
 
 	// Initialize unified activity feed service
@@ -5254,11 +5939,34 @@ func (a *supermemoryAdapter) SearchMemory(ctx context.Context, userID, query str
 	if err != nil {
 		return nil, err
 	}
+	return mapSupermemoryResults(results), nil
+}
+
+func (a *supermemoryAdapter) SearchMemoryRanked(ctx context.Context, userID, query string, limit int) ([]aiservice.SupermemoryResult, error) {
+	results, err := a.client.Search(ctx, userID, query, supermemoryclient.SearchOptions{Limit: limit, Rerank: true})
+	if err != nil {
+		return nil, err
+	}
+	return mapSupermemoryResults(results), nil
+}
+
+func mapSupermemoryResults(results []supermemoryclient.SearchResult) []aiservice.SupermemoryResult {
 	out := make([]aiservice.SupermemoryResult, len(results))
 	for i, r := range results {
-		out[i] = aiservice.SupermemoryResult{Memory: r.Memory, Similarity: r.Similarity}
+		res := aiservice.SupermemoryResult{Memory: r.Memory, Similarity: r.Similarity}
+		if r.Metadata != nil {
+			if tsStr, ok := r.Metadata["event_ts"]; ok {
+				if ts, perr := strconv.ParseInt(tsStr, 10, 64); perr == nil {
+					res.EventUnix = ts
+				}
+			}
+		}
+		if !r.UpdatedAt.IsZero() {
+			res.UpdatedUnix = r.UpdatedAt.Unix()
+		}
+		out[i] = res
 	}
-	return out, nil
+	return out
 }
 
 // revenueSweepTransferAdapter wraps Circle adapter for revenue sweep transfers from user wallets.
@@ -5324,6 +6032,160 @@ func writeFeeDebugLog(location, message, hypothesisID string, data map[string]in
 	}
 	_, _ = f.Write(append(b, '\n'))
 	_ = f.Close()
+}
+
+// platformVoiceAdapter adapts the ElevenLabs REST client to platform.VoiceTranscoder.
+type platformVoiceAdapter struct {
+	rest *ai.ElevenLabsREST
+}
+
+func (a *platformVoiceAdapter) Available() bool { return a.rest.Available() }
+
+func (a *platformVoiceAdapter) Synthesize(ctx context.Context, text string) ([]byte, string, error) {
+	return a.rest.TextToSpeech(ctx, text)
+}
+
+func (a *platformVoiceAdapter) Transcribe(ctx context.Context, audio []byte, mime string) (string, error) {
+	return a.rest.SpeechToText(ctx, audio, mime)
+}
+
+// orchestratorAdapter wraps aiservice.AgentAdapter to implement platform.Orchestrator.
+// It maps a messaging thread to a stable conversation, translates staged pending
+// actions into confirm cards (or an in-app authorization hand-off for fund moves),
+// and executes confirmations through the orchestrator's authoritative store.
+type orchestratorAdapter struct {
+	orchestrator *aiservice.AgentAdapter
+	convRepo     *repositories.ConversationRepository
+	deepLinkBase string
+}
+
+const defaultAppDeepLinkBase = "rail://"
+
+func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("parse user id: %w", err)
+	}
+	if a.orchestrator.IsUserOverCostCeiling(ctx, uid) {
+		nextMonth := time.Now().AddDate(0, 1, 0)
+		resetDate := time.Date(nextMonth.Year(), nextMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
+		daysUntil := int(resetDate.Sub(time.Now()).Hours() / 24)
+		msg := fmt.Sprintf("You've hit your monthly AI limit. Miriam will be back on %s (%d days).",
+			resetDate.Format("Jan 2"), daysUntil)
+		return &platform.PlatformReply{Text: msg}, nil
+	}
+
+	pid, _ := uuid.Parse(platformIdentityID)
+	convID, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
+	if err != nil {
+		return nil, fmt.Errorf("resolve platform conversation: %w", err)
+	}
+
+	// Load the full conversation so Miriam has memory of the thread; the exchange
+	// is persisted, titled, and fed into memory by ChatWithConversation.
+	conv, err := a.convRepo.GetConversation(ctx, convID)
+	if err != nil {
+		return nil, fmt.Errorf("load platform conversation: %w", err)
+	}
+
+	resp, err := a.orchestrator.ChatWithConversation(ctx, uid, conv, message)
+	if err != nil {
+		return nil, err
+	}
+
+	reply := &platform.PlatformReply{Text: resp.Content}
+	if resp.PendingAction == nil {
+		return reply, nil
+	}
+
+	pa := resp.PendingAction
+	if aiservice.IsFundMovingAction(pa.Action) {
+		// Fund-moving actions require the app's passcode/Face ID step-up, which
+		// has no messaging equivalent — hand off to the app.
+		if reply.Text == "" {
+			reply.Text = pa.Description
+		}
+		reply.Text += "\n\nFor your security, moving money needs Face ID. Tap below to finish in the RAIL app."
+		reply.OpenApp = &platform.OpenAppRequest{
+			Title: "Authorize in RAIL",
+			URL:   a.authorizeDeepLink(convID, pa.Action),
+		}
+		return reply, nil
+	}
+
+	// The Confirm/Cancel prompt is rendered as a poll; the vote correlates back
+	// to this conversation's single pending action.
+	summary := pa.Description
+	if reply.Text != "" && reply.Text != pa.Description {
+		summary = reply.Text
+	}
+	if reply.Text == "" {
+		reply.Text = pa.Description
+	}
+	reply.Confirm = &platform.ConfirmRequest{Summary: summary}
+	return reply, nil
+}
+
+// resolveConvID maps a messaging thread to its stable conversation id.
+func (a *orchestratorAdapter) resolveConvID(ctx context.Context, uid uuid.UUID, platformIdentityID, threadID string, plat entities.Platform) (uuid.UUID, error) {
+	pid, _ := uuid.Parse(platformIdentityID)
+	return a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
+}
+
+func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("parse user id: %w", err)
+	}
+	cid, err := a.resolveConvID(ctx, uid, platformIdentityID, threadID, plat)
+	if err != nil {
+		return nil, fmt.Errorf("resolve conversation: %w", err)
+	}
+
+	// Defence in depth: a fund-moving action must never execute from a messaging
+	// vote — it should have been sent as an in-app card, never a poll.
+	if action, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid); ok && aiservice.IsFundMovingAction(action.Action) {
+		return &platform.PlatformReply{Text: "For your security, moving money has to be done with Face ID in the RAIL app."}, nil
+	}
+
+	action, err := a.orchestrator.ConfirmAction(ctx, uid, cid)
+	if err != nil {
+		return nil, err
+	}
+	return &platform.PlatformReply{
+		Text:   "✅ Done — " + actionSuccessSummary(action),
+		Effect: platform.EffectCelebration,
+	}, nil
+}
+
+func (a *orchestratorAdapter) CancelPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("parse user id: %w", err)
+	}
+	cid, err := a.resolveConvID(ctx, uid, platformIdentityID, threadID, plat)
+	if err != nil {
+		return nil, fmt.Errorf("resolve conversation: %w", err)
+	}
+	if err := a.orchestrator.CancelAction(ctx, uid, cid); err != nil {
+		return nil, err
+	}
+	return &platform.PlatformReply{Text: "No problem — I've cancelled that."}, nil
+}
+
+func (a *orchestratorAdapter) authorizeDeepLink(convID uuid.UUID, action string) string {
+	base := a.deepLinkBase
+	if base == "" {
+		base = defaultAppDeepLinkBase
+	}
+	return fmt.Sprintf("%sauthorize?conv=%s&action=%s", base, convID.String(), url.QueryEscape(action))
+}
+
+func actionSuccessSummary(action *entities.PendingAction) string {
+	if action != nil && action.Description != "" {
+		return action.Description
+	}
+	return "all set"
 }
 
 // #endregion

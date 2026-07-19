@@ -19,10 +19,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
-	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/metrics"
 )
 
@@ -135,6 +136,7 @@ type Service struct {
 	encryptionKey          string
 	notifier               KYCNotifier
 	amlScreener            AMLScreener
+	graphVAService         *funding.GraphVirtualAccountService
 	logger                 *zap.Logger
 	resyncMu               sync.Mutex
 	resyncInFlight         map[string]bool
@@ -155,10 +157,17 @@ func (s *Service) SetAMLScreener(a AMLScreener) {
 	s.amlScreener = a
 }
 
+// SetGraphVAService wires the Graph virtual account service for NGN provisioning
+// during Sprout tier upgrades.
+func (s *Service) SetGraphVAService(g *funding.GraphVirtualAccountService) {
+	s.graphVAService = g
+}
+
 type UserRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.User, error)
 	GetProfileByUserID(ctx context.Context, userID uuid.UUID) (*entities.UserProfile, error)
 	Update(ctx context.Context, user *entities.User) error
+	UpdateKYCTier(ctx context.Context, userID uuid.UUID, tier int) error
 }
 
 type KYCSubmissionRepository interface {
@@ -1796,10 +1805,37 @@ func (s *Service) GetKYCStatus(ctx context.Context, userID uuid.UUID) (*entities
 		},
 	}
 
-	// Populate supported tax ID type from user's profile country
-	if profile, err := s.userRepo.GetProfileByUserID(ctx, userID); err == nil && profile != nil && profile.Country != nil {
-		response.SupportedTaxIDType = GetSupportedTaxIDType(*profile.Country)
+	// Populate supported tax ID type from user's profile country, and the
+	// tiered KYC ladder (Tier 1 non_kyc → Tier 2 basic/NGN → Tier 3
+	// advanced/USD+cards+investing). Prefer the persisted numeric tier,
+	// falling back to deriving from the legacy status string.
+	tierLevel := 0
+	if profile, err := s.userRepo.GetProfileByUserID(ctx, userID); err == nil && profile != nil {
+		if profile.Country != nil {
+			response.SupportedTaxIDType = GetSupportedTaxIDType(*profile.Country)
+		}
+		tierLevel = profile.KYCTier
+		response.BVNVerified = profile.BVNVerifiedAt != nil
+		response.NINVerified = profile.NINVerifiedAt != nil
 	}
+
+	// Self-heal: Bridge is the authoritative Tier 3 gate. If Bridge is active but a
+	// missed webhook left the persisted tier below advanced, reconcile it here so a
+	// user is never stuck sub-Tier-3 despite a completed Bridge KYC.
+	if tierLevel < entities.KYCTierLevelAdvanced &&
+		user.BridgeKYCStatus != nil && strings.EqualFold(*user.BridgeKYCStatus, "active") {
+		if err := s.userRepo.UpdateKYCTier(ctx, userID, entities.KYCTierLevelAdvanced); err != nil {
+			s.logger.Warn("Failed to self-heal kyc_tier to advanced", zap.Error(err), zap.String("user_id", userID.String()))
+		} else {
+			tierLevel = entities.KYCTierLevelAdvanced
+		}
+	}
+
+	tier := entities.EffectiveKYCTier(tierLevel, user.KYCStatus)
+	resolvedLevel := entities.KYCTierToLevel(tier)
+	response.KYCTier = resolvedLevel
+	response.KYCTierName = string(tier)
+	response.TierCapabilities = entities.CapabilitiesForTier(resolvedLevel)
 
 	return response, nil
 }
@@ -2282,6 +2318,337 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 		SessionToken: sess.SessionToken,
 		URL:          sess.URL,
 	}, nil
+}
+
+// ── Sprout Upgrade (Tier 2) ──────────────────────────────────────
+
+// SproutUpgrade upgrades a user to Sprout tier (Tier 2). This:
+// 1. Validates preconditions (user at Seed tier, has Bridge customer, Didit session approved)
+// 2. Updates user profile with phone + DOB
+// 3. Fetches Didit session results to extract NIN, ID type, ID number, ID images
+// 4. Creates Graph person + NGN bank account via GraphProvisioner
+// 5. Submits same data to Bridge KYC
+// 6. Promotes user to Tier 2
+func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *entities.SproutUpgradeRequest) (*entities.SproutUpgradeResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("missing request")
+	}
+	s.logger.Info("Sprout upgrade started",
+		zap.String("user_id", userID.String()),
+		zap.String("didit_session_id", req.DiditSessionID),
+	)
+
+	// Step 1: Validate preconditions
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user profile: %w", err)
+	}
+
+	// Must be at Seed tier (Tier 1) or below to upgrade to Sprout
+	if profile.KYCTier >= entities.KYCTierLevelBasic {
+		return &entities.SproutUpgradeResponse{
+			Status:   "already_upgraded",
+			Message:  "Already at Sprout tier or higher",
+			KYCTier:  profile.KYCTier,
+			TierName: "basic",
+		}, nil
+	}
+
+	// Must have a Bridge customer ID (created during onboarding)
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return nil, ErrNoBridgeCustomer
+	}
+
+	// Validate phone format
+	phone := strings.TrimSpace(req.Phone)
+	if phone == "" {
+		return nil, fmt.Errorf("phone number is required")
+	}
+
+	// Step 3: Parse date of birth
+	dob, err := time.Parse("2006-01-02", req.DateOfBirth)
+	if err != nil {
+		return nil, fmt.Errorf("invalid date_of_birth format (expected YYYY-MM-DD): %w", err)
+	}
+
+	// Step 4: Fetch Didit session results to get NIN, ID type, ID number, images
+	var diditVerification *didit.IDVerification
+	if s.diditAdapter != nil {
+		decision, diditErr := s.diditAdapter.GetSessionDecision(ctx, req.DiditSessionID)
+		if diditErr != nil {
+			s.logger.Warn("Failed to fetch Didit session decision, continuing without document data",
+				zap.Error(diditErr),
+				zap.String("user_id", userID.String()),
+				zap.String("session_id", req.DiditSessionID))
+		} else if decision != nil && len(decision.IDVerifications) > 0 {
+			diditVerification = &decision.IDVerifications[0]
+			s.logger.Info("Didit verification data extracted",
+				zap.String("user_id", userID.String()),
+				zap.String("document_type", diditVerification.DocumentType),
+				zap.String("document_number", diditVerification.DocumentNumber))
+		}
+	}
+
+	// Step 5: Determine ID type and number from Didit results
+	idType := "nin" // default
+	idNumber := ""
+	if diditVerification != nil {
+		idType = normalizeIDType(diditVerification.DocumentType)
+		idNumber = diditVerification.DocumentNumber
+	}
+
+	// Step 6: Update user profile with phone + DOB
+	if user.Phone == nil || *user.Phone == "" {
+		if phoneErr := s.updateUserProfile(ctx, userID, map[string]interface{}{
+			"phone": phone,
+		}); phoneErr != nil {
+			s.logger.Warn("Failed to update phone on profile",
+				zap.Error(phoneErr),
+				zap.String("user_id", userID.String()))
+		}
+	}
+	if user.DateOfBirth == nil {
+		if dobErr := s.updateUserProfile(ctx, userID, map[string]interface{}{
+			"date_of_birth": dob,
+		}); dobErr != nil {
+			s.logger.Warn("Failed to update date_of_birth on profile",
+				zap.Error(dobErr),
+				zap.String("user_id", userID.String()))
+		}
+	}
+
+	// Validate BVN
+	bvn := strings.TrimSpace(req.BVN)
+	if len(bvn) != 11 || !isNumeric(bvn) {
+		return nil, fmt.Errorf("invalid BVN format (must be 11 digits)")
+	}
+
+	// Step 7: Provision Graph person + NGN bank account
+	var ngnaAccount *entities.NGNAccountInfo
+	var graphPersonID string
+	if s.graphVAService != nil {
+		va, graphErr := s.graphVAService.ProvisionNGNAccount(ctx, &funding.ProvisionNGNAccountRequest{
+			UserID:   userID,
+			BVN:      bvn,
+			IDType:   idType,
+			IDNumber: idNumber,
+		})
+		if graphErr != nil {
+			s.logger.Warn("Graph NGN provisioning failed during Sprout upgrade (non-fatal)",
+				zap.Error(graphErr),
+				zap.String("user_id", userID.String()))
+		} else if va != nil {
+			ngnaAccount = &entities.NGNAccountInfo{
+				AccountNumber:   va.AccountNumber,
+				BankName:        va.BankName,
+				BeneficiaryName: va.BeneficiaryName,
+				Status:          string(va.Status),
+			}
+			if va.GraphPersonID != nil {
+				graphPersonID = *va.GraphPersonID
+			}
+		}
+	}
+
+	// Step 8: Submit to Bridge KYC (source of funds will be collected at Bloom tier)
+	if s.bridgeAdapter != nil && profile.BridgeCustomerID != nil && diditVerification != nil {
+		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
+			IdentifyingInformation: []bridge.IdentifyingInfo{
+				{
+					Type:           idType,
+					IssuingCountry: "NG",
+					Number:         idNumber,
+					ImageFront:     diditVerification.FrontImage,
+					ImageBack:      diditVerification.BackImage,
+				},
+			},
+		}
+		_, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq)
+		if bridgeErr != nil {
+			s.logger.Warn("Bridge KYC submission failed during Sprout upgrade (non-fatal)",
+				zap.Error(bridgeErr),
+				zap.String("user_id", userID.String()))
+		}
+	} else if s.bridgeAdapter != nil && profile.BridgeCustomerID != nil {
+		s.logger.Info("Skipping Bridge KYC submission — no Didit verification data available",
+			zap.String("user_id", userID.String()))
+	}
+
+	// Step 9: Promote user to Tier 2
+	if err := s.userRepo.UpdateKYCTier(ctx, userID, entities.KYCTierLevelBasic); err != nil {
+		s.logger.Warn("Failed to promote KYC tier to basic",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("failed to promote tier: %w", err)
+	}
+
+	// Step 10: Build response AFTER successful tier promotion
+	caps := entities.CapabilitiesForTier(entities.KYCTierLevelBasic)
+	response := &entities.SproutUpgradeResponse{
+		Status:   "upgraded",
+		Message:  "Sprout tier activated. NGN account is being provisioned.",
+		KYCTier:  entities.KYCTierLevelBasic,
+		TierName: "basic",
+		Capabilities: entities.TierCapabilities{
+			Tier:               caps.Tier,
+			CanDepositCrypto:   caps.CanDepositCrypto,
+			CanReceiveNGN:      caps.CanReceiveNGN,
+			CanDepositFiatUSD:  caps.CanDepositFiatUSD,
+			CanUseCard:         caps.CanUseCard,
+			CanInvest:          caps.CanInvest,
+			CanInvestTokenized: caps.CanInvestTokenized,
+		},
+		NGNAccount:     ngnaAccount,
+		GraphPersonID:  graphPersonID,
+	}
+
+	s.logger.Info("Sprout upgrade completed",
+		zap.String("user_id", userID.String()),
+		zap.Int("tier", entities.KYCTierLevelBasic))
+
+	return response, nil
+}
+
+// ── Bloom Upgrade (Tier 3) ──────────────────────────────────────
+
+// BloomUpgrade upgrades a user to Bloom tier (Tier 3). This:
+// 1. Validates preconditions (user at Sprout tier, has Bridge customer)
+// 2. Submits employment info + financial profile to Bridge KYC
+// 3. Promotes user to Tier 3
+func (s *Service) BloomUpgrade(ctx context.Context, userID uuid.UUID, req *entities.BloomUpgradeRequest) (*entities.BloomUpgradeResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("missing request")
+	}
+	s.logger.Info("Bloom upgrade started",
+		zap.String("user_id", userID.String()))
+
+	// Step 1: Validate preconditions
+	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user profile: %w", err)
+	}
+
+	// Must be at Sprout tier (Tier 2) to upgrade to Bloom
+	if profile.KYCTier < entities.KYCTierLevelBasic {
+		return nil, fmt.Errorf("must be at Sprout tier (Tier 2) to upgrade to Bloom")
+	}
+	if profile.KYCTier >= entities.KYCTierLevelAdvanced {
+		return &entities.BloomUpgradeResponse{
+			Status:   "already_upgraded",
+			Message:  "Already at Bloom tier or higher",
+			KYCTier:  profile.KYCTier,
+			TierName: "advanced",
+		}, nil
+	}
+
+	// Must have a Bridge customer ID
+	if profile.BridgeCustomerID == nil || *profile.BridgeCustomerID == "" {
+		return nil, ErrNoBridgeCustomer
+	}
+
+	// Step 2: Submit employment + financial profile to Bridge KYC
+	// Bridge success is required for Bloom tier — unlocks USD/EUR accounts, cards, investing
+	if s.bridgeAdapter == nil {
+		return nil, fmt.Errorf("Bridge adapter not available — cannot complete Bloom upgrade")
+	}
+	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
+		EmploymentStatus:           req.EmploymentStatus,
+		MostRecentOccupation:       req.Occupation,
+		SourceOfFunds:              req.SourceOfFunds,
+		ExpectedMonthlyPaymentsUSD: req.ExpectedMonthlyVolume,
+		AccountPurpose:             req.AccountPurpose,
+	}
+	customer, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq)
+	if bridgeErr != nil {
+		s.logger.Error("Bridge KYC submission failed during Bloom upgrade",
+			zap.Error(bridgeErr),
+			zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("Bridge KYC submission failed: %w", bridgeErr)
+	}
+	bridgeResult := entities.KYCProviderResult{
+		Success: true,
+		Status:  string(customer.Status),
+	}
+
+	// Step 3: Promote user to Tier 3
+	if err := s.userRepo.UpdateKYCTier(ctx, userID, entities.KYCTierLevelAdvanced); err != nil {
+		s.logger.Warn("Failed to promote KYC tier to advanced",
+			zap.Error(err),
+			zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("failed to promote tier: %w", err)
+	}
+
+	// Step 4: Build response AFTER successful tier promotion
+	caps := entities.CapabilitiesForTier(entities.KYCTierLevelAdvanced)
+	response := &entities.BloomUpgradeResponse{
+		Status:   "upgraded",
+		Message:  "Bloom tier activated. Unlimited limits unlocked.",
+		KYCTier:  entities.KYCTierLevelAdvanced,
+		TierName: "advanced",
+		Capabilities: entities.TierCapabilities{
+			Tier:               caps.Tier,
+			CanDepositCrypto:   caps.CanDepositCrypto,
+			CanReceiveNGN:      caps.CanReceiveNGN,
+			CanDepositFiatUSD:  caps.CanDepositFiatUSD,
+			CanUseCard:         caps.CanUseCard,
+			CanInvest:          caps.CanInvest,
+			CanInvestTokenized: caps.CanInvestTokenized,
+		},
+		BridgeResult: bridgeResult,
+	}
+
+	s.logger.Info("Bloom upgrade completed",
+		zap.String("user_id", userID.String()),
+		zap.Int("tier", entities.KYCTierLevelAdvanced))
+
+	return response, nil
+}
+
+// updateUserProfile updates specific fields on the user profile.
+func (s *Service) updateUserProfile(ctx context.Context, userID uuid.UUID, fields map[string]interface{}) error {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if phone, ok := fields["phone"].(string); ok && phone != "" {
+		user.Phone = &phone
+	}
+	if dob, ok := fields["date_of_birth"].(time.Time); ok {
+		user.DateOfBirth = &dob
+	}
+
+	return s.userRepo.Update(ctx, user)
+}
+
+// normalizeIDType maps Didit document types to Graph-compatible ID types.
+func normalizeIDType(diditType string) string {
+	switch strings.ToLower(strings.TrimSpace(diditType)) {
+	case "nin", "national_id", "national id":
+		return "nin"
+	case "passport", "international_passport":
+		return "passport"
+	case "drivers_license", "driver_license", "driving_licence", "drivers licence":
+		return "drivers_license"
+	case "voters_card", "voter_card":
+		return "voters_card"
+	default:
+		return "nin"
+	}
+}
+
+// isNumeric checks if a string contains only digits.
+func isNumeric(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // buildBridgeKYCRequest constructs the Bridge UpdateCustomerRequest from KYC data.

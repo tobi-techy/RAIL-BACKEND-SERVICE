@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"math/big"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ const (
 type LedgerService interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
 	CreateTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, metadata map[string]interface{}) error
+	CreatePendingTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, txType entities.TransactionType, amount decimal.Decimal, idempotencyKey string, metadata map[string]interface{}) error
+	CommitPendingTransaction(ctx context.Context, idempotencyKey string) error
+	FailPendingTransaction(ctx context.Context, idempotencyKey string) error
+	GetLedgerTransactionStatus(ctx context.Context, idempotencyKey string) (entities.TransactionStatus, error)
 	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
 	TransferSpendingToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
 }
@@ -189,6 +194,26 @@ type SessionAnomalyChecker interface {
 	GetRecentCriticalAnomalies(ctx context.Context, userID uuid.UUID) (hasCritical bool, reason string, err error)
 }
 
+// SpendingCommitmentGuard enforces a user's self-imposed daily spending cap.
+type SpendingCommitmentGuard interface {
+	CheckOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+	RecordOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+}
+
+// AdminErrorAlerter sends detailed error emails to the ops team.
+type AdminErrorAlerter interface {
+	SendErrorAlert(ctx context.Context, payload AdminErrorPayload)
+}
+
+// AdminErrorPayload holds structured error context for admin alerts.
+type AdminErrorPayload struct {
+	UserID      string
+	Operation   string
+	Error       error
+	PanicStack  []byte
+	ExtraFields map[string]string
+}
+
 // WithdrawalService handles crypto and fiat withdrawal operations
 type WithdrawalService struct {
 	withdrawalRepo      WithdrawalRepository
@@ -211,6 +236,8 @@ type WithdrawalService struct {
 	tieredLimits        TieredWithdrawalLimitChecker
 	fraudChecker        FraudChecker
 	sessionAnomaly      SessionAnomalyChecker
+	commitment          SpendingCommitmentGuard
+	adminAlerter        AdminErrorAlerter
 	stashLockMu         sync.RWMutex
 	db                  *sqlx.DB
 	logger              *logger.Logger
@@ -330,6 +357,23 @@ func (s *WithdrawalService) SetFraudChecker(f FraudChecker) {
 // SetSessionAnomalyChecker wires the session anomaly detector for impossible travel blocking.
 func (s *WithdrawalService) SetSessionAnomalyChecker(a SessionAnomalyChecker) {
 	s.sessionAnomaly = a
+}
+
+// SetSpendingCommitment wires the self-imposed daily spending cap enforcer.
+func (s *WithdrawalService) SetSpendingCommitment(g SpendingCommitmentGuard) {
+	s.commitment = g
+}
+
+// SetAdminAlerter wires the admin error alert email sender.
+func (s *WithdrawalService) SetAdminAlerter(a AdminErrorAlerter) {
+	s.adminAlerter = a
+}
+
+// alertAdmin is a nil-safe helper that sends an admin error alert if configured.
+func (s *WithdrawalService) alertAdmin(payload AdminErrorPayload) {
+	if s.adminAlerter != nil {
+		s.adminAlerter.SendErrorAlert(context.Background(), payload)
+	}
 }
 
 // IsStashLocked returns true if the user has no open withdrawal window.
@@ -689,7 +733,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	// TODO: Re-enable whitelist once testing is complete
 	if false && s.addressWhitelist != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
-		skipWhitelist := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		skipWhitelist := userErr == nil && user != nil && entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipWhitelist {
 			if err := s.addressWhitelist.ValidateWithdrawalAddress(ctx, req.UserID, req.DestinationChain, req.DestinationAddress); err != nil {
 				s.logger.Warn("Address whitelist validation failed", "error", err.Error(), "address", req.DestinationAddress)
@@ -723,6 +767,14 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 			s.logger.Warn("Withdrawal blocked due to session anomaly",
 				"user_id", req.UserID.String(), "reason", reason)
 			return nil, fmt.Errorf("withdrawal temporarily blocked: unusual login activity detected. Please contact support if this was you")
+		}
+	}
+
+	// Step 3.4: Enforce user's self-imposed daily spending commitment
+	if s.commitment != nil {
+		if err := s.commitment.CheckOutflow(ctx, req.UserID, req.Amount, string(req.Currency)); err != nil {
+			s.logger.Warn("Withdrawal blocked by daily spending commitment", "user_id", req.UserID.String())
+			return nil, entities.ErrCommitmentExceeded
 		}
 	}
 
@@ -824,7 +876,7 @@ func (s *WithdrawalService) InitiateCryptoWithdrawal(ctx context.Context, req *e
 	// transaction webhook can resume it after manual approval.
 	if s.complianceScreener != nil {
 		user, userErr := s.userRepo.GetUserEntityByID(ctx, req.UserID)
-		skipCompliance := userErr == nil && user != nil && entities.DeriveKYCTier(user.KYCStatus) == entities.KYCTierNonKYC
+		skipCompliance := userErr == nil && user != nil && entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus) == entities.KYCTierNonKYC
 		if !skipCompliance {
 			if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusComplianceReview); err != nil {
 				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "failed to hold for compliance review")
@@ -890,16 +942,37 @@ func (s *WithdrawalService) submitApprovedCryptoWithdrawal(ctx context.Context, 
 	}
 	withdrawal.Status = entities.WithdrawalStatusProcessing
 
-	// Post ledger debit BEFORE executing the on-chain burn.
-	// This ensures the balance is decremented before funds can leave custody.
-	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to post pre-burn ledger debit", "error", err, "withdrawal_id", withdrawal.ID.String())
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger debit failed: "+err.Error())
-		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
+	// Reserve Blend redemption BEFORE the ledger moves so a crash after the
+	// pending transaction always leaves a durable record for the reconciliation
+	// worker — otherwise the ledger can run ahead of Blend custody with nothing
+	// to retry. This mirrors the reserve-before-debit pattern in EmergencyStashToSpending.
+	if req.SourceAccount == entities.WithdrawalSourceStashBalance {
+		redeemAmount := withdrawal.Amount.Add(withdrawal.FeeAmount)
+		if redeemAmount.GreaterThan(decimal.Zero) {
+			redeemKey := "withdrawal-" + withdrawal.ID.String()
+			if reserver, ok := s.stashYieldRedeemer.(RedemptionReserver); ok && reserver != nil {
+				if _, rerr := reserver.EnsureRedemptionReserved(ctx, req.UserID, redeemAmount, redeemKey); rerr != nil {
+					s.logger.Error("Failed to reserve Blend redemption before pending ledger",
+						"error", rerr, "withdrawal_id", withdrawal.ID.String())
+					_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "reserve redemption: "+rerr.Error())
+					return nil, fmt.Errorf("failed to reserve yield redemption: %w", rerr)
+				}
+			}
+		}
+	}
+
+	// Create a PENDING ledger transaction — entries are inserted for the audit
+	// trail but account balances are NOT updated yet. The debit is committed
+	// only after the on-chain transfer succeeds (see executeCryptoWithdrawalAsync).
+	if err := s.createPendingWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to create pending ledger transaction", "error", err, "withdrawal_id", withdrawal.ID.String())
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger pending tx failed: "+err.Error())
+		return nil, fmt.Errorf("failed to create pending ledger transaction: %w", err)
 	}
 
 	// Execute transfer asynchronously.
-	// Ledger is debited, withdrawal record exists — return immediately and process in background.
+	// Pending ledger transaction is created, redemption is reserved, withdrawal record exists — return
+	// immediately and process in background.
 
 	// Notify user immediately that withdrawal is being processed
 	if s.notificationService != nil {
@@ -1014,6 +1087,36 @@ func (s *WithdrawalService) ResumeComplianceApprovedWithdrawal(ctx context.Conte
 
 // executeCryptoWithdrawalAsync runs the Bridge transfer and post-processing in the background.
 func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			s.logger.Error("async: crypto withdrawal goroutine panicked",
+				"panic", r,
+				"withdrawal_id", withdrawal.ID.String(),
+				"user_id", withdrawal.UserID.String(),
+				"stack", string(stack))
+			// Use failWithdrawal (not MarkFailed) so the ledger is properly
+			// handled: if Circle already confirmed, settle; if pending, fail it;
+			// if committed, reverse it. MarkFailed alone would orphan the ledger.
+			if failErr := s.failWithdrawal(context.Background(), withdrawal, fmt.Sprintf("internal panic: %v", r)); failErr != nil {
+				s.logger.Error("async: failed to mark withdrawal as failed after panic",
+					"error", failErr, "withdrawal_id", withdrawal.ID.String())
+			}
+			s.alertAdmin(AdminErrorPayload{
+				UserID:    withdrawal.UserID.String(),
+				Operation: "crypto_withdrawal",
+				Error:     fmt.Errorf("panic: %v", r),
+				PanicStack: stack,
+				ExtraFields: map[string]string{
+					"withdrawal_id": withdrawal.ID.String(),
+					"amount":        withdrawal.Amount.String(),
+					"currency":      string(withdrawal.Currency),
+					"dest_chain":    req.DestinationChain,
+				},
+			})
+		}
+	}()
+
 	// 8 minutes: yield redemption + transfer + the completion pollers below
 	// (ChainRails polls up to 5 minutes on its own) must all fit — a shorter
 	// parent deadline silently truncated polling and left rows in processing.
@@ -1021,33 +1124,55 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	defer cancel()
 
 	if err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req); err != nil {
-		s.logger.Error("async: stash yield redemption failed — reversing ledger",
+		s.logger.Error("async: stash yield redemption failed — marking pending ledger failed",
 			"error", err, "withdrawal_id", withdrawal.ID.String())
-		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-			s.logger.Error("async: failed to reverse ledger debit",
-				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+			s.logger.Error("async: failed to mark pending ledger as failed",
+				"error", failErr, "withdrawal_id", withdrawal.ID.String())
 		}
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		if s.notificationService != nil {
-			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Your stash withdrawal could not be redeemed from yield. Your funds have been returned to your stash balance.")
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Your stash withdrawal could not be redeemed from yield. Your funds are still in your stash balance.")
 		}
+		s.alertAdmin(AdminErrorPayload{
+			UserID:    withdrawal.UserID.String(),
+			Operation: "crypto_withdrawal_stash_yield",
+			Error:     err,
+			ExtraFields: map[string]string{
+				"withdrawal_id": withdrawal.ID.String(),
+				"amount":        withdrawal.Amount.String(),
+				"currency":      string(withdrawal.Currency),
+				"source":        "stash_balance",
+			},
+		})
 		return
 	}
 
 	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress, req.CircleWalletID)
 	if err != nil {
-		s.logger.Error("async: crypto transfer failed — reversing ledger",
+		s.logger.Error("async: crypto transfer failed — marking pending ledger failed",
 			"error", err, "withdrawal_id", withdrawal.ID.String())
-		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-			s.logger.Error("async: failed to reverse ledger debit",
-				"error", revErr, "withdrawal_id", withdrawal.ID.String())
-			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
-		} else {
-			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, fmt.Sprintf("transfer failed (reversed): %v", err))
+		if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+			s.logger.Error("async: failed to mark pending ledger as failed",
+				"error", failErr, "withdrawal_id", withdrawal.ID.String())
 		}
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		if s.notificationService != nil {
-			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds are still in your balance.")
 		}
+		s.alertAdmin(AdminErrorPayload{
+			UserID:    withdrawal.UserID.String(),
+			Operation: "crypto_withdrawal_transfer",
+			Error:     err,
+			ExtraFields: map[string]string{
+				"withdrawal_id":    withdrawal.ID.String(),
+				"amount":           withdrawal.Amount.String(),
+				"currency":         string(withdrawal.Currency),
+				"dest_chain":       req.DestinationChain,
+				"dest_address":     req.DestinationAddress,
+				"provider_wallet":  withdrawal.ProviderWalletType,
+			},
+		})
 		return
 	}
 
@@ -1095,6 +1220,11 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		state == "UNDELIVERABLE" || state == "RETURNED" || state == "REFUNDED"
 
 	if isFinalSuccess {
+		// Commit the pending ledger debit NOW that transfer succeeded.
+		if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+			s.logger.Error("async: failed to commit pending ledger — withdrawal completed but ledger inconsistent",
+				"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+		}
 		if s.limitsService != nil {
 			_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
 		}
@@ -1116,15 +1246,15 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		s.logger.Info("async: crypto withdrawal completed",
 			"withdrawal_id", withdrawal.ID.String(), "tx_hash", transferResult.TxHash)
 	} else if isFinalFailure {
-		s.logger.Error("async: crypto transfer returned failure state — reversing ledger",
+		s.logger.Error("async: crypto transfer returned failure state — marking pending ledger failed",
 			"withdrawal_id", withdrawal.ID.String(), "state", state)
-		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-			s.logger.Error("async: failed to reverse ledger after provider failure",
-				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+			s.logger.Error("async: failed to mark pending ledger as failed",
+				"error", failErr, "withdrawal_id", withdrawal.ID.String())
 		}
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "provider returned: "+state)
 		if s.notificationService != nil {
-			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+			_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds are still in your balance.")
 		}
 	} else {
 		s.logger.Info("async: crypto withdrawal processing, will poll for completion",
@@ -1163,6 +1293,10 @@ func (s *WithdrawalService) pollCircleWithdrawalCompletion(ctx context.Context, 
 				if tx.TxHash != "" {
 					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
 				}
+				if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+					s.logger.Error("async: Circle confirmed but failed to commit ledger",
+						"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+				}
 				if s.limitsService != nil {
 					_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
 				}
@@ -1178,13 +1312,13 @@ func (s *WithdrawalService) pollCircleWithdrawalCompletion(ctx context.Context, 
 				return
 			}
 			if state == "FAILED" || state == "DENIED" || state == "CANCELLED" || state == "CANCELED" {
-				if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-					s.logger.Error("async: failed to reverse ledger after Circle failure",
-						"error", revErr, "withdrawal_id", withdrawal.ID.String())
+				if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+					s.logger.Error("async: failed to mark pending ledger as failed after Circle failure",
+						"error", failErr, "withdrawal_id", withdrawal.ID.String())
 				}
 				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "circle transfer "+strings.ToLower(state))
 				if s.notificationService != nil {
-					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds are still in your balance.")
 				}
 				return
 			}
@@ -1218,6 +1352,10 @@ func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdr
 				if status.TxHash != "" {
 					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash)
 				}
+				if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+					s.logger.Error("async: ChainRails confirmed but failed to commit ledger",
+						"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+				}
 				if s.limitsService != nil {
 					_ = s.limitsService.RecordWithdrawal(ctx, req.UserID, req.Amount)
 				}
@@ -1236,13 +1374,13 @@ func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdr
 				return
 			}
 			if state == "REFUNDED" || state == "FAILED" || state == "EXPIRED" || state == "CANCELLED" {
-				if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-					s.logger.Error("async: failed to reverse ledger after ChainRails failure",
-						"error", revErr, "withdrawal_id", withdrawal.ID.String())
+				if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+					s.logger.Error("async: failed to mark pending ledger as failed after ChainRails failure",
+						"error", failErr, "withdrawal_id", withdrawal.ID.String())
 				}
 				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "chainrails intent "+strings.ToLower(state))
 				if s.notificationService != nil {
-					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds have been returned to your balance.")
+					_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Transfer failed. Your funds are still in your balance.")
 				}
 				s.logger.Warn("async: ChainRails withdrawal failed via polling",
 					"withdrawal_id", withdrawal.ID.String(), "state", state)
@@ -1264,9 +1402,11 @@ func (s *WithdrawalService) prepareStashYieldForCryptoWithdrawal(ctx context.Con
 		return nil
 	}
 	idemKey := "withdrawal-" + withdrawal.ID.String()
-	// Use the no-sweep variant when available: funds are leaving the platform so the
-	// crypto transfer will spend the USDC directly from the Base EOA. A concurrent sweep
-	// goroutine would race the transfer for the same funds.
+	// Reservation was already done in submitApprovedCryptoWithdrawal (before the
+	// ledger debit), so only the actual redemption happens here. RedeemStashYield
+	// is idempotent — if the reservation already drove it to completion, this is a
+	// fast no-op. Use the no-sweep variant: funds are leaving the platform so the
+	// crypto transfer will spend the USDC directly from the Base EOA.
 	if rt, ok := s.stashYieldRedeemer.(StashYieldRedeemerForTransfer); ok {
 		return rt.RedeemStashYieldForTransfer(ctx, withdrawal.UserID, redeemAmount, idemKey)
 	}
@@ -1392,6 +1532,14 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 		}
 	}
 
+	// Step 4.2: Enforce user's self-imposed daily spending commitment
+	if s.commitment != nil {
+		if err := s.commitment.CheckOutflow(ctx, req.UserID, req.Amount, string(req.Currency)); err != nil {
+			s.logger.Warn("Fiat withdrawal blocked by daily spending commitment", "user_id", req.UserID.String())
+			return nil, entities.ErrCommitmentExceeded
+		}
+	}
+
 	// Step 5: Check balance based on source account
 	balance, err := s.getSourceBalance(ctx, req.UserID, req.SourceAccount)
 	if err != nil {
@@ -1496,23 +1644,33 @@ func (s *WithdrawalService) InitiateFiatWithdrawal(ctx context.Context, req *ent
 	}
 	withdrawal.Status = entities.WithdrawalStatusProcessing
 
-	if err := s.postWithdrawalLedgerEntries(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to post pre-transfer ledger debit", "error", err, "withdrawal_id", withdrawal.ID.String())
-		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger debit failed: "+err.Error())
-		return nil, fmt.Errorf("failed to post ledger debit: %w", err)
+	// Create a PENDING ledger transaction — entries are inserted for the audit
+	// trail but account balances are NOT updated yet. The debit is committed
+	// only after the Bridge offramp transfer succeeds.
+	if err := s.createPendingWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to create pending ledger transaction for fiat withdrawal", "error", err, "withdrawal_id", withdrawal.ID.String())
+		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "ledger pending tx failed: "+err.Error())
+		return nil, fmt.Errorf("failed to create pending ledger transaction: %w", err)
 	}
 
 	// Step 9: Execute Bridge offramp transfer
 	transferID, err := s.executeFiatTransfer(ctx, withdrawal, bankAccount)
 	if err != nil {
 		s.logger.Error("Failed to execute fiat transfer", "error", err)
-		// Reverse the ledger debit when transfer fails
-		if revErr := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); revErr != nil {
-			s.logger.Error("Failed to reverse ledger debit after transfer failure",
-				"error", revErr, "withdrawal_id", withdrawal.ID.String())
+		// Mark pending ledger as failed — balances were never updated so no reversal needed.
+		if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+			s.logger.Error("Failed to mark pending ledger as failed after fiat transfer failure",
+				"error", failErr, "withdrawal_id", withdrawal.ID.String())
 		}
 		_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, err.Error())
 		return nil, fmt.Errorf("failed to execute transfer: %w", err)
+	}
+
+	// Commit the pending ledger debit NOW that fiat transfer is initiated.
+	if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+		s.logger.Error("Failed to commit pending ledger after fiat transfer",
+			"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+		// Don't fail the withdrawal — transfer was initiated successfully.
 	}
 
 	// Update bridge transfer ID
@@ -1790,8 +1948,8 @@ func (s *WithdrawalService) CancelWithdrawal(ctx context.Context, userID, withdr
 		}
 	}
 
-	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
-		return fmt.Errorf("failed to reverse withdrawal ledger entry: %w", err)
+	if err := s.handleLedgerCancellation(ctx, withdrawal); err != nil {
+		return fmt.Errorf("failed to handle ledger cancellation: %w", err)
 	}
 
 	if err := s.withdrawalRepo.MarkCancelled(ctx, withdrawalID); err != nil {
@@ -1945,6 +2103,92 @@ func (s *WithdrawalService) reverseWithdrawalLedgerEntry(ctx context.Context, wi
 		withdrawal.Amount.Add(withdrawal.FeeAmount),
 		metadata,
 	)
+}
+
+// withdrawalLedgerIdempotencyKey returns the well-known idempotency key for a
+// withdrawal's pending ledger transaction. Both CreatePendingTransaction and
+// CommitPendingTransaction/FailPendingTransaction use this key so they can
+// resolve the same ledger row without passing IDs across goroutines.
+func withdrawalLedgerIdempotencyKey(withdrawalID uuid.UUID) string {
+	return "withdrawal-ledger-" + withdrawalID.String()
+}
+
+// createPendingWithdrawalLedgerEntry creates a ledger transaction in pending
+// status without touching any account balances. The balances are committed
+// later by commitPendingWithdrawalLedgerEntry once the transfer succeeds.
+func (s *WithdrawalService) createPendingWithdrawalLedgerEntry(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if s.ledgerService == nil {
+		return fmt.Errorf("ledger service not configured")
+	}
+
+	accountType, err := mapWithdrawalSourceToAccountType(withdrawal.SourceAccount)
+	if err != nil {
+		return err
+	}
+
+	metadata := map[string]interface{}{
+		"withdrawal_id":    withdrawal.ID.String(),
+		"withdrawal_type":  string(withdrawal.WithdrawalType),
+		"source_account":   string(withdrawal.SourceAccount),
+		"principal_amount": withdrawal.Amount.String(),
+		"fee_amount":       withdrawal.FeeAmount.String(),
+	}
+	if withdrawal.DestinationAddress != nil {
+		metadata["destination_address"] = *withdrawal.DestinationAddress
+	}
+	if withdrawal.ProviderTransferID != nil {
+		metadata["provider_transfer_id"] = *withdrawal.ProviderTransferID
+	}
+
+	return s.ledgerService.CreatePendingTransaction(
+		ctx,
+		withdrawal.UserID,
+		accountType,
+		entities.TransactionTypeWithdrawal,
+		withdrawal.Amount.Add(withdrawal.FeeAmount),
+		withdrawalLedgerIdempotencyKey(withdrawal.ID),
+		metadata,
+	)
+}
+
+// commitPendingWithdrawalLedgerEntry promotes the pending ledger transaction
+// to completed, locking accounts and updating balances atomically.
+func (s *WithdrawalService) commitPendingWithdrawalLedgerEntry(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if s.ledgerService == nil {
+		return fmt.Errorf("ledger service not configured")
+	}
+	return s.ledgerService.CommitPendingTransaction(ctx, withdrawalLedgerIdempotencyKey(withdrawal.ID))
+}
+
+// failPendingWithdrawalLedgerEntry marks the pending ledger transaction as
+// failed. Since balances were never updated, no reversal entries are needed.
+func (s *WithdrawalService) failPendingWithdrawalLedgerEntry(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if s.ledgerService == nil {
+		return nil // no-op if ledger not configured
+	}
+	return s.ledgerService.FailPendingTransaction(ctx, withdrawalLedgerIdempotencyKey(withdrawal.ID))
+}
+
+// handleLedgerCancellation checks the ledger transaction status and either
+// fails the pending tx (no balance impact) or reverses a committed tx
+// (compensating entries). This is used by cancel/refund paths where the
+// ledger could be in either state.
+func (s *WithdrawalService) handleLedgerCancellation(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if s.ledgerService == nil {
+		return nil
+	}
+	status, err := s.ledgerService.GetLedgerTransactionStatus(ctx, withdrawalLedgerIdempotencyKey(withdrawal.ID))
+	if err != nil {
+		return fmt.Errorf("get ledger status: %w", err)
+	}
+	switch status {
+	case entities.TransactionStatusPending:
+		return s.failPendingWithdrawalLedgerEntry(ctx, withdrawal)
+	case entities.TransactionStatusCompleted:
+		return s.reverseWithdrawalLedgerEntry(ctx, withdrawal)
+	default:
+		return nil // already failed/reversed — no-op
+	}
 }
 
 // calculateCryptoWithdrawalFee returns chain-specific flat service fees.
@@ -2451,6 +2695,12 @@ func (s *WithdrawalService) CompleteChainRailsWithdrawal(ctx context.Context, in
 		}
 	}
 
+	// Commit the pending ledger debit if the withdrawal has one (stash/crypto).
+	if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+		s.logger.Error("ChainRails intent settled but failed to commit ledger",
+			"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+	}
+
 	if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
 		return fmt.Errorf("failed to settle withdrawal completion: %w", err)
 	}
@@ -2508,11 +2758,11 @@ func (s *WithdrawalService) RefundChainRailsWithdrawal(ctx context.Context, inte
 		return nil
 	}
 
-	// Reverse the ledger debit to restore the user's balance
-	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
-		s.logger.Error("Failed to reverse ledger for ChainRails refund",
+	// Handle ledger: fail pending tx or reverse committed tx depending on status.
+	if err := s.handleLedgerCancellation(ctx, withdrawal); err != nil {
+		s.logger.Error("Failed to handle ledger for ChainRails refund",
 			"withdrawal_id", withdrawal.ID, "error", err)
-		return fmt.Errorf("failed to reverse ledger: %w", err)
+		return fmt.Errorf("failed to handle ledger cancellation: %w", err)
 	}
 
 	if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, fmt.Sprintf("chainrails intent %d refunded", intentID)); err != nil {
@@ -2615,12 +2865,21 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 		return nil
 	}
 
-	// Ledger debit was already posted before the burn in InitiateCryptoWithdrawal.
-	// Do not post again here.
+	// Ensure the pending ledger entry is committed before marking the withdrawal
+	// completed. The async goroutine normally commits it, but if polling timed
+	// out the webhook/settlement path reaches here with the ledger still pending.
+	// CommitPendingTransaction is idempotent — safe to call even if already committed.
+	if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+		s.logger.Error("settleCompletedCryptoWithdrawal: failed to commit pending ledger entry",
+			"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+	}
 
 	now := time.Now()
 	if err := s.withdrawalRepo.MarkCompleted(ctx, withdrawal.ID); err != nil {
 		return fmt.Errorf("failed to complete withdrawal: %w", err)
+	}
+	if s.commitment != nil {
+		_ = s.commitment.RecordOutflow(ctx, withdrawal.UserID, withdrawal.Amount, string(withdrawal.Currency))
 	}
 	// #region agent log
 	writeWithdrawalDebugLog("withdrawal/service.go:settleCompletedCryptoWithdrawal", "withdrawal completed; fee awaits revenue sweep", "H3", map[string]interface{}{
@@ -2679,6 +2938,9 @@ func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, w
 		if err := s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount); err != nil {
 			s.logger.Error("Failed to record fiat withdrawal against limits", "error", err, "withdrawal_id", withdrawal.ID.String())
 		}
+	}
+	if s.commitment != nil {
+		_ = s.commitment.RecordOutflow(ctx, withdrawal.UserID, withdrawal.Amount, string(withdrawal.Currency))
 	}
 
 	if metrics.Business != nil {
@@ -2749,13 +3011,18 @@ func (s *WithdrawalService) failWithdrawal(ctx context.Context, withdrawal *enti
 				if tx.TxHash != "" {
 					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
 				}
+				// Commit the pending ledger debit since funds actually left.
+				if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+					s.logger.Error("failWithdrawal: on-chain confirmed but failed to commit ledger",
+						"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+				}
 				return s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
 			}
 		}
 	}
 
-	if err := s.reverseWithdrawalLedgerEntry(ctx, withdrawal); err != nil {
-		return fmt.Errorf("failed to reverse withdrawal ledger entry: %w", err)
+	if err := s.handleLedgerCancellation(ctx, withdrawal); err != nil {
+		return fmt.Errorf("failed to handle ledger cancellation: %w", err)
 	}
 	if err := s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, reason); err != nil {
 		return fmt.Errorf("failed to mark withdrawal failed: %w", err)
@@ -2789,6 +3056,11 @@ func (s *WithdrawalService) CompleteWithdrawalByTransferID(ctx context.Context, 
 
 	if withdrawal.IsFiat() {
 		return s.settleCompletedFiatWithdrawal(ctx, withdrawal)
+	}
+	// Commit the pending ledger debit if the withdrawal has one.
+	if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+		s.logger.Error("webhook settled crypto withdrawal but failed to commit ledger",
+			"error", commitErr, "withdrawal_id", withdrawal.ID.String())
 	}
 	return s.settleCompletedCryptoWithdrawal(ctx, withdrawal)
 }
@@ -2921,6 +3193,10 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 						zap.String("withdrawal_id", withdrawal.ID.String()), zap.Error(hashErr))
 				}
 			}
+			if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+				s.logger.Error("sync: ChainRails completed but failed to commit ledger",
+					"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+			}
 			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
 				return withdrawal.Status, err
 			}
@@ -2949,6 +3225,10 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 		case "COMPLETE", "COMPLETED", "CONFIRMED":
 			if tx.TxHash != "" {
 				_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+			}
+			if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+				s.logger.Error("sync: Circle completed but failed to commit ledger",
+					"error", commitErr, "withdrawal_id", withdrawal.ID.String())
 			}
 			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
 				return withdrawal.Status, err
@@ -2980,6 +3260,10 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 				return withdrawal.Status, err
 			}
 		} else {
+			if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+				s.logger.Error("sync: Bridge completed but failed to commit ledger",
+					"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+			}
 			if err := s.settleCompletedCryptoWithdrawal(ctx, withdrawal); err != nil {
 				return withdrawal.Status, err
 			}

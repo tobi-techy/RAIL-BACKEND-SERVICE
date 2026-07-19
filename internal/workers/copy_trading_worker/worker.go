@@ -13,7 +13,6 @@ import (
 // SignalRepository defines the interface for fetching pending signals
 type SignalRepository interface {
 	GetPendingSignals(ctx context.Context, limit int) ([]*entities.Signal, error)
-	UpdateSignalStatus(ctx context.Context, signalID interface{}, status entities.SignalStatus, processedCount, failedCount int) error
 }
 
 // Worker processes copy trading signals asynchronously

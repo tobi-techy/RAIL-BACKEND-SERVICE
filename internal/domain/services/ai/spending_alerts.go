@@ -19,7 +19,7 @@ type SpendingAlert struct {
 
 // CheckSpendingAlert analyzes a new transaction and returns alerts if anomalous.
 // Called from card/withdrawal webhook handlers after a transaction completes.
-func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, merchant, category string) []*SpendingAlert {
+func (o *AgentAdapter) CheckSpendingAlert(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, merchant, category string) []*SpendingAlert {
 	if o.spending == nil {
 		return nil
 	}
@@ -36,12 +36,24 @@ func (o *Orchestrator) CheckSpendingAlert(ctx context.Context, userID uuid.UUID,
 	dailyAvg := summary.DailyAvg
 	alerts := make([]*SpendingAlert, 0)
 
+	// Look up enrichment context for the merchant
+	merchantContext := ""
+	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		if et := lookupEnrichment(merchant, enrichmentMap); et != nil {
+			merchantContext = et.MerchantContext
+		}
+	}
+
 	// Alert 1: Single transaction > 3x daily average
 	if !dailyAvg.IsZero() && amount.GreaterThan(dailyAvg.Mul(decimal.NewFromInt(3))) {
+		msg := fmt.Sprintf("Heads up — that $%s transaction is more than 3x your daily average of $%s", amount.StringFixed(2), dailyAvg.StringFixed(2))
+		if merchantContext != "" {
+			msg += fmt.Sprintf(" (%s)", merchantContext)
+		}
 		alerts = append(alerts, &SpendingAlert{
 			UserID:  userID,
 			Type:    "high_spend",
-			Message: fmt.Sprintf("Heads up — that $%s transaction is more than 3x your daily average of $%s", amount.StringFixed(2), dailyAvg.StringFixed(2)),
+			Message: msg,
 			Amount:  amount.String(),
 		})
 	}

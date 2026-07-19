@@ -26,7 +26,7 @@ type FinancialProfileProvider interface {
 
 // SetFinancialProfileProvider wires the durable personalization provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetFinancialProfileProvider(p FinancialProfileProvider) {
+func (o *AgentAdapter) SetFinancialProfileProvider(p FinancialProfileProvider) {
 	o.financialProfile = p
 }
 
@@ -69,7 +69,7 @@ func FinancialProfileTools() []infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeGetFinancialProfile(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetFinancialProfile(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.financialProfile == nil {
 		return map[string]interface{}{"error": "financial profile not available"}, nil
 	}
@@ -104,7 +104,7 @@ func (o *Orchestrator) executeGetFinancialProfile(ctx context.Context, userID uu
 	}, nil
 }
 
-func (o *Orchestrator) executePersonaMoneyContext(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executePersonaMoneyContext(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.financialProfile == nil {
 		return map[string]interface{}{"error": "financial profile not available"}, nil
 	}
@@ -173,7 +173,7 @@ func (o *Orchestrator) executePersonaMoneyContext(ctx context.Context, userID uu
 	}, nil
 }
 
-func (o *Orchestrator) createFinancialProfileAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createFinancialProfileAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	params, changedFields, err := buildFinancialProfileParams(args)
 	if err != nil {
 		return map[string]interface{}{"error": err.Error()}, nil
@@ -206,7 +206,7 @@ func (o *Orchestrator) createFinancialProfileAction(ctx context.Context, userID,
 	}, nil
 }
 
-func (o *Orchestrator) executeUpdateFinancialProfile(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeUpdateFinancialProfile(ctx context.Context, userID uuid.UUID, params map[string]interface{}) (map[string]interface{}, error) {
 	if o.financialProfile == nil {
 		return map[string]interface{}{"error": "financial profile not available"}, nil
 	}
@@ -240,7 +240,7 @@ func (o *Orchestrator) executeUpdateFinancialProfile(ctx context.Context, userID
 	}, nil
 }
 
-func (o *Orchestrator) buildFinancialProfileContext(ctx context.Context, userID uuid.UUID) string {
+func (o *AgentAdapter) buildFinancialProfileContext(ctx context.Context, userID uuid.UUID) string {
 	if o.financialProfile == nil {
 		return ""
 	}
@@ -250,24 +250,47 @@ func (o *Orchestrator) buildFinancialProfileContext(ctx context.Context, userID 
 	if err != nil || profile == nil {
 		return ""
 	}
-	return fmt.Sprintf(
-		"[User financial profile — type: %s | residence: %s | tax country: %s | primary currency: %s | earns in: %s | spends in: %s | family support country: %s | income frequency: %s | monthly income: %s | fixed costs: %s | savings target: %s | emergency target: %s | risk tolerance: %s | horizon: %s | goal: %s. Use this only as personalization context; still call tools for current balances, transactions, budgets, and activity.]",
-		coalesceString(profile.UserType, "individual"),
-		profile.ResidenceCountry,
-		profile.TaxCountry,
-		profile.PrimaryCurrency,
-		profile.EarningCurrency,
-		profile.SpendingCurrency,
-		profile.FamilySupportCountry,
-		profile.IncomeFrequency,
-		profile.MonthlyIncome.StringFixed(2),
-		profile.MonthlyFixedCosts.StringFixed(2),
-		profile.MonthlySavingsTarget.StringFixed(2),
-		profile.EmergencyFundTarget.StringFixed(2),
-		profile.RiskTolerance,
-		profile.InvestmentHorizon,
-		profile.FinancialGoal,
-	)
+
+	var parts []string
+	if profile.UserType == "" {
+		parts = append(parts, "type: individual")
+	} else {
+		parts = append(parts, "type: "+profile.UserType)
+	}
+	parts = appendNonEmpty(parts, "residence: %s", profile.ResidenceCountry)
+	parts = appendNonEmpty(parts, "tax country: %s", profile.TaxCountry)
+	parts = appendNonEmpty(parts, "currency: %s", profile.PrimaryCurrency)
+	parts = appendNonEmpty(parts, "earns in: %s", profile.EarningCurrency)
+	parts = appendNonEmpty(parts, "spends in: %s", profile.SpendingCurrency)
+	parts = appendNonEmpty(parts, "family support: %s", profile.FamilySupportCountry)
+	parts = appendNonEmpty(parts, "income freq: %s", profile.IncomeFrequency)
+	if profile.MonthlyIncome.IsPositive() {
+		parts = append(parts, "income: $"+profile.MonthlyIncome.StringFixed(2))
+	}
+	if profile.MonthlyFixedCosts.IsPositive() {
+		parts = append(parts, "fixed costs: $"+profile.MonthlyFixedCosts.StringFixed(2))
+	}
+	if profile.MonthlySavingsTarget.IsPositive() {
+		parts = append(parts, "savings target: $"+profile.MonthlySavingsTarget.StringFixed(2))
+	}
+	if profile.EmergencyFundTarget.IsPositive() {
+		parts = append(parts, "emergency target: $"+profile.EmergencyFundTarget.StringFixed(2))
+	}
+	parts = appendNonEmpty(parts, "risk: %s", profile.RiskTolerance)
+	parts = appendNonEmpty(parts, "horizon: %s", profile.InvestmentHorizon)
+	parts = appendNonEmpty(parts, "goal: %s", profile.FinancialGoal)
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[User financial profile — " + strings.Join(parts, " | ") + ". Use this only as personalization context; still call tools for current balances, transactions, budgets, and activity.]"
+}
+
+func appendNonEmpty(parts []string, format string, val string) []string {
+	if val != "" {
+		return append(parts, fmt.Sprintf(format, val))
+	}
+	return parts
 }
 
 func buildFinancialProfileParams(args map[string]interface{}) (map[string]interface{}, []string, error) {

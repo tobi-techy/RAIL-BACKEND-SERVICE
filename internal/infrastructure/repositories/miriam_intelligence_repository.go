@@ -228,6 +228,108 @@ func (r *MiriamIntelligenceRepository) ListReceipts(ctx context.Context, userID 
 	return receipts, nil
 }
 
+// ListReceiptsSince returns receipts created at or after the given time, oldest
+// first, so self-review can grade actions in chronological order.
+func (r *MiriamIntelligenceRepository) ListReceiptsSince(ctx context.Context, userID uuid.UUID, since time.Time) ([]entities.MiriamDecisionReceipt, error) {
+	var receipts []entities.MiriamDecisionReceipt
+	err := r.db.SelectContext(ctx, &receipts, `
+		SELECT * FROM miriam_decision_receipts
+		WHERE user_id = $1 AND created_at >= $2
+		ORDER BY created_at ASC`, userID, since)
+	if err != nil {
+		return nil, fmt.Errorf("list miriam receipts since: %w", err)
+	}
+	return receipts, nil
+}
+
+// CreateSelfReview persists a self-review audit row.
+func (r *MiriamIntelligenceRepository) CreateSelfReview(ctx context.Context, review *entities.MiriamSelfReview) error {
+	if review.ID == uuid.Nil {
+		review.ID = uuid.New()
+	}
+	if review.CadenceHint == "" {
+		review.CadenceHint = entities.NudgeCadenceNormal
+	}
+	if review.Adjustments == nil {
+		review.Adjustments = json.RawMessage(`{}`)
+	}
+	if review.CreatedAt.IsZero() {
+		review.CreatedAt = time.Now().UTC()
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO miriam_self_reviews (
+			id, user_id, period_start, period_end, actions_reviewed, actions_helped,
+			actions_neutral, actions_harmed, nudges_sent, nudges_dismissed,
+			avg_health_before, avg_health_after, cadence_hint, verdict, adjustments,
+			note_sent, created_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+		)`,
+		review.ID, review.UserID, review.PeriodStart, review.PeriodEnd, review.ActionsReviewed,
+		review.ActionsHelped, review.ActionsNeutral, review.ActionsHarmed, review.NudgesSent,
+		review.NudgesDismissed, review.AvgHealthBefore, review.AvgHealthAfter, review.CadenceHint,
+		review.Verdict, review.Adjustments, review.NoteSent, review.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("create miriam self review: %w", err)
+	}
+	return nil
+}
+
+// LastSelfReviewAt returns the timestamp of the user's most recent self-review,
+// or nil if none exists. Used to gate the once-per-day cadence.
+func (r *MiriamIntelligenceRepository) LastSelfReviewAt(ctx context.Context, userID uuid.UUID) (*time.Time, error) {
+	var at time.Time
+	err := r.db.GetContext(ctx, &at, `
+		SELECT created_at FROM miriam_self_reviews
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1`, userID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("last miriam self review at: %w", err)
+	}
+	return &at, nil
+}
+
+// LastSelfReviewNoteAt returns the timestamp of the user's most recent
+// self-review that surfaced a user-facing note, or nil if none. Used to gate the
+// weekly "how I'm doing" note.
+func (r *MiriamIntelligenceRepository) LastSelfReviewNoteAt(ctx context.Context, userID uuid.UUID) (*time.Time, error) {
+	var at time.Time
+	err := r.db.GetContext(ctx, &at, `
+		SELECT created_at FROM miriam_self_reviews
+		WHERE user_id = $1 AND note_sent = TRUE
+		ORDER BY created_at DESC
+		LIMIT 1`, userID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("last miriam self review note at: %w", err)
+	}
+	return &at, nil
+}
+
+// LatestCadenceHint returns the nudge cadence hint from the user's most recent
+// self-review, defaulting to "normal" when none exists.
+func (r *MiriamIntelligenceRepository) LatestCadenceHint(ctx context.Context, userID uuid.UUID) (string, error) {
+	var hint string
+	err := r.db.GetContext(ctx, &hint, `
+		SELECT cadence_hint FROM miriam_self_reviews
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1`, userID)
+	if err == sql.ErrNoRows {
+		return entities.NudgeCadenceNormal, nil
+	}
+	if err != nil {
+		return entities.NudgeCadenceNormal, fmt.Errorf("latest miriam cadence hint: %w", err)
+	}
+	return hint, nil
+}
+
 func (r *MiriamIntelligenceRepository) CreateEvent(ctx context.Context, event *entities.MiriamEvent) error {
 	if event.ID == uuid.Nil {
 		event.ID = uuid.New()

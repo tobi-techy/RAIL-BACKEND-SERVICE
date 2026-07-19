@@ -29,7 +29,7 @@ type PriceTracker interface {
 
 // SetPriceTracker sets the price tracking provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetPriceTracker(p PriceTracker) {
+func (o *AgentAdapter) SetPriceTracker(p PriceTracker) {
 	o.priceTracker = p
 }
 
@@ -47,7 +47,7 @@ func PriceTrackingTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executePriceChanges(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executePriceChanges(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.priceTracker == nil {
 		return map[string]interface{}{"error": "price tracking not available"}, nil
 	}

@@ -31,7 +31,7 @@ type MilestoneAlert struct {
 // CheckSavingsMilestone checks if the user just crossed a stash milestone.
 // Call this after a deposit is split (stash balance increased).
 // prevBalance is the stash balance before the deposit.
-func (o *Orchestrator) CheckSavingsMilestone(ctx context.Context, userID uuid.UUID, prevBalance decimal.Decimal) *MilestoneAlert {
+func (o *AgentAdapter) CheckSavingsMilestone(ctx context.Context, userID uuid.UUID, prevBalance decimal.Decimal) *MilestoneAlert {
 	if o.aggregateStats == nil {
 		return nil
 	}

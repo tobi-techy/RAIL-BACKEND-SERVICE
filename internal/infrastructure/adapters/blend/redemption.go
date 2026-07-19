@@ -173,7 +173,12 @@ func (r *DepositRouter) RedeemStashYieldForTransfer(ctx context.Context, userID 
 	}
 
 	if err := r.assertSufficientPosition(ctx, userID, amount, existing.ID); err != nil {
-		_ = r.markRedemptionFailed(ctx, idempotencyKey, err.Error())
+		r.logger.Error("Blend: redemption (transfer) blocked on insufficient position — deferring for worker retry",
+			zap.String("redemption_id", existing.ID.String()),
+			zap.String("user_id", userID.String()),
+			zap.String("amount", amount.StringFixed(6)),
+			zap.Error(err))
+		r.deferRedemption(ctx, existing.ID, err.Error(), 2*time.Minute)
 		return err
 	}
 
@@ -248,11 +253,11 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 	// 5. Bridge redeemed USDC from Base EOA → user's Solana wallet (async, best-effort).
 	// Skipped when funds are about to leave the platform via a crypto transfer — the
 	// transfer spends from the Base EOA directly, and a concurrent sweep would race it.
+	// Do NOT set swept_at here — if the transfer fails, the worker's retryPendingSweeps
+	// must be able to discover this complete-but-unswept redemption and bridge the funds
+	// back to Solana. The 5-minute grace period in retryPendingSweeps avoids racing a
+	// transfer that is still in flight.
 	if skipSweep {
-		// Mark swept_at so the worker does not retry the sweep for this redemption.
-		_, _ = r.db.ExecContext(context.Background(), `
-			UPDATE blend_yield_redemptions SET swept_at = NOW(), updated_at = NOW() WHERE id = $1
-		`, red.ID)
 		return nil
 	}
 

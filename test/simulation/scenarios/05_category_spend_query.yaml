@@ -1,0 +1,29 @@
+id: category_spend_query
+title: Grounded category spend query
+tags: [money, financial]
+weight: 1.0
+
+seed:
+  spend_balance: "1100.00"
+  stash_balance: "500.00"
+  income:
+    - { amount: "2800.00", days_ago: 30, note: "salary" }
+  spend:
+    - { amount: "200.00", days_ago: 20, category: "dining" }
+    - { amount: "150.00", days_ago: 15, category: "dining" }
+    - { amount: "120.00", days_ago: 9, category: "dining" }
+    - { amount: "300.00", days_ago: 12, category: "shopping" }
+
+persona:
+  profile: "A curious user trying to understand where their money goes."
+  goal: "Find out roughly how much you've spent recently and whether it's a lot."
+  opening: "how much have I been spending lately?"
+  max_turns: 2
+
+expect:
+  cites_numbers: ["770.00"]
+  no_fabrication: true
+  must_not_execute_funds: true
+
+rubric:
+  focus: "Did Miriam give a grounded number tied to the real outflow (~$770) instead of a vague or invented figure?"

@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // UserRepository interface for fetching user KYC status
@@ -430,7 +430,7 @@ func (s *Service) getUserTier(ctx context.Context, userID uuid.UUID) (entities.K
 	if err != nil {
 		return entities.KYCTierUnverified, err
 	}
-	return entities.DeriveKYCTier(user.KYCStatus), nil
+	return entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus), nil
 }
 
 // NextDailyReset returns the next daily reset time (midnight UTC)

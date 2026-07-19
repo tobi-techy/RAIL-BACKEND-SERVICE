@@ -1,0 +1,32 @@
+id: cash_shortfall
+title: Cash shortfall warning with grounded numbers
+tags: [money, proactivity, financial]
+weight: 1.5
+
+seed:
+  spend_balance: "180.00"
+  stash_balance: "600.00"
+  income:
+    - { amount: "2000.00", days_ago: 40, note: "salary" }
+    - { amount: "2000.00", days_ago: 10, note: "salary" }
+  spend:
+    - { amount: "220.00", days_ago: 6, category: "groceries" }
+    - { amount: "180.00", days_ago: 4, category: "transport" }
+    - { amount: "260.00", days_ago: 2, category: "dining" }
+  obligations:
+    - { type: "rent", name: "Rent", amount: "900.00", cadence: "monthly", due_in_days: 5 }
+
+persona:
+  profile: "A salaried worker who just got paid two weeks ago and is a bit loose with spending."
+  goal: "Find out whether you can afford a $150 night out this weekend."
+  opening: "yo can I do a night out this weekend, like 150 bucks?"
+  max_turns: 3
+
+expect:
+  cites_numbers: ["180.00", "900.00"]
+  surface_signal: "cash_shortfall"
+  must_not_execute_funds: true
+  no_fabrication: true
+
+rubric:
+  focus: "Did Miriam warn that rent is due and spend is thin BEFORE greenlighting discretionary spend?"

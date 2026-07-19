@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 )
 
 // CopyTradingRepository handles database operations for copy trading
@@ -37,7 +37,7 @@ func (r *CopyTradingRepository) GetActiveConductors(ctx context.Context, limit, 
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, user_id, display_name, bio, avatar_url, status, fee_rate, source_aum,
+		SELECT id, user_id, source, external_key, display_name, bio, avatar_url, status, fee_rate, source_aum,
 		       total_return, win_rate, max_drawdown, sharpe_ratio, total_trades,
 		       followers_count, min_draft_amount, is_verified, verified_at, last_trade_at,
 		       created_at, updated_at
@@ -64,7 +64,7 @@ func (r *CopyTradingRepository) GetActiveConductors(ctx context.Context, limit, 
 // GetConductorByID returns a conductor by ID
 func (r *CopyTradingRepository) GetConductorByID(ctx context.Context, id uuid.UUID) (*entities.Conductor, error) {
 	query := `
-		SELECT id, user_id, display_name, bio, avatar_url, status, fee_rate, source_aum,
+		SELECT id, user_id, source, external_key, display_name, bio, avatar_url, status, fee_rate, source_aum,
 		       total_return, win_rate, max_drawdown, sharpe_ratio, total_trades,
 		       followers_count, min_draft_amount, is_verified, verified_at, last_trade_at,
 		       created_at, updated_at
@@ -83,7 +83,7 @@ func (r *CopyTradingRepository) GetConductorByID(ctx context.Context, id uuid.UU
 // GetConductorByUserID returns a conductor by user ID
 func (r *CopyTradingRepository) GetConductorByUserID(ctx context.Context, userID uuid.UUID) (*entities.Conductor, error) {
 	query := `
-		SELECT id, user_id, display_name, bio, avatar_url, status, fee_rate, source_aum,
+		SELECT id, user_id, source, external_key, display_name, bio, avatar_url, status, fee_rate, source_aum,
 		       total_return, win_rate, max_drawdown, sharpe_ratio, total_trades,
 		       followers_count, min_draft_amount, is_verified, verified_at, last_trade_at,
 		       created_at, updated_at
@@ -456,20 +456,94 @@ func (r *CopyTradingRepository) UpdateApplicationStatus(ctx context.Context, id 
 
 // CreateConductor creates a new conductor
 func (r *CopyTradingRepository) CreateConductor(ctx context.Context, conductor *entities.Conductor) error {
+	if conductor.Source == "" {
+		conductor.Source = entities.ConductorSourceRail
+	}
 	query := `
-		INSERT INTO conductors (id, user_id, display_name, bio, avatar_url, status, fee_rate,
+		INSERT INTO conductors (id, user_id, source, external_key, display_name, bio, avatar_url, status, fee_rate,
 		                        source_aum, total_return, win_rate, max_drawdown, sharpe_ratio,
 		                        total_trades, followers_count, min_draft_amount, is_verified,
 		                        verified_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 	`
 	_, err := r.db.ExecContext(ctx, query,
-		conductor.ID, conductor.UserID, conductor.DisplayName, conductor.Bio, conductor.AvatarURL,
+		conductor.ID, conductor.UserID, conductor.Source, conductor.ExternalKey,
+		conductor.DisplayName, conductor.Bio, conductor.AvatarURL,
 		conductor.Status, conductor.FeeRate, conductor.SourceAUM, conductor.TotalReturn,
 		conductor.WinRate, conductor.MaxDrawdown, conductor.SharpeRatio, conductor.TotalTrades,
 		conductor.FollowersCount, conductor.MinDraftAmount, conductor.IsVerified,
 		conductor.VerifiedAt, conductor.CreatedAt, conductor.UpdatedAt)
 	return err
+}
+
+// GetConductorByExternalKey returns a public-figure conductor by its dataset key.
+func (r *CopyTradingRepository) GetConductorByExternalKey(ctx context.Context, externalKey string) (*entities.Conductor, error) {
+	query := `
+		SELECT id, user_id, source, external_key, display_name, bio, avatar_url, status, fee_rate, source_aum,
+		       total_return, win_rate, max_drawdown, sharpe_ratio, total_trades,
+		       followers_count, min_draft_amount, is_verified, verified_at, last_trade_at,
+		       created_at, updated_at
+		FROM conductors WHERE external_key = $1
+	`
+	var conductor entities.Conductor
+	if err := r.db.GetContext(ctx, &conductor, query, externalKey); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get conductor by external key: %w", err)
+	}
+	return &conductor, nil
+}
+
+// GetActivePublicConductorsWithDrafts returns active public-figure conductors
+// that at least one user currently copies. Used by the public trades worker to
+// know which figures to poll disclosures for.
+func (r *CopyTradingRepository) GetActivePublicConductorsWithDrafts(ctx context.Context) ([]*entities.Conductor, error) {
+	query := `
+		SELECT DISTINCT c.id, c.user_id, c.source, c.external_key, c.display_name, c.bio, c.avatar_url, c.status, c.fee_rate, c.source_aum,
+		       c.total_return, c.win_rate, c.max_drawdown, c.sharpe_ratio, c.total_trades,
+		       c.followers_count, c.min_draft_amount, c.is_verified, c.verified_at, c.last_trade_at,
+		       c.created_at, c.updated_at
+		FROM conductors c
+		JOIN drafts d ON d.conductor_id = c.id AND d.status = 'active'
+		WHERE c.source = 'public' AND c.status = 'active'
+	`
+	var conductors []*entities.Conductor
+	if err := r.db.SelectContext(ctx, &conductors, query); err != nil {
+		return nil, fmt.Errorf("failed to get public conductors: %w", err)
+	}
+	return conductors, nil
+}
+
+// GetSignalByOrderRef returns the signal with the given order/disclosure
+// reference for a conductor, or nil when none exists.
+func (r *CopyTradingRepository) GetSignalByOrderRef(ctx context.Context, conductorID uuid.UUID, orderRef string) (*entities.Signal, error) {
+	query := `
+		SELECT id, conductor_id, asset_ticker, asset_name, signal_type, side, base_quantity,
+		       base_price, base_value, conductor_aum_at_signal, order_id, status,
+		       processed_count, failed_count, created_at, completed_at
+		FROM signals WHERE conductor_id = $1 AND order_id = $2
+		ORDER BY created_at ASC LIMIT 1
+	`
+	var signal entities.Signal
+	if err := r.db.GetContext(ctx, &signal, query, conductorID, orderRef); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get signal by order ref: %w", err)
+	}
+	return &signal, nil
+}
+
+// SignalExistsByOrderRef reports whether a signal with the given order/disclosure
+// reference already exists for the conductor (dedupe for disclosure ingestion).
+func (r *CopyTradingRepository) SignalExistsByOrderRef(ctx context.Context, conductorID uuid.UUID, orderRef string) (bool, error) {
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM signals WHERE conductor_id = $1 AND order_id = $2)`
+	if err := r.db.GetContext(ctx, &exists, query, conductorID, orderRef); err != nil {
+		return false, fmt.Errorf("failed to check signal existence: %w", err)
+	}
+	return exists, nil
 }
 
 // === Track Operations ===

@@ -34,6 +34,12 @@ type SpendingTransaction struct {
 	Amount   decimal.Decimal `db:"amount" json:"amount"`
 	Category string          `db:"category" json:"category"`
 	Source   string          `db:"source" json:"source"`
+
+	// Enrichment fields (populated when enriched data is available)
+	PlainDescription string `json:"plain_description,omitempty" db:"plain_description"`
+	MerchantContext  string `json:"merchant_context,omitempty" db:"merchant_context"`
+	Counterparty     string `json:"counterparty,omitempty" db:"counterparty"`
+	IsEssential      *bool  `json:"is_essential,omitempty" db:"is_essential"`
 }
 
 // MoneyFlowSummary holds pre-computed money-in and money-out totals for a period.

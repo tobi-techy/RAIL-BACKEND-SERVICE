@@ -29,8 +29,10 @@ import (
 )
 
 // ReceiptMemoryStore stores receipt-related memories for long-term recall.
+// eventDate is "YYYY-MM-DD" (empty if unknown) so recalls can be time-ranked;
+// metadata carries structured tags (type/category/merchant) for filtered search.
 type ReceiptMemoryStore interface {
-	StoreMemory(ctx context.Context, userID string, content string) error
+	StoreMemory(ctx context.Context, userID string, content string, eventDate string, metadata map[string]string) error
 }
 
 // ImageAnalysisHandler handles receipt/image analysis via vision-capable LLM.
@@ -39,7 +41,7 @@ type ImageAnalysisHandler struct {
 	visionURL     string  // e.g. https://api.openai.com/v1 or https://api.moonshot.ai/v1
 	visionModel   string  // e.g. gpt-4o or moonshot-v1-8k
 	visionTemp    float64 // temperature for vision calls (Kimi requires 1.0)
-	orchestrator  *aiservice.Orchestrator
+	orchestrator  aiservice.ChatEngine
 	receiptRepo   *repositories.ReceiptRepository
 	budgetRepo    *repositories.BudgetRepository
 	spendingRepo  *repositories.LedgerSpendingRepository
@@ -54,7 +56,7 @@ type ConversationPersister interface {
 	RecordImageExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, thumbnail string, tokens int, model string) error
 }
 
-func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
+func NewImageAnalysisHandler(apiKey string, orchestrator aiservice.ChatEngine, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
 	return &ImageAnalysisHandler{
 		apiKey:       apiKey,
 		visionURL:    "https://api.openai.com/v1",
@@ -67,7 +69,7 @@ func NewImageAnalysisHandler(apiKey string, orchestrator *aiservice.Orchestrator
 }
 
 // NewImageAnalysisHandlerWithVision creates a handler using any OpenAI-compatible vision endpoint.
-func NewImageAnalysisHandlerWithVision(apiKey, baseURL, model string, orchestrator *aiservice.Orchestrator, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
+func NewImageAnalysisHandlerWithVision(apiKey, baseURL, model string, orchestrator aiservice.ChatEngine, receiptRepo *repositories.ReceiptRepository, logger *zap.Logger) *ImageAnalysisHandler {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
 	}
@@ -266,11 +268,21 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 					}
 					memContent := fmt.Sprintf("Scanned receipt: %s %s at %s on %s (%s)",
 						scan.Currency, scan.Amount.StringFixed(0), parsed.Merchant, dateStr, parsed.Category)
-					go func(uid uuid.UUID, content string) {
+					eventDate := ""
+					if scan.ReceiptDate != nil {
+						eventDate = scan.ReceiptDate.Format("2006-01-02")
+					}
+					meta := map[string]string{
+						"type":     "receipt",
+						"category": scan.Category,
+						"merchant": parsed.Merchant,
+						"currency": scan.Currency,
+					}
+					go func(uid uuid.UUID, content, ev string, md map[string]string) {
 						smCtx, smCancel := context.WithTimeout(context.Background(), 5*time.Second)
 						defer smCancel()
-						_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content)
-					}(userID, memContent)
+						_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content, ev, md)
+					}(userID, memContent, eventDate, meta)
 				}
 			}
 		} else {
@@ -290,11 +302,18 @@ func (h *ImageAnalysisHandler) AnalyzeImage(c *gin.Context) {
 			if h.memoryStore != nil {
 				memoryContent := fmt.Sprintf("Receipt from %s for %s %s on %s matched to bank statement transaction: %s",
 					parsed.Merchant, scan.Currency, scan.Amount.StringFixed(0), scan.ReceiptDate.Format("Jan 2, 2006"), txn.Description)
-				go func(uid uuid.UUID, content string) {
+				eventDate := scan.ReceiptDate.Format("2006-01-02")
+				meta := map[string]string{
+					"type":     "receipt_match",
+					"category": scan.Category,
+					"merchant": parsed.Merchant,
+					"currency": scan.Currency,
+				}
+				go func(uid uuid.UUID, content, ev string, md map[string]string) {
 					smCtx, smCancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer smCancel()
-					_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content)
-				}(userID, memoryContent)
+					_ = h.memoryStore.StoreMemory(smCtx, uid.String(), content, ev, md)
+				}(userID, memoryContent, eventDate, meta)
 			}
 		}
 	}

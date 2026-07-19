@@ -46,7 +46,15 @@ func (r *repoFake) ListCaps(_ context.Context, _ uuid.UUID, activeOnly bool) ([]
 	return out, nil
 }
 
-func (r *repoFake) DeleteCap(_ context.Context, _, id uuid.UUID) error { return nil }
+func (r *repoFake) DeleteCap(_ context.Context, _, id uuid.UUID) error {
+	for i := range r.caps {
+		if r.caps[i].ID == id {
+			r.caps = append(r.caps[:i], r.caps[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
 
 func (r *repoFake) RecordEvent(_ context.Context, event *entities.MoneyGuardEvent) error {
 	r.events = append(r.events, event)
@@ -228,6 +236,42 @@ func TestEvaluateCardAuthorizationDoesNotApplySideEffects(t *testing.T) {
 	require.False(t, notifier.called)
 	require.True(t, sweeper.amount.IsZero())
 	require.Empty(t, repo.events)
+}
+
+func TestScopedCapsOnlyTriggerForMatchingTransactions(t *testing.T) {
+	userID := uuid.New()
+	repo := &repoFake{
+		settings: &entities.MoneyGuardSettings{
+			UserID: userID, GuardianMode: entities.GuardianModeNudge,
+			SafeToSpendFloor: decimal.NewFromInt(10),
+		},
+		caps: []entities.SpendingCap{{
+			ID: uuid.New(), UserID: userID, Scope: entities.CapScopeMerchant, ScopeValue: "Bet9ja",
+			Period: entities.CapPeriodMonth, LimitAmount: merchantBlockLimit,
+			Currency: "USD", EnforcementAction: entities.CapActionDecline, IsActive: true,
+		}},
+	}
+	svc := NewService(
+		repo, &balanceFake{spend: decimal.NewFromInt(500)}, nil,
+		spendingFake{total: decimal.NewFromInt(90)},
+		nil, nil, nil, nil, nil, zap.NewNop(),
+	)
+
+	// Unrelated merchant must not trip the block cap.
+	decision, err := svc.EvaluateCardAuthorization(context.Background(), userID, TransactionInput{
+		Amount: decimal.NewFromInt(12), Merchant: "Starbucks", Reference: "auth_ok",
+	})
+	require.NoError(t, err)
+	require.True(t, decision.Allowed)
+	require.Empty(t, decision.TriggeredCaps)
+
+	// Noisy card-network descriptor for the blocked merchant must decline.
+	decision, err = svc.EvaluateCardAuthorization(context.Background(), userID, TransactionInput{
+		Amount: decimal.NewFromInt(12), Merchant: "BET9JA LAGOS NG", Reference: "auth_blocked",
+	})
+	require.NoError(t, err)
+	require.False(t, decision.Allowed)
+	require.Len(t, decision.TriggeredCaps, 1)
 }
 
 func TestEvaluateStashRaidWarnsAndPausesAfterLimit(t *testing.T) {

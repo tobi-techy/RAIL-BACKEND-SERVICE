@@ -69,7 +69,7 @@ func FinancialAuditTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeFinancialAudit(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.spending == nil || o.aggregateStats == nil {
 		return map[string]interface{}{"error": "financial audit service is unavailable: spending and balance providers are not configured"}, nil
 	}
@@ -111,6 +111,14 @@ func (o *Orchestrator) executeFinancialAudit(ctx context.Context, userID uuid.UU
 
 	topCategories := auditTopCategories(summary.Categories, 8)
 	topMerchants := auditTopMerchants(summary.Merchants, 8)
+
+	// Enrich top merchants with plain descriptions and context
+	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		for _, m := range topMerchants {
+			enrichMerchantEntry(m, enrichmentMap)
+		}
+	}
+
 	biggestLeak := auditBiggestLeak(topCategories, totalOut)
 	monthlyTrend := o.auditMonthlyTrend(ctx, userID, start, end)
 	dataCoverage := auditDataCoverage(summary, monthlyTrend, start, end)
@@ -355,7 +363,7 @@ func auditBiggestLeak(topCategories []map[string]interface{}, totalOut decimal.D
 	}
 }
 
-func (o *Orchestrator) auditMonthlyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) []map[string]interface{} {
+func (o *AgentAdapter) auditMonthlyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) []map[string]interface{} {
 	if o.spending == nil {
 		return nil
 	}
@@ -492,7 +500,7 @@ func decimalFromAuditMap(data map[string]interface{}, key string) decimal.Decima
 	return value
 }
 
-func (o *Orchestrator) auditProfile(ctx context.Context, userID uuid.UUID) (map[string]interface{}, *entities.FinancialProfile) {
+func (o *AgentAdapter) auditProfile(ctx context.Context, userID uuid.UUID) (map[string]interface{}, *entities.FinancialProfile) {
 	if o.financialProfile == nil {
 		return map[string]interface{}{"has_profile": false}, nil
 	}
@@ -513,7 +521,7 @@ func (o *Orchestrator) auditProfile(ctx context.Context, userID uuid.UUID) (map[
 	}, profile
 }
 
-func (o *Orchestrator) auditObligations(ctx context.Context, userID uuid.UUID, now time.Time) (map[string]interface{}, decimal.Decimal, []string) {
+func (o *AgentAdapter) auditObligations(ctx context.Context, userID uuid.UUID, now time.Time) (map[string]interface{}, decimal.Decimal, []string) {
 	if o.obligations == nil {
 		return map[string]interface{}{"available": false, "message": "No manual obligations provider configured."}, decimal.Zero, []string{"Manual obligations were not included; rent, tax, family support, payroll, and subscriptions may be missing."}
 	}
@@ -534,7 +542,7 @@ func (o *Orchestrator) auditObligations(ctx context.Context, userID uuid.UUID, n
 	}, summary.RequiredThisMonth, nil
 }
 
-func (o *Orchestrator) auditBudget(ctx context.Context, userID uuid.UUID, monthlyOut decimal.Decimal, now time.Time) map[string]interface{} {
+func (o *AgentAdapter) auditBudget(ctx context.Context, userID uuid.UUID, monthlyOut decimal.Decimal, now time.Time) map[string]interface{} {
 	if o.budgetProvider == nil {
 		return map[string]interface{}{"has_budget": false}
 	}
@@ -569,7 +577,7 @@ func (o *Orchestrator) auditBudget(ctx context.Context, userID uuid.UUID, monthl
 	}
 }
 
-func (o *Orchestrator) auditRecurring(ctx context.Context, userID uuid.UUID) (map[string]interface{}, decimal.Decimal, []string) {
+func (o *AgentAdapter) auditRecurring(ctx context.Context, userID uuid.UUID) (map[string]interface{}, decimal.Decimal, []string) {
 	if o.recurringDetector == nil {
 		return map[string]interface{}{"available": false}, decimal.Zero, nil
 	}

@@ -58,8 +58,8 @@ type BridgeWebhookHandler struct {
 	walletService           WalletWebhookService
 	logger                  *zap.Logger
 	webhookSecret           string
-	skipWebhookVerification bool   // Should ONLY be true in development with explicit config
-	environment             string // Track environment to enforce verification in production
+	skipWebhookVerification bool               // Should ONLY be true in development with explicit config
+	environment             string             // Track environment to enforce verification in production
 	redis                   BridgeWebhookRedis // Redis for event deduplication
 }
 
@@ -1446,6 +1446,7 @@ type UserRepositoryForCustomer interface {
 	UpdateBridgeKYCStatus(ctx context.Context, userID uuid.UUID, status string) error
 	UpdateKYCStatus(ctx context.Context, userID uuid.UUID, status entities.KYCStatus, approvedAt *time.Time, rejectionReason *string) error
 	UpdateOnboardingStatus(ctx context.Context, userID uuid.UUID, status entities.OnboardingStatus) error
+	UpdateKYCTier(ctx context.Context, userID uuid.UUID, tier int) error
 }
 
 // NewBridgeCustomerStatusProcessor creates a new customer status processor
@@ -1509,13 +1510,25 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 	// Bridge is the authoritative source for KYC approval.
 	if bridgeKYCStatus == "active" {
 		now := time.Now()
+		// These writes are fail-loud: returning an error makes Bridge retry the
+		// webhook so the tier promotion (Tier 3) is eventually consistent rather
+		// than silently half-applied.
 		if err := s.userRepo.UpdateKYCStatus(ctx, user.ID, entities.KYCStatusApproved, &now, nil); err != nil {
 			s.logger.Error("Failed to promote kyc_status to approved on Bridge active",
 				zap.Error(err), zap.String("user_id", user.ID.String()))
+			return fmt.Errorf("promote kyc_status: %w", err)
 		}
 		if err := s.userRepo.UpdateOnboardingStatus(ctx, user.ID, entities.OnboardingStatusCompleted); err != nil {
 			s.logger.Error("Failed to complete onboarding on Bridge active",
 				zap.Error(err), zap.String("user_id", user.ID.String()))
+			return fmt.Errorf("complete onboarding: %w", err)
+		}
+		// Tier 3 (advanced): Bridge KYC is the authoritative gate for USD accounts,
+		// cards, and investing. Promote the persisted tier when Bridge goes active.
+		if err := s.userRepo.UpdateKYCTier(ctx, user.ID, entities.KYCTierLevelAdvanced); err != nil {
+			s.logger.Error("Failed to promote kyc_tier to advanced on Bridge active",
+				zap.Error(err), zap.String("user_id", user.ID.String()))
+			return fmt.Errorf("promote kyc_tier: %w", err)
 		}
 		analytics.TrackEvent(ctx, user.ID.String(), analytics.EventKYCCompleted, map[string]any{
 			"provider": "bridge",
@@ -1525,6 +1538,22 @@ func (s *BridgeCustomerStatusProcessor) UpdateCustomerStatus(ctx context.Context
 		})
 		s.logger.Info("KYC approved — Bridge active",
 			zap.String("user_id", user.ID.String()))
+	} else if bridgeKYCStatus == "rejected" {
+		// Bridge revoked/denied advanced KYC. Drop the persisted tier back to the
+		// user's still-valid NGN floor (Tier 2 if BVN+NIN verified, else Tier 1) so
+		// they cannot retain Tier 3 limits/capabilities after a rejection. Fail-loud
+		// so a failed downgrade is retried rather than leaving a stale high tier.
+		floor := entities.KYCTierLevelNonKYC
+		if user.BVNVerifiedAt != nil && user.NINVerifiedAt != nil {
+			floor = entities.KYCTierLevelBasic
+		}
+		if err := s.userRepo.UpdateKYCTier(ctx, user.ID, floor); err != nil {
+			s.logger.Error("Failed to downgrade kyc_tier on Bridge rejection",
+				zap.Error(err), zap.String("user_id", user.ID.String()))
+			return fmt.Errorf("downgrade kyc_tier: %w", err)
+		}
+		s.logger.Warn("Bridge KYC rejected — downgraded persisted tier to NGN floor",
+			zap.String("user_id", user.ID.String()), zap.Int("floor", floor))
 	}
 
 	// Send push notification for KYC outcome

@@ -71,6 +71,12 @@ type Notifier interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
 }
 
+// ProactiveChatSender routes proactive messages back through the messaging bridge
+// (iMessage / SMS) so nudges, alerts, and check-ins appear in the user's chat thread.
+type ProactiveChatSender interface {
+	SendChatMessage(ctx context.Context, userID uuid.UUID, message string) error
+}
+
 type Service struct {
 	repo        Repository
 	balances    BalanceProvider
@@ -103,6 +109,7 @@ func NewService(
 
 type CreateMandateRequest struct {
 	Name               string          `json:"name"`
+	ActionType         string          `json:"action_type"`
 	MaxAmountPerAction decimal.Decimal `json:"max_amount_per_action"`
 	MaxAmountPerDay    decimal.Decimal `json:"max_amount_per_day"`
 	MinSpendBalance    decimal.Decimal `json:"min_spend_balance"`
@@ -111,10 +118,35 @@ type CreateMandateRequest struct {
 	ExpiresAt          *time.Time      `json:"expires_at"`
 }
 
-func (s *Service) CreateTransferToStashMandate(ctx context.Context, userID uuid.UUID, req CreateMandateRequest) (*entities.MiriamAutopilotMandate, error) {
+func (s *Service) CreateMandate(ctx context.Context, userID uuid.UUID, req CreateMandateRequest) (*entities.MiriamAutopilotMandate, error) {
+	if req.ActionType != "" && !entities.IsValidMandateActionType(req.ActionType) {
+		return nil, fmt.Errorf("unsupported mandate action type: %s", req.ActionType)
+	}
+	actionType := req.ActionType
+	if actionType == "" {
+		actionType = entities.MiriamMandateTransferToStash
+	}
+
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		name = "Miriam quiet Stash moves"
+		switch actionType {
+		case entities.MiriamMandateTransferToStash:
+			name = "Miriam quiet Stash moves"
+		case entities.MiriamMandateTransferToSpend:
+			name = "Pull from Stash for bills"
+		case entities.MiriamMandateBillReservation:
+			name = "Set aside for upcoming bills"
+		case entities.MiriamMandateSpendCooldown:
+			name = "Cool off on spending"
+		case entities.MiriamMandateGoalContribution:
+			name = "Auto-save to goals"
+		case entities.MiriamMandateStashTopUp:
+			name = "Top up Stash from surplus"
+		case entities.MiriamMandateIdleSweep:
+			name = "Sweep idle cash to Stash"
+		default:
+			name = "Miriam quiet action"
+		}
 	}
 	if !req.MaxAmountPerAction.IsPositive() {
 		return nil, fmt.Errorf("max_amount_per_action must be positive")
@@ -132,7 +164,7 @@ func (s *Service) CreateTransferToStashMandate(ctx context.Context, userID uuid.
 		ID:                 uuid.New(),
 		UserID:             userID,
 		Name:               name,
-		ActionType:         entities.MiriamMandateTransferToStash,
+		ActionType:         actionType,
 		Status:             entities.MiriamMandateStatusActive,
 		MaxAmountPerAction: req.MaxAmountPerAction,
 		MaxAmountPerDay:    req.MaxAmountPerDay,
@@ -145,6 +177,12 @@ func (s *Service) CreateTransferToStashMandate(ctx context.Context, userID uuid.
 		return nil, err
 	}
 	return mandate, nil
+}
+
+// CreateTransferToStashMandate is a convenience wrapper that creates a transfer_to_stash mandate.
+func (s *Service) CreateTransferToStashMandate(ctx context.Context, userID uuid.UUID, req CreateMandateRequest) (*entities.MiriamAutopilotMandate, error) {
+	req.ActionType = entities.MiriamMandateTransferToStash
+	return s.CreateMandate(ctx, userID, req)
 }
 
 func (s *Service) ListMandates(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutopilotMandate, error) {

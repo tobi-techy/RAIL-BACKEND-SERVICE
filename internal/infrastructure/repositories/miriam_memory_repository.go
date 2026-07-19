@@ -34,10 +34,10 @@ func (r *MiriamMemoryRepository) SaveFact(ctx context.Context, fact *entities.Mi
 	defer tx.Rollback()
 
 	err = tx.QueryRowxContext(ctx, `
-		INSERT INTO miriam_user_facts (user_id, category, fact, source, confidence, first_observed_at, last_confirmed_at)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		INSERT INTO miriam_user_facts (user_id, category, fact, source, confidence, importance, first_observed_at, last_confirmed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
 		RETURNING id, created_at, first_observed_at, last_confirmed_at`,
-		fact.UserID, fact.Category, fact.Fact, fact.Source, fact.Confidence,
+		fact.UserID, fact.Category, fact.Fact, fact.Source, fact.Confidence, fact.Importance,
 	).Scan(&fact.ID, &fact.CreatedAt, &fact.FirstObservedAt, &fact.LastConfirmedAt)
 	if err != nil {
 		return fmt.Errorf("insert fact: %w", err)
@@ -61,11 +61,11 @@ func (r *MiriamMemoryRepository) SaveFact(ctx context.Context, fact *entities.Mi
 func (r *MiriamMemoryRepository) GetActiveFacts(ctx context.Context, userID uuid.UUID) ([]*entities.MiriamUserFact, error) {
 	var facts []*entities.MiriamUserFact
 	err := r.db.SelectContext(ctx, &facts, `
-		SELECT id, user_id, category, fact, source, confidence, superseded_by,
+		SELECT id, user_id, category, fact, source, confidence, importance, superseded_by,
 		       first_observed_at, last_confirmed_at, created_at
 		FROM miriam_user_facts
 		WHERE user_id = $1 AND superseded_by IS NULL
-		ORDER BY last_confirmed_at DESC
+		ORDER BY importance DESC, last_confirmed_at DESC
 		LIMIT 50`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get active facts: %w", err)
@@ -77,7 +77,7 @@ func (r *MiriamMemoryRepository) GetActiveFacts(ctx context.Context, userID uuid
 func (r *MiriamMemoryRepository) GetActiveFactsByCategory(ctx context.Context, userID uuid.UUID, category string) ([]*entities.MiriamUserFact, error) {
 	var facts []*entities.MiriamUserFact
 	err := r.db.SelectContext(ctx, &facts, `
-		SELECT id, user_id, category, fact, source, confidence, superseded_by,
+		SELECT id, user_id, category, fact, source, confidence, importance, superseded_by,
 		       first_observed_at, last_confirmed_at, created_at
 		FROM miriam_user_facts
 		WHERE user_id = $1 AND category = $2 AND superseded_by IS NULL
@@ -171,6 +171,38 @@ func (r *MiriamMemoryRepository) SetPersonalityMode(ctx context.Context, userID 
 	return nil
 }
 
+// GetControlLevel returns the user's control level, or "full" if none is set.
+func (r *MiriamMemoryRepository) GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error) {
+	var level sql.NullString
+	err := r.db.QueryRowContext(ctx, `
+		SELECT control_level FROM miriam_tone_profiles WHERE user_id = $1`, userID).Scan(&level)
+	if err == sql.ErrNoRows {
+		return "full", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get control level: %w", err)
+	}
+	if !level.Valid || level.String == "" {
+		return "full", nil
+	}
+	return level.String, nil
+}
+
+// SetControlLevel updates the control_level column for a user. Valid values: "full", "guided", "monitor".
+func (r *MiriamMemoryRepository) SetControlLevel(ctx context.Context, userID uuid.UUID, level string) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO miriam_tone_profiles (user_id, formality, directness, warmth, humor, brevity, control_level, sample_count)
+		VALUES ($1, 0.5, 0.5, 0.5, 0.5, 0.5, $2, 0)
+		ON CONFLICT (user_id) DO UPDATE SET
+			control_level = $2,
+			updated_at = NOW()`,
+		userID, level)
+	if err != nil {
+		return fmt.Errorf("set control level: %w", err)
+	}
+	return nil
+}
+
 // --- Staleness & Decay ---
 
 // DecayStaleFacts reduces confidence of facts not confirmed within the given duration.
@@ -212,6 +244,16 @@ func (r *MiriamMemoryRepository) SetFactEmbedding(ctx context.Context, factID uu
 	return nil
 }
 
+// SetFactImportance updates the importance score for a fact.
+func (r *MiriamMemoryRepository) SetFactImportance(ctx context.Context, factID uuid.UUID, importance int) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE miriam_user_facts SET importance = $1 WHERE id = $2`, importance, factID)
+	if err != nil {
+		return fmt.Errorf("set fact importance: %w", err)
+	}
+	return nil
+}
+
 // SimilarFact wraps a fact with its cosine distance from the query vector.
 type SimilarFact = entities.SimilarFact
 
@@ -219,7 +261,7 @@ type SimilarFact = entities.SimilarFact
 func (r *MiriamMemoryRepository) FindSimilarFacts(ctx context.Context, userID uuid.UUID, embedding []float32, category string, limit int) ([]SimilarFact, error) {
 	var facts []SimilarFact
 	err := r.db.SelectContext(ctx, &facts, `
-		SELECT id, user_id, category, fact, source, confidence, superseded_by,
+		SELECT id, user_id, category, fact, source, confidence, importance, superseded_by,
 		       first_observed_at, last_confirmed_at, created_at,
 		       (embedding <=> $3) AS distance
 		FROM miriam_user_facts

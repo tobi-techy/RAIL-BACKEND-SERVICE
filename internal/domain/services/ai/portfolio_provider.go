@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 

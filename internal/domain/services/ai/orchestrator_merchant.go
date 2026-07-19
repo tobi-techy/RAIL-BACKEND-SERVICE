@@ -30,7 +30,7 @@ type MerchantAnalyzer interface {
 
 // SetMerchantAnalyzer sets the merchant analyzer provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetMerchantAnalyzer(m MerchantAnalyzer) {
+func (o *AgentAdapter) SetMerchantAnalyzer(m MerchantAnalyzer) {
 	o.merchantAnalyzer = m
 }
 
@@ -48,7 +48,7 @@ func MerchantInsightsTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeMerchantInsights(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeMerchantInsights(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.merchantAnalyzer == nil {
 		return map[string]interface{}{"error": "merchant analysis not available"}, nil
 	}

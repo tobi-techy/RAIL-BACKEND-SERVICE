@@ -211,6 +211,9 @@ func (s *NotificationService) sendInApp(ctx context.Context, notification *entit
 // queueNotification is the core delivery path for convenience methods.
 // It persists in-app, sends push via Expo, and emails for important event types.
 func (s *NotificationService) queueNotification(ctx context.Context, userID uuid.UUID, notifType, title, body string, data map[string]interface{}) error {
+	if s == nil {
+		return nil
+	}
 	// 1. Always persist to in-app notification center
 	if s.persister != nil {
 		if err := s.persister.Create(ctx, userID, notifType, "medium", title, body, data); err != nil {
@@ -462,6 +465,9 @@ func friendlyAccountLabel(s string) string {
 }
 
 func (s *NotificationService) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
+	if s == nil {
+		return nil
+	}
 	return s.queueNotification(ctx, userID, "push", title, message, nil)
 }
 

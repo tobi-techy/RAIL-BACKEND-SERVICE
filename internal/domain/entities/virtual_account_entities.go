@@ -17,24 +17,36 @@ const (
 	VirtualAccountStatusFailed  VirtualAccountStatus = "failed"
 )
 
+// VirtualAccountProvider identifies which external provider issued the account.
+type VirtualAccountProvider string
+
+const (
+	VirtualAccountProviderBridge VirtualAccountProvider = "bridge"
+	VirtualAccountProviderGraph  VirtualAccountProvider = "graph"
+)
+
 // VirtualAccount represents a virtual account linked to an Alpaca brokerage account
 type VirtualAccount struct {
-	ID               uuid.UUID            `json:"id" db:"id"`
-	UserID           uuid.UUID            `json:"user_id" db:"user_id"`
-	BridgeCustomerID string               `json:"bridge_customer_id" db:"bridge_customer_id"`
-	AlpacaAccountID  string               `json:"alpaca_account_id" db:"alpaca_account_id"`
-	BridgeAccountID  *string              `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
-	AccountNumber    string               `json:"account_number" db:"account_number"`
-	RoutingNumber    string               `json:"routing_number" db:"routing_number"`
-	BankName         string               `json:"bank_name" db:"bank_name"`
-	BeneficiaryName  string               `json:"beneficiary_name" db:"beneficiary_name"`
-	BankAddress      string               `json:"bank_address" db:"bank_address"`
-	BeneficiaryAddr  string               `json:"beneficiary_address" db:"beneficiary_address"`
-	PaymentRails     pq.StringArray       `json:"payment_rails" db:"payment_rails"`
-	Status           VirtualAccountStatus `json:"status" db:"status"`
-	Currency         string               `json:"currency" db:"currency"`
-	CreatedAt        time.Time            `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time            `json:"updated_at" db:"updated_at"`
+	ID               uuid.UUID              `json:"id" db:"id"`
+	UserID           uuid.UUID              `json:"user_id" db:"user_id"`
+	Provider         VirtualAccountProvider `json:"provider" db:"provider"`
+	BridgeCustomerID string                 `json:"bridge_customer_id" db:"bridge_customer_id"`
+	AlpacaAccountID  string                 `json:"alpaca_account_id" db:"alpaca_account_id"`
+	BridgeAccountID  *string                `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
+	GraphPersonID    *string                `json:"graph_person_id,omitempty" db:"graph_person_id"`
+	GraphAccountID   *string                `json:"graph_account_id,omitempty" db:"graph_account_id"`
+	AccountNumber    string                 `json:"account_number" db:"account_number"`
+	RoutingNumber    string                 `json:"routing_number" db:"routing_number"`
+	BankCode         string                 `json:"bank_code" db:"bank_code"`
+	BankName         string                 `json:"bank_name" db:"bank_name"`
+	BeneficiaryName  string                 `json:"beneficiary_name" db:"beneficiary_name"`
+	BankAddress      string                 `json:"bank_address" db:"bank_address"`
+	BeneficiaryAddr  string                 `json:"beneficiary_address" db:"beneficiary_address"`
+	PaymentRails     pq.StringArray         `json:"payment_rails" db:"payment_rails"`
+	Status           VirtualAccountStatus   `json:"status" db:"status"`
+	Currency         string                 `json:"currency" db:"currency"`
+	CreatedAt        time.Time              `json:"created_at" db:"created_at"`
+	UpdatedAt        time.Time              `json:"updated_at" db:"updated_at"`
 }
 
 // CreateVirtualAccountRequest represents a request to create a virtual account

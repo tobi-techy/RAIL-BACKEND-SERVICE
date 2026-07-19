@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -20,6 +20,12 @@ type Repository interface {
 	CreateConductor(ctx context.Context, conductor *entities.Conductor) error
 	UpdateConductorAUM(ctx context.Context, conductorID uuid.UUID, aum decimal.Decimal) error
 	IncrementFollowersCount(ctx context.Context, conductorID uuid.UUID, delta int) error
+
+	// Public-figure conductor operations
+	GetConductorByExternalKey(ctx context.Context, externalKey string) (*entities.Conductor, error)
+	GetActivePublicConductorsWithDrafts(ctx context.Context) ([]*entities.Conductor, error)
+	SignalExistsByOrderRef(ctx context.Context, conductorID uuid.UUID, orderRef string) (bool, error)
+	GetSignalByOrderRef(ctx context.Context, conductorID uuid.UUID, orderRef string) (*entities.Signal, error)
 
 	// Conductor application operations
 	CreateApplication(ctx context.Context, app *entities.ConductorApplication) error
@@ -88,16 +94,17 @@ type Service struct {
 	userProvider    UserProvider
 	balanceProvider BalanceProvider
 	tradingAdapter  TradingAdapter
+	publicTrades    PublicTradesSource
 	logger          *zap.Logger
 }
 
 // NewService creates a new copy trading service
 func NewService(repo Repository, balanceProvider BalanceProvider, tradingAdapter TradingAdapter, logger *zap.Logger) *Service {
 	return &Service{
-		repo:           repo,
+		repo:            repo,
 		balanceProvider: balanceProvider,
-		tradingAdapter: tradingAdapter,
-		logger:         logger,
+		tradingAdapter:  tradingAdapter,
+		logger:          logger,
 	}
 }
 
@@ -178,8 +185,8 @@ func (s *Service) CreateDraft(ctx context.Context, drafterID uuid.UUID, req *ent
 		return nil, fmt.Errorf("conductor is not active")
 	}
 
-	// Prevent self-following
-	if conductor.UserID == drafterID {
+	// Prevent self-following (public-figure conductors have no Rail user)
+	if conductor.UserID != nil && *conductor.UserID == drafterID {
 		return nil, fmt.Errorf("cannot copy your own trades")
 	}
 
@@ -813,7 +820,8 @@ func (s *Service) ReviewApplication(ctx context.Context, applicationID, reviewer
 		now := time.Now().UTC()
 		conductor := &entities.Conductor{
 			ID:             uuid.New(),
-			UserID:         app.UserID,
+			UserID:         &app.UserID,
+			Source:         entities.ConductorSourceRail,
 			DisplayName:    app.DisplayName,
 			Bio:            app.Bio,
 			Status:         entities.ConductorStatusActive,

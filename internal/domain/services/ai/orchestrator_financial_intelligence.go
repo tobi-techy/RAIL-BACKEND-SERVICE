@@ -68,7 +68,7 @@ func FinancialIntelligenceTools(hasActionHistory bool) []infraai.Tool {
 	return tools
 }
 
-func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeFinancialHealth(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	period := normalizeAuditPeriod(auditStringArg(args, "period", "last_90_days"))
 	start, end := parsePeriod(period)
 	now := time.Now().UTC()
@@ -199,7 +199,7 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 	}
 
 	result := map[string]interface{}{
-		"score":                score,
+		"score":               score,
 		"status":              status,
 		"period":              period,
 		"period_label":        periodToLabel(period, start, end),
@@ -231,7 +231,7 @@ func (o *Orchestrator) executeFinancialHealth(ctx context.Context, userID uuid.U
 	return result, nil
 }
 
-func (o *Orchestrator) executeFinancialPlan(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeFinancialPlan(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	health, err := o.executeFinancialHealth(ctx, userID, nil)
 	if err != nil {
 		return nil, err
@@ -272,7 +272,7 @@ func (o *Orchestrator) executeFinancialPlan(ctx context.Context, userID uuid.UUI
 	}, nil
 }
 
-func (o *Orchestrator) executeCashFlowForecast(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeCashFlowForecast(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	now := time.Now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
@@ -336,7 +336,7 @@ func (o *Orchestrator) executeCashFlowForecast(ctx context.Context, userID uuid.
 	}, nil
 }
 
-func (o *Orchestrator) executeActionReceipts(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeActionReceipts(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.actionHistory == nil {
 		return map[string]interface{}{"error": "action receipts are not available"}, nil
 	}
@@ -363,7 +363,7 @@ func (o *Orchestrator) executeActionReceipts(ctx context.Context, userID uuid.UU
 	return map[string]interface{}{"receipts": receipts, "count": len(receipts)}, nil
 }
 
-func (o *Orchestrator) currentBalances(ctx context.Context, userID uuid.UUID) (decimal.Decimal, decimal.Decimal, decimal.Decimal) {
+func (o *AgentAdapter) currentBalances(ctx context.Context, userID uuid.UUID) (decimal.Decimal, decimal.Decimal, decimal.Decimal) {
 	if o.aggregateStats == nil {
 		return decimal.Zero, decimal.Zero, decimal.Zero
 	}
@@ -372,7 +372,7 @@ func (o *Orchestrator) currentBalances(ctx context.Context, userID uuid.UUID) (d
 	return spend, stash, spend.Add(stash)
 }
 
-func (o *Orchestrator) monthFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) *entities.MoneyFlowSummary {
+func (o *AgentAdapter) monthFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) *entities.MoneyFlowSummary {
 	if o.spending == nil {
 		return &entities.MoneyFlowSummary{}
 	}

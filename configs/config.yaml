@@ -18,6 +18,25 @@ ramphub:
   webhook_path: "/ramphub"
   developer_fee_percent: 0.5
 
+# Graph (useoval.com) NGN named virtual bank accounts. Secrets come from env
+# (GRAPH_API_KEY, GRAPH_WEBHOOK_SECRET); these are non-secret defaults.
+graph:
+  enabled: false
+  base_url: "https://api.useoval.com"
+  environment: "sandbox"
+  webhook_path: "/graph"
+  developer_fee_percent: 0.5
+
+# Travu bus & flight booking aggregator. Secrets come from env
+# (TRAVU_SECRET_KEY etc.); these are non-secret defaults.
+travu:
+  base_url: "https://api.travu.africa/api/v1"
+  sandbox: false
+  flight_search_enabled: false
+  developer_fee_percent: 2.0
+  max_amount_ngn: 2000000
+
+
 server:
   port: 8081
   host: 0.0.0.0
@@ -171,7 +190,10 @@ circle:
   treasury_wallet_address: ""  # Company wallet for account closure fund sweeps
 
 kyc:
-  provider: ""
+  # Set to "didit" to activate the Didit identity/liveness + compliance pipeline.
+  # Secrets are injected via env: DIDIT_API_KEY, DIDIT_WEBHOOK_SECRET, DIDIT_WORKFLOW_ID.
+  # Legacy Sumsub keys below only apply when provider="sumsub".
+  provider: "didit"
   api_key: ""
   api_secret: ""
   base_url: "https://api.sumsub.com"
@@ -179,6 +201,9 @@ kyc:
   environment: "development"
   user_agent: "Stack-Service/1.0"
   level_name: "basic-kyc"
+  didit_api_key: ""
+  didit_webhook_secret: ""
+  didit_workflow_id: ""
 
 email:
   provider: "unosend"
@@ -405,4 +430,11 @@ statement:
   s3_bucket: ""
   s3_prefix: "statements/"
   s3_region: "eu-west-1"
+  max_file_size_mb: 20
+
+# Document Intelligence Pipeline (PaddleOCR sidecar + R2 storage)
+document:
+  ocr_service_url: ""       # e.g. http://ocr:8091 — empty disables the pipeline
+  enable_python_ocr: false  # gate the new document pipeline
+  min_ocr_confidence: 0.5   # 0-1 floor for trusting OCR output
   max_file_size_mb: 20

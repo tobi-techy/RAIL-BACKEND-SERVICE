@@ -1,0 +1,2 @@
+ALTER TABLE users DROP COLUMN IF EXISTS nin_last4;
+ALTER TABLE users DROP COLUMN IF EXISTS nin_verified_at;

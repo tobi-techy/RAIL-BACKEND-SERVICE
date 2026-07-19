@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // NairaOrderSummary is a lightweight view of recent paj orders.
@@ -30,27 +31,58 @@ type nairaCtx struct {
 }
 
 // SetNairaContext wires the naira context provider.
-func (o *Orchestrator) SetNairaContext(p NairaOrderProvider) {
+func (o *AgentAdapter) SetNairaContext(p NairaOrderProvider) {
 	if p != nil {
 		o.nairaCtx = &nairaCtx{provider: p}
 	}
 }
 
-// buildNairaContext queries paj_orders and merges with bank statement context
-// to produce a dual-currency context block.
-func (o *Orchestrator) buildNairaContext(ctx context.Context, userID uuid.UUID) string {
-	if o.nairaCtx == nil || o.nairaCtx.provider == nil {
+// liveNairaRateLine returns a context line with the current NGN/USD rate so
+// Miriam never quotes a stale, memorized rate. Empty when no live rate is known.
+func (o *AgentAdapter) liveNairaRateLine(ctx context.Context) string {
+	if o.currencyRates == nil {
 		return ""
 	}
-
-	// Check cache first
-	if cached, ok := globalContextCache.GetNairaCtx(userID); ok {
+	// The rate is user-independent and slow to fetch (live ramp API); cache it
+	// process-wide so it stays off the per-turn hot path. An empty cached value
+	// means "unavailable last time" and is honored until it expires.
+	if cached, ok := globalContextCache.GetRateLine(); ok {
 		return cached
+	}
+	rctx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
+	defer cancel()
+	rate, err := o.currencyRates.GetLatestRate(rctx, "USD", "NGN")
+	if err != nil || !rate.IsPositive() {
+		globalContextCache.SetRateLine("")
+		return ""
+	}
+	// Guard against an inverted pair (USD-per-NGN would be a tiny fraction).
+	if rate.LessThan(decimal.NewFromInt(10)) {
+		globalContextCache.SetRateLine("")
+		return ""
+	}
+	line := fmt.Sprintf("[Live rate right now: $1 ≈ ₦%s. Use this exact rate for any naira/dollar conversion, never a memorized rate.]", rate.Round(0).String())
+	globalContextCache.SetRateLine(line)
+	return line
+}
+
+// buildNairaContext prepends the live NGN/USD rate, then merges the user's recent
+// paj_orders into a dual-currency context block.
+func (o *AgentAdapter) buildNairaContext(ctx context.Context, userID uuid.UUID) string {
+	rateLine := o.liveNairaRateLine(ctx)
+
+	if o.nairaCtx == nil || o.nairaCtx.provider == nil {
+		return rateLine
+	}
+
+	// Check cache first (order-history portion); prepend the fresh rate.
+	if cached, ok := globalContextCache.GetNairaCtx(userID); ok {
+		return joinNonEmpty(rateLine, cached)
 	}
 
 	orders, err := o.nairaCtx.provider.GetRecentOrders(ctx, userID, 5)
 	if err != nil || len(orders) == 0 {
-		return ""
+		return rateLine
 	}
 
 	var sb strings.Builder
@@ -86,5 +118,16 @@ func (o *Orchestrator) buildNairaContext(ctx context.Context, userID uuid.UUID) 
 
 	result := sb.String()
 	globalContextCache.SetNairaCtx(userID, result)
-	return result
+	return joinNonEmpty(rateLine, result)
+}
+
+// joinNonEmpty joins non-empty blocks with a newline.
+func joinNonEmpty(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "\n")
 }

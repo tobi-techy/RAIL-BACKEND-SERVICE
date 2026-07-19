@@ -63,7 +63,7 @@ type VoiceHandler struct {
 	tokenSecret         string
 	webhookSecret       string
 	pidginVoiceID       string
-	orchestrator        *aiservice.Orchestrator
+	orchestrator aiservice.ChatEngine
 	usage               VoiceUsageTracker
 	convService         VoiceConversationPersister
 	sessionLimiter      *aiservice.VoiceSessionRateLimiter
@@ -75,7 +75,7 @@ type VoiceHandler struct {
 	logger              *zap.Logger
 }
 
-func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret, pidginVoiceID string, orchestrator *aiservice.Orchestrator, usage VoiceUsageTracker, convService VoiceConversationPersister, sessionLimiter *aiservice.VoiceSessionRateLimiter, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
+func NewVoiceHandler(apiKey, agentID, tokenSecret, webhookSecret, pidginVoiceID string, orchestrator aiservice.ChatEngine, usage VoiceUsageTracker, convService VoiceConversationPersister, sessionLimiter *aiservice.VoiceSessionRateLimiter, allowedOrigins []string, logger *zap.Logger, ttsConfig *infraai.ELTTSConfig) *VoiceHandler {
 	h := &VoiceHandler{
 		apiKey:           apiKey,
 		agentID:          agentID,
@@ -990,7 +990,7 @@ func (h *VoiceHandler) persistVoiceTranscripts(userID uuid.UUID, convID uuid.UUI
 			}
 		}
 		if h.orchestrator != nil {
-			h.orchestrator.IngestVoiceTranscripts(userID, pairs)
+			h.orchestrator.IngestVoiceTranscripts(context.Background(), userID, pairs)
 		}
 	}()
 }

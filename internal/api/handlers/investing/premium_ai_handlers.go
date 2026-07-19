@@ -20,13 +20,13 @@ import (
 
 // PremiumAIHandlers handles AI feature endpoints.
 type PremiumAIHandlers struct {
-	orchestrator      *aiservice.Orchestrator
+	orchestrator      aiservice.ChatEngine
 	convService       *conversationsvc.Service
 	passcodeValidator automationPasscodeValidator
 	logger            *zap.Logger
 }
 
-func NewPremiumAIHandlers(orchestrator *aiservice.Orchestrator, logger *zap.Logger, convService ...*conversationsvc.Service) *PremiumAIHandlers {
+func NewPremiumAIHandlers(orchestrator aiservice.ChatEngine, logger *zap.Logger, convService ...*conversationsvc.Service) *PremiumAIHandlers {
 	h := &PremiumAIHandlers{orchestrator: orchestrator, logger: logger}
 	if len(convService) > 0 {
 		h.convService = convService[0]

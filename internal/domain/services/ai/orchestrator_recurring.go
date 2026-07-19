@@ -30,7 +30,7 @@ type RecurringExpenseDetector interface {
 }
 
 // SetRecurringDetector sets the recurring expense detector.
-func (o *Orchestrator) SetRecurringDetector(d RecurringExpenseDetector) {
+func (o *AgentAdapter) SetRecurringDetector(d RecurringExpenseDetector) {
 	o.recurringDetector = d
 }
 
@@ -43,7 +43,7 @@ func RecurringExpenseTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeRecurringExpenses(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeRecurringExpenses(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.recurringDetector == nil {
 		return map[string]interface{}{"error": "recurring expense detection not available"}, nil
 	}
@@ -72,6 +72,13 @@ func (o *Orchestrator) executeRecurringExpenses(ctx context.Context, userID uuid
 			"first_seen": e.FirstSeen,
 			"last_seen":  e.LastSeen,
 			"count":      e.Count,
+		}
+	}
+
+	// Enrich recurring expense entries with plain descriptions and context
+	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		for _, item := range items {
+			enrichMerchantEntry(item, enrichmentMap)
 		}
 	}
 

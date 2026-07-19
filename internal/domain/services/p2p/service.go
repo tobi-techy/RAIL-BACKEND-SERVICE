@@ -80,6 +80,12 @@ type BridgeOfframp interface {
 	InitiateTransfer(ctx context.Context, req map[string]interface{}) (map[string]interface{}, error)
 }
 
+// SpendingCommitmentGuard enforces a user's self-imposed daily spending cap.
+type SpendingCommitmentGuard interface {
+	CheckOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+	RecordOutflow(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency string) error
+}
+
 // ClaimToBankRequest holds the recipient's bank details for a no-app claim
 type ClaimToBankRequest struct {
 	AccountHolderName string
@@ -98,6 +104,7 @@ type Service struct {
 	notification   NotificationSender
 	bridgeOfframp  BridgeOfframp
 	tapIntentStore TapIntentStore
+	commitment     SpendingCommitmentGuard
 	logger         *zap.Logger
 }
 
@@ -133,6 +140,11 @@ func (s *Service) SetUserUpdater(updater UserUpdater) {
 // SetWalletLookup sets the wallet lookup (required for bank claim flow)
 func (s *Service) SetWalletLookup(w WalletLookup) {
 	s.walletLookup = w
+}
+
+// SetSpendingCommitment wires the self-imposed daily spending cap enforcer.
+func (s *Service) SetSpendingCommitment(g SpendingCommitmentGuard) {
+	s.commitment = g
 }
 
 const (
@@ -311,6 +323,13 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		return nil, entities.ErrP2PInsufficientFunds
 	}
 
+	// Enforce the sender's self-imposed daily spending commitment.
+	if s.commitment != nil {
+		if err := s.commitment.CheckOutflow(ctx, senderID, amount, "USD"); err != nil {
+			return nil, entities.ErrCommitmentExceeded
+		}
+	}
+
 	// Lookup recipient
 	lookup, err := s.LookupRecipient(ctx, req.Identifier)
 	if err != nil {
@@ -380,6 +399,9 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		if err := s.transfer.TransferBetweenUsers(ctx, senderID, lookup.User.ID, amount, desc, "p2p-send-"+transfer.ID.String()); err != nil {
 			return nil, fmt.Errorf("transfer failed: %w", err)
 		}
+		if s.commitment != nil {
+			_ = s.commitment.RecordOutflow(ctx, senderID, amount, "USD")
+		}
 
 		sender, _ := s.userLookup.GetByID(ctx, senderID)
 		senderName := "Someone"
@@ -416,6 +438,9 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req *entities.P2
 		}
 		if err := s.transfer.ReserveFunds(ctx, senderID, amount, desc, "p2p-reserve-"+transfer.ID.String()); err != nil {
 			return nil, fmt.Errorf("failed to reserve funds: %w", err)
+		}
+		if s.commitment != nil {
+			_ = s.commitment.RecordOutflow(ctx, senderID, amount, "USD")
 		}
 		rollbackOnCreateFailure = func() {
 			rollbackDesc := "P2P pending rollback"

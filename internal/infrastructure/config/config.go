@@ -38,9 +38,14 @@ type Config struct {
 	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
 	Paj            PajConfig            `mapstructure:"paj"`
 	RampHub        RampHubConfig        `mapstructure:"ramphub"`
+	Graph          GraphConfig          `mapstructure:"graph"`
+	Airbills       AirbillsConfig       `mapstructure:"airbills"`
+	Travu          TravuConfig          `mapstructure:"travu"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
+	Platform       PlatformConfig       `mapstructure:"platform"`
+	Eval           EvalConfig           `mapstructure:"eval"`
 	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
 	AI             AIConfig             `mapstructure:"ai"`
 	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
@@ -48,6 +53,16 @@ type Config struct {
 	Umbra          UmbraConfig          `mapstructure:"umbra"`
 	Enrichment     EnrichmentConfig     `mapstructure:"enrichment"`
 	Statement      StatementConfig      `mapstructure:"statement"`
+	Document       DocumentConfig       `mapstructure:"document"`
+	AdminAlertEmail string             `mapstructure:"admin_alert_email"`
+}
+
+// DocumentConfig configures the document-intelligence pipeline (PaddleOCR sidecar + R2).
+type DocumentConfig struct {
+	OCRServiceURL    string  `mapstructure:"ocr_service_url"`   // e.g. http://ocr:8091 (empty = pipeline disabled)
+	EnablePythonOCR  bool    `mapstructure:"enable_python_ocr"` // gate the new pipeline
+	MinOCRConfidence float64 `mapstructure:"min_ocr_confidence"` // 0-1 floor for trusting OCR output
+	MaxFileSizeMB    int     `mapstructure:"max_file_size_mb"`  // upload ceiling (default 20)
 }
 
 // StatementConfig holds configuration for the bank statement processing pipeline.
@@ -110,14 +125,29 @@ type AIConfig struct {
 	AssemblyAI  AssemblyAIConfig  `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
 	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
+	Qdrant      QdrantConfig      `mapstructure:"qdrant"`
 	Tavily      TavilyConfig      `mapstructure:"tavily"`
 	Langfuse    LangfuseConfig    `mapstructure:"langfuse"`
 	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
+
+	// ResponseGuard enables Miriam's deterministic pre-delivery guard (strips
+	// ungrounded currency figures, surfaces missed anomalies, sanitizes
+	// formatting). Off by default in production; the simulation harness turns it
+	// on. Env: AI_RESPONSE_GUARD.
+	ResponseGuard bool `mapstructure:"response_guard"`
 }
 
 // SupermemoryConfig contains Supermemory API configuration.
 type SupermemoryConfig struct {
 	APIKey string `mapstructure:"api_key"`
+}
+
+// QdrantConfig configures the Qdrant vector store client for episodic/fact memory.
+type QdrantConfig struct {
+	BaseURL          string `mapstructure:"base_url"`          // e.g. "http://localhost:6333"
+	APIKey           string `mapstructure:"api_key"`           // Qdrant API key (optional for self-hosted)
+	DefaultDim       int    `mapstructure:"default_dim"`       // embedding dimension (default 768)
+	CollectionPrefix string `mapstructure:"collection_prefix"` // optional prefix for collection names
 }
 
 // TavilyConfig contains Tavily web search API configuration (powers web_search:
@@ -585,6 +615,47 @@ type RampHubConfig struct {
 	Sandbox             bool    `mapstructure:"sandbox"`               // when true, sandbox webhook events (livemode:false) are accepted; must be false in production
 }
 
+// GraphConfig configures the Graph (useoval.com) provider for NGN named
+// virtual bank accounts. Secrets come from env (GRAPH_API_KEY etc.); the
+// non-secret defaults live in configs/config.yaml.
+type GraphConfig struct {
+	APIKey              string  `mapstructure:"api_key"`
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.useoval.com
+	Environment         string  `mapstructure:"environment"`           // "sandbox" or "production"
+	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound webhooks
+	WebhookPath         string  `mapstructure:"webhook_path"`          // webhook route mount point; defaults to "/graph"
+	MasterWalletID      string  `mapstructure:"master_wallet_id"`      // Rail's Graph NGN master wallet (autosweep destination)
+	CircleDepositAddr   string  `mapstructure:"circle_deposit_addr"`   // Rail Circle USDC custody address for NGN→USDC payout
+	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's business fee % applied to NGN deposits (e.g. 0.5)
+	Enabled             bool    `mapstructure:"enabled"`               // master switch; when false the provider is not wired
+}
+
+// AirbillsConfig configures the Airbills bill-payment gateway (airtime, data,
+// electricity, cable TV, betting, transport; settles in USDC/USDT on Solana).
+type AirbillsConfig struct {
+	SecretKey           string  `mapstructure:"secret_key"`            // business secret key sent in the secretkey header
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://developer.airbills.org/api/vendor/gateway
+	CallbackURL         string  `mapstructure:"callback_url"`          // Rail endpoint Airbills POSTs fulfillment callbacks to
+	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound callbacks
+	WebhookPath         string  `mapstructure:"webhook_path"`          // webhook route mount point; defaults to "/airbills"
+	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's service fee % added to each bill (e.g. 1.0)
+	DefaultToken        string  `mapstructure:"default_token"`         // "USDC" or "USDT"; defaults to USDC
+	MaxAmountNGN        float64 `mapstructure:"max_amount_ngn"`        // hard per-payment ceiling in NGN (safety cap)
+}
+
+// TravuConfig configures the Travu bus + flight booking aggregator. Bookings
+// debit Rail's prefunded NGN float on the Travu dashboard; Rail charges the
+// user in USDC via a ledger hold at the live FX rate.
+type TravuConfig struct {
+	SecretKey           string  `mapstructure:"secret_key"`            // Bearer token sent in the Authorization header
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.travu.africa/api/v1
+	Sandbox             bool    `mapstructure:"sandbox"`               // when true, use the /test base URL
+	AgentEmail          string  `mapstructure:"agent_email"`           // Rail's Travu account email, sent on bus bookings
+	FlightSearchEnabled bool    `mapstructure:"flight_search_enabled"` // gate flight search until Travu enables the endpoint
+	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's service fee % added to each booking
+	MaxAmountNGN        float64 `mapstructure:"max_amount_ngn"`        // hard per-booking ceiling in NGN (safety cap)
+}
+
 // WorkerConfig contains background worker configuration
 type WorkerConfig struct {
 	Count                       int  `mapstructure:"count"`
@@ -638,6 +709,33 @@ type AppleOAuthProviderConfig struct {
 	KeyID       string `mapstructure:"key_id"`      // Key ID from Apple Developer Portal
 	PrivateKey  string `mapstructure:"private_key"` // P8 private key content (base64 encoded)
 	RedirectURI string `mapstructure:"redirect_uri"`
+}
+
+// EvalConfig gates the Miriam evaluation endpoint used by the terminal test harness.
+// Keep disabled in production — it runs Miriam for an arbitrary user id, guarded
+// only by a shared token.
+type EvalConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Token   string `mapstructure:"token"` // shared secret required in the X-Eval-Token header
+}
+
+// PlatformConfig contains configuration for external platform messaging (iMessage, WhatsApp, Telegram).
+type PlatformConfig struct {
+	Enabled                bool   `mapstructure:"enabled"`
+	AMQPURL                string `mapstructure:"amqp_url"`
+	AMQPExchange           string `mapstructure:"amqp_exchange"`
+	AMQPQueue              string `mapstructure:"amqp_queue"`
+	AMQPRoutingKey         string `mapstructure:"amqp_routing_key"`
+	AMQPActionQueue        string `mapstructure:"amqp_action_queue"`
+	AMQPActionRoutingKey   string `mapstructure:"amqp_action_routing_key"`
+	HandshakeTokenTTL      int    `mapstructure:"handshake_token_ttl_seconds"` // TTL for handshake tokens (default 900 = 15 min)
+	BridgeBaseURL          string `mapstructure:"bridge_base_url"`             // URL of the Spectrum Bridge service
+	BridgeHMACSecret       string `mapstructure:"bridge_hmac_secret"`          // HMAC signing secret for Bridge↔Go
+	BridgeMessagingAddress string `mapstructure:"bridge_messaging_address"`    // Platform address users text the link code to (e.g. bridge iMessage handle)
+	AppDeepLinkBaseURL     string `mapstructure:"app_deep_link_base_url"`      // Base for app authorization deep links (default "rail://")
+	AppDownloadURL         string `mapstructure:"app_download_url"`            // App download link shared during chat-first onboarding (e.g. TestFlight)
+	OnboardingEnabled      bool   `mapstructure:"onboarding_enabled"`          // Enable chat-first account creation for unlinked senders
+	PushNotificationRule   string `mapstructure:"push_notification_rule"`      // "always", "action_only", "never"
 }
 
 // WebAuthnConfig contains WebAuthn/Passkey configuration
@@ -873,6 +971,12 @@ func setDefaults() {
 	viper.SetDefault("cloudflare.access_key", "")
 	viper.SetDefault("cloudflare.secret_key", "")
 	viper.SetDefault("cloudflare.r2_bucket", "")
+
+	// Document intelligence pipeline defaults
+	viper.SetDefault("document.ocr_service_url", "")
+	viper.SetDefault("document.enable_python_ocr", false)
+	viper.SetDefault("document.min_ocr_confidence", 0.5)
+	viper.SetDefault("document.max_file_size_mb", 20)
 	viper.SetDefault("cloudflare.r2_public_url", "")
 	viper.SetDefault("cloudflare.worker_url", "")
 
@@ -939,6 +1043,8 @@ func setDefaults() {
 	viper.SetDefault("ai.gemini.max_tokens", 500)
 	viper.SetDefault("ai.gemini.temperature", 0.7)
 	viper.SetDefault("ai.kimi.model", "moonshot-v1-32k")
+	viper.SetDefault("ai.response_guard", false)
+	viper.BindEnv("ai.response_guard", "AI_RESPONSE_GUARD")
 
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.SetDefault("ai.elevenlabs.stability", 0.5)
@@ -962,6 +1068,9 @@ func setDefaults() {
 	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
 	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
 	viper.BindEnv("ai.kimi.model", "KIMI_MODEL")
+	viper.BindEnv("document.ocr_service_url", "DOCUMENT_OCR_SERVICE_URL")
+	viper.BindEnv("document.enable_python_ocr", "DOCUMENT_ENABLE_PYTHON_OCR")
+	viper.BindEnv("document.min_ocr_confidence", "DOCUMENT_MIN_OCR_CONFIDENCE")
 	viper.BindEnv("ai.groq.api_key", "GROQ_API_KEY")
 	viper.BindEnv("ai.primary", "AI_PRIMARY")
 	viper.BindEnv("ai.bedrock.region", "BEDROCK_REGION")
@@ -1056,6 +1165,17 @@ func setDefaults() {
 
 	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/balances.limit", 60)
 	viper.SetDefault("rate_limit.endpoint_limits.GET:/api/v1/balances.window", 60) // 1 minute
+
+	// Platform defaults
+	viper.SetDefault("platform.enabled", false)
+	viper.SetDefault("platform.amqp_exchange", "miriam")
+	viper.SetDefault("platform.amqp_queue", "miriam.inbound")
+	viper.SetDefault("platform.amqp_routing_key", "message.inbound")
+	viper.SetDefault("platform.handshake_token_ttl_seconds", 900)
+	viper.SetDefault("platform.bridge_base_url", "http://localhost:4000")
+	viper.SetDefault("platform.push_notification_rule", "action_only")
+	viper.SetDefault("platform.onboarding_enabled", false)
+	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
 }
 
 func overrideFromEnv() {
@@ -1070,6 +1190,17 @@ func overrideFromEnv() {
 	}
 	if trustedProxies := os.Getenv("TRUSTED_PROXIES"); trustedProxies != "" {
 		viper.Set("server.trusted_proxies", strings.Split(trustedProxies, ","))
+	}
+
+	// Platform
+	if url := os.Getenv("PLATFORM_AMQP_URL"); url != "" {
+		viper.Set("platform.amqp_url", url)
+	}
+	if secret := os.Getenv("PLATFORM_BRIDGE_HMAC_SECRET"); secret != "" {
+		viper.Set("platform.bridge_hmac_secret", secret)
+	}
+	if url := os.Getenv("PLATFORM_BRIDGE_BASE_URL"); url != "" {
+		viper.Set("platform.bridge_base_url", url)
 	}
 
 	// WebAuthn
@@ -1097,6 +1228,14 @@ func overrideFromEnv() {
 	// Database
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		viper.Set("database.url", dbURL)
+	}
+
+	// Eval
+	if v := os.Getenv("EVAL_ENABLED"); v == "true" || v == "1" {
+		viper.Set("eval.enabled", true)
+	}
+	if v := os.Getenv("EVAL_TOKEN"); v != "" {
+		viper.Set("eval.token", v)
 	}
 
 	// JWT
@@ -1268,6 +1407,11 @@ func overrideFromEnv() {
 	}
 	if replyTo := os.Getenv("EMAIL_REPLY_TO"); replyTo != "" {
 		viper.Set("email.reply_to", replyTo)
+	}
+
+	// Admin error alert email
+	if adminAlertEmail := os.Getenv("ADMIN_ALERT_EMAIL"); adminAlertEmail != "" {
+		viper.Set("admin_alert_email", adminAlertEmail)
 	}
 
 	// AI Providers
@@ -1485,6 +1629,30 @@ func overrideFromEnv() {
 		{"ramphub.webhook_path", "RAMPHUB_WEBHOOK_PATH"},
 		{"ramphub.developer_fee_percent", "RAMPHUB_DEVELOPER_FEE_PERCENT"},
 		{"ramphub.sandbox", "RAMPHUB_SANDBOX"},
+		{"graph.api_key", "GRAPH_API_KEY"},
+		{"graph.base_url", "GRAPH_BASE_URL"},
+		{"graph.environment", "GRAPH_ENVIRONMENT"},
+		{"graph.webhook_secret", "GRAPH_WEBHOOK_SECRET"},
+		{"graph.webhook_path", "GRAPH_WEBHOOK_PATH"},
+		{"graph.master_wallet_id", "GRAPH_MASTER_WALLET_ID"},
+		{"graph.circle_deposit_addr", "GRAPH_CIRCLE_DEPOSIT_ADDR"},
+		{"graph.developer_fee_percent", "GRAPH_DEVELOPER_FEE_PERCENT"},
+		{"graph.enabled", "GRAPH_ENABLED"},
+		{"airbills.secret_key", "AIRBILLS_SECRET_KEY"},
+		{"airbills.base_url", "AIRBILLS_BASE_URL"},
+		{"airbills.callback_url", "AIRBILLS_CALLBACK_URL"},
+		{"airbills.webhook_secret", "AIRBILLS_WEBHOOK_SECRET"},
+		{"airbills.webhook_path", "AIRBILLS_WEBHOOK_PATH"},
+		{"airbills.developer_fee_percent", "AIRBILLS_DEVELOPER_FEE_PERCENT"},
+		{"airbills.default_token", "AIRBILLS_DEFAULT_TOKEN"},
+		{"airbills.max_amount_ngn", "AIRBILLS_MAX_AMOUNT_NGN"},
+		{"travu.secret_key", "TRAVU_SECRET_KEY"},
+		{"travu.base_url", "TRAVU_BASE_URL"},
+		{"travu.sandbox", "TRAVU_SANDBOX"},
+		{"travu.agent_email", "TRAVU_AGENT_EMAIL"},
+		{"travu.flight_search_enabled", "TRAVU_FLIGHT_SEARCH_ENABLED"},
+		{"travu.developer_fee_percent", "TRAVU_DEVELOPER_FEE_PERCENT"},
+		{"travu.max_amount_ngn", "TRAVU_MAX_AMOUNT_NGN"},
 	} {
 		viper.BindEnv(kv[0], kv[1])
 		if v := os.Getenv(kv[1]); v != "" {
@@ -1602,6 +1770,33 @@ func validate(config *Config) error {
 	if config.RampHub.APIKey != "" {
 		if config.RampHub.DeveloperFeePercent < 0 || config.RampHub.DeveloperFeePercent > 100 {
 			return fmt.Errorf("ramphub.developer_fee_percent must be between 0 and 100, got %.4f", config.RampHub.DeveloperFeePercent)
+		}
+	}
+
+	if config.Graph.Enabled {
+		if config.Graph.APIKey == "" {
+			return fmt.Errorf("graph.api_key is required when graph.enabled is true")
+		}
+		if config.Graph.WebhookSecret == "" {
+			return fmt.Errorf("graph.webhook_secret is required when graph.enabled is true")
+		}
+		if config.Graph.DeveloperFeePercent < 0 || config.Graph.DeveloperFeePercent > 100 {
+			return fmt.Errorf("graph.developer_fee_percent must be between 0 and 100, got %.4f", config.Graph.DeveloperFeePercent)
+		}
+	}
+
+	if config.Airbills.SecretKey != "" {
+		if config.Airbills.DeveloperFeePercent < 0 || config.Airbills.DeveloperFeePercent > 100 {
+			return fmt.Errorf("airbills.developer_fee_percent must be between 0 and 100, got %.4f", config.Airbills.DeveloperFeePercent)
+		}
+		if t := strings.ToUpper(strings.TrimSpace(config.Airbills.DefaultToken)); t != "" && t != "USDC" && t != "USDT" {
+			return fmt.Errorf("airbills.default_token must be USDC or USDT, got %q", config.Airbills.DefaultToken)
+		}
+	}
+
+	if config.Travu.SecretKey != "" {
+		if config.Travu.DeveloperFeePercent < 0 || config.Travu.DeveloperFeePercent > 100 {
+			return fmt.Errorf("travu.developer_fee_percent must be between 0 and 100, got %.4f", config.Travu.DeveloperFeePercent)
 		}
 	}
 

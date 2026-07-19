@@ -116,13 +116,10 @@ func main() {
 		ProviderName: "kimi",
 	}, logger)
 
-	orch := ai.NewOrchestratorWithDeps(
-		provider, nil, nil, nil, logger,
-		ai.OrchestratorDeps{
-			AggregateStats: &mockStats{},
-			Spending:       &mockSpending{},
-		},
-	)
+	orch := ai.NewAgentAdapter(nil, provider, nil, nil, nil, logger)
+	orch.SetAggregateStats(&mockStats{})
+	orch.SetSpending(&mockSpending{})
+	orch.SetConversations(nil)
 
 	// Wire Tavily if key is available
 	tavilyKey := os.Getenv("TAVILY_API_KEY")
@@ -171,7 +168,8 @@ func main() {
 		switch input {
 		case "/reset":
 			history = nil
-			fmt.Println("\n  [conversation reset]\n")
+			fmt.Println("\n  [conversation reset]")
+			fmt.Println()
 			continue
 		case "/prompt":
 			fmt.Println("\n--- SystemPromptV2 (first 600 chars) ---")

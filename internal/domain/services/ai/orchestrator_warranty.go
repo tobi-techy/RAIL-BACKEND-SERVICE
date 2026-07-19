@@ -17,7 +17,7 @@ type WarrantyTracker interface {
 }
 
 // SetWarrantyTracker sets the warranty tracker provider.
-func (o *Orchestrator) SetWarrantyTracker(w WarrantyTracker) {
+func (o *AgentAdapter) SetWarrantyTracker(w WarrantyTracker) {
 	o.warrantyTracker = w
 }
 
@@ -30,7 +30,7 @@ func WarrantyTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeGetWarrantyItems(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetWarrantyItems(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.warrantyTracker == nil {
 		return map[string]interface{}{"error": "warranty tracking not available"}, nil
 	}

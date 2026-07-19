@@ -68,22 +68,27 @@ type KYCProviderResult struct {
 
 // KYCStatusResponse for checking current KYC state.
 type KYCStatusResponse struct {
-	UserID              uuid.UUID         `json:"user_id"`
-	Status              string            `json:"status"`
-	Verified            bool              `json:"verified"`
-	HasSubmitted        bool              `json:"has_submitted"`
-	RequiresKYC         bool              `json:"requires_kyc"`
-	RequiredFor         []string          `json:"required_for,omitempty"`
-	LastSubmittedAt     *time.Time        `json:"last_submitted_at,omitempty"`
-	ApprovedAt          *time.Time        `json:"approved_at,omitempty"`
-	RejectionReason     *string           `json:"rejection_reason,omitempty"`
-	ProviderReference   *string           `json:"provider_reference,omitempty"`
-	NextSteps           []string          `json:"next_steps,omitempty"`
-	OverallStatus       string            `json:"overall_status,omitempty"` // pending, approved, rejected, not_started
-	SupportedTaxIDType  string            `json:"supported_tax_id_type,omitempty"` // Single tax ID type for user's country (e.g. ssn, nino, nin)
-	Bridge              KYCProviderStatus `json:"bridge,omitempty"`
-	Alpaca              KYCProviderStatus `json:"alpaca,omitempty"`
-	Capabilities        KYCCapabilities   `json:"capabilities,omitempty"`
+	UserID             uuid.UUID         `json:"user_id"`
+	Status             string            `json:"status"`
+	Verified           bool              `json:"verified"`
+	HasSubmitted       bool              `json:"has_submitted"`
+	RequiresKYC        bool              `json:"requires_kyc"`
+	RequiredFor        []string          `json:"required_for,omitempty"`
+	LastSubmittedAt    *time.Time        `json:"last_submitted_at,omitempty"`
+	ApprovedAt         *time.Time        `json:"approved_at,omitempty"`
+	RejectionReason    *string           `json:"rejection_reason,omitempty"`
+	ProviderReference  *string           `json:"provider_reference,omitempty"`
+	NextSteps          []string          `json:"next_steps,omitempty"`
+	OverallStatus      string            `json:"overall_status,omitempty"`        // pending, approved, rejected, not_started
+	SupportedTaxIDType string            `json:"supported_tax_id_type,omitempty"` // Single tax ID type for user's country (e.g. ssn, nino, nin)
+	Bridge             KYCProviderStatus `json:"bridge,omitempty"`
+	Alpaca             KYCProviderStatus `json:"alpaca,omitempty"`
+	Capabilities       KYCCapabilities   `json:"capabilities,omitempty"`
+	KYCTier            int               `json:"kyc_tier"`                    // 1=non_kyc, 2=basic (NGN), 3=advanced (USD/cards/investing)
+	KYCTierName        string            `json:"kyc_tier_name"`               // non_kyc | basic | advanced
+	TierCapabilities   TierCapabilities  `json:"tier_capabilities,omitempty"` // per-tier feature unlocks
+	BVNVerified        bool              `json:"bvn_verified"`                // Graph BVN verification completed (Tier 2)
+	NINVerified        bool              `json:"nin_verified"`                // Graph NIN verification completed (Tier 2)
 }
 
 // KYCProviderStatus represents status for a single provider.
@@ -171,11 +176,11 @@ type KYCDigitSessionResponse struct {
 
 // DiditWebhookPayload contains the relevant fields from a Didit webhook.
 type DiditWebhookPayload struct {
-	SessionID   string `json:"session_id"`
-	Status      string `json:"status"`
-	WebhookType string `json:"webhook_type"`
-	VendorData  string `json:"vendor_data"`
-	WorkflowID  string `json:"workflow_id"`
+	SessionID   string                `json:"session_id"`
+	Status      string                `json:"status"`
+	WebhookType string                `json:"webhook_type"`
+	VendorData  string                `json:"vendor_data"`
+	WorkflowID  string                `json:"workflow_id"`
 	Decision    *DiditWebhookDecision `json:"decision,omitempty"`
 }
 
@@ -186,21 +191,21 @@ type DiditWebhookDecision struct {
 
 // DiditIDVerification holds the document data from a Didit id_verifications entry.
 type DiditIDVerification struct {
-	FirstName      string `json:"first_name"`
-	LastName       string `json:"last_name"`
-	DateOfBirth    string `json:"date_of_birth"`
-	DocumentType   string `json:"document_type"`
-	DocumentNumber string `json:"document_number"`
-	PersonalNumber string `json:"personal_number"`
-	IssuingState   string `json:"issuing_state"`
-	Nationality    string `json:"nationality"`
-	Gender         string `json:"gender"`
-	ExpirationDate string `json:"expiration_date"`
-	FrontImage     string `json:"front_image"`
-	BackImage      string `json:"back_image"`
-	FullFrontImage string `json:"full_front_image"`
-	FullBackImage  string `json:"full_back_image"`
-	PortraitImage  string `json:"portrait_image"`
+	FirstName      string              `json:"first_name"`
+	LastName       string              `json:"last_name"`
+	DateOfBirth    string              `json:"date_of_birth"`
+	DocumentType   string              `json:"document_type"`
+	DocumentNumber string              `json:"document_number"`
+	PersonalNumber string              `json:"personal_number"`
+	IssuingState   string              `json:"issuing_state"`
+	Nationality    string              `json:"nationality"`
+	Gender         string              `json:"gender"`
+	ExpirationDate string              `json:"expiration_date"`
+	FrontImage     string              `json:"front_image"`
+	BackImage      string              `json:"back_image"`
+	FullFrontImage string              `json:"full_front_image"`
+	FullBackImage  string              `json:"full_back_image"`
+	PortraitImage  string              `json:"portrait_image"`
 	ParsedAddress  *DiditParsedAddress `json:"parsed_address,omitempty"`
 }
 
@@ -215,16 +220,72 @@ type DiditParsedAddress struct {
 
 // Didit verification statuses (case-sensitive, with spaces).
 const (
-	DiditStatusNotStarted = "Not Started"
-	DiditStatusInProgress = "In Progress"
-	DiditStatusApproved   = "Approved"
-	DiditStatusDeclined   = "Declined"
-	DiditStatusInReview   = "In Review"
+	DiditStatusNotStarted  = "Not Started"
+	DiditStatusInProgress  = "In Progress"
+	DiditStatusApproved    = "Approved"
+	DiditStatusDeclined    = "Declined"
+	DiditStatusInReview    = "In Review"
 	DiditStatusResubmitted = "Resubmitted"
-	DiditStatusExpired    = "Expired"
-	DiditStatusAbandoned  = "Abandoned"
-	DiditStatusKYCExpired = "Kyc Expired"
+	DiditStatusExpired     = "Expired"
+	DiditStatusAbandoned   = "Abandoned"
+	DiditStatusKYCExpired  = "Kyc Expired"
 )
+
+// SproutUpgradeRequest is the request for upgrading to Sprout tier (Tier 2).
+// This creates a Graph person + NGN bank account and submits the same data to Bridge.
+// The frontend completes Didit ID+liveness verification BEFORE calling this endpoint.
+type SproutUpgradeRequest struct {
+	Phone     string `json:"phone" validate:"required"`
+	DateOfBirth string `json:"date_of_birth" validate:"required"` // YYYY-MM-DD
+	BVN       string `json:"bvn" validate:"required,len=11"`
+
+	// Didit session results — the frontend passes the completed session ID.
+	// The backend fetches the verified ID data (NIN, document type, document images)
+	// from Didit using this session ID.
+	DiditSessionID string `json:"didit_session_id" validate:"required"`
+}
+
+// SproutUpgradeResponse is returned after a successful Sprout tier upgrade.
+type SproutUpgradeResponse struct {
+	Status        string             `json:"status"` // "upgraded" | "pending_graph" | "pending_bridge"
+	Message       string             `json:"message"`
+	NGNAccount    *NGNAccountInfo    `json:"ngn_account,omitempty"`
+	BridgeResult  KYCProviderResult  `json:"bridge_result"`
+	GraphPersonID string             `json:"graph_person_id,omitempty"`
+	KYCTier       int                `json:"kyc_tier"`
+	TierName      string             `json:"kyc_tier_name"`
+	Capabilities  TierCapabilities   `json:"tier_capabilities"`
+}
+
+// NGNAccountInfo contains the NGN virtual account details after Sprout upgrade.
+type NGNAccountInfo struct {
+	AccountNumber string `json:"account_number"`
+	BankName      string `json:"bank_name"`
+	BeneficiaryName string `json:"beneficiary_name"`
+	Status        string `json:"status"`
+}
+
+// BloomUpgradeRequest is the request for upgrading to Bloom tier (Tier 3).
+// This submits proof of address + financial profile to Bridge.
+type BloomUpgradeRequest struct {
+	EmploymentStatus     string `json:"employment_status" validate:"required"`
+	Occupation           string `json:"occupation" validate:"required"`
+	SourceOfFunds        string `json:"source_of_funds" validate:"required"`
+	ExpectedMonthlyVolume string `json:"expected_monthly_volume" validate:"required"`
+	AccountPurpose       string `json:"account_purpose" validate:"required"`
+	ProofOfAddressURL    string `json:"proof_of_address_url" validate:"required"`
+	ProofOfAddressType   string `json:"proof_of_address_type" validate:"required,oneof=utility_bill bank_statement government_letter"`
+}
+
+// BloomUpgradeResponse is returned after a successful Bloom tier upgrade.
+type BloomUpgradeResponse struct {
+	Status       string            `json:"status"` // "upgraded" | "pending_bridge"
+	Message      string            `json:"message"`
+	BridgeResult KYCProviderResult `json:"bridge_result"`
+	KYCTier      int               `json:"kyc_tier"`
+	TierName     string            `json:"kyc_tier_name"`
+	Capabilities TierCapabilities  `json:"tier_capabilities"`
+}
 
 // SumsubWebhookPayload contains the relevant fields used by webhook processing.
 type SumsubWebhookPayload struct {

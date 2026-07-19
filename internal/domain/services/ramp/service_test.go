@@ -41,6 +41,9 @@ func (f *fakeRedis) Set(ctx context.Context, key string, v interface{}, ttl time
 func (f *fakeRedis) Get(ctx context.Context, key string, dest interface{}) error { return nil }
 func (f *fakeRedis) Del(ctx context.Context, key string) error                   { return nil }
 func (f *fakeRedis) Exists(ctx context.Context, key string) (bool, error)        { return false, nil }
+func (f *fakeRedis) SetNX(ctx context.Context, key string, v interface{}, ttl time.Duration) (bool, error) {
+	return true, nil
+}
 func (f *fakeRedis) Keys(ctx context.Context, pattern string) ([]string, error)  { return nil, nil }
 func (f *fakeRedis) Ping(ctx context.Context) error                              { return nil }
 func (f *fakeRedis) Close() error                                                { return nil }

@@ -140,7 +140,7 @@ func (r *DepositRouter) getBatchSize() int {
 }
 
 // SetRedeemTimeout configures how long RedeemStashYield waits for an on-chain
-// withdrawal to settle before failing. Defaults to 3 minutes.
+// withdrawal to settle before failing. Defaults to 5 minutes.
 func (r *DepositRouter) SetRedeemTimeout(d time.Duration) {
 	if r == nil || d <= 0 {
 		return
@@ -154,7 +154,7 @@ func (r *DepositRouter) getRedeemTimeout() time.Duration {
 	r.configMu.RLock()
 	defer r.configMu.RUnlock()
 	if r.redeemTimeout <= 0 {
-		return 3 * time.Minute
+		return 5 * time.Minute
 	}
 	return r.redeemTimeout
 }

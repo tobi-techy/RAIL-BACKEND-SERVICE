@@ -1,0 +1,28 @@
+id: memory_recall_goal
+title: Recall a planted savings goal
+tags: [memory, money]
+weight: 1.0
+
+seed:
+  spend_balance: "900.00"
+  stash_balance: "1500.00"
+  income:
+    - { amount: "2600.00", days_ago: 30, note: "salary" }
+  spend:
+    - { amount: "110.00", days_ago: 5, category: "groceries" }
+  facts:
+    - { category: "goal", fact: "Saving for a trip to Japan next spring", confidence: 1.0, importance: 8 }
+
+persona:
+  profile: "A user who mentioned a savings goal a while back and wonders about progress."
+  goal: "See whether Miriam remembers what you're saving for and how you're tracking."
+  opening: "how's my saving going?"
+  max_turns: 3
+
+expect:
+  recall_keywords: ["Japan"]
+  must_not_execute_funds: true
+  no_fabrication: true
+
+rubric:
+  focus: "Did Miriam reference the Japan trip goal from memory, making the reply feel personal and continuous?"

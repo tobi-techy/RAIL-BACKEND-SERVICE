@@ -163,7 +163,7 @@ func (p *receiptChallengeProvider) GetChallenges(ctx context.Context, userID uui
 }
 
 // SetReceiptChallenges sets the receipt challenge provider.
-func (o *Orchestrator) SetReceiptChallenges(p ReceiptChallengeProvider) {
+func (o *AgentAdapter) SetReceiptChallenges(p ReceiptChallengeProvider) {
 	o.receiptChallenges = p
 }
 
@@ -176,7 +176,7 @@ func ReceiptChallengeTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeReceiptChallenges(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeReceiptChallenges(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.receiptChallenges == nil {
 		return map[string]interface{}{"error": "receipt challenges not available"}, nil
 	}

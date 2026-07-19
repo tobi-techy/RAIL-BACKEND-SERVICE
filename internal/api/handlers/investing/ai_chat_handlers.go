@@ -68,13 +68,13 @@ func getNudgeLimiter(userID string) *rate.Limiter {
 
 // AIChatHandlers handles AI chat endpoints
 type AIChatHandlers struct {
-	orchestrator *aiservice.Orchestrator
+	orchestrator aiservice.ChatEngine
 	convService  *conversationsvc.Service
 	logger       *logger.Logger
 }
 
 // NewAIChatHandlers creates new AI chat handlers
-func NewAIChatHandlers(orchestrator *aiservice.Orchestrator, convService *conversationsvc.Service, logger *logger.Logger) *AIChatHandlers {
+func NewAIChatHandlers(orchestrator aiservice.ChatEngine, convService *conversationsvc.Service, logger *logger.Logger) *AIChatHandlers {
 	return &AIChatHandlers{orchestrator: orchestrator, convService: convService, logger: logger}
 }
 

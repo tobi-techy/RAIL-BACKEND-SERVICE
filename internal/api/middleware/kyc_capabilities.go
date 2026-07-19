@@ -49,7 +49,7 @@ func RequireCryptoCapability(userReader UserEntityReader, log *zap.Logger) gin.H
 			return
 		}
 
-		tier := entities.DeriveKYCTier(user.KYCStatus)
+		tier := entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus)
 		if tier == entities.KYCTierUnverified {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"code":    "ACCOUNT_SETUP_REQUIRED",
@@ -132,6 +132,47 @@ func RequireAlpacaCapability(userReader UserEntityReader, log *zap.Logger) gin.H
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"code":    "ALPACA_KYC_REQUIRED",
 				"message": "Complete identity verification to access investing features",
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// RequireTokenizedInvestingCapability gates tokenized-asset investing (e.g. LI.FI)
+// behind Tier 3 (advanced). Until a user reaches Tier 3 via Bridge KYC, the
+// capability is locked with a 403.
+func RequireTokenizedInvestingCapability(userReader UserEntityReader, log *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, err := extractUserID(c)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    "UNAUTHORIZED",
+				"message": "Authentication required",
+			})
+			return
+		}
+
+		user, err := userReader.GetUserEntityByID(c.Request.Context(), userID)
+		if err != nil {
+			log.Error("Failed to load user for tokenized investing capability check",
+				zap.Error(err),
+				zap.String("user_id", userID.String()),
+				zap.String("request_id", c.GetString("request_id")))
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"code":    "KYC_STATUS_ERROR",
+				"message": "Unable to verify investing eligibility at this time",
+			})
+			return
+		}
+
+		tier := entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus)
+		caps := entities.CapabilitiesForTier(entities.KYCTierToLevel(tier))
+		if !caps.CanInvestTokenized {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    "TOKENIZED_INVESTING_LOCKED",
+				"message": "Complete advanced (Tier 3) verification to access tokenized-asset investing",
 			})
 			return
 		}

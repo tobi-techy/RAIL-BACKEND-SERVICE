@@ -63,7 +63,7 @@ func LinkedBanksTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeGetLinkedBanks(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetLinkedBanks(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.bankAccountProvider == nil {
 		return map[string]interface{}{"accounts": []interface{}{}, "message": "No bank accounts linked yet"}, nil
 	}
@@ -89,7 +89,7 @@ func (o *Orchestrator) executeGetLinkedBanks(ctx context.Context, userID uuid.UU
 	return map[string]interface{}{"accounts": result}, nil
 }
 
-func (o *Orchestrator) createWithdrawalAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) createWithdrawalAction(ctx context.Context, userID, convID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	amountF, _ := args["amount"].(float64)
 	currency, _ := args["currency"].(string)
 
@@ -107,8 +107,8 @@ func (o *Orchestrator) createWithdrawalAction(ctx context.Context, userID, convI
 		balance, err := o.fundsTransferer.GetSpendBalance(ctx, userID)
 		if err == nil && balance.LessThan(amount) {
 			return map[string]interface{}{
-				"error":   "Insufficient balance",
-				"balance": balance.StringFixed(2),
+				"error":     "Insufficient balance",
+				"balance":   balance.StringFixed(2),
 				"requested": amount.StringFixed(2),
 			}, nil
 		}
@@ -141,7 +141,7 @@ func (o *Orchestrator) createWithdrawalAction(ctx context.Context, userID, convI
 	}, nil
 }
 
-func (o *Orchestrator) executeWithdrawal(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
+func (o *AgentAdapter) executeWithdrawal(ctx context.Context, userID uuid.UUID, action *entities.PendingAction) error {
 	if o.withdrawalInitiator == nil {
 		return fmt.Errorf("withdrawal service unavailable")
 	}

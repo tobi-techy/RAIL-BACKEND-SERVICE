@@ -2,6 +2,7 @@ package entities
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,66 +14,66 @@ type KYCTier string
 
 const (
 	KYCTierUnverified KYCTier = "unverified" // No account setup — all transactions blocked
-	KYCTierNonKYC     KYCTier = "non_kyc"    // Circle wallet created, no KYC — limited crypto only
-	KYCTierBasic      KYCTier = "basic"      // Basic identity verification (Tier 1)
-	KYCTierAdvanced   KYCTier = "advanced"   // Advanced verification with proof of address/funds (Tier 2)
+	KYCTierNonKYC     KYCTier = "non_kyc"    // Tier 1: wallet created, no KYC — limited crypto + NGN ramp
+	KYCTierBasic      KYCTier = "basic"      // Tier 2: BVN + NIN verified via Graph — NGN virtual account
+	KYCTierAdvanced   KYCTier = "advanced"   // Tier 3: Bridge KYC — USD virtual account, cards, investing
 )
 
 // ── Non-KYC Limits (crypto-only, no fiat) ────────────────────────
 
 var (
-	NonKYCDailyTransferLimit   = decimal.NewFromFloat(100.00)   // $100/day
-	NonKYCMonthlyTransferLimit = decimal.NewFromFloat(500.00)   // $500/month
-	NonKYCMaxTransferAmount    = decimal.NewFromFloat(100.00)   // $100 per transaction
-	NonKYCMinTransferAmount    = decimal.NewFromFloat(1.00)     // $1 minimum
+	NonKYCDailyTransferLimit   = decimal.NewFromFloat(100.00) // $100/day
+	NonKYCMonthlyTransferLimit = decimal.NewFromFloat(500.00) // $500/month
+	NonKYCMaxTransferAmount    = decimal.NewFromFloat(100.00) // $100 per transaction
+	NonKYCMinTransferAmount    = decimal.NewFromFloat(1.00)   // $1 minimum
 )
 
 // ── Non-KYC NGN Limits (Naira allowed without KYC) ───────────────
 
 var (
-	NonKYCDailyTransferLimitNGN   = decimal.NewFromFloat(50000.00)   // ₦50,000/day
-	NonKYCMonthlyTransferLimitNGN = decimal.NewFromFloat(200000.00)  // ₦200,000/month
-	NonKYCMaxTransferAmountNGN    = decimal.NewFromFloat(50000.00)   // ₦50,000 per transaction
-	NonKYCMinTransferAmountNGN    = decimal.NewFromFloat(500.00)     // ₦500 minimum
+	NonKYCDailyTransferLimitNGN   = decimal.NewFromFloat(50000.00)  // ₦50,000/day
+	NonKYCMonthlyTransferLimitNGN = decimal.NewFromFloat(200000.00) // ₦200,000/month
+	NonKYCMaxTransferAmountNGN    = decimal.NewFromFloat(50000.00)  // ₦50,000 per transaction
+	NonKYCMinTransferAmountNGN    = decimal.NewFromFloat(500.00)    // ₦500 minimum
 )
 
 // ── USD Limits ───────────────────────────────────────────────────
 
 var (
-	MinDepositAmount = decimal.NewFromFloat(1.00)
+	MinDepositAmount    = decimal.NewFromFloat(1.00)
 	MinWithdrawalAmount = decimal.NewFromFloat(1.00)
 	MaxWithdrawalAmount = decimal.NewFromFloat(10000.00)
 
-	// Tier 1 (Basic KYC) — USD
-	Tier1DailyDepositLimit   = decimal.NewFromFloat(5000.00)
-	Tier1MonthlyDepositLimit = decimal.NewFromFloat(25000.00)
-	Tier1DailyWithdrawalLimit   = decimal.NewFromFloat(2500.00)
-	Tier1MonthlyWithdrawalLimit = decimal.NewFromFloat(25000.00)
+	// Tier 2 (basic — BVN+NIN) — USD
+	BasicDailyDepositLimit      = decimal.NewFromFloat(5000.00)
+	BasicMonthlyDepositLimit    = decimal.NewFromFloat(25000.00)
+	BasicDailyWithdrawalLimit   = decimal.NewFromFloat(2500.00)
+	BasicMonthlyWithdrawalLimit = decimal.NewFromFloat(25000.00)
 
-	// Tier 2 (Advanced KYC) — USD
-	Tier2DailyDepositLimit   = decimal.NewFromFloat(50000.00)
-	Tier2MonthlyDepositLimit = decimal.NewFromFloat(250000.00)
-	Tier2DailyWithdrawalLimit   = decimal.NewFromFloat(10000.00)
-	Tier2MonthlyWithdrawalLimit = decimal.NewFromFloat(150000.00)
+	// Tier 3 (advanced — Bridge KYC) — USD
+	AdvancedDailyDepositLimit      = decimal.NewFromFloat(50000.00)
+	AdvancedMonthlyDepositLimit    = decimal.NewFromFloat(250000.00)
+	AdvancedDailyWithdrawalLimit   = decimal.NewFromFloat(10000.00)
+	AdvancedMonthlyWithdrawalLimit = decimal.NewFromFloat(150000.00)
 )
 
 // ── NGN Limits ───────────────────────────────────────────────────
 
 var (
-	MinDepositAmountNGN = decimal.NewFromFloat(500.00) // ₦500
+	MinDepositAmountNGN    = decimal.NewFromFloat(500.00) // ₦500
 	MinWithdrawalAmountNGN = decimal.NewFromFloat(500.00)
 
-	// Tier 1 (BVN verified) — NGN
-	Tier1DailyDepositLimitNGN   = decimal.NewFromFloat(2000000.00)  // ₦2M
-	Tier1MonthlyDepositLimitNGN = decimal.NewFromFloat(10000000.00) // ₦10M
-	Tier1DailyWithdrawalLimitNGN   = decimal.NewFromFloat(1000000.00)  // ₦1M
-	Tier1MonthlyWithdrawalLimitNGN = decimal.NewFromFloat(5000000.00)  // ₦5M
+	// Tier 2 (basic — BVN+NIN) — NGN
+	BasicDailyDepositLimitNGN      = decimal.NewFromFloat(2000000.00)  // ₦2M
+	BasicMonthlyDepositLimitNGN    = decimal.NewFromFloat(10000000.00) // ₦10M
+	BasicDailyWithdrawalLimitNGN   = decimal.NewFromFloat(1000000.00)  // ₦1M
+	BasicMonthlyWithdrawalLimitNGN = decimal.NewFromFloat(5000000.00)  // ₦5M
 
-	// Tier 2 (Full KYC) — NGN
-	Tier2DailyDepositLimitNGN   = decimal.NewFromFloat(10000000.00) // ₦10M
-	Tier2MonthlyDepositLimitNGN = decimal.NewFromFloat(50000000.00) // ₦50M
-	Tier2DailyWithdrawalLimitNGN   = decimal.NewFromFloat(5000000.00)  // ₦5M
-	Tier2MonthlyWithdrawalLimitNGN = decimal.NewFromFloat(25000000.00) // ₦25M
+	// Tier 3 (advanced — Bridge KYC) — NGN
+	AdvancedDailyDepositLimitNGN      = decimal.NewFromFloat(10000000.00) // ₦10M
+	AdvancedMonthlyDepositLimitNGN    = decimal.NewFromFloat(50000000.00) // ₦50M
+	AdvancedDailyWithdrawalLimitNGN   = decimal.NewFromFloat(5000000.00)  // ₦5M
+	AdvancedMonthlyWithdrawalLimitNGN = decimal.NewFromFloat(25000000.00) // ₦25M
 )
 
 // TransactionLimitConfig holds limits for a specific KYC tier and currency
@@ -143,14 +144,14 @@ func getUSDLimits(tier KYCTier) TransactionLimitConfig {
 	case KYCTierAdvanced:
 		return TransactionLimitConfig{
 			Tier: KYCTierAdvanced, Currency: "USD",
-			MinDeposit: MinDepositAmount, DailyDepositLimit: Tier2DailyDepositLimit, MonthlyDepositLimit: Tier2MonthlyDepositLimit,
-			MinWithdrawal: MinWithdrawalAmount, MaxWithdrawal: MaxWithdrawalAmount, DailyWithdrawalLimit: Tier2DailyWithdrawalLimit, MonthlyWithdrawalLimit: Tier2MonthlyWithdrawalLimit,
+			MinDeposit: MinDepositAmount, DailyDepositLimit: AdvancedDailyDepositLimit, MonthlyDepositLimit: AdvancedMonthlyDepositLimit,
+			MinWithdrawal: MinWithdrawalAmount, MaxWithdrawal: MaxWithdrawalAmount, DailyWithdrawalLimit: AdvancedDailyWithdrawalLimit, MonthlyWithdrawalLimit: AdvancedMonthlyWithdrawalLimit,
 		}
 	default: // Basic
 		return TransactionLimitConfig{
 			Tier: KYCTierBasic, Currency: "USD",
-			MinDeposit: MinDepositAmount, DailyDepositLimit: Tier1DailyDepositLimit, MonthlyDepositLimit: Tier1MonthlyDepositLimit,
-			MinWithdrawal: MinWithdrawalAmount, MaxWithdrawal: MaxWithdrawalAmount, DailyWithdrawalLimit: Tier1DailyWithdrawalLimit, MonthlyWithdrawalLimit: Tier1MonthlyWithdrawalLimit,
+			MinDeposit: MinDepositAmount, DailyDepositLimit: BasicDailyDepositLimit, MonthlyDepositLimit: BasicMonthlyDepositLimit,
+			MinWithdrawal: MinWithdrawalAmount, MaxWithdrawal: MaxWithdrawalAmount, DailyWithdrawalLimit: BasicDailyWithdrawalLimit, MonthlyWithdrawalLimit: BasicMonthlyWithdrawalLimit,
 		}
 	}
 }
@@ -160,14 +161,14 @@ func getNGNLimits(tier KYCTier) TransactionLimitConfig {
 	case KYCTierAdvanced:
 		return TransactionLimitConfig{
 			Tier: KYCTierAdvanced, Currency: "NGN",
-			MinDeposit: MinDepositAmountNGN, DailyDepositLimit: Tier2DailyDepositLimitNGN, MonthlyDepositLimit: Tier2MonthlyDepositLimitNGN,
-			MinWithdrawal: MinWithdrawalAmountNGN, MaxWithdrawal: Tier2DailyWithdrawalLimitNGN, DailyWithdrawalLimit: Tier2DailyWithdrawalLimitNGN, MonthlyWithdrawalLimit: Tier2MonthlyWithdrawalLimitNGN,
+			MinDeposit: MinDepositAmountNGN, DailyDepositLimit: AdvancedDailyDepositLimitNGN, MonthlyDepositLimit: AdvancedMonthlyDepositLimitNGN,
+			MinWithdrawal: MinWithdrawalAmountNGN, MaxWithdrawal: AdvancedDailyWithdrawalLimitNGN, DailyWithdrawalLimit: AdvancedDailyWithdrawalLimitNGN, MonthlyWithdrawalLimit: AdvancedMonthlyWithdrawalLimitNGN,
 		}
 	default: // Basic
 		return TransactionLimitConfig{
 			Tier: KYCTierBasic, Currency: "NGN",
-			MinDeposit: MinDepositAmountNGN, DailyDepositLimit: Tier1DailyDepositLimitNGN, MonthlyDepositLimit: Tier1MonthlyDepositLimitNGN,
-			MinWithdrawal: MinWithdrawalAmountNGN, MaxWithdrawal: Tier1DailyWithdrawalLimitNGN, DailyWithdrawalLimit: Tier1DailyWithdrawalLimitNGN, MonthlyWithdrawalLimit: Tier1MonthlyWithdrawalLimitNGN,
+			MinDeposit: MinDepositAmountNGN, DailyDepositLimit: BasicDailyDepositLimitNGN, MonthlyDepositLimit: BasicMonthlyDepositLimitNGN,
+			MinWithdrawal: MinWithdrawalAmountNGN, MaxWithdrawal: BasicDailyWithdrawalLimitNGN, DailyWithdrawalLimit: BasicDailyWithdrawalLimitNGN, MonthlyWithdrawalLimit: BasicMonthlyWithdrawalLimitNGN,
 		}
 	}
 }
@@ -248,4 +249,102 @@ func DeriveKYCTier(kycStatus string) KYCTier {
 	default:
 		return KYCTierUnverified
 	}
+}
+
+// ── Tiered KYC ladder ─────────────────────────────────────────────
+//
+// Rail runs a 3-tier ladder split by provider domain:
+//
+//	Tier 1 (non_kyc):  signup only — crypto + NGN ramp (RampHub/Paj) at capped limits.
+//	Tier 2 (basic):    BVN + NIN verified via Graph — unlocks the Graph NGN named
+//	                   virtual account and higher NGN limits.
+//	Tier 3 (advanced): Bridge KYC active (Didit doc+selfie → Bridge) — unlocks the
+//	                   Bridge USD virtual account, cards, and investing (incl. tokenized).
+const (
+	KYCTierLevelUnverified = 0
+	KYCTierLevelNonKYC     = 1
+	KYCTierLevelBasic      = 2
+	KYCTierLevelAdvanced   = 3
+)
+
+// TierLevelToKYCTier maps the persisted numeric tier to a KYCTier.
+func TierLevelToKYCTier(level int) KYCTier {
+	switch level {
+	case KYCTierLevelAdvanced:
+		return KYCTierAdvanced
+	case KYCTierLevelBasic:
+		return KYCTierBasic
+	case KYCTierLevelNonKYC:
+		return KYCTierNonKYC
+	default:
+		return KYCTierUnverified
+	}
+}
+
+// KYCTierToLevel maps a KYCTier to the persisted numeric tier.
+func KYCTierToLevel(tier KYCTier) int {
+	switch tier {
+	case KYCTierAdvanced:
+		return KYCTierLevelAdvanced
+	case KYCTierBasic:
+		return KYCTierLevelBasic
+	case KYCTierNonKYC:
+		return KYCTierLevelNonKYC
+	case KYCTierUnverified:
+		return KYCTierLevelUnverified
+	default:
+		return KYCTierLevelNonKYC
+	}
+}
+
+// EffectiveKYCTier resolves a user's tier, preferring the explicit persisted
+// numeric tier. Account-level blocks stop all access regardless of tier, and the
+// legacy-status fallback can never grant Tier 3 (advanced requires a persisted
+// tier set by Bridge KYC), keeping the ladder authoritative and downgrade-safe.
+func EffectiveKYCTier(tierLevel int, kycStatus string) KYCTier {
+	switch strings.ToLower(strings.TrimSpace(kycStatus)) {
+	case "blocked", "suspended", "banned", "frozen", "deactivated":
+		return KYCTierUnverified
+	}
+	if tierLevel >= KYCTierLevelBasic {
+		return TierLevelToKYCTier(tierLevel)
+	}
+	derived := DeriveKYCTier(kycStatus)
+	if KYCTierToLevel(derived) > KYCTierLevelBasic {
+		return KYCTierBasic
+	}
+	return derived
+}
+
+// TierCapabilities describes what a given tier unlocks.
+type TierCapabilities struct {
+	Tier               int  `json:"tier"`
+	CanDepositCrypto   bool `json:"can_deposit_crypto"`
+	CanReceiveNGN      bool `json:"can_receive_ngn"`      // Graph NGN virtual account (Tier 2)
+	CanDepositFiatUSD  bool `json:"can_deposit_fiat_usd"` // Bridge USD virtual account (Tier 3)
+	CanUseCard         bool `json:"can_use_card"`         // Bridge cards (Tier 3)
+	CanInvest          bool `json:"can_invest"`           // Brokerage investing (Tier 3)
+	CanInvestTokenized bool `json:"can_invest_tokenized"` // Tokenized-asset investing / LI.FI (Tier 3)
+}
+
+// CapabilitiesForTier returns the capability set unlocked at a numeric tier.
+//
+//	Tier 1 (non_kyc):  crypto + NGN ramp (limited caps).
+//	Tier 2 (basic):    + Graph NGN named virtual account, higher NGN limits.
+//	Tier 3 (advanced): + Bridge USD virtual account, cards, investing (incl. tokenized).
+func CapabilitiesForTier(tierLevel int) TierCapabilities {
+	caps := TierCapabilities{Tier: tierLevel}
+	if tierLevel >= KYCTierLevelNonKYC {
+		caps.CanDepositCrypto = true
+	}
+	if tierLevel >= KYCTierLevelBasic {
+		caps.CanReceiveNGN = true
+	}
+	if tierLevel >= KYCTierLevelAdvanced {
+		caps.CanDepositFiatUSD = true
+		caps.CanUseCard = true
+		caps.CanInvest = true
+		caps.CanInvestTokenized = true
+	}
+	return caps
 }

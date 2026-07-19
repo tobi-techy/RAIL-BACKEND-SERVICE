@@ -56,10 +56,21 @@ const (
 	ExecutionStatusFailed            ExecutionStatus = "failed"
 )
 
-// Conductor represents a professional investor whose trades can be copied
+// ConductorSource distinguishes Rail-user conductors from public figures
+// whose trades come from public disclosures.
+const (
+	ConductorSourceRail   = "rail"
+	ConductorSourcePublic = "public"
+)
+
+// Conductor represents an investor whose trades can be copied. Rail conductors
+// have a UserID; public-figure conductors have a nil UserID and an ExternalKey
+// identifying them in the public disclosure dataset.
 type Conductor struct {
 	ID             uuid.UUID       `json:"id" db:"id"`
-	UserID         uuid.UUID       `json:"user_id" db:"user_id"`
+	UserID         *uuid.UUID      `json:"user_id,omitempty" db:"user_id"`
+	Source         string          `json:"source" db:"source"`
+	ExternalKey    *string         `json:"external_key,omitempty" db:"external_key"`
 	DisplayName    string          `json:"display_name" db:"display_name"`
 	Bio            string          `json:"bio,omitempty" db:"bio"`
 	AvatarURL      string          `json:"avatar_url,omitempty" db:"avatar_url"`
@@ -104,22 +115,22 @@ type Draft struct {
 
 // Signal represents a trade executed by a conductor
 type Signal struct {
-	ID                  uuid.UUID       `json:"id" db:"id"`
-	ConductorID         uuid.UUID       `json:"conductor_id" db:"conductor_id"`
-	AssetTicker         string          `json:"asset_ticker" db:"asset_ticker"`
-	AssetName           string          `json:"asset_name,omitempty" db:"asset_name"`
-	SignalType          SignalType      `json:"signal_type" db:"signal_type"`
-	Side                string          `json:"side" db:"side"`
-	BaseQuantity        decimal.Decimal `json:"base_quantity" db:"base_quantity"`
-	BasePrice           decimal.Decimal `json:"base_price" db:"base_price"`
-	BaseValue           decimal.Decimal `json:"base_value" db:"base_value"`
+	ID                   uuid.UUID       `json:"id" db:"id"`
+	ConductorID          uuid.UUID       `json:"conductor_id" db:"conductor_id"`
+	AssetTicker          string          `json:"asset_ticker" db:"asset_ticker"`
+	AssetName            string          `json:"asset_name,omitempty" db:"asset_name"`
+	SignalType           SignalType      `json:"signal_type" db:"signal_type"`
+	Side                 string          `json:"side" db:"side"`
+	BaseQuantity         decimal.Decimal `json:"base_quantity" db:"base_quantity"`
+	BasePrice            decimal.Decimal `json:"base_price" db:"base_price"`
+	BaseValue            decimal.Decimal `json:"base_value" db:"base_value"`
 	ConductorAUMAtSignal decimal.Decimal `json:"conductor_aum_at_signal" db:"conductor_aum_at_signal"`
-	OrderID             string          `json:"order_id,omitempty" db:"order_id"`
-	Status              SignalStatus    `json:"status" db:"status"`
-	ProcessedCount      int             `json:"processed_count" db:"processed_count"`
-	FailedCount         int             `json:"failed_count" db:"failed_count"`
-	CreatedAt           time.Time       `json:"created_at" db:"created_at"`
-	CompletedAt         *time.Time      `json:"completed_at,omitempty" db:"completed_at"`
+	OrderID              string          `json:"order_id,omitempty" db:"order_id"`
+	Status               SignalStatus    `json:"status" db:"status"`
+	ProcessedCount       int             `json:"processed_count" db:"processed_count"`
+	FailedCount          int             `json:"failed_count" db:"failed_count"`
+	CreatedAt            time.Time       `json:"created_at" db:"created_at"`
+	CompletedAt          *time.Time      `json:"completed_at,omitempty" db:"completed_at"`
 }
 
 // SignalExecutionLog tracks the execution of a copied trade for each drafter
@@ -216,19 +227,19 @@ const (
 
 // ConductorApplication represents a user's application to become a conductor
 type ConductorApplication struct {
-	ID                  uuid.UUID                  `json:"id" db:"id"`
-	UserID              uuid.UUID                  `json:"user_id" db:"user_id"`
-	DisplayName         string                     `json:"display_name" db:"display_name"`
-	Bio                 string                     `json:"bio" db:"bio"`
-	InvestmentStrategy  string                     `json:"investment_strategy" db:"investment_strategy"`
-	Experience          string                     `json:"experience" db:"experience"`
-	SocialLinks         map[string]string          `json:"social_links,omitempty" db:"social_links"`
-	Status              ConductorApplicationStatus `json:"status" db:"status"`
-	ReviewedBy          *uuid.UUID                 `json:"reviewed_by,omitempty" db:"reviewed_by"`
-	ReviewedAt          *time.Time                 `json:"reviewed_at,omitempty" db:"reviewed_at"`
-	RejectionReason     string                     `json:"rejection_reason,omitempty" db:"rejection_reason"`
-	CreatedAt           time.Time                  `json:"created_at" db:"created_at"`
-	UpdatedAt           time.Time                  `json:"updated_at" db:"updated_at"`
+	ID                 uuid.UUID                  `json:"id" db:"id"`
+	UserID             uuid.UUID                  `json:"user_id" db:"user_id"`
+	DisplayName        string                     `json:"display_name" db:"display_name"`
+	Bio                string                     `json:"bio" db:"bio"`
+	InvestmentStrategy string                     `json:"investment_strategy" db:"investment_strategy"`
+	Experience         string                     `json:"experience" db:"experience"`
+	SocialLinks        map[string]string          `json:"social_links,omitempty" db:"social_links"`
+	Status             ConductorApplicationStatus `json:"status" db:"status"`
+	ReviewedBy         *uuid.UUID                 `json:"reviewed_by,omitempty" db:"reviewed_by"`
+	ReviewedAt         *time.Time                 `json:"reviewed_at,omitempty" db:"reviewed_at"`
+	RejectionReason    string                     `json:"rejection_reason,omitempty" db:"rejection_reason"`
+	CreatedAt          time.Time                  `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time                  `json:"updated_at" db:"updated_at"`
 }
 
 // CreateConductorApplicationRequest represents a request to apply as a conductor
@@ -277,9 +288,9 @@ type TrackAllocation struct {
 
 // CreateTrackRequest represents a request to create a new track
 type CreateTrackRequest struct {
-	Name        string                        `json:"name" binding:"required,min=2,max=100"`
-	Description string                        `json:"description" binding:"required,min=10,max=500"`
-	RiskLevel   string                        `json:"risk_level" binding:"required,oneof=low medium high"`
+	Name        string                         `json:"name" binding:"required,min=2,max=100"`
+	Description string                         `json:"description" binding:"required,min=10,max=500"`
+	RiskLevel   string                         `json:"risk_level" binding:"required,oneof=low medium high"`
 	Allocations []CreateTrackAllocationRequest `json:"allocations" binding:"required,min=1,max=20"`
 }
 
@@ -292,9 +303,9 @@ type CreateTrackAllocationRequest struct {
 
 // UpdateTrackRequest represents a request to update track allocations
 type UpdateTrackRequest struct {
-	Name        *string                       `json:"name,omitempty"`
-	Description *string                       `json:"description,omitempty"`
-	RiskLevel   *string                       `json:"risk_level,omitempty"`
+	Name        *string                        `json:"name,omitempty"`
+	Description *string                        `json:"description,omitempty"`
+	RiskLevel   *string                        `json:"risk_level,omitempty"`
 	Allocations []CreateTrackAllocationRequest `json:"allocations,omitempty"`
 }
 

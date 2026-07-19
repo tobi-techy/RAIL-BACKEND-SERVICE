@@ -74,6 +74,200 @@ func (s *Service) GetTransactionByIdempotencyKey(ctx context.Context, key string
 	return s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, key)
 }
 
+// CreatePendingTransaction inserts a ledger transaction with status=pending and
+// its entry rows, but does NOT lock or update any account balances. The
+// balances are updated later by CommitPendingTransaction once the transfer
+// succeeds. If the transfer fails, FailPendingTransaction marks the tx as
+// failed with zero balance impact.
+func (s *Service) CreatePendingTransaction(ctx context.Context, req *entities.CreateTransactionRequest) error {
+	if err := req.Validate(); err != nil {
+		return fmt.Errorf("validate request: %w", err)
+	}
+
+	// Idempotency: if a tx with this key already exists, it's a replay.
+	existing, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
+	if err != nil {
+		return fmt.Errorf("check idempotency: %w", err)
+	}
+	if existing != nil {
+		s.logger.Info("Pending transaction already exists (idempotent)",
+			"idempotency_key", req.IdempotencyKey,
+			"transaction_id", existing.ID)
+		return nil
+	}
+
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	txCtx := repositories.WithTx(ctx, tx)
+	now := time.Now()
+
+	ledgerTx := &entities.LedgerTransaction{
+		ID:              uuid.New(),
+		UserID:          req.UserID,
+		TransactionType: req.TransactionType,
+		ReferenceID:     req.ReferenceID,
+		ReferenceType:   req.ReferenceType,
+		Status:          entities.TransactionStatusPending,
+		IdempotencyKey:  req.IdempotencyKey,
+		Description:     req.Description,
+		Metadata:        req.Metadata,
+		CreatedAt:       now,
+	}
+
+	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
+		if repositories.IsUniqueViolation(err, "") {
+			_ = tx.Rollback()
+			return nil // idempotent replay
+		}
+		return fmt.Errorf("create pending transaction: %w", err)
+	}
+
+	// Insert entry rows (for audit trail) but do NOT touch account balances.
+	for _, entryReq := range req.Entries {
+		entry := &entities.LedgerEntry{
+			ID:            uuid.New(),
+			TransactionID: ledgerTx.ID,
+			AccountID:     entryReq.AccountID,
+			EntryType:     entryReq.EntryType,
+			Amount:        entryReq.Amount,
+			Currency:      entryReq.Currency,
+			Description:   entryReq.Description,
+			Metadata:      entryReq.Metadata,
+			CreatedAt:     now,
+		}
+		if err := s.ledgerRepo.CreateEntry(txCtx, entry); err != nil {
+			return fmt.Errorf("create pending entry: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit pending transaction: %w", err)
+	}
+
+	s.logger.Info("Pending ledger transaction created",
+		"transaction_id", ledgerTx.ID,
+		"idempotency_key", req.IdempotencyKey,
+		"type", ledgerTx.TransactionType)
+	return nil
+}
+
+// CommitPendingTransaction promotes a pending ledger transaction to completed
+// by locking the affected accounts, updating their balances, and marking the
+// transaction as completed. This is called after the external transfer succeeds.
+func (s *Service) CommitPendingTransaction(ctx context.Context, idempotencyKey string) error {
+	ledgerTx, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil {
+		return fmt.Errorf("get pending transaction: %w", err)
+	}
+	if ledgerTx == nil {
+		return fmt.Errorf("pending transaction not found for key: %s", idempotencyKey)
+	}
+	if ledgerTx.Status == entities.TransactionStatusCompleted {
+		s.logger.Info("Transaction already committed (idempotent)",
+			"idempotency_key", idempotencyKey)
+		return nil
+	}
+	if ledgerTx.Status != entities.TransactionStatusPending {
+		return fmt.Errorf("transaction %s is in status %s, cannot commit", ledgerTx.ID, ledgerTx.Status)
+	}
+
+	entries, err := s.ledgerRepo.GetEntriesByTransactionID(ctx, ledgerTx.ID)
+	if err != nil {
+		return fmt.Errorf("get pending entries: %w", err)
+	}
+	if len(entries) == 0 {
+		return fmt.Errorf("pending transaction %s has no entries", ledgerTx.ID)
+	}
+
+	// Use its own DB transaction to lock accounts and update balances atomically.
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin commit transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	txCtx := repositories.WithTx(ctx, tx)
+
+	// Convert repo entries to CreateEntryRequest for the existing helper.
+	entryReqs := make([]entities.CreateEntryRequest, len(entries))
+	for i, e := range entries {
+		entryReqs[i] = entities.CreateEntryRequest{
+			AccountID:   e.AccountID,
+			EntryType:   e.EntryType,
+			Amount:      e.Amount,
+			Currency:    e.Currency,
+			Description: e.Description,
+		}
+	}
+
+	for _, entryReq := range orderedEntriesForLocking(entryReqs) {
+		if err := s.updateAccountBalanceInTx(txCtx, entryReq.AccountID, entryReq.EntryType, entryReq.Amount); err != nil {
+			return fmt.Errorf("commit balance update: %w", err)
+		}
+	}
+
+	ledgerTx.MarkCompleted()
+	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, ledgerTx.ID, entities.TransactionStatusCompleted); err != nil {
+		return fmt.Errorf("mark transaction completed: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+
+	s.logger.Info("Pending ledger transaction committed",
+		"transaction_id", ledgerTx.ID,
+		"idempotency_key", idempotencyKey)
+	return nil
+}
+
+// FailPendingTransaction marks a pending ledger transaction as failed without
+// touching any account balances (they were never updated). This is called when
+// the external transfer fails.
+func (s *Service) FailPendingTransaction(ctx context.Context, idempotencyKey string) error {
+	ledgerTx, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil {
+		return fmt.Errorf("get pending transaction: %w", err)
+	}
+	if ledgerTx == nil {
+		s.logger.Warn("FailPendingTransaction: transaction not found (may already be cleaned up)",
+			"idempotency_key", idempotencyKey)
+		return nil
+	}
+	if ledgerTx.Status != entities.TransactionStatusPending {
+		s.logger.Info("FailPendingTransaction: transaction already in terminal status",
+			"idempotency_key", idempotencyKey, "status", ledgerTx.Status)
+		return nil
+	}
+
+	if err := s.ledgerRepo.UpdateTransactionStatus(ctx, ledgerTx.ID, entities.TransactionStatusFailed); err != nil {
+		return fmt.Errorf("mark transaction failed: %w", err)
+	}
+
+	s.logger.Info("Pending ledger transaction marked failed",
+		"transaction_id", ledgerTx.ID,
+		"idempotency_key", idempotencyKey)
+	return nil
+}
+
+// GetLedgerTransactionStatus returns the current status of a ledger transaction
+// identified by its idempotency key. Used by callers that need to decide whether
+// to fail a pending tx or reverse a committed one.
+func (s *Service) GetLedgerTransactionStatus(ctx context.Context, idempotencyKey string) (entities.TransactionStatus, error) {
+	ledgerTx, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil {
+		return "", fmt.Errorf("get transaction: %w", err)
+	}
+	if ledgerTx == nil {
+		return "", nil
+	}
+	return ledgerTx.Status, nil
+}
+
 // ledgerTxRetryConfig governs how many times we replay a ledger transaction
 // after a Postgres serialization failure / deadlock. Ledger work is short and
 // fully rolled back by the server on 40001/40P01, so replaying from scratch is
@@ -985,6 +1179,38 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 		s.observeStashRaid(userID, amount, idempotencyKey)
 	}
 	return nil
+}
+
+// ChargeLimitIncreaseFee debits a flat fee from the user's spending_balance and
+// credits it to the limit-increase revenue account. Used when a user raises
+// their self-imposed daily spending commitment. Idempotent by key.
+func (s *Service) ChargeLimitIncreaseFee(ctx context.Context, userID uuid.UUID, fee decimal.Decimal, idempotencyKey string) error {
+	if !fee.IsPositive() {
+		return fmt.Errorf("fee must be positive")
+	}
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	revenueAccount, err := s.GetSystemAccount(ctx, entities.AccountTypeLimitIncreaseRevenue)
+	if err != nil {
+		return fmt.Errorf("get limit increase revenue account: %w", err)
+	}
+	desc := fmt.Sprintf("Daily limit increase fee: %s", fee.String())
+	refType := "limit_increase_fee"
+	txReq := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: fee, Currency: "USD", Description: &desc},
+			{AccountID: revenueAccount.ID, EntryType: entities.EntryTypeDebit, Amount: fee, Currency: "USD", Description: &desc},
+		},
+	}
+	_, _, err = s.createTransaction(ctx, txReq)
+	return err
 }
 
 // CreditStash credits a user's stash_balance from the system USDC buffer.

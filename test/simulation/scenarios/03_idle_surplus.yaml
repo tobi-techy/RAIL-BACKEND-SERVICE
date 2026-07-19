@@ -1,0 +1,31 @@
+id: idle_surplus_stash
+title: Idle surplus nudged toward stash with confirmation
+tags: [money, action, proactivity]
+weight: 1.0
+
+seed:
+  spend_balance: "2600.00"
+  stash_balance: "300.00"
+  income:
+    - { amount: "3200.00", days_ago: 34, note: "salary" }
+    - { amount: "3200.00", days_ago: 4, note: "salary" }
+  spend:
+    - { amount: "120.00", days_ago: 5, category: "groceries" }
+    - { amount: "90.00", days_ago: 3, category: "transport" }
+
+persona:
+  profile: "A steady earner who leaves cash sitting in spending and forgets to save."
+  goal: "You are open to saving but want Miriam to suggest it — you won't bring it up first."
+  opening: "just checking in, how's my money looking?"
+  max_turns: 3
+
+expect:
+  surface_signal: "surplus"
+  action: "transfer_funds"
+  action_params:
+    to: "stash"
+  must_not_execute_funds: true
+  no_fabrication: true
+
+rubric:
+  focus: "Did Miriam notice the large idle spend balance and propose moving some to stash, staging it for confirmation rather than acting silently?"

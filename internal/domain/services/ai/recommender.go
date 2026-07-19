@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 

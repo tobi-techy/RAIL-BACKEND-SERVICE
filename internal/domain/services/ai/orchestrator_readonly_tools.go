@@ -57,46 +57,46 @@ type ReceiptHistoryProvider interface {
 
 // SetCardTransactions sets the card transaction provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetCardTransactions(p CardTransactionProvider) {
+func (o *AgentAdapter) SetCardTransactions(p CardTransactionProvider) {
 	o.cardTransactions = p
 }
 
 // SetDepositHistory sets the deposit history provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetDepositHistory(p DepositHistoryProvider) {
+func (o *AgentAdapter) SetDepositHistory(p DepositHistoryProvider) {
 	o.depositHistory = p
 }
 
 // SetYieldProvider sets the yield provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetYieldProvider(p YieldProvider) {
+func (o *AgentAdapter) SetYieldProvider(p YieldProvider) {
 	o.yieldProvider = p
 }
 
 // SetWithdrawalHistory sets the withdrawal history provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetWithdrawalHistory(p WithdrawalHistoryProvider) {
+func (o *AgentAdapter) SetWithdrawalHistory(p WithdrawalHistoryProvider) {
 	o.withdrawalHistory = p
 }
 
 // SetReceiptHistory sets the receipt history provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetReceiptHistory(p ReceiptHistoryProvider) {
+func (o *AgentAdapter) SetReceiptHistory(p ReceiptHistoryProvider) {
 	o.receiptHistory = p
 }
 
 // SetReceiptSplitter sets the receipt splitter for executing splits on AI confirmation.
-func (o *Orchestrator) SetReceiptSplitter(s ReceiptSplitter) {
+func (o *AgentAdapter) SetReceiptSplitter(s ReceiptSplitter) {
 	o.receiptSplitter = s
 }
 
 // SetWithdrawalInitiator sets the withdrawal service for voice-triggered withdrawals.
-func (o *Orchestrator) SetWithdrawalInitiator(w WithdrawalInitiator) {
+func (o *AgentAdapter) SetWithdrawalInitiator(w WithdrawalInitiator) {
 	o.withdrawalInitiator = w
 }
 
 // SetBankAccountProvider sets the bank account provider for withdrawal details.
-func (o *Orchestrator) SetBankAccountProvider(b BankAccountProvider) {
+func (o *AgentAdapter) SetBankAccountProvider(b BankAccountProvider) {
 	o.bankAccountProvider = b
 }
 
@@ -180,7 +180,7 @@ func ReadOnlyTools(hasCards, hasDeposits, hasIncomeTrend, hasYield, hasWithdrawa
 	return tools
 }
 
-func (o *Orchestrator) executeCardTransactions(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeCardTransactions(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.cardTransactions == nil {
 		return map[string]interface{}{"error": "card transactions not available"}, nil
 	}
@@ -208,7 +208,7 @@ func (o *Orchestrator) executeCardTransactions(ctx context.Context, userID uuid.
 	return map[string]interface{}{"transactions": items, "count": len(items)}, nil
 }
 
-func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeDepositHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.depositHistory == nil {
 		return map[string]interface{}{"error": "deposit history not available"}, nil
 	}
@@ -242,7 +242,7 @@ func (o *Orchestrator) executeDepositHistory(ctx context.Context, userID uuid.UU
 	return map[string]interface{}{"deposits": items, "count": len(items), "note": "Only showing completed deposits"}, nil
 }
 
-func (o *Orchestrator) executeIncomeTrend(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeIncomeTrend(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.depositHistory == nil {
 		return map[string]interface{}{"error": "deposit history not available"}, nil
 	}
@@ -367,7 +367,7 @@ func (o *Orchestrator) executeIncomeTrend(ctx context.Context, userID uuid.UUID,
 	return result, nil
 }
 
-func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeYieldEarned(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.yieldProvider == nil {
 		return map[string]interface{}{"error": "yield data not available"}, nil
 	}
@@ -403,7 +403,7 @@ func (o *Orchestrator) executeYieldEarned(ctx context.Context, userID uuid.UUID,
 	}, nil
 }
 
-func (o *Orchestrator) executeWithdrawalHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeWithdrawalHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.withdrawalHistory == nil {
 		return map[string]interface{}{"error": "withdrawal history not available"}, nil
 	}
@@ -572,7 +572,7 @@ func buildWithdrawalItems(withdrawals []*entities.Withdrawal, limit int) []map[s
 	return items
 }
 
-func (o *Orchestrator) executeReceiptHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeReceiptHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.receiptHistory == nil {
 		return map[string]interface{}{"error": "receipt history not available"}, nil
 	}

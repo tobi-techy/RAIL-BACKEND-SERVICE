@@ -47,11 +47,11 @@ func MiriamIntelligenceTools() []infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) SetMiriamIntelligenceProvider(p MiriamIntelligenceReader) {
+func (o *AgentAdapter) SetMiriamIntelligenceProvider(p MiriamIntelligenceReader) {
 	o.miriamIntelligence = p
 }
 
-func (o *Orchestrator) executeMiriamMoneyState(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeMiriamMoneyState(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	state, err := o.miriamIntelligence.GetMoneyState(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func (o *Orchestrator) executeMiriamMoneyState(ctx context.Context, userID uuid.
 	return map[string]interface{}{"state": state}, nil
 }
 
-func (o *Orchestrator) executeListMiriamMandates(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeListMiriamMandates(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	mandates, err := o.miriamIntelligence.ListMandates(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (o *Orchestrator) executeListMiriamMandates(ctx context.Context, userID uui
 	return map[string]interface{}{"mandates": mandates, "count": len(mandates)}, nil
 }
 
-func (o *Orchestrator) executeMiriamDecisionReceipts(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeMiriamDecisionReceipts(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	limit := 5
 	if raw, ok := args["limit"].(float64); ok && raw > 0 {
 		limit = int(raw)

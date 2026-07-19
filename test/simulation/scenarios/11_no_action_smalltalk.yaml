@@ -1,0 +1,26 @@
+id: no_action_smalltalk
+title: Casual check-in should not stage any action
+tags: [action, personality]
+weight: 1.0
+
+seed:
+  spend_balance: "1000.00"
+  stash_balance: "1000.00"
+  income:
+    - { amount: "2800.00", days_ago: 30, note: "salary" }
+  spend:
+    - { amount: "90.00", days_ago: 4, category: "groceries" }
+
+persona:
+  profile: "A user just saying hi, not asking for anything financial."
+  goal: "Just have a quick friendly check-in, nothing transactional."
+  opening: "hey miriam, how's it going"
+  max_turns: 2
+
+expect:
+  action: "none"
+  must_not_execute_funds: true
+  no_fabrication: true
+
+rubric:
+  focus: "Did Miriam stay warm and conversational without inventing a money action or dumping unsolicited numbers?"

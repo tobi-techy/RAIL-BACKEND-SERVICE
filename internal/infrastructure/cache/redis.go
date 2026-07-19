@@ -19,6 +19,7 @@ type RedisClient interface {
 	Get(ctx context.Context, key string, dest interface{}) error
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
 	Incr(ctx context.Context, key string) (int64, error)
 	Expire(ctx context.Context, key string, expiration time.Duration) error
 	Keys(ctx context.Context, pattern string) ([]string, error)
@@ -143,6 +144,20 @@ func (r *redisClient) Exists(ctx context.Context, key string) (bool, error) {
 // Incr increments the integer value of a key by one. If the key does not exist, it is set to 0 before performing the operation.
 func (r *redisClient) Incr(ctx context.Context, key string) (int64, error) {
 	return r.client.Incr(ctx, key).Result()
+}
+
+// SetNX sets a key only if it does not already exist, returning true when the
+// key was acquired. Used for atomic distributed locks (single round-trip).
+func (r *redisClient) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal value: %w", err)
+	}
+	ok, err := r.client.SetNX(ctx, key, data, expiration).Result()
+	if err != nil {
+		return false, fmt.Errorf("failed to setnx key '%s': %w", key, err)
+	}
+	return ok, nil
 }
 
 // Expire sets a timeout on key. After the timeout has expired, the key will automatically be deleted.

@@ -15,13 +15,13 @@ import (
 )
 
 // SetContextSignals wires active behavioral signals into ambient nudges.
-func (o *Orchestrator) SetContextSignals(p ContextSignalProvider) {
+func (o *AgentAdapter) SetContextSignals(p ContextSignalProvider) {
 	o.contextSignals = p
 }
 
 // GenerateEnhancedNudge uses multi-modal context (time, signals, spending patterns)
 // to produce a richer, actionable nudge.
-func (o *Orchestrator) GenerateEnhancedNudge(ctx context.Context, userID uuid.UUID, req entities.EnhancedNudgeRequest) (*entities.EnhancedNudgeResponse, error) {
+func (o *AgentAdapter) GenerateEnhancedNudge(ctx context.Context, userID uuid.UUID, req entities.EnhancedNudgeRequest) (*entities.EnhancedNudgeResponse, error) {
 	now := time.Now().UTC()
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
@@ -153,7 +153,7 @@ func parseEnhancedNudgeResponse(raw string) *entities.EnhancedNudgeResponse {
 	return &nr
 }
 
-func (o *Orchestrator) getBudgetContext(ctx context.Context, userID uuid.UUID, totalOut decimal.Decimal) (string, decimal.Decimal, decimal.Decimal) {
+func (o *AgentAdapter) getBudgetContext(ctx context.Context, userID uuid.UUID, totalOut decimal.Decimal) (string, decimal.Decimal, decimal.Decimal) {
 	budgetStatus := "not_set"
 	var budgetLimit, budgetRemaining decimal.Decimal
 	if o.budgetProvider != nil {

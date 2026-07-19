@@ -37,7 +37,7 @@ func SimulateSavingsTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeSimulateSavings(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSimulateSavings(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	depositAmt, _ := args["deposit_amount"].(float64)
 	frequency, _ := args["deposit_frequency"].(string)
 	durationMonths, _ := args["duration_months"].(float64)

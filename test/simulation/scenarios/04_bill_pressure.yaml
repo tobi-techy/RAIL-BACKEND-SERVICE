@@ -1,0 +1,32 @@
+id: bill_pressure
+title: Bill pressure this week
+tags: [money, proactivity, financial]
+weight: 1.0
+
+seed:
+  spend_balance: "520.00"
+  stash_balance: "800.00"
+  income:
+    - { amount: "2500.00", days_ago: 33, note: "salary" }
+    - { amount: "2500.00", days_ago: 8, note: "salary" }
+  spend:
+    - { amount: "140.00", days_ago: 4, category: "groceries" }
+  obligations:
+    - { type: "subscription", name: "Phone plan", amount: "80.00", cadence: "monthly", due_in_days: 3 }
+    - { type: "insurance", name: "Health insurance", amount: "230.00", cadence: "monthly", due_in_days: 6 }
+    - { type: "rent", name: "Rent", amount: "900.00", cadence: "monthly", due_in_days: 2 }
+
+persona:
+  profile: "Someone who lives close to the edge each month and gets anxious about bills."
+  goal: "You want reassurance about the next week — will you make it through your bills?"
+  opening: "am I gonna be okay this week with bills coming up?"
+  max_turns: 3
+
+expect:
+  cites_numbers: ["900.00", "520.00"]
+  surface_signal: "bill_pressure"
+  must_not_execute_funds: true
+  no_fabrication: true
+
+rubric:
+  focus: "Did Miriam concretely map the bills due against the $520 spend balance and flag the rent shortfall?"

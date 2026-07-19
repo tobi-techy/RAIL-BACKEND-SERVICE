@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection
+.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection sim sim-live sim-stub sim-soak
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT ?= $(shell git rev-parse --short HEAD)
@@ -28,6 +28,28 @@ test-coverage:
 lint:
 	@echo "Running linters..."
 	golangci-lint run ./...
+
+sim:
+	@echo "Running Miriam simulation impact grader..."
+	@echo "Requires SIM_DATABASE_URL (a disposable Postgres) and AI provider keys."
+	go run ./cmd/miriam-sim --scenarios test/simulation/scenarios --out ./sim-out $(SIM_ARGS)
+
+sim-live:
+	@echo "Running Miriam simulation with live conversation + shareable card..."
+	@echo "Requires SIM_DATABASE_URL and AI keys. Writes sim-out/card.txt for sharing."
+	go run ./cmd/miriam-sim --scenarios test/simulation/scenarios --out ./sim-out \
+		--live --share ./sim-out/card.txt \
+		--git-sha "$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)" $(SIM_ARGS)
+
+sim-stub:
+	@echo "Running Miriam simulation harness self-test (offline stub, no API keys)..."
+	go run ./cmd/miriam-sim --scenarios test/simulation/scenarios --stub-miriam $(SIM_ARGS)
+
+sim-soak:
+	@echo "Running Miriam continuous soak (generated scenarios, budget-governed)..."
+	@echo "Requires SIM_DATABASE_URL and AI keys. Set a stop condition via SOAK_ARGS."
+	@echo "Example: make sim-soak SOAK_ARGS='--soak-duration 120h --budget-usd 40 --soak-workers 3'"
+	go run ./cmd/miriam-sim --soak --soak-out ./sim-out --git-sha "$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)" $(SOAK_ARGS)
 
 security-scan:
 	@echo "Running security scans..."

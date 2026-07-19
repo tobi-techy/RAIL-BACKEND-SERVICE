@@ -49,6 +49,7 @@ type Worker struct {
 	maxPendingAge    time.Duration
 	hardMaxAge       time.Duration
 	completeAfterAge time.Duration
+	failCheckAge     time.Duration
 	stopCh           chan struct{}
 }
 
@@ -61,6 +62,7 @@ func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
 		maxPendingAge:    15 * time.Minute,
 		hardMaxAge:       6 * time.Hour,
 		completeAfterAge: 2 * time.Hour,
+		failCheckAge:     3 * time.Minute,
 		stopCh:           make(chan struct{}),
 	}
 }
@@ -90,8 +92,67 @@ func (w *Worker) Stop() { close(w.stopCh) }
 
 func (w *Worker) recover(ctx context.Context) {
 	w.reverseAbandonedOrders(ctx)
+	w.reverseFailedTransfers(ctx)
 	w.reconcileStuckOrders(ctx)
 	w.failExpiredOrders(ctx)
+}
+
+// reverseFailedTransfers promptly refunds offramps whose direct Circle transfer
+// (bridge_transfer_id = "circle:...") has reached a terminal FAILED state,
+// without waiting for the full completeAfterAge window. A Circle-confirmed
+// failure — e.g. a paymaster denial such as PAYMASTER_SOL_ATA_CREATION_NOT_ALLOWED
+// — can never settle, so the crypto has definitively not left the user's wallet
+// and the hold is safe to reverse within minutes instead of hours. Completions
+// and still-pending transfers are left untouched here; reconcileStuckOrders
+// promotes genuine completions after completeAfterAge to avoid racing an
+// in-flight transfer.
+func (w *Worker) reverseFailedTransfers(ctx context.Context) {
+	if w.circle == nil {
+		return
+	}
+	minAgeSeconds := int(w.failCheckAge.Seconds())
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT ramphub_transaction_id, user_id, fiat_amount, bridge_transfer_id, COALESCE(hold_amount, token_amount, 0)
+		FROM ramphub_orders
+		WHERE order_type = 'offramp' AND status IN ('pending','processing')
+		  AND bridge_transfer_id LIKE 'circle:%'
+		  AND deposit_id IS NULL
+		  AND created_at < NOW() - make_interval(secs => $1)
+		ORDER BY created_at ASC LIMIT 25`, minAgeSeconds)
+	if err != nil {
+		w.logger.Error("ramphub offramp fast-fail: query failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	var candidates []stuckOrder
+	for rows.Next() {
+		var c stuckOrder
+		if err := rows.Scan(&c.TxID, &c.UserID, &c.FiatAmount, &c.BridgeTransferID, &c.HoldAmount); err != nil {
+			w.logger.Error("ramphub offramp fast-fail: scan failed", zap.Error(err))
+			continue
+		}
+		candidates = append(candidates, c)
+	}
+	for _, c := range candidates {
+		circleTxID := strings.TrimPrefix(c.BridgeTransferID, "circle:")
+		if circleTxID == "" {
+			continue
+		}
+		state, err := w.circle.GetCircleTransferStatus(ctx, circleTxID)
+		if err != nil {
+			w.logger.Warn("ramphub offramp fast-fail: circle status check failed",
+				zap.Error(err), zap.String("ramphub_tx_id", c.TxID), zap.String("circle_tx_id", circleTxID))
+			continue
+		}
+		if state != CircleTransferFailed {
+			continue
+		}
+		if err := w.reverseStuckOrder(ctx, c.TxID, c.UserID, "circle_failed_fast_reversal"); err != nil {
+			w.logger.Error("ramphub offramp fast-fail: reversal failed",
+				zap.Error(err), zap.String("ramphub_tx_id", c.TxID))
+		}
+	}
 }
 
 // reverseAbandonedOrders refunds offramps where the Circle transfer never
@@ -184,7 +245,7 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 func (w *Worker) reconcileStuckOrder(ctx context.Context, c stuckOrder) error {
 	circleTxID := strings.TrimPrefix(c.BridgeTransferID, "circle:")
 	if circleTxID == "" {
-		return nil
+		return w.reverseStuckOrder(ctx, c.TxID, c.UserID, "empty_circle_tx_id_recovery")
 	}
 	state, err := w.circle.GetCircleTransferStatus(ctx, circleTxID)
 	if err != nil {

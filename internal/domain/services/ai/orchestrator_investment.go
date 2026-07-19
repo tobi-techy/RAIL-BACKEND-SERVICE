@@ -62,7 +62,7 @@ func InvestmentProductTool() infraai.Tool {
 }
 
 // executeInvestmentProducts filters products by currency, amount, and risk.
-func (o *Orchestrator) executeInvestmentProducts(args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeInvestmentProducts(args map[string]interface{}) (map[string]interface{}, error) {
 	currency, _ := args["currency"].(string)
 	risk, _ := args["risk"].(string)
 	amount, _ := args["amount"].(float64)

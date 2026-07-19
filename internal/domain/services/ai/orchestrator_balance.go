@@ -20,7 +20,7 @@ type BalanceHistoryProvider interface {
 
 // SetBalanceHistory sets the balance history provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetBalanceHistory(b BalanceHistoryProvider) {
+func (o *AgentAdapter) SetBalanceHistory(b BalanceHistoryProvider) {
 	o.balanceHistory = b
 }
 
@@ -42,7 +42,7 @@ func BalanceHistoryTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeBalanceHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeBalanceHistory(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.balanceHistory == nil {
 		return map[string]interface{}{"error": "balance history not available"}, nil
 	}

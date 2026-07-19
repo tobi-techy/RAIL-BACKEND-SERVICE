@@ -52,7 +52,7 @@ func ExpandedInsightTools() []infraai.Tool {
 }
 
 // executeGetSubscriptions detects recurring charges from transaction history.
-func (o *Orchestrator) executeGetSubscriptions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetSubscriptions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.recurringDetector != nil {
 		expenses, err := o.recurringDetector.DetectRecurring(ctx, userID)
 		if err == nil {
@@ -83,6 +83,14 @@ func (o *Orchestrator) executeGetSubscriptions(ctx context.Context, userID uuid.
 				})
 			}
 			totalYearly := totalMonthly.Mul(decimal.NewFromInt(12))
+
+			// Enrich subscription candidates with plain descriptions and context
+			if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+				for _, c := range candidates {
+					enrichMerchantEntry(c, enrichmentMap)
+				}
+			}
+
 			return map[string]interface{}{
 				"source":        "recurring_detector",
 				"candidates":    candidates,
@@ -153,6 +161,13 @@ func (o *Orchestrator) executeGetSubscriptions(ctx context.Context, userID uuid.
 		tip = fmt.Sprintf("You're spending $%s/year on subscriptions. Review if you're using all of them.", totalYearly.StringFixed(0))
 	}
 
+	// Enrich fallback subscription entries with plain descriptions and context
+	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		for _, s := range subs {
+			enrichMerchantEntry(s, enrichmentMap)
+		}
+	}
+
 	return map[string]interface{}{
 		"source":        "transaction_grouping",
 		"subscriptions": subs,
@@ -170,7 +185,7 @@ func subscriptionSavingsTip(totalYearly decimal.Decimal) string {
 }
 
 // executeGetRunway calculates how long the user's money will last.
-func (o *Orchestrator) executeGetRunway(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetRunway(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.spending == nil || o.aggregateStats == nil {
 		return map[string]interface{}{"error": "required services unavailable"}, nil
 	}
@@ -222,7 +237,7 @@ func (o *Orchestrator) executeGetRunway(ctx context.Context, userID uuid.UUID) (
 }
 
 // executeGetDepositPattern analyzes deposit frequency and consistency.
-func (o *Orchestrator) executeGetDepositPattern(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetDepositPattern(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending service unavailable"}, nil
 	}
@@ -269,7 +284,7 @@ func (o *Orchestrator) executeGetDepositPattern(ctx context.Context, userID uuid
 }
 
 // executeGetYieldSummary returns stash yield performance data.
-func (o *Orchestrator) executeGetYieldSummary(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetYieldSummary(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.aggregateStats == nil {
 		return map[string]interface{}{"error": "balance service unavailable"}, nil
 	}
@@ -294,7 +309,7 @@ func (o *Orchestrator) executeGetYieldSummary(ctx context.Context, userID uuid.U
 }
 
 // executeGetSpendingComparison compares spending between this month and last month.
-func (o *Orchestrator) executeGetSpendingComparison(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeGetSpendingComparison(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending service unavailable"}, nil
 	}

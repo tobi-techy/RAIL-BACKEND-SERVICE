@@ -68,51 +68,7 @@ type ActionChip struct {
 	Description string `json:"description,omitempty"`
 }
 
-// GetProactiveOpener returns a personalized greeting and suggestions
-// based on the user's current financial state and active predictions.
-// Used to replace the static empty-state greeting with something reactive.
-func (o *Orchestrator) GetProactiveOpener(ctx context.Context, userID uuid.UUID) *ProactiveOpener {
-	// Check cache first to avoid redundant AI calls from concurrent requests.
-	proactiveCache.RLock()
-	if entry, ok := proactiveCache.entries[userID]; ok && time.Now().Before(entry.expiresAt) {
-		proactiveCache.RUnlock()
-		return entry.opener
-	}
-	proactiveCache.RUnlock()
-
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	bubble, greeting, suggestions, chips := o.generateProactiveContent(ctx, userID)
-	if greeting == "" {
-		return o.fallbackProactiveOpener()
-	}
-	if len(suggestions) == 0 {
-		suggestions = o.fallbackSuggestions()
-	}
-	if bubble == "" {
-		bubble = greeting
-	}
-
-	opener := &ProactiveOpener{
-		BubbleMessage: bubble,
-		Greeting:      greeting,
-		Severity:      "info",
-		Suggestions:   suggestions,
-		ActionChips:   chips,
-	}
-
-	// Cache the result.
-	proactiveCache.Lock()
-	if len(proactiveCache.entries) < proactiveCacheMaxSize {
-		proactiveCache.entries[userID] = proactiveCacheEntry{opener: opener, expiresAt: time.Now().Add(proactiveCacheTTL)}
-	}
-	proactiveCache.Unlock()
-
-	return opener
-}
-
-func (o *Orchestrator) generateProactiveContent(ctx context.Context, userID uuid.UUID) (string, string, []Suggestion, []ActionChip) {
+func (o *AgentAdapter) generateProactiveContent(ctx context.Context, userID uuid.UUID) (string, string, []Suggestion, []ActionChip) {
 	snapshot := o.buildStarterContext(ctx, userID)
 
 	now := time.Now().UTC()
@@ -181,7 +137,7 @@ User snapshot:
 	return parsed.BubbleMessage, parsed.Greeting, parsed.Suggestions, chips
 }
 
-func (o *Orchestrator) generateActionChipsFromContext(ctx context.Context, userID uuid.UUID) []ActionChip {
+func (o *AgentAdapter) generateActionChipsFromContext(ctx context.Context, userID uuid.UUID) []ActionChip {
 	var chips []ActionChip
 
 	spend, stash, _ := o.currentBalances(ctx, userID)
@@ -205,7 +161,7 @@ func (o *Orchestrator) generateActionChipsFromContext(ctx context.Context, userI
 	return chips
 }
 
-func (o *Orchestrator) fallbackProactiveOpener() *ProactiveOpener {
+func (o *AgentAdapter) fallbackProactiveOpener() *ProactiveOpener {
 	return &ProactiveOpener{
 		BubbleMessage: "Let's check your finances",
 		Greeting:      "Hey, I'm Miriam. I can audit your spending, plan the month, or catch the leaks.",
@@ -214,7 +170,7 @@ func (o *Orchestrator) fallbackProactiveOpener() *ProactiveOpener {
 	}
 }
 
-func (o *Orchestrator) fallbackSuggestions() []Suggestion {
+func (o *AgentAdapter) fallbackSuggestions() []Suggestion {
 	return []Suggestion{
 		{Text: "Audit my money in hard mode", Category: "insight"},
 		{Text: "Build my monthly plan", Category: "action"},

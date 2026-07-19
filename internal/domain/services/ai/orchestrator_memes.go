@@ -140,7 +140,7 @@ func SendVoiceMessageTool() infraai.Tool {
 	}
 }
 
-func (o *Orchestrator) executeSendVoiceMessage(ctx context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSendVoiceMessage(ctx context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	text := strings.TrimSpace(stringArg(args, "text"))
 	if text == "" {
 		return map[string]interface{}{"error": "empty text"}, nil
@@ -204,7 +204,7 @@ func generateElevenLabsTTS(ctx context.Context, apiKey, voiceID, text string) (s
 	return "data:audio/mpeg;base64," + base64.StdEncoding.EncodeToString(audio), nil
 }
 
-func (o *Orchestrator) executeSendMeme(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSendMeme(_ context.Context, _ uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	id := strings.TrimSpace(strings.ToLower(stringArg(args, "template")))
 	tmpl, ok := memeTemplateByID[id]
 	if !ok {

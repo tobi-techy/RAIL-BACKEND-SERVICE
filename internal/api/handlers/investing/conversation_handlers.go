@@ -26,7 +26,7 @@ type passcodeSessionValidator interface {
 
 // ConversationHandlers handles AI conversation endpoints.
 type ConversationHandlers struct {
-	orchestrator                  *aiservice.Orchestrator
+	orchestrator                  aiservice.ChatEngine
 	convService                   *conversationsvc.Service
 	logger                        *zap.Logger
 	passcodeValidator             passcodeSessionValidator
@@ -40,7 +40,7 @@ type ConversationHandlers struct {
 // fund-moving pending action requires a verified passcode session, matching the
 // direct withdrawal/transfer routes. passcodeValidator may be nil only when the
 // gate is disabled.
-func NewConversationHandlers(orchestrator *aiservice.Orchestrator, convService *conversationsvc.Service, logger *zap.Logger, passcodeValidator passcodeSessionValidator, requirePasscodeForFundActions bool) *ConversationHandlers {
+func NewConversationHandlers(orchestrator aiservice.ChatEngine, convService *conversationsvc.Service, logger *zap.Logger, passcodeValidator passcodeSessionValidator, requirePasscodeForFundActions bool) *ConversationHandlers {
 	return &ConversationHandlers{
 		orchestrator:                  orchestrator,
 		convService:                   convService,
@@ -338,4 +338,39 @@ func (h *ConversationHandlers) CancelAction(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"status": "cancelled"}})
+}
+
+// GetPendingAction handles GET /api/v1/ai/conversations/:id/pending.
+// It lets the app render an approval card for an action Miriam staged over a
+// messaging channel (iMessage/WhatsApp) — showing exactly what will happen
+// before the user authorizes it with Face ID / passcode.
+func (h *ConversationHandlers) GetPendingAction(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
+		return
+	}
+
+	pending, ok := h.orchestrator.PeekPendingAction(c.Request.Context(), userID, conv.ID)
+	if !ok || pending == nil {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"pending_action": nil}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"pending_action": gin.H{
+			"id":              pending.ID,
+			"conversation_id": pending.ConversationID.String(),
+			"action":          pending.Action,
+			"description":     pending.Description,
+			"params":          pending.Params,
+			"expires_at":      pending.ExpiresAt,
+			"is_fund_moving":  aiservice.IsFundMovingAction(pending.Action),
+		},
+	}})
 }

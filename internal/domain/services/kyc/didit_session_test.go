@@ -40,6 +40,13 @@ func (r *diditSessionUserRepo) Update(_ context.Context, user *entities.User) er
 	return nil
 }
 
+func (r *diditSessionUserRepo) UpdateKYCTier(_ context.Context, _ uuid.UUID, tier int) error {
+	if r.profile != nil {
+		r.profile.KYCTier = tier
+	}
+	return nil
+}
+
 type diditSessionSubmissionRepo struct {
 	createCalls int
 	updateCalls int

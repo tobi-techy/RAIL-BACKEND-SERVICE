@@ -35,10 +35,20 @@ type SpendingAnalyzer interface {
 	GetDailyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByPeriod, error)
 }
 
+// SpendingEnricher adds plain-English descriptions to spending transactions.
+type SpendingEnricher interface {
+	EnrichTransactions(ctx context.Context, txns []entities.SpendingTransaction) []entities.SpendingTransaction
+}
+
 // SetSpending sets the spending analysis provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.
-func (o *Orchestrator) SetSpending(s SpendingAnalyzer) {
+func (o *AgentAdapter) SetSpending(s SpendingAnalyzer) {
 	o.spending = s
+}
+
+// SetSpendingEnricher sets the spending enricher for plain-English transaction descriptions.
+func (o *AgentAdapter) SetSpendingEnricher(e SpendingEnricher) {
+	o.spendingEnricher = e
 }
 
 // truncateMerchant limits merchant name length to reduce PII sent to LLM.
@@ -271,7 +281,7 @@ func periodToLabel(period string, start, end time.Time) string {
 }
 
 // executeSpendingSummary handles the get_spending_summary tool call.
-func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSpendingSummary(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
@@ -294,6 +304,13 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 		merchants[i] = map[string]interface{}{"merchant": truncateMerchant(m.Merchant), "total": m.Total.String(), "count": m.Count}
 	}
 
+	// Enrich merchant entries with plain descriptions and context
+	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		for _, m := range merchants {
+			enrichMerchantEntry(m, enrichmentMap)
+		}
+	}
+
 	return map[string]interface{}{
 		"period":            periodToLabel(period, start, end),
 		"total":             summary.Total.String(),
@@ -307,7 +324,7 @@ func (o *Orchestrator) executeSpendingSummary(ctx context.Context, userID uuid.U
 }
 
 // executeSpendingChart handles the get_spending_chart tool call.
-func (o *Orchestrator) executeSpendingChart(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeSpendingChart(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
@@ -334,7 +351,7 @@ func (o *Orchestrator) executeSpendingChart(ctx context.Context, userID uuid.UUI
 }
 
 // executeRecentTransactions handles the get_recent_transactions tool call.
-func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeRecentTransactions(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}
@@ -352,6 +369,11 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 		return nil, fmt.Errorf("recent transactions: %w", err)
 	}
 
+	// Enrich transactions with plain-English descriptions from the ML sidecar
+	if o.spendingEnricher != nil {
+		txns = o.spendingEnricher.EnrichTransactions(ctx, txns)
+	}
+
 	items := make([]map[string]interface{}, len(txns))
 	for i, t := range txns {
 		item := map[string]interface{}{
@@ -365,14 +387,27 @@ func (o *Orchestrator) executeRecentTransactions(ctx context.Context, userID uui
 		if !strings.HasPrefix(catLower, "p2p") && !strings.Contains(catLower, "withdrawal") {
 			item["merchant"] = t.Source
 		}
+		// Inject enriched understanding fields when available
+		if t.PlainDescription != "" {
+			item["plain_description"] = t.PlainDescription
+		}
+		if t.MerchantContext != "" {
+			item["merchant_context"] = t.MerchantContext
+		}
+		if t.Counterparty != "" && t.Counterparty != t.Source {
+			item["counterparty"] = t.Counterparty
+		}
+		if t.IsEssential != nil {
+			item["is_essential"] = *t.IsEssential
+		}
 		items[i] = item
 	}
 
-	return map[string]interface{}{"period": periodToLabel(period, start, end), "transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account). The 'merchant' field is set for card and receipt transactions only. The 'source' field shows the merchant name for card payments, recipient for P2P transfers, or withdrawal details for withdrawals."}, nil
+	return map[string]interface{}{"period": periodToLabel(period, start, end), "transactions": items, "count": len(items), "note": "All transactions are completed outflows (money leaving your account). Enriched fields (plain_description, merchant_context) provide Miriam with plain-English context for each transaction."}, nil
 }
 
 // executeMoneyFlow handles the get_money_flow tool call.
-func (o *Orchestrator) executeMoneyFlow(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
+func (o *AgentAdapter) executeMoneyFlow(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	if o.spending == nil {
 		return map[string]interface{}{"error": "spending analysis not available"}, nil
 	}

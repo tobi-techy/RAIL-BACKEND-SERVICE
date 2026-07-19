@@ -39,6 +39,7 @@ type UserInfo struct {
 	Email             string           `json:"email"`
 	Phone             *string          `json:"phone,omitempty"`
 	FirstName         *string          `json:"firstName,omitempty"`
+	MiddleName        *string          `json:"middleName,omitempty"`
 	LastName          *string          `json:"lastName,omitempty"`
 	DateOfBirth       *time.Time       `json:"dateOfBirth,omitempty"`
 	Country           *string          `json:"country,omitempty"`
@@ -149,6 +150,7 @@ type User struct {
 	Email              string           `json:"email" db:"email"`
 	Phone              *string          `json:"phone" db:"phone"`
 	FirstName          *string          `json:"firstName,omitempty" db:"first_name"`
+	MiddleName         *string          `json:"middleName,omitempty" db:"middle_name"`
 	LastName           *string          `json:"lastName,omitempty" db:"last_name"`
 	DateOfBirth        *time.Time       `json:"dateOfBirth,omitempty" db:"date_of_birth"`
 	Country            *string          `json:"country,omitempty" db:"country"`
@@ -163,6 +165,7 @@ type User struct {
 	PhoneVerified      bool             `json:"phoneVerified" db:"phone_verified"`
 	OnboardingStatus   OnboardingStatus `json:"onboardingStatus" db:"onboarding_status"`
 	KYCStatus          string           `json:"kycStatus" db:"kyc_status"`
+	KYCTier            int              `json:"kycTier" db:"kyc_tier"`
 	KYCProviderRef     *string          `json:"kycProviderRef" db:"kyc_provider_ref"`
 	KYCSubmittedAt     *time.Time       `json:"kycSubmittedAt" db:"kyc_submitted_at"`
 	KYCApprovedAt      *time.Time       `json:"kycApprovedAt" db:"kyc_approved_at"`
@@ -171,6 +174,9 @@ type User struct {
 	AlpacaAccountID    *string          `json:"alpacaAccountId" db:"alpaca_account_id"`
 	BridgeKYCStatus    *string          `json:"bridgeKycStatus" db:"bridge_kyc_status"`
 	BridgeKYCLink      *string          `json:"bridgeKycLink" db:"bridge_kyc_link"`
+	EmploymentStatus   *string          `json:"employmentStatus,omitempty" db:"employment_status"`
+	SourceOfFunds      *string          `json:"sourceOfFunds,omitempty" db:"source_of_funds"`
+	AccountPurpose     *string          `json:"accountPurpose,omitempty" db:"account_purpose"`
 	Role               string           `json:"role" db:"role"`
 	IsActive           bool             `json:"isActive" db:"is_active"`
 	LastLoginAt        *time.Time       `json:"lastLoginAt" db:"last_login_at"`
@@ -185,6 +191,7 @@ func (u *User) ToUserInfo() *UserInfo {
 		Email:             u.Email,
 		Phone:             u.Phone,
 		FirstName:         u.FirstName,
+		MiddleName:        u.MiddleName,
 		LastName:          u.LastName,
 		DateOfBirth:       u.DateOfBirth,
 		Country:           u.Country,
@@ -208,6 +215,9 @@ func (u *User) ToUserProfile() *UserProfile {
 		AuthProviderID:     u.AuthProviderID,
 		Email:              u.Email,
 		Phone:              u.Phone,
+		FirstName:          u.FirstName,
+		MiddleName:         u.MiddleName,
+		LastName:           u.LastName,
 		DateOfBirth:        u.DateOfBirth,
 		Country:            u.Country,
 		AddressStreet:      u.AddressStreet,
