@@ -334,6 +334,25 @@ func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, e
 		if isTerminalIntent(session.Status) {
 			return nil, fmt.Errorf("blend: force-reset returned terminal session %s (%s); cannot proceed", session.IntentID, session.Status)
 		}
+		return session, nil
+	}
+	// Force-reset stale non-terminal withdraw sessions (LOCKED/SUBMITTED). A
+	// previous attempt likely executed on-chain but Blend never reported SETTLED
+	// (e.g. session expired). Leaving it locked causes QuoteWithdraw 409 errors
+	// and blocks the account indefinitely. Resetting is safe: the Circle tx is
+	// idempotent and the redemption worker will re-quote on a fresh session.
+	if session.Type == IntentTypeWithdraw && (session.Status == IntentStatusLocked || session.Status == IntentStatusSubmitted) {
+		r.logger.Warn("Blend: force-reset stale non-terminal withdraw session",
+			zap.String("intent_id", session.IntentID),
+			zap.String("status", session.Status),
+			zap.String("account_id", accountID))
+		session, err = r.blend.GetOrCreateSession(ctx, accountID, externalRef, true)
+		if err != nil {
+			return nil, fmt.Errorf("blend: reset stale withdraw session: %w", err)
+		}
+		if isTerminalIntent(session.Status) {
+			return nil, fmt.Errorf("blend: force-reset returned terminal session %s (%s); cannot proceed", session.IntentID, session.Status)
+		}
 	}
 	return session, nil
 }
@@ -462,6 +481,13 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
+	// After Blend has been LOCKED/SUBMITTED for this long, check on-chain
+	// balance as a fallback. Blend sometimes never reports SETTLED (expired
+	// sessions, internal bugs), but the USDC actually arrived in the EOA.
+	settlementFallbackAfter := 3 * time.Minute
+	fallbackDeadline := time.Now().Add(settlementFallbackAfter)
+	fallbackChecked := false
+
 	for {
 		session, err := r.blend.GetSession(ctx, acct.BlendAccountID, red.IntentID.String)
 		if err == nil {
@@ -498,6 +524,22 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 						zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
 				}
 				return fmt.Errorf("blend: withdraw session %s ended in %s: %s (reset for retry)", session.IntentID, session.Status, msg)
+
+			case IntentStatusLocked, IntentStatusSubmitted:
+				// On-chain balance fallback: when Blend is stuck LOCKED/SUBMITTED,
+				// check if USDC actually arrived in the EOA. Blend's reporting is
+				// not the source of truth — the on-chain balance is.
+				if !fallbackChecked && time.Now().After(fallbackDeadline) {
+					fallbackChecked = true
+					if fErr := r.tryOnChainSettlementFallback(ctx, acct, red, amount); fErr != nil {
+						// Non-fatal: either balance not yet present or finalize failed.
+						// Continue polling until context deadline.
+						r.logger.Warn("Blend: on-chain settlement fallback did not complete, continuing to poll",
+							zap.String("redemption_id", red.ID.String()), zap.Error(fErr))
+					} else {
+						return nil // finalized via on-chain proof
+					}
+				}
 			}
 		} else {
 			r.logger.Warn("Blend: poll withdraw session failed, will retry",
@@ -513,6 +555,43 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 		case <-ticker.C:
 		}
 	}
+}
+
+// tryOnChainSettlementFallback checks the EOA's on-chain USDC balance. If the
+// redeemed funds have actually arrived (balance >= pre-redeem baseline + amount),
+// finalize the redemption immediately without waiting for Blend to report SETTLED.
+// This breaks the deadlock when Blend sessions get stuck LOCKED/SUBMITTED.
+func (r *DepositRouter) tryOnChainSettlementFallback(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal) error {
+	have, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+	if balErr != nil {
+		return fmt.Errorf("check EOA balance: %w", balErr)
+	}
+
+	baseline := decimal.Zero
+	if red.PreRedeemBalance.Valid {
+		baseline = red.PreRedeemBalance.Decimal
+	}
+	required := baseline.Add(amount)
+
+	if have.LessThan(required) {
+		return fmt.Errorf("EOA balance %s < required %s (baseline %s + amount %s); funds not yet arrived",
+			have.StringFixed(6), required.StringFixed(6), baseline.StringFixed(6), amount.StringFixed(6))
+	}
+
+	r.logger.Warn("Blend: settling via on-chain balance fallback (Blend session stuck — USDC confirmed in EOA)",
+		zap.String("redemption_id", red.ID.String()),
+		zap.String("eoa_balance", have.StringFixed(6)),
+		zap.String("baseline", baseline.StringFixed(6)),
+		zap.String("amount", amount.StringFixed(6)))
+
+	// Synthesize a SETTLED session for finalizeRedemption. The on-chain balance
+	// is the real proof; Blend's API status is irrelevant at this point.
+	syntheticSession := &Session{
+		IntentID: red.IntentID.String,
+		Status:   IntentStatusSettled,
+		Type:     IntentTypeWithdraw,
+	}
+	return r.finalizeRedemption(ctx, acct, red, amount, syntheticSession)
 }
 
 // finalizeRedemption decrements positions FIFO and marks the redemption complete,

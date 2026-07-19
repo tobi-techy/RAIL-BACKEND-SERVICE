@@ -338,6 +338,33 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 		if !amt.GreaterThan(decimal.Zero) {
 			continue
 		}
+
+		// Cap sweep amount to actual EOA balance. The DB amount may be stale
+		// (e.g. from a balance cap applied by a concurrent worker using outdated
+		// Blend API data). Sweeping more than available causes persistent
+		// "insufficient EOA balance" errors every worker tick.
+		eoaBal, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+		if balErr != nil {
+			r.logger.Warn("blend sweep: cannot check EOA balance, proceeding with DB amount",
+				zap.String("redemption_id", row.ID.String()), zap.Error(balErr))
+		} else if eoaBal.LessThan(decimal.NewFromFloat(0.10)) {
+			r.logger.Warn("blend sweep: EOA balance too low to sweep economically, skipping",
+				zap.String("redemption_id", row.ID.String()),
+				zap.String("eoa_balance", eoaBal.StringFixed(6)))
+			continue
+		} else if eoaBal.LessThan(amt) {
+			capped := eoaBal.Sub(decimal.NewFromFloat(0.01)) // gas buffer
+			if capped.IsNegative() {
+				capped = decimal.Zero
+			}
+			r.logger.Warn("blend sweep: capping sweep to EOA balance (DB amount exceeds available)",
+				zap.String("redemption_id", row.ID.String()),
+				zap.String("db_amount", amt.StringFixed(6)),
+				zap.String("eoa_balance", eoaBal.StringFixed(6)),
+				zap.String("capped_amount", capped.StringFixed(6)))
+			amt = capped
+		}
+
 		sweepCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		r.sweepToSolana(sweepCtx, acct, amt, row.ID)
 		cancel()
