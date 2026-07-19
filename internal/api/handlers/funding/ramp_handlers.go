@@ -138,13 +138,14 @@ func (h *RampHandlers) CreateOfframp(c *gin.Context) {
 		BankName      string  `json:"bankName"`
 		Amount        float64 `json:"amount" binding:"required,gt=0"`
 		Currency      string  `json:"currency"`
+		ExpectedRate  float64 `json:"expectedRate"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_REQUEST", "message": "bankCode, accountNumber, and amount required"})
 		return
 	}
 
-	res, err := h.service.CreateOfframp(c.Request.Context(), userID, req.BankCode, req.AccountNumber, req.BankName, req.Amount, req.Currency)
+	res, err := h.service.CreateOfframp(c.Request.Context(), userID, req.BankCode, req.AccountNumber, req.BankName, req.Amount, req.Currency, req.ExpectedRate)
 	if err != nil {
 		h.handleError(c, err)
 		return

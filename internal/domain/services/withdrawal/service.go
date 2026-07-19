@@ -22,6 +22,7 @@ import (
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
+	blendpkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -1124,6 +1125,15 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	defer cancel()
 
 	if err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req); err != nil {
+		// ErrRedemptionRetrying means the Blend session failed but the redemption
+		// was reset for worker retry. The withdrawal must stay in 'processing' so
+		// the worker can resume it — NOT marked as failed, which would let the user
+		// create a duplicate withdrawal while the old redemption is still in-flight.
+		if errors.Is(err, blendpkg.ErrRedemptionRetrying) {
+			s.logger.Warn("async: Blend redemption retrying — leaving withdrawal in processing",
+				"error", err, "withdrawal_id", withdrawal.ID.String())
+			return
+		}
 		s.logger.Error("async: stash yield redemption failed — marking pending ledger failed",
 			"error", err, "withdrawal_id", withdrawal.ID.String())
 		if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {

@@ -698,7 +698,7 @@ type OfframpResult struct {
 // Circle/ChainRails delivery to RampHub's deposit address → reconcile via
 // signed webhook + poll. bankName is optional but improves RampHub's
 // provider-scoped bank code matching.
-func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode, accountNumber, bankName string, fiatAmount float64, currency string) (*OfframpResult, error) {
+func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode, accountNumber, bankName string, fiatAmount float64, currency string, expectedRate float64) (*OfframpResult, error) {
 	if currency == "" {
 		currency = "NGN"
 	}
@@ -736,6 +736,19 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	}
 	if quote.Rate < 100 || quote.Rate > 10000 {
 		return nil, fmt.Errorf("offramp rate out of bounds: %.2f", quote.Rate)
+	}
+
+	// Rate staleness guard: if the frontend provided an expected rate, reject
+	// when the live rate deviates by more than 5%. This prevents the user from
+	// confirming at one rate and getting a significantly different one.
+	if expectedRate > 0 && quote.Rate > 0 {
+		deviation := (quote.Rate - expectedRate) / expectedRate
+		if deviation < 0 {
+			deviation = -deviation
+		}
+		if deviation > 0.05 {
+			return nil, fmt.Errorf("rate has changed significantly (was ₦%.0f/USD, now ₦%.0f/USD). Please refresh and try again", expectedRate, quote.Rate)
+		}
 	}
 
 	// RampHub/RIO minimum: $1 USDC per order. Compute from the live rate.

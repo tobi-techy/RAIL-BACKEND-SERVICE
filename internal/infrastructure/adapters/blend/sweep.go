@@ -19,26 +19,34 @@ func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccoun
 	if err := r.doSweepToSolana(ctx, acct, amount, redemptionID); err != nil {
 		r.logger.Error("blend sweep: failed, will retry on next worker tick",
 			zap.String("redemption_id", redemptionID.String()), zap.Error(err))
-		r.persistSweepFailure(redemptionID, err.Error())
+		if dbErr := r.persistSweepFailure(redemptionID, err.Error()); dbErr != nil {
+			r.logger.Error("CRITICAL: blend sweep failed AND could not persist failure to DB — worker will re-sweep",
+				zap.String("redemption_id", redemptionID.String()), zap.Error(dbErr))
+		}
 		return
 	}
-	r.persistSweepSuccess(redemptionID)
+	if dbErr := r.persistSweepSuccess(redemptionID); dbErr != nil {
+		r.logger.Error("CRITICAL: blend sweep succeeded on-chain but could not persist to DB — worker will re-sweep risking double-bridge",
+			zap.String("redemption_id", redemptionID.String()), zap.Error(dbErr))
+	}
 }
 
-func (r *DepositRouter) persistSweepSuccess(redemptionID uuid.UUID) {
-	_, _ = r.db.ExecContext(context.Background(), `
+func (r *DepositRouter) persistSweepSuccess(redemptionID uuid.UUID) error {
+	_, err := r.db.ExecContext(context.Background(), `
 		UPDATE blend_yield_redemptions
 		SET swept_at = NOW(), sweep_failed_reason = NULL, updated_at = NOW()
 		WHERE id = $1
 	`, redemptionID)
+	return err
 }
 
-func (r *DepositRouter) persistSweepFailure(redemptionID uuid.UUID, reason string) {
-	_, _ = r.db.ExecContext(context.Background(), `
+func (r *DepositRouter) persistSweepFailure(redemptionID uuid.UUID, reason string) error {
+	_, err := r.db.ExecContext(context.Background(), `
 		UPDATE blend_yield_redemptions
 		SET sweep_failed_reason = $2, updated_at = NOW()
 		WHERE id = $1
 	`, redemptionID, reason)
+	return err
 }
 
 func (r *DepositRouter) doSweepToSolana(ctx context.Context, acct *blendUserAccount, amount decimal.Decimal, redemptionID uuid.UUID) error {

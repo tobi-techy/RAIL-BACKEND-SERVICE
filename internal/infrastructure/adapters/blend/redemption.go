@@ -23,6 +23,11 @@ const (
 	redemptionStatusFailed    = "failed"
 )
 
+// ErrRedemptionRetrying indicates the Blend redemption was reset for worker retry
+// (e.g. session failed but attempts < threshold). The caller should NOT treat this
+// as a terminal failure — the redemption is still alive and the worker will resume it.
+var ErrRedemptionRetrying = errors.New("blend: redemption reset for retry")
+
 // RedeemStashYield withdraws `amount` USDC from the user's Blend Safe back to their
 // EOA (Base Circle wallet) so a subsequent stash withdrawal can spend it.
 //
@@ -242,6 +247,17 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 		`, red.ID, amount); dbErr != nil {
 			r.logger.Error("Blend: failed to persist capped redemption amount",
 				zap.String("redemption_id", red.ID.String()), zap.Error(dbErr))
+		}
+		// Sync the withdrawal record so the user sees the actual redeemed amount,
+		// not the original (higher) amount they requested.
+		withdrawKey := "withdrawal-" + red.ID.String()
+		if _, wErr := r.db.ExecContext(ctx, `
+			UPDATE withdrawals
+			SET amount = $2, total_amount = $2 + fee_amount, updated_at = NOW()
+			WHERE idempotency_key = $1 AND status IN ('pending', 'processing')
+		`, withdrawKey, amount); wErr != nil {
+			r.logger.Error("Blend: failed to sync withdrawal amount after balance cap",
+				zap.String("redemption_id", red.ID.String()), zap.Error(wErr))
 		}
 	}
 
@@ -523,7 +539,7 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 					r.logger.Error("Blend: failed to reset redemption after session failure",
 						zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
 				}
-				return fmt.Errorf("blend: withdraw session %s ended in %s: %s (reset for retry)", session.IntentID, session.Status, msg)
+				return fmt.Errorf("%w: withdraw session %s ended in %s: %s", ErrRedemptionRetrying, session.IntentID, session.Status, msg)
 
 			case IntentStatusLocked, IntentStatusSubmitted:
 				// On-chain balance fallback: when Blend is stuck LOCKED/SUBMITTED,

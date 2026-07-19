@@ -100,7 +100,7 @@ func (r *DepositRouter) reconcileOnce(ctx context.Context) {
 			r.logger.Error("Blend reconcile panic recovered", zap.Any("panic", rec), zap.Stack("stacktrace"))
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
 
 	r.reconcileDepositRoutes(ctx)
@@ -307,13 +307,14 @@ func (r *DepositRouter) detectStuckRedemptions(ctx context.Context) {
 // don't race with a crypto transfer that may still be spending from the Base EOA.
 func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 	type row struct {
-		ID     uuid.UUID `db:"id"`
-		UserID uuid.UUID `db:"user_id"`
-		Amount string    `db:"amount"`
+		ID       uuid.UUID `db:"id"`
+		UserID   uuid.UUID `db:"user_id"`
+		Amount   string    `db:"amount"`
+		Attempts int       `db:"attempts"`
 	}
 	var rows []row
 	if err := r.db.SelectContext(ctx, &rows, `
-		SELECT id, user_id, amount
+		SELECT id, user_id, amount, attempts
 		FROM blend_yield_redemptions
 		WHERE status = 'complete'
 		  AND swept_at IS NULL
@@ -329,6 +330,13 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+		}
+		// Skip redemptions with too many failed sweep attempts — the underlying
+		// issue (e.g. ChainRails down, insufficient gas) is likely persistent.
+		if row.Attempts > 10 {
+			r.logger.Warn("blend sweep: skipping — too many attempts, needs operator intervention",
+				zap.String("redemption_id", row.ID.String()), zap.Int("attempts", row.Attempts))
+			continue
 		}
 		acct, err := r.getUserAccount(ctx, row.UserID)
 		if err != nil || acct == nil {
@@ -356,7 +364,10 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 				zap.String("redemption_id", row.ID.String()),
 				zap.String("eoa_balance", eoaBal.StringFixed(6)),
 				zap.String("db_amount", amt.StringFixed(6)))
-			r.persistSweepSuccess(row.ID)
+			if dbErr := r.persistSweepSuccess(row.ID); dbErr != nil {
+				r.logger.Error("blend sweep: could not persist auto-mark to DB",
+					zap.String("redemption_id", row.ID.String()), zap.Error(dbErr))
+			}
 			continue
 		} else if eoaBal.LessThan(amt) {
 			capped := eoaBal.Sub(decimal.NewFromFloat(0.01)) // gas buffer

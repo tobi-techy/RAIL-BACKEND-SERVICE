@@ -189,7 +189,12 @@ func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
 	if event.NotificationType != "transactions.inbound" {
 		// Handle outbound transaction completions (withdrawal status updates)
 		if event.NotificationType == "transactions.outbound" {
-			h.processOutboundTransaction(c.Request.Context(), &event)
+			if err := h.processOutboundTransaction(c.Request.Context(), &event); err != nil {
+				h.logger.Error("Circle outbound webhook processing failed, returning 500 for retry",
+					zap.String("txId", event.Notification.ID), zap.Error(err))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{"status": "processed"})
 			// Mark as processed in Redis
 			if err := h.redis.Set(c.Request.Context(), redisKey, true, 24*time.Hour); err != nil {
@@ -431,12 +436,13 @@ func isNativeGasToken(symbol string) bool {
 }
 
 // processOutboundTransaction handles completed/failed outbound Circle transfers (withdrawals).
-func (h *CircleWebhookHandler) processOutboundTransaction(ctx context.Context, event *CircleWebhookEvent) {
+// Returns an error when the DB update fails so the caller can return 500 and Circle retries.
+func (h *CircleWebhookHandler) processOutboundTransaction(ctx context.Context, event *CircleWebhookEvent) error {
 	tx := event.Notification
 	if h.withdrawalCompleter == nil {
 		h.logger.Warn("Circle outbound webhook received but no withdrawal completer configured",
 			zap.String("txId", tx.ID), zap.String("state", tx.State))
-		return
+		return nil
 	}
 
 	state := strings.ToUpper(strings.TrimSpace(tx.State))
@@ -445,21 +451,22 @@ func (h *CircleWebhookHandler) processOutboundTransaction(ctx context.Context, e
 		if err := h.withdrawalCompleter.CompleteWithdrawalByTransferID(ctx, tx.ID); err != nil {
 			h.logger.Error("Failed to complete Circle withdrawal",
 				zap.String("txId", tx.ID), zap.Error(err))
-		} else {
-			h.logger.Info("Circle outbound withdrawal completed",
-				zap.String("txId", tx.ID), zap.String("txHash", tx.TxHash))
+			return fmt.Errorf("complete withdrawal %s: %w", tx.ID, err)
 		}
+		h.logger.Info("Circle outbound withdrawal completed",
+			zap.String("txId", tx.ID), zap.String("txHash", tx.TxHash))
 	case "FAILED", "DENIED", "CANCELLED", "CANCELED":
 		reason := fmt.Sprintf("circle transfer %s", strings.ToLower(state))
 		if err := h.withdrawalCompleter.FailWithdrawalByTransferID(ctx, tx.ID, reason); err != nil {
 			h.logger.Error("Failed to mark Circle withdrawal as failed",
 				zap.String("txId", tx.ID), zap.Error(err))
-		} else {
-			h.logger.Info("Circle outbound withdrawal failed",
-				zap.String("txId", tx.ID), zap.String("state", state))
+			return fmt.Errorf("fail withdrawal %s: %w", tx.ID, err)
 		}
+		h.logger.Info("Circle outbound withdrawal failed",
+			zap.String("txId", tx.ID), zap.String("state", state))
 	default:
 		h.logger.Debug("Circle outbound transaction in non-terminal state",
 			zap.String("txId", tx.ID), zap.String("state", state))
 	}
+	return nil
 }
