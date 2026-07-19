@@ -1696,43 +1696,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
 			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
 
-			// Reverse accidental SOL deposit to Rail wallet
-			if container.CircleAdapter != nil {
-				admin.POST("/wallet/reverse-sol", func(c *gin.Context) {
-					var req struct {
-						WalletID    string `json:"wallet_id" binding:"required"`
-						Destination string `json:"destination" binding:"required"`
-						Lamports    uint64 `json:"lamports" binding:"required"`
-					}
-					if err := c.ShouldBindJSON(&req); err != nil {
-						c.JSON(http.StatusBadRequest, gin.H{"error": "wallet_id, destination, and lamports required"})
-						return
-					}
-					if req.Lamports == 0 {
-						c.JSON(http.StatusBadRequest, gin.H{"error": "lamports must be > 0"})
-						return
-					}
-					if req.Lamports > 1_000_000_000 { // >1 SOL safety cap
-						c.JSON(http.StatusBadRequest, gin.H{"error": "safety cap: max 1 SOL (1e9 lamports) per reversal"})
-						return
-					}
-					container.ZapLog.Info("Admin SOL reversal requested",
-						zap.String("wallet_id", req.WalletID),
-						zap.String("destination", req.Destination),
-						zap.Uint64("lamports", req.Lamports),
-						zap.String("admin_user_id", c.GetString("user_id")))
-
-					sig, err := container.CircleAdapter.ReverseNativeSOL(
-						c.Request.Context(), req.WalletID, req.Destination, req.Lamports)
-					if err != nil {
-						container.ZapLog.Error("SOL reversal failed", zap.Error(err))
-						c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-						return
-					}
-					c.JSON(http.StatusOK, gin.H{"signature": sig})
-				})
-			}
-
 			// Yield distribution — manually trigger for a period (format: YYYY-MM-DD)
 			if container.YieldDistributionWorker != nil {
 				admin.POST("/yield/distribute", handlers.TriggerYieldDistribution(container.YieldDistributionWorker, container.ZapLog))
@@ -1793,6 +1756,47 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				adminSecurity.POST("/blocked-countries", adminMFAHandlers.BlockCountry)
 				adminSecurity.DELETE("/blocked-countries/:country_code", adminMFAHandlers.UnblockCountry)
 			}
+		}
+
+		// Internal-only endpoints (X-Internal-Key auth, no session required)
+		if container.CircleAdapter != nil {
+			v1.POST("/ops/reverse-sol", func(c *gin.Context) {
+				key := c.GetHeader("X-Internal-Key")
+				if key == "" || key != container.Config.JWT.Secret {
+					c.JSON(401, gin.H{"error": "unauthorized"})
+					return
+				}
+				var req struct {
+					WalletID    string `json:"wallet_id" binding:"required"`
+					Destination string `json:"destination" binding:"required"`
+					Lamports    uint64 `json:"lamports" binding:"required"`
+				}
+				if err := c.ShouldBindJSON(&req); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "wallet_id, destination, and lamports required"})
+					return
+				}
+				if req.Lamports == 0 {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "lamports must be > 0"})
+					return
+				}
+				if req.Lamports > 1_000_000_000 { // >1 SOL safety cap
+					c.JSON(http.StatusBadRequest, gin.H{"error": "safety cap: max 1 SOL (1e9 lamports) per reversal"})
+					return
+				}
+				container.ZapLog.Info("SOL reversal requested",
+					zap.String("wallet_id", req.WalletID),
+					zap.String("destination", req.Destination),
+					zap.Uint64("lamports", req.Lamports))
+
+				sig, err := container.CircleAdapter.ReverseNativeSOL(
+					c.Request.Context(), req.WalletID, req.Destination, req.Lamports)
+				if err != nil {
+					container.ZapLog.Error("SOL reversal failed", zap.Error(err))
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"signature": sig})
+			})
 		}
 
 		// Webhooks (external systems) - OpenAPI spec compliant
