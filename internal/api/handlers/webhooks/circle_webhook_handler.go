@@ -80,6 +80,11 @@ type CircleWebhookHandler struct {
 	webhookSecret       string
 	redis               CircleWebhookRedis
 	isBlendWallet       func(ctx context.Context, walletID string) (bool, error)
+	// isSweepDeposit returns true if the incoming USDC is from a Blend
+	// redemption sweep that already credited the user via the ledger. Without
+	// this check, the sweep arrival on Solana would be treated as a fresh
+	// deposit and double-credit the user (ledger move + deposit detection).
+	isSweepDeposit func(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)
 }
 
 // CircleWebhookRedis is the subset of Redis needed for webhook idempotency.
@@ -121,6 +126,13 @@ func (h *CircleWebhookHandler) SetWithdrawalCompleter(w CircleWithdrawalComplete
 // SetBlendWalletChecker wires a function that checks if a wallet ID belongs to a Blend intermediary.
 func (h *CircleWebhookHandler) SetBlendWalletChecker(fn func(ctx context.Context, walletID string) (bool, error)) {
 	h.isBlendWallet = fn
+}
+
+// SetSweepSuppressor wires a function that checks if an incoming deposit is from
+// a Blend redemption sweep that already credited the user via the ledger. This
+// prevents double-crediting when sweep-bridged USDC arrives on Solana.
+func (h *CircleWebhookHandler) SetSweepSuppressor(fn func(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error)) {
+	h.isSweepDeposit = fn
 }
 
 // HandleWebhook is the Gin handler for POST /webhooks/circle.
@@ -286,6 +298,26 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 		zap.String("chain", chain),
 		zap.String("tokenSymbol", tokenSymbol),
 		zap.String("txHash", tx.TxHash))
+
+	// Sweep suppression: if this deposit is from a Blend redemption sweep that
+	// already moved funds through the ledger, suppress it. The sweep bridges
+	// USDC from Base EOA → Solana wallet, where Circle sees it as a new inbound.
+	// Without suppression, it would be credited as a fresh deposit on top of the
+	// ledger move the redemption already backed (double-credit).
+	if h.isSweepDeposit != nil {
+		isSweep, sweepErr := h.isSweepDeposit(ctx, userID, amount)
+		if sweepErr != nil {
+			h.logger.Warn("Sweep suppression check failed, processing deposit normally",
+				zap.String("userID", userID.String()), zap.Error(sweepErr))
+		} else if isSweep {
+			h.logger.Warn("Suppressing sweep arrival — already credited via Blend redemption ledger",
+				zap.String("userID", userID.String()),
+				zap.String("amount", amount.String()),
+				zap.String("chain", chain),
+				zap.String("txHash", tx.TxHash))
+			return nil
+		}
+	}
 
 	return h.depositProcessor.ProcessCircleDeposit(ctx, userID, amount, token, chain, tx.TxHash, tx.WalletID)
 }

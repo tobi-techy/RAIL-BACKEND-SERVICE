@@ -2587,6 +2587,24 @@ func (c *Container) initializeDomainServices() error {
 			err := sqlxDB.GetContext(ctx, &exists, `SELECT EXISTS(SELECT 1 FROM blend_user_accounts WHERE circle_wallet_id = $1)`, walletID)
 			return exists, err
 		})
+		// Wire sweep suppressor to prevent Blend redemption sweeps from being
+		// double-credited as fresh deposits. When USDC is bridged from Base EOA
+		// to Solana via ChainRails, Circle sees it as an inbound on the user's
+		// Solana wallet. Without suppression, deposit detection would credit it
+		// on top of the ledger move the redemption already backed.
+		c.CircleWebhookHandler.SetSweepSuppressor(func(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (bool, error) {
+			var exists bool
+			err := sqlxDB.GetContext(ctx, &exists, `
+				SELECT EXISTS(
+					SELECT 1 FROM blend_yield_redemptions
+					WHERE user_id = $1
+					  AND status = 'complete'
+					  AND swept_at IS NOT NULL
+					  AND swept_at > NOW() - INTERVAL '1 hour'
+					  AND ABS(amount - $2) < 0.01
+				)`, userID, amount)
+			return exists, err
+		})
 	}
 
 	// Initialize auto-invest service (OrderPlacer will be set after InvestingService is created)
