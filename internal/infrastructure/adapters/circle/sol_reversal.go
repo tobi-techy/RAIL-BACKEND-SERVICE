@@ -43,8 +43,8 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		return "", fmt.Errorf("get SOL balance: %w", err)
 	}
 	const rentExemptBuffer uint64 = 1_000_000 // 0.001 SOL
-	if bal.Value < lamports+rentExemptBuffer {
-		return "", fmt.Errorf("insufficient balance: have %d lamports, need %d (amount + 0.001 rent buffer)", bal.Value, lamports+rentExemptBuffer)
+	if bal.Value < rentExemptBuffer {
+		return "", fmt.Errorf("insufficient balance: have %d lamports, need at least %d for rent-exempt minimum", bal.Value, rentExemptBuffer)
 	}
 	lamports = bal.Value - rentExemptBuffer
 
