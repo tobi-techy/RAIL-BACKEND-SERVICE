@@ -388,8 +388,10 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 	}
 }
 
-// detectStaleRoutes logs a warning for routes stuck in non-terminal states for >6 hours,
-// including the last known error for each so operators can diagnose without a DB query.
+// detectStaleRoutes terminates deposit routes stuck in non-terminal states for >6 hours.
+// Routes past the 100-attempt retry budget with Circle transfer failures are dead — the
+// source wallet is empty or Circle will never confirm. Marking them terminal stops the
+// infinite retry loop that was spamming "circle transfer still pending" every 30s.
 func (r *DepositRouter) detectStaleRoutes(ctx context.Context) {
 	type staleRow struct {
 		ID        uuid.UUID      `db:"id"`
@@ -403,19 +405,36 @@ func (r *DepositRouter) detectStaleRoutes(ctx context.Context) {
 		FROM blend_deposit_routes
 		WHERE status NOT IN ('complete', 'error_terminal', 'error_payload')
 		  AND updated_at < NOW() - INTERVAL '6 hours'
-		LIMIT 10
+		LIMIT 25
 	`); err != nil || len(rows) == 0 {
 		return
 	}
 	for _, row := range rows {
-		if !r.shouldAlert("route:" + row.ID.String()) {
-			continue
+		if row.Attempts >= 100 {
+			// Route has exhausted the retry budget. The source wallet is
+			// permanently depleted or Circle will never confirm. Mark terminal.
+			_, err := r.db.ExecContext(ctx, `
+				UPDATE blend_deposit_routes
+				SET status = 'error_terminal', next_retry_at = NOW() + INTERVAL '24 hours', updated_at = NOW()
+				WHERE id = $1
+			`, row.ID)
+			if err != nil {
+				r.logger.Error("Blend: failed to terminate stale route",
+					zap.String("route_id", row.ID.String()), zap.Error(err))
+				continue
+			}
+			r.logger.Warn("Blend: terminated stale deposit route (stuck >6h, >100 attempts)",
+				zap.String("route_id", row.ID.String()),
+				zap.String("status", row.Status),
+				zap.Int("attempts", row.Attempts),
+				zap.String("last_error", row.LastError.String))
+		} else {
+			r.logger.Warn("Blend: stale deposit route (stuck >6h, still retrying)",
+				zap.String("route_id", row.ID.String()),
+				zap.String("status", row.Status),
+				zap.Int("attempts", row.Attempts),
+				zap.String("last_error", row.LastError.String))
 		}
-		r.logger.Warn("Blend: stale deposit route (stuck >6h)",
-			zap.String("route_id", row.ID.String()),
-			zap.String("status", row.Status),
-			zap.Int("attempts", row.Attempts),
-			zap.String("last_error", row.LastError.String))
 	}
 }
 

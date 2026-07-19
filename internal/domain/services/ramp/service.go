@@ -852,7 +852,7 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 
 	// A sell order requires the crypto amount (NGN payout is derived from it).
 	orderCrypto := decimal.NewFromFloat(fiatAmount).Div(decimal.NewFromFloat(quote.Rate)).Round(6)
-	order, err := s.ramphubClient.CreateOrder(ctx, ramphub.OrderRequest{
+	sellReq := ramphub.OrderRequest{
 		Side:                "sell",
 		Amount:              orderCrypto.InexactFloat64(),
 		FiatCurrency:        currency,
@@ -865,7 +865,16 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 		Email:               s.getUserEmail(ctx, userID),
 		ExternalCustomerID:  rampCustomerID(userID),
 		DeveloperFeePercent: s.developerFeePercent,
-	})
+	}
+	order, err := s.ramphubClient.CreateOrder(ctx, sellReq)
+	if err != nil && ramphub.IsActiveIntentConflict(err) {
+		// Stale buy intent from a prior session is blocking this sell order.
+		// Take over the existing payment window and retry once.
+		s.logger.Warn("RampHub offramp: active intent conflict, overriding",
+			zap.String("user_id", userID.String()))
+		sellReq.OverrideActiveIntent = true
+		order, err = s.ramphubClient.CreateOrder(ctx, sellReq)
+	}
 	if err != nil {
 		// Reverse hold and surface the error. Paj fallback is intentionally
 		// omitted — Paj requires a MongoDB ObjectID bank identifier but this
