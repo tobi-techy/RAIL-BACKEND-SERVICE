@@ -3,6 +3,7 @@ package funding
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -223,13 +224,21 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 
 	if err := chainrails.VerifyWebhookSignature(rawBody, sig, ts, h.webhookSecret); err != nil {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "unauthorized").Inc()
+		// Log first 20 bytes of body for signature debugging (don't log full body or secret)
+		bodyPreview := ""
+		if len(rawBody) > 0 {
+			bodyPreview = fmt.Sprintf("len=%d first20=%q", len(rawBody), string(rawBody[:min(20, len(rawBody))]))
+		}
 		h.logger.Warn("ChainRails webhook signature invalid",
 			"error", err,
 			"client_ip", c.ClientIP(),
 			"user_agent", c.GetHeader("User-Agent"),
 			"sig_present", sig != "",
+			"sig_len", len(sig),
 			"ts_present", ts != "",
-			"secret_len", len(h.webhookSecret))
+			"ts_value", ts,
+			"secret_len", len(h.webhookSecret),
+			"body_preview", bodyPreview)
 		common.SendUnauthorized(c, "Invalid webhook signature")
 		return
 	}

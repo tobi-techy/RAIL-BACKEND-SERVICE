@@ -153,7 +153,9 @@ func (w *Worker) sweepWithdrawalFees(ctx context.Context) (int, int, error) {
 			continue
 		}
 
-		ref := fmt.Sprintf("fee-sweep-%s", f.ID.String())
+		// Circle requires idempotencyKey to be a valid UUID. Derive a deterministic
+		// UUID from the withdrawal ID so retries are idempotent without violating format.
+		ref := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("fee-sweep-%s", f.ID.String()))).String()
 		if err := w.transfer.TransferToTreasury(ctx, f.UserID, f.Amount, ref); err != nil {
 			// #region agent log
 			writeAgentDebugLog("revenue_sweep/worker.go:sweepWithdrawalFees", "treasury transfer failed", "H4", map[string]interface{}{
@@ -226,7 +228,7 @@ func (w *Worker) sweepPajOfframpFees(ctx context.Context) (int, int, error) {
 			continue
 		}
 
-		ref := fmt.Sprintf("paj-offramp-fee-sweep-%s", f.PajOrderID)
+		ref := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("paj-offramp-fee-sweep-%s", f.PajOrderID))).String()
 		if err := w.transfer.TransferToTreasury(ctx, f.UserID, f.Amount, ref); err != nil {
 			w.logger.Warn("Paj offramp revenue sweep transfer failed",
 				zap.String("paj_order_id", f.PajOrderID),

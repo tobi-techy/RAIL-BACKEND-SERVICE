@@ -348,9 +348,15 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 			r.logger.Warn("blend sweep: cannot check EOA balance, proceeding with DB amount",
 				zap.String("redemption_id", row.ID.String()), zap.Error(balErr))
 		} else if eoaBal.LessThan(decimal.NewFromFloat(0.10)) {
-			r.logger.Warn("blend sweep: EOA balance too low to sweep economically, skipping",
+			// EOA is nearly empty. The sweep likely already succeeded on-chain
+			// (USDC was bridged to Solana) but the polling didn't detect it.
+			// Auto-mark as swept to stop the retry loop. The deposit was already
+			// credited when ChainRails delivered it to Solana.
+			r.logger.Warn("blend sweep: EOA balance near zero — sweep already completed on-chain, auto-marking swept",
 				zap.String("redemption_id", row.ID.String()),
-				zap.String("eoa_balance", eoaBal.StringFixed(6)))
+				zap.String("eoa_balance", eoaBal.StringFixed(6)),
+				zap.String("db_amount", amt.StringFixed(6)))
+			r.persistSweepSuccess(row.ID)
 			continue
 		} else if eoaBal.LessThan(amt) {
 			capped := eoaBal.Sub(decimal.NewFromFloat(0.01)) // gas buffer
