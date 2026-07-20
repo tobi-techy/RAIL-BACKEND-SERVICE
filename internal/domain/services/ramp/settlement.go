@@ -246,9 +246,12 @@ func (s *Service) reverseHold(ctx context.Context, userID uuid.UUID, txID string
 	// 'paid' the crypto leg has reached them and an NGN payout may follow —
 	// auto-reversing the hold would double-credit (user keeps USDC and gets NGN).
 	// Paid-but-stuck orders go to manual reconciliation instead.
+	// Also skip if a 'transaction.completed' webhook was already received — the
+	// offramp succeeded even if the Circle transfer handler hasn't noticed yet.
 	res, dbErr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = 'failed', deposit_id = gen_random_uuid(), updated_at = NOW()
-		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')`, txID)
+		WHERE ramphub_transaction_id = $1 AND status IN ('pending', 'processing')
+		  AND COALESCE(last_webhook_status, '') NOT LIKE '%completed%'`, txID)
 	if dbErr != nil {
 		s.logger.Error("failed to mark RampHub order as failed",
 			zap.Error(dbErr), zap.String("ramphub_tx_id", txID))

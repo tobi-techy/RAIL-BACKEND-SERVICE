@@ -1028,11 +1028,26 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID string, event *r
 		return fmt.Errorf("lookup ramphub order: %w", err)
 	}
 	txID := canonicalTxID
-	if currentStatus == "completed" || currentStatus == "failed" {
+
+	// If the order is already completed, nothing to do.
+	if currentStatus == "completed" {
 		return nil
 	}
 
+	// If the order is marked 'failed' but RampHub says it completed, the
+	// offramp actually succeeded — the user received NGN in their bank.
+	// This happens when the recovery worker or Circle transfer handler
+	// prematurely marked the order failed (e.g. transient Circle error that
+	// self-resolved). We must re-debit the ledger hold that was reversed and
+	// update the status to 'completed'.
 	newStatus := ramphub.MapEventStatus(event.Type, event.Data.Status)
+	if currentStatus == "failed" && newStatus == "completed" && orderType == "offramp" {
+		return s.recoverFailedOfframpCompletion(ctx, userID, txID)
+	}
+	if currentStatus == "failed" {
+		return nil
+	}
+
 	if _, uerr := s.db.ExecContext(ctx, `
 		UPDATE ramphub_orders SET status = $1, last_webhook_status = $2, last_webhook_at = NOW(), updated_at = NOW()
 		WHERE ramphub_transaction_id = $3 AND status NOT IN ('completed','failed')`,
@@ -1418,6 +1433,58 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 		}
 		return fmt.Errorf("reverse offramp hold: %w", err)
 	}
+	return nil
+}
+
+// recoverFailedOfframpCompletion handles the case where a RampHub offramp
+// webhook reports 'completed' but the order was already marked 'failed' by the
+// recovery worker or Circle transfer handler. If RampHub completed the offramp,
+// the user received NGN — we must re-debit the ledger hold that was reversed.
+func (s *Service) recoverFailedOfframpCompletion(ctx context.Context, userID uuid.UUID, txID string) error {
+	// Atomically claim: clear the deposit_id (reversal claim) and read the hold
+	// amount. Only the first caller succeeds; concurrent calls see ErrNoRows.
+	var holdAmount decimal.Decimal
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE ramphub_orders SET deposit_id = NULL, status = 'completed',
+		 last_webhook_status = 'transaction.completed', last_webhook_at = NOW(), updated_at = NOW()
+		 WHERE ramphub_transaction_id = $1 AND order_type = 'offramp' AND status = 'failed'
+		 RETURNING COALESCE(hold_amount, token_amount)`, txID).Scan(&holdAmount)
+	if err == sql.ErrNoRows {
+		return nil // already recovered or not an offramp
+	}
+	if err != nil {
+		return fmt.Errorf("claim failed offramp for recovery: %w", err)
+	}
+	if holdAmount.IsZero() || holdAmount.IsNegative() {
+		return nil
+	}
+
+	if s.ledger == nil {
+		return nil
+	}
+
+	// Re-debit the ledger — the user received NGN so the USDC hold must stand.
+	if err := s.ledger.CreateTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
+		entities.TransactionTypeWithdrawal, holdAmount, map[string]interface{}{
+			"provider": ProviderRampHub, "type": "offramp_hold",
+			"ramphub_tx_id": txID, "recovered_from_failed": true,
+		}); err != nil {
+		s.logger.Error("CRITICAL: failed to re-debit offramp hold after failed→completed recovery",
+			zap.Error(err), zap.String("user_id", userID.String()),
+			zap.String("ramphub_tx_id", txID), zap.String("amount", holdAmount.String()))
+		// Restore the claim so the recovery worker can retry.
+		if _, uErr := s.db.ExecContext(ctx,
+			`UPDATE ramphub_orders SET deposit_id = gen_random_uuid(), status = 'failed', updated_at = NOW()
+			 WHERE ramphub_transaction_id = $1 AND status = 'completed'`, txID); uErr != nil {
+			s.logger.Error("CRITICAL: failed to un-recover failed offramp order — manual intervention required",
+				zap.Error(uErr), zap.String("ramphub_tx_id", txID))
+		}
+		return fmt.Errorf("re-debit offramp hold: %w", err)
+	}
+
+	s.logger.Warn("Recovered failed offramp: re-debited ledger, order completed",
+		zap.String("user_id", userID.String()),
+		zap.String("ramphub_tx_id", txID), zap.String("amount", holdAmount.String()))
 	return nil
 }
 
