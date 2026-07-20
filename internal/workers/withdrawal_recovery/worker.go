@@ -97,7 +97,9 @@ func (w *Worker) Stop() { close(w.stopCh) }
 func (w *Worker) recover(ctx context.Context) {
 	w.recoverPreTransferStuck(ctx)
 	w.syncPostTransferStuck(ctx)
-	w.failChainRailsExpired(ctx)
+	if err := w.failChainRailsExpired(ctx); err != nil {
+		w.logger.Error("withdrawal recovery: chainrails failure handler returned error", zap.Error(err))
+	}
 }
 
 // recoverPreTransferStuck reverses withdrawals where the provider transfer
@@ -299,9 +301,9 @@ func withdrawalLedgerIdempotencyKey(withdrawalID uuid.UUID) string {
 // stuck in processing for over 1 hour. ChainRails relies on webhooks for
 // status updates — if the webhook is missed, these stay pending forever.
 // After 1h, we assume the transfer failed and reverse the ledger hold.
-func (w *Worker) failChainRailsExpired(ctx context.Context) {
+func (w *Worker) failChainRailsExpired(ctx context.Context) error {
 	if w.ledger == nil {
-		return
+		return nil
 	}
 
 	rows, err := w.db.QueryContext(ctx, `
@@ -314,7 +316,7 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) {
 		LIMIT 10`)
 	if err != nil {
 		w.logger.Error("withdrawal recovery: chainrails expired query failed", zap.Error(err))
-		return
+		return nil
 	}
 	defer rows.Close()
 
@@ -354,6 +356,7 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) {
 					WHERE id = $1 AND status IN ('processing', 'onchain_transfer')`, s.ID); err != nil {
 					w.logger.Error("withdrawal recovery: chainrails failed to mark withdrawal failed",
 						zap.Error(err), zap.String("withdrawal_id", s.ID.String()))
+					return fmt.Errorf("mark withdrawal failed (chainrails): %w", err)
 				}
 				continue
 			}
@@ -384,4 +387,5 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) {
 			zap.String("user_id", s.UserID.String()),
 			zap.String("amount", totalAmount.String()))
 	}
+	return nil
 }
