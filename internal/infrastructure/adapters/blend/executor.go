@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
@@ -299,6 +300,40 @@ func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, pl
 	if err != nil {
 		return nil, fmt.Errorf("blend: safe multisend circle execute: %w", err)
 	}
+
+	// Circle contract-execution endpoint returns async: tx.ID is set but TxHash
+	// may be empty until the on-chain tx is confirmed. Poll until we get a real
+	// hash — Blend needs a non-empty hash to match against its own record.
+	if tx.TxHash == "" && tx.ID != "" {
+		pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		defer cancel()
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		e.logger.Info("Blend: tx hash empty after ExecuteContract, polling Circle for tx hash",
+			zap.String("tx_id", tx.ID))
+		for {
+			select {
+			case <-pollCtx.Done():
+				e.logger.Warn("Blend: timed out polling for tx hash",
+					zap.String("tx_id", tx.ID))
+			goto done
+			case <-ticker.C:
+				updated, pollErr := e.circle.GetTransaction(pollCtx, tx.ID)
+				if pollErr != nil {
+					e.logger.Warn("Blend: GetTransaction poll failed, retrying",
+						zap.String("tx_id", tx.ID), zap.Error(pollErr))
+					continue
+				}
+				if updated.TxHash != "" {
+					tx = updated
+					e.logger.Info("Blend: resolved tx hash from Circle",
+						zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash))
+					goto done
+				}
+			}
+		}
+	}
+done:
 	e.logger.Info("Blend executor Safe multisend result",
 		zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash), zap.String("state", string(tx.State)))
 	return []ExecutedTx{{ChainID: trustedSafe.ChainID, TxHash: tx.TxHash, TransactionID: tx.ID}}, nil
