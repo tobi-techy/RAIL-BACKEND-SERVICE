@@ -393,7 +393,11 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 	case IntentStatusLocked, IntentStatusSubmitted, IntentStatusSettled:
 		// Already progressed by a prior attempt — continue.
 	case IntentStatusFailed, IntentStatusCancelled:
-		// Session expired — if we've been retrying excessively, mark terminal.
+		// Session expired — but the on-chain tx may have already executed.
+		// Check the on-chain balance before giving up.
+		if fErr := r.tryOnChainSettlementFallback(ctx, acct, red, red.Amount); fErr == nil {
+			return nil // finalized via on-chain proof
+		}
 		if red.Attempts >= 10 {
 			reason := fmt.Sprintf("withdraw session %s is %s after %d attempts", intentID, current.Status, red.Attempts)
 			if rerr := r.markRedemptionFailed(ctx, red.IdempotencyKey, reason); rerr != nil {
@@ -509,6 +513,18 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 				msg := session.ErrorMessage
 				if msg == "" {
 					msg = session.Status
+				}
+				// The Blend session expired/cancelled, but the on-chain tx may have
+				// already executed (vault shares redeemed, USDC in EOA). Check the
+				// on-chain balance before giving up — Blend's API status is not the
+				// source of truth when our executor confirmed the tx.
+				if fErr := r.tryOnChainSettlementFallback(ctx, acct, red, amount); fErr == nil {
+					return nil // finalized via on-chain proof
+				} else {
+					r.logger.Warn("Blend: on-chain settlement fallback failed after session cancellation",
+						zap.String("redemption_id", red.ID.String()),
+						zap.String("session_status", session.Status),
+						zap.Error(fErr))
 				}
 				// A failed/cancelled Blend session means this attempt didn't settle —
 				// not that the redemption can never settle. Reset to pending (fresh
