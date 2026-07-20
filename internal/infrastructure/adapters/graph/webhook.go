@@ -11,6 +11,9 @@ import (
 // VerifyWebhookSignature validates the HMAC-SHA256 signature Graph sends over
 // the raw request body using the webhook signing secret.
 func VerifyWebhookSignature(body []byte, signature, secret string) error {
+	if secret == "" {
+		return fmt.Errorf("webhook secret not configured")
+	}
 	sig := strings.TrimSpace(signature)
 	sig = strings.TrimPrefix(sig, "sha256=")
 	sig = strings.ToLower(strings.TrimSpace(sig))

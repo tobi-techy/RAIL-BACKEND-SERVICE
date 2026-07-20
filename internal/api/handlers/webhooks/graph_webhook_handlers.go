@@ -123,7 +123,7 @@ func (h *GraphWebhookHandler) handleBankAccountEvent(c *gin.Context, event *grap
 		if err := h.service.HandleAccountActivatedWithData(c.Request.Context(), event.Data.ID, bankAcct); err != nil {
 			h.logger.Error("Failed to activate Graph NGN account",
 				zap.Error(err), zap.String("account_id", event.Data.ID))
-			c.JSON(http.StatusOK, gin.H{"error": "activation_failed"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "activation_failed"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "processed"})
@@ -255,7 +255,7 @@ func (h *GraphWebhookHandler) handleAccountCredit(c *gin.Context, event *graph.W
 			zap.Error(err),
 			zap.String("account_id", accountID),
 			zap.String("tx_ref", txRef))
-		c.JSON(http.StatusOK, gin.H{"error": "deposit_processing_failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "deposit_processing_failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})

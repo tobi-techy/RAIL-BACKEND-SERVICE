@@ -225,11 +225,19 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 			}
 			// If Retry-After is present, override the backoff on next iteration.
 			if ra := resp.Header.Get("Retry-After"); ra != "" && attempt < c.cfg.MaxRetries {
+				var retryDur time.Duration
+				// Try numeric seconds first (e.g. "30").
 				if secs, err := time.ParseDuration(ra + "s"); err == nil {
+					retryDur = secs
+				} else if t, err := time.Parse(time.RFC1123, ra); err == nil {
+					// Fall back to HTTP-date format (e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
+					retryDur = time.Until(t)
+				}
+				if retryDur > 0 {
 					select {
 					case <-ctx.Done():
 						return ctx.Err()
-					case <-time.After(secs):
+					case <-time.After(retryDur):
 					}
 				}
 			}

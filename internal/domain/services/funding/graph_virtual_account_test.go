@@ -72,6 +72,9 @@ func (r *fakeVARepo) Create(ctx context.Context, a *entities.VirtualAccount) err
 	return nil
 }
 func (r *fakeVARepo) Update(ctx context.Context, a *entities.VirtualAccount) error { return nil }
+func (r *fakeVARepo) UpdateWithVersion(ctx context.Context, a *entities.VirtualAccount, old time.Time) error {
+	return nil
+}
 func (r *fakeVARepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error) {
 	return nil, nil
 }

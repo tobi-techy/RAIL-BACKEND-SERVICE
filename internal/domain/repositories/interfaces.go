@@ -136,4 +136,5 @@ type VirtualAccountRepository interface {
 	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)
 	GetByBridgeAccountID(ctx context.Context, bridgeAccountID string) (*entities.VirtualAccount, error)
 	Update(ctx context.Context, account *entities.VirtualAccount) error
+	UpdateWithVersion(ctx context.Context, account *entities.VirtualAccount, oldUpdatedAt time.Time) error
 }

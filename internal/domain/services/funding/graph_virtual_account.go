@@ -589,6 +589,8 @@ func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAm
 // HandleAccountActivated flips a pending NGN virtual account to active and fills
 // HandleAccountActivatedWithData updates the virtual account with bank details
 // from the webhook payload directly — no extra API call needed.
+// Uses optimistic concurrency via updated_at to prevent lost updates from
+// concurrent webhook deliveries or parallel processing.
 func (s *GraphVirtualAccountService) HandleAccountActivatedWithData(ctx context.Context, graphAccountID string, acct *graph.BankAccount) error {
 	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
 	if err != nil {
@@ -597,6 +599,8 @@ func (s *GraphVirtualAccountService) HandleAccountActivatedWithData(ctx context.
 	if va == nil {
 		return fmt.Errorf("virtual account not found: %s", graphAccountID)
 	}
+
+	oldUpdatedAt := va.UpdatedAt
 
 	va.AccountNumber = acct.AccountNumber
 	va.RoutingNumber = acct.RoutingNumber
@@ -608,7 +612,7 @@ func (s *GraphVirtualAccountService) HandleAccountActivatedWithData(ctx context.
 	va.Status = mapGraphAccountStatus(acct.Status)
 	va.UpdatedAt = time.Now()
 
-	if err := s.virtualAccountRepo.Update(ctx, va); err != nil {
+	if err := s.virtualAccountRepo.UpdateWithVersion(ctx, va, oldUpdatedAt); err != nil {
 		return fmt.Errorf("update virtual account: %w", err)
 	}
 	s.logger.Info("Graph NGN account activated", "graph_account_id", graphAccountID, "status", string(va.Status))
