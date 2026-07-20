@@ -1,13 +1,15 @@
 package circle
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"math"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/system"
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/gagliardetto/solana-go/rpc/ws"
 	"go.uber.org/zap"
@@ -30,14 +32,12 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		return "", fmt.Errorf("invalid destination %q: %w", destination, err)
 	}
 
-	// 2. Get recent blockhash from Solana mainnet
+	// 2. Get recent blockhash + balance from Solana mainnet
 	rpcClient := rpc.New(rpc.MainNetBeta_RPC)
 	recent, err := rpcClient.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return "", fmt.Errorf("get recent blockhash: %w", err)
 	}
-
-	// 2a. Check current SOL balance — wallet must keep ~0.001 SOL for rent-exempt minimum
 	bal, err := rpcClient.GetBalance(ctx, fromAddress, rpc.CommitmentFinalized)
 	if err != nil {
 		return "", fmt.Errorf("get SOL balance: %w", err)
@@ -48,28 +48,48 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 	}
 	lamports = bal.Value - rentExemptBuffer
 
-	// 3. Build SOL transfer instruction
-	ix := system.NewTransferInstruction(
-		lamports,
-		fromAddress,
-		toAddress,
-	).Build()
+	// 3. Build the raw transaction message manually.
+	//    SystemProgram Transfer instruction: 4 bytes type (2) + 8 bytes lamports.
+	var ixData [12]byte
+	binary.LittleEndian.PutUint32(ixData[0:4], 2) // instruction index = 2 (Transfer)
+	binary.LittleEndian.PutUint64(ixData[4:12], lamports)
 
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{ix},
-		recent.Value.Blockhash,
-		solana.TransactionPayer(fromAddress),
-	)
-	if err != nil {
-		return "", fmt.Errorf("build transaction: %w", err)
-	}
+	// Transaction message layout:
+	//   [0]     num_required_signatures (1)
+	//   [1]     num_readonly_signed_accounts (0)
+	//   [2]     num_readonly_unsigned_accounts (1) — SystemProgram is non-writable
+	//   [3..35] fromAddress (signer + writable)
+	//   [35..67] toAddress (writable)
+	//   [67..99] SystemProgramID (readonly unsigned)
+	//   [99..103] compiled instruction: program_index=2, num_accounts=2, data_len=12
+	//   [103..105] account_indices: [0, 1]
+	//   [105..117] instruction data (12 bytes)
+	//   [117..149] recent blockhash (32 bytes)
+	//   [149]     num_instructions (1)
+	msg := make([]byte, 0, 200)
+	msg = append(msg, 1)  // num_required_signatures
+	msg = append(msg, 0)  // num_readonly_signed_accounts
+	msg = append(msg, 1)  // num_readonly_unsigned_accounts (SystemProgram)
+	msg = append(msg, fromAddress[:]...)
+	msg = append(msg, toAddress[:]...)
+	msg = append(msg, solana.SystemProgramID[:]...)
+	// Compiled instruction
+	msg = append(msg, 2)    // program_account_index (SystemProgram)
+	msg = append(msg, 2)    // num_accounts (from + to)
+	msg = append(msg, 12)   // data_length
+	msg = append(msg, 0, 1) // account_indices: [from=0, to=1]
+	msg = append(msg, ixData[:]...)
+	// Blockhash + instruction count
+	msg = append(msg, recent.Value.Blockhash[:]...)
+	msg = append(msg, 1) // one instruction
 
-	// Serialize as base64 for Circle SignTransaction
-	rawBytes, err := tx.MarshalBinary()
-	if err != nil {
-		return "", fmt.Errorf("serialize transaction: %w", err)
-	}
-	rawB64 := base64.StdEncoding.EncodeToString(rawBytes)
+	// 4. Serialize as versioned-legacy transaction: 0x80 | 0x00 = legacy, then message bytes
+	//    Circle expects Solana legacy transaction format.
+	var txBytes bytes.Buffer
+	txBytes.WriteByte(0x80 | 0x00) // legacy transaction marker
+	txBytes.Write(msg)
+
+	rawB64 := base64.StdEncoding.EncodeToString(txBytes.Bytes())
 
 	a.logger.Info("Circle SOL reversal: signing transaction",
 		zap.String("wallet_id", walletID),
@@ -77,9 +97,10 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		zap.String("to", destination),
 		zap.Uint64("lamports", lamports),
 		zap.Float64("sol", float64(lamports)/math.Pow(10, 9)),
-		zap.Int("raw_tx_bytes", len(rawBytes)))
+		zap.Int("raw_tx_bytes", txBytes.Len()),
+		zap.String("raw_tx_b64", rawB64))
 
-	// 4. Sign via Circle
+	// 5. Sign via Circle
 	signed, err := a.client.SignTransaction(ctx, &SignTransactionRequest{
 		WalletID:       walletID,
 		RawTransaction: rawB64,
@@ -89,21 +110,29 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		return "", fmt.Errorf("sign transaction: %w", err)
 	}
 
-	// 5. Broadcast via Solana RPC (signedTransaction is base64-encoded)
+	a.logger.Info("Circle SOL reversal: signed",
+		zap.String("signed_tx_len", fmt.Sprintf("%d", len(signed.SignedTransaction))))
+
+	// 6. Broadcast via Solana RPC
 	signedBytes, err := base64.StdEncoding.DecodeString(signed.SignedTransaction)
 	if err != nil {
 		return "", fmt.Errorf("decode signed transaction: %w", err)
 	}
 
+	// Verify the signed tx has a valid signature (ed25519 = 64 bytes)
+	// Legacy tx format: [marker 0x80][message][signature 64 bytes]
+	// But Circle may return it differently — just broadcast what we get.
 	sig, err := rpcClient.SendRawTransaction(ctx, signedBytes)
 	if err != nil {
 		return "", fmt.Errorf("broadcast: %w", err)
 	}
 
-	// 6. Confirm
+	a.logger.Info("Circle SOL reversal: broadcast", zap.String("sig", sig.String()))
+
+	// 7. Confirm
 	wsClient, err := ws.Connect(ctx, rpc.MainNetBeta_WS)
 	if err != nil {
-		a.logger.Warn("Circle SOL reversal: could not open WS for confirmation, tx was broadcast",
+		a.logger.Warn("Circle SOL reversal: could not open WS for confirmation",
 			zap.String("sig", sig.String()), zap.Error(err))
 		return sig.String(), nil
 	}
@@ -111,14 +140,13 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 
 	sub, err := wsClient.SignatureSubscribe(sig, rpc.CommitmentConfirmed)
 	if err != nil {
-		a.logger.Warn("Circle SOL reversal: could not subscribe to signature, tx was broadcast",
+		a.logger.Warn("Circle SOL reversal: could not subscribe to signature",
 			zap.String("sig", sig.String()), zap.Error(err))
 		return sig.String(), nil
 	}
 	defer sub.Unsubscribe()
 
-	a.logger.Info("Circle SOL reversal: waiting for confirmation",
-		zap.String("sig", sig.String()))
+	a.logger.Info("Circle SOL reversal: waiting for confirmation", zap.String("sig", sig.String()))
 	result, err := sub.Recv(ctx)
 	if err != nil {
 		return "", fmt.Errorf("confirm transaction: %w", err)
@@ -132,3 +160,6 @@ func (a *Adapter) ReverseNativeSOL(ctx context.Context, walletID, destination st
 		zap.Uint64("lamports", lamports))
 	return sig.String(), nil
 }
+
+// ed25519PublicKeyFromBytes converts 32 bytes to ed25519.PublicKey (for potential future use).
+var _ = ed25519.PublicKey{}

@@ -1181,6 +1181,71 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 	return nil
 }
 
+// CreatePendingEmergencyTransfer is the pending-twin of EmergencyTransferStashToSpending.
+// It inserts the same double-entry rows but leaves account balances untouched until
+// CommitPendingTransaction is called after the Blend redemption completes.
+func (s *Service) CreatePendingEmergencyTransfer(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error {
+	if amount.IsNegative() {
+		return fmt.Errorf("invalid transfer amount: %s", amount.String())
+	}
+	if fee.IsNegative() {
+		return fmt.Errorf("fee cannot be negative")
+	}
+	if amount.IsZero() && !fee.IsPositive() {
+		return fmt.Errorf("transfer amount or fee must be positive")
+	}
+
+	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		return fmt.Errorf("get stash account: %w", err)
+	}
+	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return fmt.Errorf("get spending account: %w", err)
+	}
+	var revenueAccount *entities.LedgerAccount
+	if fee.IsPositive() {
+		revenueAccount, err = s.GetSystemAccount(ctx, entities.AccountTypeEmergencyWithdrawalRevenue)
+		if err != nil {
+			return fmt.Errorf("get emergency revenue account: %w", err)
+		}
+	}
+
+	total := amount.Add(fee)
+	desc := fmt.Sprintf("Emergency stash withdrawal (pending): %s (fee: %s)", amount.String(), fee.String())
+	refType := "emergency_stash_transfer"
+	entries := []entities.CreateEntryRequest{
+		{AccountID: stashAccount.ID, EntryType: entities.EntryTypeCredit, Amount: total, Currency: "USD"},
+	}
+	if amount.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID: spendAccount.ID,
+			EntryType: entities.EntryTypeDebit,
+			Amount:    amount,
+			Currency:  "USD",
+		})
+	}
+	if fee.IsPositive() {
+		entries = append(entries, entities.CreateEntryRequest{
+			AccountID: revenueAccount.ID,
+			EntryType: entities.EntryTypeDebit,
+			Amount:    fee,
+			Currency:  "USD",
+		})
+	}
+
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   &refType,
+		IdempotencyKey:  idempotencyKey,
+		Description:     &desc,
+		Entries:         entries,
+	}
+
+	return s.CreatePendingTransaction(ctx, req)
+}
+
 // ChargeLimitIncreaseFee debits a flat fee from the user's spending_balance and
 // credits it to the limit-increase revenue account. Used when a user raises
 // their self-imposed daily spending commitment. Idempotent by key.

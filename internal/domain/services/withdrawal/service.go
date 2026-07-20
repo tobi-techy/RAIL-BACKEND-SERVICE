@@ -156,6 +156,7 @@ type StashLockChecker interface {
 // EmergencyLedger is the subset of ledger operations needed for emergency withdrawals.
 type EmergencyLedger interface {
 	EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error
+	CreatePendingEmergencyTransfer(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error
 }
 
 // StashYieldRedeemer redeems a user's yield position back to USDC before stash funds exit.
@@ -478,15 +479,15 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		blendReserved = reserved
 	}
 
-	if err := s.emergencyLedger.EmergencyTransferStashToSpending(ctx, userID, amount, fee, idempotencyKey); err != nil {
+	// Create a PENDING ledger transfer — balances are NOT updated yet. The debit
+	// is committed only after the Blend redemption succeeds (see async goroutine below).
+	pendingKey := "emergency-stash-pending-" + idempotencyKey
+	if err := s.emergencyLedger.CreatePendingEmergencyTransfer(ctx, userID, amount, fee, pendingKey); err != nil {
 		if blendReserved {
 			if reserver, ok := s.stashYieldRedeemer.(RedemptionReserver); ok {
-				// Detach from the request context: the abandon must run even if the
-				// client disconnected and cancelled ctx, or the reservation would be
-				// left claimable with no ledger move behind it.
 				abandonCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-				if aerr := reserver.AbandonRedemption(abandonCtx, redeemKey, "emergency ledger transfer failed: "+err.Error()); aerr != nil {
-					s.logger.Error("failed to abandon Blend redemption after emergency ledger failure",
+				if aerr := reserver.AbandonRedemption(abandonCtx, redeemKey, "emergency ledger pending failed: "+err.Error()); aerr != nil {
+					s.logger.Error("failed to abandon Blend redemption after emergency pending ledger failure",
 						zap.String("user_id", userID.String()), zap.Error(aerr))
 				}
 				cancel()
@@ -498,7 +499,6 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		s.logger.Error("failed to mark cycles as emergency withdrawn", zap.String("user_id", userID.String()), zap.Error(err))
 	}
 
-	// Record the transfer so it appears in the user's transaction history.
 	transferID := uuid.New()
 	if s.stashTransferRepo != nil {
 		now := time.Now()
@@ -511,26 +511,38 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 			CreatedAt:   now,
 			CompletedAt: &now,
 		}); err != nil {
-			s.logger.Error("failed to record emergency stash transfer (funds moved)",
+			s.logger.Error("failed to record emergency stash transfer",
 				zap.String("user_id", userID.String()), zap.Error(err))
 		}
 	}
 
-	// Reconcile on-chain custody with the ledger: the stash just dropped by `total`, so redeem
-	// that from Blend back into spendable custody. Non-blocking — the user already has their
-	// spending balance and the funds stay on-platform; the Blend reconciliation worker resumes
-	// the reserved redemption if this attempt fails. (The crypto-withdrawal path redeems
-	// synchronously because funds leave the platform there; here they don't.)
+	// Async: Blend redemption + commit pending ledger. Balances only move after
+	// Blend custody is reconciled, preventing a stash debit without backing funds.
 	if s.stashYieldRedeemer != nil && blendReserved {
 		total := total
 		go func() {
 			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			defer cancel()
 			if err := s.stashYieldRedeemer.RedeemStashYield(rctx, userID, total, redeemKey); err != nil {
-				s.logger.Error("emergency stash-to-spending: async Blend redemption incomplete (reserved; worker will resume)",
+				s.logger.Error("emergency stash-to-spending: Blend redemption failed — failing pending ledger",
 					zap.String("user_id", userID.String()), zap.String("amount", total.String()), zap.Error(err))
+				if failErr := s.ledgerService.FailPendingTransaction(rctx, pendingKey); failErr != nil {
+					s.logger.Error("emergency stash-to-spending: failed to mark pending ledger failed",
+						zap.String("user_id", userID.String()), zap.Error(failErr))
+				}
+				return
+			}
+			if commitErr := s.ledgerService.CommitPendingTransaction(rctx, pendingKey); commitErr != nil {
+				s.logger.Error("emergency stash-to-spending: failed to commit pending ledger after Blend redemption",
+					zap.String("user_id", userID.String()), zap.Error(commitErr))
 			}
 		}()
+	} else {
+		// No Blend reservation — commit the pending ledger immediately.
+		if err := s.ledgerService.CommitPendingTransaction(ctx, pendingKey); err != nil {
+			s.logger.Error("emergency stash-to-spending: failed to commit pending ledger immediately",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
 	}
 	if s.notificationService != nil {
 		_ = s.notificationService.NotifyEmergencyWithdrawal(ctx, userID, amount, fee)
