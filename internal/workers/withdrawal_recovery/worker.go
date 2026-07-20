@@ -316,7 +316,7 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) error {
 		LIMIT 10`)
 	if err != nil {
 		w.logger.Error("withdrawal recovery: chainrails expired query failed", zap.Error(err))
-		return nil
+		return fmt.Errorf("query chainrails expired withdrawals: %w", err)
 	}
 	defer rows.Close()
 
