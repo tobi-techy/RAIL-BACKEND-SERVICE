@@ -621,11 +621,8 @@ type RampHubConfig struct {
 type GraphConfig struct {
 	APIKey              string  `mapstructure:"api_key"`
 	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.useoval.com
-	Environment         string  `mapstructure:"environment"`           // "sandbox" or "production"
 	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound webhooks
 	WebhookPath         string  `mapstructure:"webhook_path"`          // webhook route mount point; defaults to "/graph"
-	MasterWalletID      string  `mapstructure:"master_wallet_id"`      // Rail's Graph NGN master wallet (autosweep destination)
-	CircleDepositAddr   string  `mapstructure:"circle_deposit_addr"`   // Rail Circle USDC custody address for NGN→USDC payout
 	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's business fee % applied to NGN deposits (e.g. 0.5)
 	Enabled             bool    `mapstructure:"enabled"`               // master switch; when false the provider is not wired
 }
@@ -1631,11 +1628,8 @@ func overrideFromEnv() {
 		{"ramphub.sandbox", "RAMPHUB_SANDBOX"},
 		{"graph.api_key", "GRAPH_API_KEY"},
 		{"graph.base_url", "GRAPH_BASE_URL"},
-		{"graph.environment", "GRAPH_ENVIRONMENT"},
 		{"graph.webhook_secret", "GRAPH_WEBHOOK_SECRET"},
 		{"graph.webhook_path", "GRAPH_WEBHOOK_PATH"},
-		{"graph.master_wallet_id", "GRAPH_MASTER_WALLET_ID"},
-		{"graph.circle_deposit_addr", "GRAPH_CIRCLE_DEPOSIT_ADDR"},
 		{"graph.developer_fee_percent", "GRAPH_DEVELOPER_FEE_PERCENT"},
 		{"graph.enabled", "GRAPH_ENABLED"},
 		{"airbills.secret_key", "AIRBILLS_SECRET_KEY"},

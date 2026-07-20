@@ -544,31 +544,80 @@ func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAm
 		feeMultiplier = decimal.Zero
 	}
 
-	if conv, err := s.graphClient.CreateConversion(ctx, &graph.CreateConversionRequest{
-		Source:    "NGN",
-		Target:    "USDC",
-		Amount:    ngnAmount.String(),
-		Reference: reference,
-	}); err == nil && conv != nil {
+	// Primary path: Graph conversion API (NGN → USD). Amount must be in kobo
+	// (minor units) — consistent with how Graph sends amounts in webhooks.
+	amountKobo := int(ngnAmount.Mul(decimal.NewFromInt(100)).IntPart())
+	conv, convErr := s.graphClient.CreateConversion(ctx, &graph.CreateConversionRequest{
+		CurrencySource:      "NGN",
+		CurrencyDestination: "USD",
+		AmountSource:        amountKobo,
+		Reference:           reference,
+	})
+	if convErr == nil && conv != nil {
 		if target, perr := decimal.NewFromString(conv.TargetAmount); perr == nil && target.GreaterThan(decimal.Zero) {
-			return target.Mul(feeMultiplier).Round(2), nil
+			result := target.Mul(feeMultiplier).Round(2)
+			return result, nil
+		}
+	}
+	// Log primary path failure so production conversion issues are debuggable.
+	if convErr != nil {
+		s.logger.Warnw("Graph conversion API failed, falling back to rate lookup",
+			"error", convErr, "ngn_amount", ngnAmount.String(), "reference", reference)
+	}
+
+	// Fallback 1: live rate from CurrencyRateProvider (e.g. external FX feed).
+	if s.currencyRates != nil {
+		if rate, err := s.currencyRates.GetLatestRate(ctx, "USD", "NGN"); err == nil && rate.GreaterThan(decimal.Zero) {
+			result := ngnAmount.Div(rate).Mul(feeMultiplier).Round(2)
+			s.logger.Infow("NGN→USD conversion used CurrencyRateProvider fallback",
+				"rate", rate.String(), "result_usd", result.String(), "reference", reference)
+			return result, nil
 		}
 	}
 
-	// Fallback: price via live rate. GetLatestRate(USD,NGN) is NGN-per-USD.
-	if s.currencyRates != nil {
-		if rate, err := s.currencyRates.GetLatestRate(ctx, "USD", "NGN"); err == nil && rate.GreaterThan(decimal.Zero) {
-			return ngnAmount.Div(rate).Mul(feeMultiplier).Round(2), nil
-		}
-	}
+	// Fallback 2: Graph FetchRate endpoint.
 	if rate, err := s.graphClient.FetchRate(ctx, "NGN", "USDC"); err == nil && rate != nil && rate.Rate > 0 {
-		return ngnAmount.Mul(decimal.NewFromFloat(rate.Rate)).Mul(feeMultiplier).Round(2), nil
+		result := ngnAmount.Mul(decimal.NewFromFloat(rate.Rate)).Mul(feeMultiplier).Round(2)
+		s.logger.Infow("NGN→USD conversion used Graph FetchRate fallback",
+			"rate", rate.Rate, "result_usd", result.String(), "reference", reference)
+		return result, nil
 	}
-	return decimal.Zero, fmt.Errorf("no NGN→USDC rate available")
+
+	return decimal.Zero, fmt.Errorf("no NGN→USD rate available (all conversion paths exhausted)")
 }
 
 // HandleAccountActivated flips a pending NGN virtual account to active and fills
-// in the bank details Graph delivers asynchronously via issuance webhook.
+// HandleAccountActivatedWithData updates the virtual account with bank details
+// from the webhook payload directly — no extra API call needed.
+func (s *GraphVirtualAccountService) HandleAccountActivatedWithData(ctx context.Context, graphAccountID string, acct *graph.BankAccount) error {
+	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
+	if err != nil {
+		return fmt.Errorf("get virtual account: %w", err)
+	}
+	if va == nil {
+		return fmt.Errorf("virtual account not found: %s", graphAccountID)
+	}
+
+	va.AccountNumber = acct.AccountNumber
+	va.RoutingNumber = acct.RoutingNumber
+	va.BankCode = acct.BankCode
+	va.BankName = acct.BankName
+	if acct.AccountName != "" {
+		va.BeneficiaryName = acct.AccountName
+	}
+	va.Status = mapGraphAccountStatus(acct.Status)
+	va.UpdatedAt = time.Now()
+
+	if err := s.virtualAccountRepo.Update(ctx, va); err != nil {
+		return fmt.Errorf("update virtual account: %w", err)
+	}
+	s.logger.Info("Graph NGN account activated", "graph_account_id", graphAccountID, "status", string(va.Status))
+	return nil
+}
+
+// HandleAccountActivated fetches bank details from Graph and updates the virtual
+// account in the bank details Graph delivers asynchronously via issuance webhook.
+// Prefer HandleAccountActivatedWithData when webhook data is already available.
 func (s *GraphVirtualAccountService) HandleAccountActivated(ctx context.Context, graphAccountID string) error {
 	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
 	if err != nil {
@@ -686,8 +735,8 @@ func normalizePhone(phone string) string {
 
 func normalizeIDType(idType string) string {
 	switch strings.ToLower(strings.TrimSpace(idType)) {
-	case "nin", "national_id":
-		return "national_id"
+	case "nin", "national_id", "national id":
+		return "nin"
 	case "voters_card", "voter_card", "voters":
 		return "voters_card"
 	case "drivers_license", "drivers_licence", "driver_license":

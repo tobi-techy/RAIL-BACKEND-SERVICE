@@ -23,7 +23,6 @@ ramphub:
 graph:
   enabled: false
   base_url: "https://api.useoval.com"
-  environment: "sandbox"
   webhook_path: "/graph"
   developer_fee_percent: 0.5
 

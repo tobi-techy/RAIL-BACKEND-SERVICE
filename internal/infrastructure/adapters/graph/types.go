@@ -39,7 +39,7 @@ type BackgroundInformation struct {
 
 // Document is a single document upload attached to a Create Person request.
 type Document struct {
-	Type       string `json:"type"` // passport, national_id, drivers_licence, voters_card, bank_statement, utility_bill, ...
+	Type       string `json:"type"` // passport, nin, drivers_licence, voters_card, bank_statement, utility_bill, ...
 	URL        string `json:"url"`
 	IssueDate  string `json:"issue_date,omitempty"`  // YYYY-MM-DD
 	ExpiryDate string `json:"expiry_date,omitempty"` // YYYY-MM-DD
@@ -56,10 +56,10 @@ type CreatePersonRequest struct {
 	Email     string `json:"email"`
 	DOB       string `json:"dob"` // YYYY-MM-DD
 
-	IDType    string `json:"id_type,omitempty"` // passport, drivers_license, national_id, voters_card
+	IDType    string `json:"id_type,omitempty"` // passport, drivers_license, nin, voters_card (Graph uses "nin" not "national_id")
 	IDNumber  string `json:"id_number,omitempty"`
 	IDCountry string `json:"id_country"`         // ISO Alpha-2, e.g. "NG"
-	IDLevel   string `json:"id_level,omitempty"` // primary (passport) | secondary (local IDs)
+	IDLevel   string `json:"id_level,omitempty"` // primary (passport) | secondary (local IDs like NIN, voter's card)
 
 	BankIDNumber string `json:"bank_id_number,omitempty"` // BVN for Nigerian ID holders
 	KYCLevel     string `json:"kyc_level,omitempty"`      // preliminary | basic
@@ -143,26 +143,36 @@ type CreateBankAccountRequest struct {
 	Whitelist        *WhitelistAccount `json:"whitelist,omitempty"`
 }
 
+// BankAddress is the nested address object on a bank account response.
+type BankAddress struct {
+	City       string `json:"city"`
+	Country    string `json:"country"`
+	Line1      string `json:"line1"`
+	Line2      string `json:"line2,omitempty"`
+	PostalCode string `json:"postal_code"`
+	State      string `json:"state"`
+}
+
 // BankAccount is the Graph bank account record. For NGN accounts the
 // account_number / account_name / bank details are populated asynchronously
 // (status pending → active), delivered via issuance webhook.
 type BankAccount struct {
-	ID            string  `json:"id"`
-	HolderID      string  `json:"holder_id"`
-	HolderType    string  `json:"holder_type"`
-	Label         string  `json:"label"`
-	AccountName   string  `json:"account_name"`
-	AccountNumber string  `json:"account_number"`
-	RoutingNumber string  `json:"routing_number"`
-	BankName      string  `json:"bank_name"`
-	BankCode      string  `json:"bank_code"`
-	BankAddress   string  `json:"bank_address"`
-	Currency      string  `json:"currency"`
-	Balance       float64 `json:"balance"`
-	Type          string  `json:"type"`
-	Status        string  `json:"status"` // pending, active, ...
-	CreatedAt     string  `json:"created_at"`
-	UpdatedAt     string  `json:"updated_at"`
+	ID            string       `json:"id"`
+	HolderID      string       `json:"holder_id"`
+	HolderType    string       `json:"holder_type"`
+	Label         string       `json:"label"`
+	AccountName   string       `json:"account_name"`
+	AccountNumber string       `json:"account_number"`
+	RoutingNumber string       `json:"routing_number"`
+	BankName      string       `json:"bank_name"`
+	BankCode      string       `json:"bank_code"`
+	BankAddress   *BankAddress `json:"bank_address,omitempty"`
+	Currency      string       `json:"currency"`
+	Balance       float64      `json:"balance"`
+	Type          string       `json:"type"`
+	Status        string       `json:"status"` // pending, active, ...
+	CreatedAt     string       `json:"created_at"`
+	UpdatedAt     string       `json:"updated_at"`
 }
 
 // ListBankAccountsResponse wraps a list of bank accounts.
@@ -181,12 +191,13 @@ type Rate struct {
 
 // CreateConversionRequest converts a balance from one currency to another
 // (e.g. NGN in the master wallet → USDC stablecoin).
+// Graph API fields: currency_source, currency_destination, amount_source (int32).
 type CreateConversionRequest struct {
-	Source       string `json:"source"`                 // e.g. "NGN"
-	Target       string `json:"target"`                 // e.g. "USDC"
-	Amount       string `json:"amount"`                 // decimal string in source currency
-	SourceWallet string `json:"source_wallet,omitempty"`
-	Reference    string `json:"reference,omitempty"` // idempotency reference
+	CurrencySource      string `json:"currency_source"`                // "NGN" or "USD"
+	CurrencyDestination string `json:"currency_destination"`           // "USD" or "NGN"
+	AmountSource        int    `json:"amount_source"`                  // amount in minor units (kobo/cents)
+	SourceWallet        string `json:"source_wallet,omitempty"`        // source wallet account ID
+	Reference           string `json:"reference,omitempty"`            // idempotency reference
 }
 
 // Conversion is the result of a currency conversion.
