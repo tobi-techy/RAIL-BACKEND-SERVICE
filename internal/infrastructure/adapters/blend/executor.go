@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
@@ -301,7 +302,69 @@ func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, pl
 	}
 	e.logger.Info("Blend executor Safe multisend result",
 		zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash), zap.String("state", string(tx.State)))
+
+	// Circle contract executions are async: the initial response may have an empty
+	// txHash while the transaction is INITIATED/QUEUED. Blend needs a real txHash
+	// to track on-chain settlement. Poll GetTransaction until the hash appears or
+	// the transaction fails. Without this, Blend receives an empty hash, can't match
+	// the on-chain tx, and the session expires with "signing inactivity".
+	if tx.TxHash == "" && tx.ID != "" {
+		tx, err = e.pollForTxHash(ctx, tx.ID, trustedSafe.ChainID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return []ExecutedTx{{ChainID: trustedSafe.ChainID, TxHash: tx.TxHash, TransactionID: tx.ID}}, nil
+}
+
+// pollForTxHash polls Circle's GetTransaction until the txHash is populated or the
+// transaction reaches a terminal state. Timeout is 2 minutes — Circle Base txs
+// typically confirm in <30s but under load can take longer.
+func (e *PlanExecutor) pollForTxHash(ctx context.Context, txID string, chainID int64) (*circlepkg.Transaction, error) {
+	const (
+		pollInterval = 3 * time.Second
+		maxPolls     = 40 // 40 × 3s = 2 minutes
+	)
+	for i := 0; i < maxPolls; i++ {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("blend: poll tx hash cancelled: %w", ctx.Err())
+		default:
+		}
+
+		tx, err := e.circle.GetTransaction(ctx, txID)
+		if err != nil {
+			e.logger.Warn("Blend: poll GetTransaction failed, retrying",
+				zap.String("tx_id", txID), zap.Error(err))
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		if tx.TxHash != "" {
+			e.logger.Info("Blend: resolved tx hash from Circle",
+				zap.String("tx_id", txID), zap.String("tx_hash", tx.TxHash),
+				zap.String("state", string(tx.State)))
+			return tx, nil
+		}
+
+		switch tx.State {
+		case circlepkg.TransactionStateFailed, circlepkg.TransactionStateCancelled, circlepkg.TransactionStateDenied:
+			return nil, fmt.Errorf("blend: circle tx %s ended in %s (error: %s)", txID, tx.State, tx.ErrorReason)
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	// Return the last known state even without a hash — the caller can still
+	// use the txID for downstream resolution or the worker will retry.
+	e.logger.Warn("Blend: pollForTxHash timed out without resolving hash",
+		zap.String("tx_id", txID), zap.Int("polls", maxPolls))
+	tx, _ := e.circle.GetTransaction(ctx, txID)
+	if tx == nil {
+		return nil, fmt.Errorf("blend: tx %s timed out and GetTransaction failed", txID)
+	}
+	return tx, nil
 }
 
 // multisendDigest is a stable digest of all steps, so retries of the same withdraw batch
