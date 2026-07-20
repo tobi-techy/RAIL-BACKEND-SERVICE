@@ -1124,16 +1124,34 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
-	if err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req); err != nil {
-		// ErrRedemptionRetrying means the Blend session failed but the redemption
-		// was reset for worker retry. The withdrawal must stay in 'processing' so
-		// the worker can resume it — NOT marked as failed, which would let the user
-		// create a duplicate withdrawal while the old redemption is still in-flight.
-		if errors.Is(err, blendpkg.ErrRedemptionRetrying) {
-			s.logger.Warn("async: Blend redemption retrying — leaving withdrawal in processing",
-				"error", err, "withdrawal_id", withdrawal.ID.String())
-			return
+	// Retry loop for yield redemption: when Blend sessions fail/cancel the worker
+	// resets the redemption for retry, but the async goroutine must survive to
+	// resume the withdrawal once the redemption succeeds. Without this loop the
+	// goroutine would exit on ErrRedemptionRetrying, leaving the withdrawal stuck
+	// in 'processing' with nobody to drive it to completion.
+	const maxRedemptionRetries = 15
+	for i := 0; i < maxRedemptionRetries; i++ {
+		err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req)
+		if err == nil {
+			break // yield redeemed, proceed to crypto transfer
 		}
+		if errors.Is(err, blendpkg.ErrRedemptionRetrying) {
+			s.logger.Warn("async: Blend redemption retrying — waiting before retry",
+				"attempt", i+1, "error", err, "withdrawal_id", withdrawal.ID.String())
+			// Back off 30s between retries, respecting the parent deadline.
+			select {
+			case <-ctx.Done():
+				s.logger.Error("async: redemption retry loop timed out", "withdrawal_id", withdrawal.ID.String())
+				if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+					s.logger.Error("async: failed to mark pending ledger as failed", "error", failErr, "withdrawal_id", withdrawal.ID.String())
+				}
+				_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "yield redemption timed out after retries")
+				return
+			case <-time.After(30 * time.Second):
+			}
+			continue
+		}
+		// Non-retrying error — the redemption is dead, fail the withdrawal.
 		s.logger.Error("async: stash yield redemption failed — marking pending ledger failed",
 			"error", err, "withdrawal_id", withdrawal.ID.String())
 		if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {

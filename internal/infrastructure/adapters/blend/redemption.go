@@ -101,7 +101,7 @@ func (r *DepositRouter) RedeemStashYield(ctx context.Context, userID uuid.UUID, 
 			zap.String("amount", amount.StringFixed(6)),
 			zap.Error(err))
 		r.deferRedemption(ctx, existing.ID, err.Error(), 2*time.Minute)
-		return err
+		return fmt.Errorf("%w: insufficient position: %v", ErrRedemptionRetrying, err)
 	}
 
 	timeout := r.getRedeemTimeout()
@@ -184,7 +184,7 @@ func (r *DepositRouter) RedeemStashYieldForTransfer(ctx context.Context, userID 
 			zap.String("amount", amount.StringFixed(6)),
 			zap.Error(err))
 		r.deferRedemption(ctx, existing.ID, err.Error(), 2*time.Minute)
-		return err
+		return fmt.Errorf("%w: insufficient position: %v", ErrRedemptionRetrying, err)
 	}
 
 	timeout := r.getRedeemTimeout()
@@ -267,7 +267,7 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 	if red.Status == redemptionStatusPending {
 		quote, err := r.blend.QuoteWithdraw(ctx, acct.BlendAccountID, intentID, r.chainID, micro, false)
 		if err != nil {
-			return fmt.Errorf("blend: quote withdraw: %w", err)
+			return fmt.Errorf("%w: quote withdraw: %v", ErrRedemptionRetrying, err)
 		}
 		if _, err := r.db.ExecContext(ctx, `
 			UPDATE blend_yield_redemptions
@@ -325,24 +325,19 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, externalRef string) (*Session, error) {
 	session, err := r.blend.GetOrCreateSession(ctx, accountID, externalRef, false)
 	if err != nil {
-		return nil, fmt.Errorf("blend: get/create withdraw session: %w", err)
+		return nil, fmt.Errorf("%w: get/create withdraw session: %v", ErrRedemptionRetrying, err)
 	}
 	// If a deposit is occupying the session slot in a non-terminal state, we must
 	// not hijack it. Surface a retryable error; the deposit settles in ~1 min.
 	if session.Type == IntentTypeDeposit && isNonTerminalIntent(session.Status) {
-		return nil, &APIError{
-			Status:  409,
-			Message: "FLOWPLAN_CONFLICT: a deposit session is in progress; retry withdrawal shortly",
-			Method:  "POST",
-			Path:    "/intent/session",
-		}
+		return nil, fmt.Errorf("%w: a deposit session is in progress; retry withdrawal shortly", ErrRedemptionRetrying)
 	}
 	// If the existing session is already a withdraw but in a terminal failed/cancelled
 	// state, reset it to get a fresh OPEN session.
 	if isTerminalIntent(session.Status) {
 		session, err = r.blend.GetOrCreateSession(ctx, accountID, externalRef, true)
 		if err != nil {
-			return nil, fmt.Errorf("blend: reset withdraw session: %w", err)
+			return nil, fmt.Errorf("%w: reset withdraw session: %v", ErrRedemptionRetrying, err)
 		}
 		// Verify the reset actually produced a non-terminal session. If Blend
 		// returns the same CANCELLED session (e.g. forceReset is ignored for
@@ -364,7 +359,7 @@ func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, e
 			zap.String("account_id", accountID))
 		session, err = r.blend.GetOrCreateSession(ctx, accountID, externalRef, true)
 		if err != nil {
-			return nil, fmt.Errorf("blend: reset stale withdraw session: %w", err)
+			return nil, fmt.Errorf("%w: reset stale withdraw session: %v", ErrRedemptionRetrying, err)
 		}
 		if isTerminalIntent(session.Status) {
 			return nil, fmt.Errorf("blend: force-reset returned terminal session %s (%s); cannot proceed", session.IntentID, session.Status)
@@ -388,12 +383,12 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 	// Tolerate re-entry: only lock when the session is still OPEN.
 	current, err := r.blend.GetSession(ctx, acct.BlendAccountID, intentID)
 	if err != nil {
-		return fmt.Errorf("blend: get withdraw session before lock: %w", err)
+		return fmt.Errorf("%w: get withdraw session before lock: %v", ErrRedemptionRetrying, err)
 	}
 	switch current.Status {
 	case IntentStatusOpen:
 		if _, err := r.blend.LockSession(ctx, acct.BlendAccountID, intentID, acct.EOAAddress); err != nil {
-			return fmt.Errorf("blend: lock withdraw session: %w", err)
+			return fmt.Errorf("%w: lock withdraw session: %v", ErrRedemptionRetrying, err)
 		}
 	case IntentStatusLocked, IntentStatusSubmitted, IntentStatusSettled:
 		// Already progressed by a prior attempt — continue.
@@ -413,7 +408,7 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 			r.logger.Error("Blend: failed to reset redemption after CANCELLED session",
 				zap.String("redemption_id", red.ID.String()), zap.Error(rerr))
 		}
-		return fmt.Errorf("blend: withdraw session %s is %s; reset to retry", intentID, current.Status)
+		return fmt.Errorf("%w: withdraw session %s is %s; reset to retry", ErrRedemptionRetrying, intentID, current.Status)
 	}
 
 	if _, err := r.db.ExecContext(ctx, `
@@ -444,7 +439,7 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 	executed, err := r.executor.Execute(ctx, acct.CircleWalletID, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
 		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: acct.EOAAddress, ChainID: acct.ChainID})
 	if err != nil {
-		return fmt.Errorf("blend: execute withdraw plan: %w", err)
+		return fmt.Errorf("%w: execute withdraw plan: %v", ErrRedemptionRetrying, err)
 	}
 
 	hashes := make([]TxHashRef, 0, len(executed))
@@ -476,7 +471,7 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 
 	session, err := r.blend.SubmitTxHashes(ctx, acct.BlendAccountID, intentID, hashes)
 	if err != nil {
-		return fmt.Errorf("blend: submit withdraw tx hashes: %w", err)
+		return fmt.Errorf("%w: submit withdraw tx hashes: %v", ErrRedemptionRetrying, err)
 	}
 	primaryHash := ""
 	if len(hashes) > 0 {
@@ -564,10 +559,11 @@ func (r *DepositRouter) awaitWithdrawSettlement(ctx context.Context, acct *blend
 
 		select {
 		case <-ctx.Done():
-			// Timed out waiting for settlement. Leave the redemption in its current
-			// state so a later retry (same idempotency key) can resume polling, and
-			// return an error so the withdrawal does NOT spend unsettled funds.
-			return fmt.Errorf("blend: withdraw for redemption %s did not settle within timeout; funds remain in Safe: %w", red.ID, ctx.Err())
+			// Timed out waiting for settlement. The redemption stays in its current
+			// state (executing/submitted) so a later retry can resume polling.
+			// Return ErrRedemptionRetrying so the withdrawal stays in 'processing'
+			// — the redemption worker will reset it via detectStuckRedemptions.
+			return fmt.Errorf("%w: withdraw for redemption %s did not settle within timeout; funds remain in Safe: %v", ErrRedemptionRetrying, red.ID, ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -664,8 +660,8 @@ func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserA
 		}
 		required := agg.Baseline.Add(agg.Claimed)
 		if have.LessThan(required) {
-			return fmt.Errorf("blend: redemption %s: EOA %s balance %s < required %s (baseline %s + in-flight claims %s); not finalizing",
-				red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6), agg.Baseline.StringFixed(6), agg.Claimed.StringFixed(6))
+			return fmt.Errorf("%w: redemption %s: EOA %s balance %s < required %s (baseline %s + in-flight claims %s); not finalizing",
+				ErrRedemptionRetrying, red.ID, acct.CircleWalletID, have.StringFixed(6), required.StringFixed(6), agg.Baseline.StringFixed(6), agg.Claimed.StringFixed(6))
 		}
 	}
 
