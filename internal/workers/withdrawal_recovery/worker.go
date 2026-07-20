@@ -16,6 +16,14 @@ type LedgerReverser interface {
 	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
 }
 
+// LedgerStatusChecker resolves the status of a ledger transaction by its
+// idempotency key. Used by the recovery worker to avoid reversing when the
+// ledger is still pending (no balance impact) vs already committed (needs
+// compensating entries).
+type LedgerStatusChecker interface {
+	GetLedgerTransactionStatus(ctx context.Context, idempotencyKey string) (entities.TransactionStatus, error)
+}
+
 // WithdrawalSyncer polls the upstream provider (Circle/Bridge) for a single
 // stuck withdrawal and finalizes it (settle on success, reverse on failure).
 // Optional — when nil, the worker only handles pre-transfer stuck cases.
@@ -30,6 +38,7 @@ type WithdrawalSyncer interface {
 type Worker struct {
 	db                  *sql.DB
 	ledger              LedgerReverser
+	ledgerStatus        LedgerStatusChecker
 	syncer              WithdrawalSyncer
 	logger              *zap.Logger
 	checkInterval       time.Duration
@@ -57,6 +66,11 @@ func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
 // withdrawals stuck in processing after the provider transfer was initiated
 // can only be finalized via webhook or user-triggered GetWithdrawal reads.
 func (w *Worker) SetWithdrawalSyncer(s WithdrawalSyncer) { w.syncer = s }
+
+// SetLedgerStatusChecker wires the ledger status checker so the recovery
+// worker can distinguish pending (no balance impact) from committed (needs
+// reversal) ledger entries before reversing.
+func (w *Worker) SetLedgerStatusChecker(c LedgerStatusChecker) { w.ledgerStatus = c }
 
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("Starting withdrawal recovery worker",
@@ -203,6 +217,45 @@ func (w *Worker) recoverStuckWithdrawal(ctx context.Context, withdrawalID, userI
 		return fmt.Errorf("ledger reverser not configured")
 	}
 
+	// Check ledger status before reversing. If the ledger entry is still
+	// pending (balances never touched), just mark it failed — no reversal
+	// needed. If already completed (balances debited), create compensating
+	// entries. This prevents double-debiting when the goroutine panicked
+	// before the ledger was committed but after the pending entry was created.
+	if w.ledgerStatus != nil {
+		key := withdrawalLedgerIdempotencyKey(withdrawalID)
+		ledgerStatus, err := w.ledgerStatus.GetLedgerTransactionStatus(ctx, key)
+		if err != nil {
+			w.logger.Warn("withdrawal recovery: failed to check ledger status, proceeding with reversal",
+				zap.Error(err), zap.String("withdrawal_id", withdrawalID.String()))
+		} else {
+			switch ledgerStatus {
+			case entities.TransactionStatusPending:
+				// Ledger never committed — balances were never debited.
+				// Mark the pending entry failed (no-op on balances) and
+				// mark the withdrawal failed. No reversal needed.
+				w.logger.Info("withdrawal recovery: ledger still pending — marking failed without reversal",
+					zap.String("withdrawal_id", withdrawalID.String()))
+				_, _ = w.db.ExecContext(ctx, `
+					UPDATE withdrawals
+					SET status = 'failed', error_message = 'auto-failed: stuck processing, ledger pending', updated_at = NOW()
+					WHERE id = $1 AND status = 'processing'`, withdrawalID)
+				return nil
+			case entities.TransactionStatusFailed, entities.TransactionStatusReversed:
+				// Already cleaned up — no-op.
+				w.logger.Info("withdrawal recovery: ledger already settled — skipping",
+					zap.String("withdrawal_id", withdrawalID.String()),
+					zap.String("ledger_status", string(ledgerStatus)))
+				return nil
+			// TransactionStatusCompleted falls through to reversal below
+			default:
+				w.logger.Warn("withdrawal recovery: unknown ledger status — proceeding with reversal",
+					zap.String("withdrawal_id", withdrawalID.String()),
+					zap.String("ledger_status", string(ledgerStatus)))
+			}
+		}
+	}
+
 	accountType := entities.AccountTypeSpendingBalance
 	if sourceAccount == string(entities.WithdrawalSourceStashBalance) {
 		accountType = entities.AccountTypeStashBalance
@@ -232,6 +285,10 @@ func (w *Worker) recoverStuckWithdrawal(ctx context.Context, withdrawalID, userI
 		zap.String("user_id", userID.String()),
 		zap.String("amount", totalAmount.String()))
 	return nil
+}
+
+func withdrawalLedgerIdempotencyKey(withdrawalID uuid.UUID) string {
+	return "withdrawal-ledger-" + withdrawalID.String()
 }
 
 // failChainRailsExpired catches ChainRails crypto withdrawals that have been
@@ -276,6 +333,25 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) {
 
 	for _, s := range items {
 		totalAmount := s.Amount.Add(s.FeeAmount)
+
+		// Check ledger status before reversing — same guard as recoverStuckWithdrawal.
+		if w.ledgerStatus != nil {
+			key := withdrawalLedgerIdempotencyKey(s.ID)
+			ledgerStatus, err := w.ledgerStatus.GetLedgerTransactionStatus(ctx, key)
+			if err != nil {
+				w.logger.Warn("withdrawal recovery: chainrails failed to check ledger status",
+					zap.Error(err), zap.String("withdrawal_id", s.ID.String()))
+			} else if ledgerStatus == entities.TransactionStatusPending || ledgerStatus == entities.TransactionStatusFailed || ledgerStatus == entities.TransactionStatusReversed {
+				w.logger.Info("withdrawal recovery: chainrails ledger not committed — marking failed without reversal",
+					zap.String("withdrawal_id", s.ID.String()), zap.String("ledger_status", string(ledgerStatus)))
+				_, _ = w.db.ExecContext(ctx, `
+					UPDATE withdrawals
+					SET status = 'failed', error_message = 'auto-failed: ChainRails timeout, ledger not committed', updated_at = NOW()
+					WHERE id = $1 AND status IN ('processing', 'onchain_transfer')`, s.ID)
+				continue
+			}
+		}
+
 		accountType := entities.AccountTypeSpendingBalance
 		if s.SourceAccount == string(entities.WithdrawalSourceStashBalance) {
 			accountType = entities.AccountTypeStashBalance
