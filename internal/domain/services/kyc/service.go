@@ -2386,10 +2386,16 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 				zap.String("session_id", req.DiditSessionID))
 		} else if decision != nil && len(decision.IDVerifications) > 0 {
 			diditVerification = &decision.IDVerifications[0]
+			docLast4 := ""
+			if len(diditVerification.DocumentNumber) > 4 {
+				docLast4 = diditVerification.DocumentNumber[len(diditVerification.DocumentNumber)-4:]
+			} else {
+				docLast4 = diditVerification.DocumentNumber
+			}
 			s.logger.Info("Didit verification data extracted",
 				zap.String("user_id", userID.String()),
 				zap.String("document_type", diditVerification.DocumentType),
-				zap.String("document_number", diditVerification.DocumentNumber))
+				zap.String("document_last4", docLast4))
 		}
 	}
 
@@ -2488,9 +2494,15 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 
 	// Step 10: Build response AFTER successful tier promotion
 	caps := entities.CapabilitiesForTier(entities.KYCTierLevelBasic)
+	msg := "Sprout tier activated."
+	if ngnaAccount != nil {
+		msg += " NGN account is ready."
+	} else {
+		msg += " NGN account provisioning pending — you can retry from settings."
+	}
 	response := &entities.SproutUpgradeResponse{
 		Status:   "upgraded",
-		Message:  "Sprout tier activated. NGN account is being provisioned.",
+		Message:  msg,
 		KYCTier:  entities.KYCTierLevelBasic,
 		TierName: "basic",
 		Capabilities: entities.TierCapabilities{

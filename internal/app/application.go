@@ -393,6 +393,7 @@ func (app *Application) initializeWorkers() error {
 	// polls the provider for withdrawals whose webhook never landed.
 	if app.container.DB != nil && app.container.LedgerService != nil {
 		app.withdrawalRecoveryWorker = withdrawal_recovery.NewWorker(app.container.DB, di.NewWithdrawalLedgerAdapter(app.container.LedgerService), app.log.Zap())
+		app.withdrawalRecoveryWorker.SetLedgerStatusChecker(app.container.LedgerService)
 		if app.container.WithdrawalService != nil {
 			app.withdrawalRecoveryWorker.SetWithdrawalSyncer(app.container.WithdrawalService)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -168,6 +169,57 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 		return fmt.Errorf("failed to update virtual account: %w", err)
 	}
 
+	return nil
+}
+
+// UpdateWithVersion updates a virtual account only if the updated_at timestamp
+// matches oldUpdatedAt, preventing lost updates from concurrent modifications.
+func (r *VirtualAccountRepository) UpdateWithVersion(ctx context.Context, account *entities.VirtualAccount, oldUpdatedAt time.Time) error {
+	query := `
+		UPDATE virtual_accounts
+		SET bridge_customer_id = $2,
+			alpaca_account_id = $3,
+			bridge_account_id = $4,
+			graph_person_id = $5,
+			graph_account_id = $6,
+			account_number = $7,
+			routing_number = $8,
+			bank_code = $9,
+			bank_name = $10,
+			beneficiary_name = $11,
+			status = $12,
+			currency = $13,
+			updated_at = $14
+		WHERE id = $1 AND updated_at = $15
+	`
+
+	result, err := r.db.ExecContext(ctx, query,
+		account.ID,
+		account.BridgeCustomerID,
+		account.AlpacaAccountID,
+		account.BridgeAccountID,
+		account.GraphPersonID,
+		account.GraphAccountID,
+		account.AccountNumber,
+		account.RoutingNumber,
+		account.BankCode,
+		account.BankName,
+		account.BeneficiaryName,
+		account.Status,
+		account.Currency,
+		account.UpdatedAt,
+		oldUpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update virtual account: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check update result: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("optimistic lock conflict: virtual account modified by another process")
+	}
 	return nil
 }
 

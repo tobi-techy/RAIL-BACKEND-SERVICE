@@ -293,6 +293,7 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, txID string, userID uuid
 		UPDATE ramphub_orders
 		SET status = 'failed', deposit_id = gen_random_uuid(), last_webhook_status = $2, updated_at = NOW()
 		WHERE ramphub_transaction_id = $1 AND status IN ('pending','processing') AND deposit_id IS NULL
+		  AND COALESCE(last_webhook_status, '') NOT LIKE '%completed%'
 		RETURNING COALESCE(hold_amount, token_amount, 0), fiat_amount`, txID, "auto-failed:"+reasonType).Scan(&claimedHold, &fiatAmount)
 	if err != nil {
 		if err == sql.ErrNoRows {

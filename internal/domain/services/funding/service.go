@@ -200,6 +200,7 @@ type BridgeLiquidationAddr struct {
 type VirtualAccountRepository interface {
 	Create(ctx context.Context, account *entities.VirtualAccount) error
 	Update(ctx context.Context, account *entities.VirtualAccount) error
+	UpdateWithVersion(ctx context.Context, account *entities.VirtualAccount, oldUpdatedAt time.Time) error
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
 	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)

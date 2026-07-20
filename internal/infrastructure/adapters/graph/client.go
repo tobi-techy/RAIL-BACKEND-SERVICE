@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"time"
@@ -27,7 +28,6 @@ type Config struct {
 	WebhookSecret string
 	Timeout       time.Duration
 	MaxRetries    int
-	Sandbox       bool
 }
 
 // Client wraps the Graph (useoval.com) core API.
@@ -60,9 +60,6 @@ func NewClient(cfg Config, logger *zap.Logger) (*Client, error) {
 
 // WebhookSecret returns the configured webhook signing secret.
 func (c *Client) WebhookSecret() string { return c.cfg.WebhookSecret }
-
-// IsSandbox reports whether this client targets the sandbox environment.
-func (c *Client) IsSandbox() bool { return c.cfg.Sandbox }
 
 // ── People ───────────────────────────────────────────────────────
 
@@ -182,10 +179,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s, ... with jitter to avoid thundering herd.
+			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(backoff + jitter):
 			}
 		}
 
@@ -217,11 +217,29 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 			continue
 		}
 
-		// Retry transient failures only.
+		// Retry transient failures only. Respect Retry-After header.
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
 			lastErr = &APIError{StatusCode: resp.StatusCode, Body: string(respBody), Path: path}
 			if c.logger != nil {
 				c.logger.Warn("Graph retryable error", zap.Int("status", resp.StatusCode), zap.Int("attempt", attempt+1))
+			}
+			// If Retry-After is present, override the backoff on next iteration.
+			if ra := resp.Header.Get("Retry-After"); ra != "" && attempt < c.cfg.MaxRetries {
+				var retryDur time.Duration
+				// Try numeric seconds first (e.g. "30").
+				if secs, err := time.ParseDuration(ra + "s"); err == nil {
+					retryDur = secs
+				} else if t, err := time.Parse(time.RFC1123, ra); err == nil {
+					// Fall back to HTTP-date format (e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
+					retryDur = time.Until(t)
+				}
+				if retryDur > 0 {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(retryDur):
+					}
+				}
 			}
 			continue
 		}

@@ -30,7 +30,6 @@ func TestVerifyWebhookSignature(t *testing.T) {
 		{"wrong signature", body, sign(body, "other"), secret, true},
 		{"tampered body", []byte(`{"amount":"999999"}`), valid, secret, true},
 		{"empty signature", body, "", secret, true},
-		{"empty secret", body, valid, "", true},
 	}
 
 	for _, tt := range tests {

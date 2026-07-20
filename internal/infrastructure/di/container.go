@@ -5522,12 +5522,10 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.Config.Graph.WebhookSecret == "" {
 			c.ZapLog.Fatal("SECURITY: Graph webhook_secret is required when Graph is enabled — refusing to start with unauthenticated webhooks")
 		}
-		graphSandbox := !strings.EqualFold(c.Config.Graph.Environment, "production")
 		graphClient, err := graphadapter.NewClient(graphadapter.Config{
 			APIKey:        c.Config.Graph.APIKey,
 			BaseURL:       c.Config.Graph.BaseURL,
 			WebhookSecret: c.Config.Graph.WebhookSecret,
-			Sandbox:       graphSandbox,
 		}, c.ZapLog)
 		if err != nil {
 			c.ZapLog.Fatal("failed to initialize Graph client", zap.Error(err))
@@ -5565,7 +5563,6 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.GraphWebhookHandler = webhooks.NewGraphWebhookHandler(
 			graphVAService,
 			c.Config.Graph.WebhookSecret,
-			graphSandbox,
 			c.ZapLog,
 		)
 		c.ZapLog.Info("Graph NGN virtual accounts initialized")

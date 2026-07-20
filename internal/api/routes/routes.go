@@ -1876,6 +1876,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				circleWebhooks.Use(middleware.CircleIPAllowlist(container.Config.Environment, container.ZapLog))
 				circleWebhooks.POST("", circleWebhookHandler.HandleWebhook)
 			}
+
+			// Graph (useoval.com) webhooks for NGN named virtual account deposits
+			if container.GraphWebhookHandler != nil {
+				graphPath := container.Config.Graph.WebhookPath
+				if graphPath == "" {
+					graphPath = "/graph"
+				}
+				graphWebhooks := webhooks.Group(graphPath)
+				graphWebhooks.Use(middleware.RateLimit(100))
+				graphWebhooks.POST("", container.GraphWebhookHandler.HandleWebhook)
+			}
 		}
 
 		// Register Alpaca investment routes

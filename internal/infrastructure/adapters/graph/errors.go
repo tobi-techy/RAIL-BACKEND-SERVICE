@@ -22,7 +22,8 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return fmt.Sprintf("graph returned %d: %s", e.StatusCode, e.Body)
+	masked := truncate(digitRun.ReplaceAllString(e.Body, "***"))
+	return fmt.Sprintf("graph returned %d: %s", e.StatusCode, masked)
 }
 
 // IsUnauthorized reports whether err wraps a Graph 401/403 response.
