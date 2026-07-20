@@ -236,10 +236,14 @@ func (w *Worker) recoverStuckWithdrawal(ctx context.Context, withdrawalID, userI
 				// mark the withdrawal failed. No reversal needed.
 				w.logger.Info("withdrawal recovery: ledger still pending — marking failed without reversal",
 					zap.String("withdrawal_id", withdrawalID.String()))
-				_, _ = w.db.ExecContext(ctx, `
+				if _, err := w.db.ExecContext(ctx, `
 					UPDATE withdrawals
 					SET status = 'failed', error_message = 'auto-failed: stuck processing, ledger pending', updated_at = NOW()
-					WHERE id = $1 AND status = 'processing'`, withdrawalID)
+					WHERE id = $1 AND status = 'processing'`, withdrawalID); err != nil {
+					w.logger.Error("withdrawal recovery: failed to mark withdrawal failed (ledger pending)",
+						zap.Error(err), zap.String("withdrawal_id", withdrawalID.String()))
+					return fmt.Errorf("mark withdrawal failed (ledger pending): %w", err)
+				}
 				return nil
 			case entities.TransactionStatusFailed, entities.TransactionStatusReversed:
 				// Already cleaned up — no-op.
@@ -344,10 +348,13 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) {
 			} else if ledgerStatus == entities.TransactionStatusPending || ledgerStatus == entities.TransactionStatusFailed || ledgerStatus == entities.TransactionStatusReversed {
 				w.logger.Info("withdrawal recovery: chainrails ledger not committed — marking failed without reversal",
 					zap.String("withdrawal_id", s.ID.String()), zap.String("ledger_status", string(ledgerStatus)))
-				_, _ = w.db.ExecContext(ctx, `
+				if _, err := w.db.ExecContext(ctx, `
 					UPDATE withdrawals
 					SET status = 'failed', error_message = 'auto-failed: ChainRails timeout, ledger not committed', updated_at = NOW()
-					WHERE id = $1 AND status IN ('processing', 'onchain_transfer')`, s.ID)
+					WHERE id = $1 AND status IN ('processing', 'onchain_transfer')`, s.ID); err != nil {
+					w.logger.Error("withdrawal recovery: chainrails failed to mark withdrawal failed",
+						zap.Error(err), zap.String("withdrawal_id", s.ID.String()))
+				}
 				continue
 			}
 		}

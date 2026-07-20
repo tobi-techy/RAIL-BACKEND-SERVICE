@@ -1409,6 +1409,7 @@ func (s *Service) reverseOfframpIfFailed(ctx context.Context, userID uuid.UUID, 
 	claimErr := s.db.QueryRowContext(ctx,
 		`UPDATE ramphub_orders SET deposit_id = gen_random_uuid()
 		 WHERE ramphub_transaction_id = $1 AND order_type = 'offramp' AND deposit_id IS NULL
+		 AND status IN ('pending', 'processing')
 		 RETURNING COALESCE(hold_amount, token_amount)`, txID).Scan(&holdAmount)
 	if claimErr == sql.ErrNoRows {
 		return nil // already claimed by webhook or recovery worker
