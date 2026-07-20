@@ -1472,10 +1472,12 @@ func (s *Service) recoverFailedOfframpCompletion(ctx context.Context, userID uui
 		s.logger.Error("CRITICAL: failed to re-debit offramp hold after failed→completed recovery",
 			zap.Error(err), zap.String("user_id", userID.String()),
 			zap.String("ramphub_tx_id", txID), zap.String("amount", holdAmount.String()))
-		// Restore the claim so the recovery worker can retry.
+		// Restore the claim unconditionally — do NOT depend on status which may
+		// have changed under us. The deposit_id claim + deposit_id IS NULL guard
+		// prevents double-recovery by concurrent callers.
 		if _, uErr := s.db.ExecContext(ctx,
 			`UPDATE ramphub_orders SET deposit_id = gen_random_uuid(), status = 'failed', updated_at = NOW()
-			 WHERE ramphub_transaction_id = $1 AND status = 'completed'`, txID); uErr != nil {
+			 WHERE ramphub_transaction_id = $1 AND deposit_id IS NULL`, txID); uErr != nil {
 			s.logger.Error("CRITICAL: failed to un-recover failed offramp order — manual intervention required",
 				zap.Error(uErr), zap.String("ramphub_tx_id", txID))
 		}
