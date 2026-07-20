@@ -25,6 +25,10 @@ func (f *fakeContractExecutor) GetTransaction(_ context.Context, _ string) (*cir
 	return &circlepkg.Transaction{ID: "tx-1", TxHash: "0xhash"}, nil
 }
 
+func (f *fakeContractExecutor) ListTransactions(_ context.Context, _ string, _ string, _ string) ([]circlepkg.Transaction, error) {
+	return []circlepkg.Transaction{{ID: "tx-1", TxHash: "0xhash"}}, nil
+}
+
 type fakeVerifier struct{ called bool }
 
 func (f *fakeVerifier) VerifySafe(_ context.Context, _ int64, _, _ string) error {

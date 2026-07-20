@@ -455,18 +455,6 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 			}
 			ex.TxHash = tx.TxHash
 		}
-		if ex.TxHash == "" && ex.TransactionID == "" {
-			// Circle async execution — advance to submitted with cooldown.
-			if _, err := r.db.ExecContext(ctx, `
-				UPDATE blend_yield_redemptions SET status = $2, submitted_at = NOW(),
-					next_retry_at = NOW() + INTERVAL '60 seconds', updated_at = NOW()
-				WHERE id = $1
-			`, red.ID, redemptionStatusSubmitted); err != nil {
-				return fmt.Errorf("blend: mark redemption submitted (async): %w", err)
-			}
-			red.Status = redemptionStatusSubmitted
-			return nil
-		}
 		if ex.TxHash == "" {
 			return fmt.Errorf("blend: circle withdraw tx %s has no hash yet", ex.TransactionID)
 		}

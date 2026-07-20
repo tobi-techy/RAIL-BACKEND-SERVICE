@@ -48,6 +48,7 @@ type ActionPlan struct {
 type ContractExecutor interface {
 	ExecuteContract(ctx context.Context, req *circlepkg.CreateContractExecutionRequest) (*circlepkg.Transaction, error)
 	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
+	ListTransactions(ctx context.Context, walletID string, operation string, state string) ([]circlepkg.Transaction, error)
 }
 
 // Allowlist of contract addresses the executor will call. Anything outside this set
@@ -301,42 +302,103 @@ func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, pl
 		return nil, fmt.Errorf("blend: safe multisend circle execute: %w", err)
 	}
 
-	// Circle contract-execution endpoint returns async: tx.ID is set but TxHash
-	// may be empty until the on-chain tx is confirmed. Poll until we get a real
-	// hash — Blend needs a non-empty hash to match against its own record.
-	if tx.TxHash == "" && tx.ID != "" {
-		pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		defer cancel()
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		e.logger.Info("Blend: tx hash empty after ExecuteContract, polling Circle for tx hash",
-			zap.String("tx_id", tx.ID))
-		for {
-			select {
-			case <-pollCtx.Done():
-				e.logger.Warn("Blend: timed out polling for tx hash",
-					zap.String("tx_id", tx.ID))
-			goto done
-			case <-ticker.C:
-				updated, pollErr := e.circle.GetTransaction(pollCtx, tx.ID)
-				if pollErr != nil {
-					e.logger.Warn("Blend: GetTransaction poll failed, retrying",
-						zap.String("tx_id", tx.ID), zap.Error(pollErr))
-					continue
+	// Circle contract-execution returns async: the tx is created but the hash
+	// only becomes available once the on-chain tx reaches COMPLETE state.
+	// Poll until we have a hash — Blend needs it to verify the receipt.
+	if tx.TxHash == "" {
+		// If CreateContractExecution returned no tx_id at all, find it via ListTransactions first.
+		if tx.ID == "" {
+			tx = e.findRecentContractExecution(ctx, walletID, tx)
+		}
+		// Poll GetTransaction until state=COMPLETE or tx_hash appears.
+		if tx.ID != "" {
+			tx = e.pollForComplete(ctx, tx)
+		}
+	}
+	e.logger.Info("Blend executor Safe multisend result",
+		zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash), zap.String("state", string(tx.State)))
+	if tx.TxHash == "" {
+		return nil, fmt.Errorf("blend: Circle tx has no hash after polling (id=%s state=%s)", tx.ID, tx.State)
+	}
+	return []ExecutedTx{{ChainID: trustedSafe.ChainID, TxHash: tx.TxHash, TransactionID: tx.ID}}, nil
+}
+
+// findRecentContractExecution polls ListTransactions to find the most recent
+// CONTRACT_EXECUTION for the wallet when CreateContractExecution returned an
+// empty Transaction struct (no tx_id). Returns the found tx or the original empty one.
+func (e *PlanExecutor) findRecentContractExecution(ctx context.Context, walletID string, fallback *circlepkg.Transaction) *circlepkg.Transaction {
+	pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	e.logger.Info("Blend: Circle returned no tx_id, polling ListTransactions to find it",
+		zap.String("wallet_id", walletID))
+	for {
+		select {
+		case <-pollCtx.Done():
+			e.logger.Warn("Blend: timed out polling ListTransactions for tx_id",
+				zap.String("wallet_id", walletID))
+			return fallback
+		case <-ticker.C:
+			txs, err := e.circle.ListTransactions(pollCtx, walletID, "CONTRACT_EXECUTION", "")
+			if err != nil {
+				e.logger.Warn("Blend: ListTransactions failed, retrying",
+					zap.String("wallet_id", walletID), zap.Error(err))
+				continue
+			}
+			for i := range txs {
+				if txs[i].ID != "" {
+					e.logger.Info("Blend: found tx from ListTransactions",
+						zap.String("tx_id", txs[i].ID), zap.String("state", string(txs[i].State)),
+						zap.String("tx_hash", txs[i].TxHash))
+					return &txs[i]
 				}
-				if updated.TxHash != "" {
-					tx = updated
-					e.logger.Info("Blend: resolved tx hash from Circle",
-						zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash))
-					goto done
-				}
+			}
+			e.logger.Debug("Blend: no CONTRACT_EXECUTION found yet",
+				zap.String("wallet_id", walletID), zap.Int("candidates", len(txs)))
+		}
+	}
+}
+
+// pollForComplete polls GetTransaction until state is COMPLETE or FAILED.
+// The tx hash is only populated at COMPLETE.
+func (e *PlanExecutor) pollForComplete(ctx context.Context, initial *circlepkg.Transaction) *circlepkg.Transaction {
+	pollCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	tx := initial
+	e.logger.Info("Blend: polling Circle for tx completion",
+		zap.String("tx_id", tx.ID), zap.String("state", string(tx.State)))
+	for {
+		select {
+		case <-pollCtx.Done():
+			e.logger.Warn("Blend: timed out polling for tx completion",
+				zap.String("tx_id", tx.ID), zap.String("last_state", string(tx.State)))
+			return tx
+		case <-ticker.C:
+			updated, err := e.circle.GetTransaction(pollCtx, tx.ID)
+			if err != nil {
+				e.logger.Warn("Blend: GetTransaction failed, retrying",
+					zap.String("tx_id", tx.ID), zap.Error(err))
+				continue
+			}
+			tx = updated
+			e.logger.Debug("Blend: tx poll",
+				zap.String("tx_id", tx.ID), zap.String("state", string(tx.State)),
+				zap.String("tx_hash", tx.TxHash))
+			switch tx.State {
+			case circlepkg.TransactionStateComplete:
+				e.logger.Info("Blend: tx reached COMPLETE",
+					zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash))
+				return tx
+			case circlepkg.TransactionStateFailed, circlepkg.TransactionStateCancelled, circlepkg.TransactionStateDenied:
+				e.logger.Error("Blend: tx reached terminal error state",
+					zap.String("tx_id", tx.ID), zap.String("state", string(tx.State)))
+				return tx
 			}
 		}
 	}
-done:
-	e.logger.Info("Blend executor Safe multisend result",
-		zap.String("tx_id", tx.ID), zap.String("tx_hash", tx.TxHash), zap.String("state", string(tx.State)))
-	return []ExecutedTx{{ChainID: trustedSafe.ChainID, TxHash: tx.TxHash, TransactionID: tx.ID}}, nil
 }
 
 // multisendDigest is a stable digest of all steps, so retries of the same withdraw batch
