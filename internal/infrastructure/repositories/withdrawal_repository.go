@@ -258,13 +258,21 @@ func (r *WithdrawalRepository) UpdateCompletedAt(ctx context.Context, id uuid.UU
 func (r *WithdrawalRepository) ForceComplete(ctx context.Context, id uuid.UUID, completedAt time.Time) error {
 	now := time.Now()
 	result, err := r.db.ExecContext(ctx,
-		`UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4`,
-		entities.WithdrawalStatusCompleted, completedAt, now, id)
+		`UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3
+		 WHERE id = $4 AND status IN ($5, $6, $7)`,
+		entities.WithdrawalStatusCompleted, completedAt, now, id,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled)
 	if err != nil {
 		return fmt.Errorf("failed to force complete withdrawal: %w", err)
 	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		return fmt.Errorf("withdrawal %s not found", id)
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("withdrawal %s not eligible for force-complete (not found or already completed)", id)
 	}
 	return nil
 }
