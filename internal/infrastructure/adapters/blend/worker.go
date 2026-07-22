@@ -14,6 +14,12 @@ import (
 // Worker tuning.
 const (
 	defaultWorkerBatchSize = 25
+	// maxRetryAttempts is the hard cap on redemption retry attempts. After this
+	// many attempts the worker stops claiming the row — the redemption stays
+	// non-terminal so operators can investigate, but the infinite loop is broken.
+	// The ledger is already ahead of Blend custody for these rows (reserve-before-
+	// debit), so manual reconciliation is required regardless.
+	maxRetryAttempts = 100
 	// leaseWindow is how far we push next_retry_at when claiming a route/redemption,
 	// preventing a second worker (or a second instance) from grabbing the same row
 	// while the first is still processing it.
@@ -527,13 +533,14 @@ func (r *DepositRouter) claimRedemptions(ctx context.Context, limit int) ([]stri
 			SELECT idempotency_key FROM blend_yield_redemptions
 			WHERE status IN ('pending', 'quoted', 'executing', 'submitted')
 				AND next_retry_at <= NOW()
+				AND attempts < $3
 				AND (attempts < 50 OR updated_at < NOW() - INTERVAL '1 hour')
 			ORDER BY next_retry_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING idempotency_key
-	`, limit, int(leaseWindow.Seconds()))
+	`, limit, int(leaseWindow.Seconds()), maxRetryAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -561,6 +568,13 @@ func (r *DepositRouter) resumeRedemption(ctx context.Context, idempotencyKey str
 		return
 	}
 	if red.Status == redemptionStatusComplete || red.Status == redemptionStatusFailed {
+		return
+	}
+	if red.Attempts >= maxRetryAttempts {
+		r.logger.Error("Blend: redemption exceeded max retry attempts — stopping to prevent infinite loop",
+			zap.String("redemption_id", red.ID.String()),
+			zap.Int("attempts", red.Attempts),
+			zap.String("status", red.Status))
 		return
 	}
 	acct, err := r.getUserAccount(ctx, red.UserID)
