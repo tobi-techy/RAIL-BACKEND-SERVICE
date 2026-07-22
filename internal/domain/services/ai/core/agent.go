@@ -455,7 +455,11 @@ func (a *Agent) assembleContext(ctx context.Context, userID uuid.UUID, message s
 		})
 	}
 
-	// Money state slot (index 6)
+	// Money state slot (index 6). Confidence only: the safe-to-spend figure is
+	// deliberately not injected here because it is a projection, not an observed
+	// number — when it appeared in context, the model quoted it as fact and the
+	// fabrication gate flagged the reply. Safe-to-spend must come from a tool
+	// call (get_cash_flow_forecast / get_miriam_brief) if the user asks for it.
 	if a.deps.MiriamIntell != nil {
 		addSlot(6, func() string {
 			ms, err := a.deps.MiriamIntell.GetMoneyState(ctx, userID)
@@ -465,9 +469,6 @@ func (a *Agent) assembleContext(ctx context.Context, userID uuid.UUID, message s
 			text := "[Money state:"
 			if v, ok := ms["confidence_level"]; ok {
 				text += fmt.Sprintf(" %v", v)
-			}
-			if v, ok := ms["safe_to_spend_daily"]; ok {
-				text += fmt.Sprintf(" safe to spend: $%v", v)
 			}
 			text += "]"
 			return text
@@ -618,27 +619,191 @@ func (a *Agent) buildMemoryPrompt(memCtx *MemoryContext) string {
 	return fmt.Sprintf("[What you know about this user, relevant to what they just said — weave in naturally, never say \"I recall\" or \"you mentioned\": %s]", joined)
 }
 
-// classifyIntent determines the user's intent from their message and state.
+// classifyIntent determines the user's intent category from their message via
+// keyword matching. It errs on the side of CategoryFull for ambiguity, which
+// makes selectTools return the full registry. A concrete category keeps the
+// offered tool set small, which both cuts token cost and stops weak models
+// from picking the wrong tool.
 func (a *Agent) classifyIntent(message string, state *UserState) []Intent {
-	return []Intent{
-		{
-			Category:    CategoryFull,
-			Confidence:  0.8,
-			RequiresLLM: true,
-		},
+	lower := strings.ToLower(message)
+	category := CategoryFull
+	confidence := 0.5
+
+	switch {
+	// Automation before action: "move $50 every friday" is recurring, not one-off.
+	case containsAny(lower, intentAutomationPatterns):
+		category, confidence = CategoryAutomation, 0.8
+	case containsAny(lower, intentActionPatterns):
+		category, confidence = CategoryAction, 0.8
+	case containsAny(lower, intentPlanningPatterns):
+		category, confidence = CategoryPlanning, 0.7
+	// History before spending: "show my deposits" is history, not analysis.
+	case containsAny(lower, intentHistoryPatterns):
+		category, confidence = CategoryHistory, 0.8
+	case containsAny(lower, intentInvestmentPatterns):
+		category, confidence = CategoryInvestment, 0.8
+	case containsAny(lower, intentMemoryPatterns):
+		category, confidence = CategoryMemory, 0.8
+	case containsAny(lower, intentSpendingPatterns):
+		category, confidence = CategorySpending, 0.8
+	case containsAny(lower, intentOverviewPatterns):
+		category, confidence = CategoryOverview, 0.7
 	}
+
+	return []Intent{{Category: category, Confidence: confidence, RequiresLLM: true}}
+}
+
+var intentActionPatterns = []string{
+	"move ", "transfer", "send $", "send ₦", "send money",
+	"set budget", "set a budget", "save $", "save ₦",
+	"to stash", "to my stash", "into my stash", "from my stash", "lock",
+	"set goal", "savings goal", "remind me", "protect", "cancel subscription",
+	"withdraw $", "withdraw ₦", "withdraw from", "withdraw to", "to my bank",
+	"block", "unblock", "pay my bill", "pay bill", "autopay", "auto-pay",
+	"buy airtime", "buy data", "copy trad", "copy trade", "stop copying", "pause copying", "cancel my",
+}
+
+var intentAutomationPatterns = []string{
+	"automation", "automate", "schedule", "every week", "every friday",
+	"every month", "every day", "daily", "weekly", "monthly", "recurring",
+	"automatic", "autopilot", "when balance", "threshold", "smart timing",
+}
+
+var intentPlanningPatterns = []string{
+	"advice", "audit", "roast", "plan", "forecast", "predict", "projection",
+	"health score", "what should i do", "reality check", "hard mode",
+	"operating plan", "tax", "how can i save", "suggestions",
+	"where to put", "grow my money", "subscriptions", "bills", "idle cash",
+	"will my", "next year", "next month",
+}
+
+var intentHistoryPatterns = []string{
+	"transactions", "show me my", "deposit", "withdrawal",
+	"card transactions", "receipt", "income trend", "yield", "interest",
+	"how much did i make", "how much did i earn", "how much did i deposit",
+	"how much did i withdraw", "last month", "income",
+	"compared to", "vs last", "vs usual", "than my usual income",
+}
+
+var intentSpendingPatterns = []string{
+	"spend", "spent", "spending", "where did my money", "money go", "breakdown",
+	"category", "categories", "food", "transport", "shopping", "groceries",
+	"outflow", "burn rate", "patterns", "weird", "strange", "off on my account",
+	"more than normal", "more than usual", "than normal", "than usual",
+}
+
+var intentOverviewPatterns = []string{
+	"how am i doing", "what changed", "what matters", "overview",
+	"what's up", "update me", "brief", "status", "check in",
+	"balance", "how much do i have", "what do i have", "how's my money",
+	"how is my money", "my saving", "my savings",
+}
+
+var intentInvestmentPatterns = []string{
+	"invest", "investment", "portfolio", "stock", "stocks", "shares",
+	"trader", "returns", "etf", "basket",
+}
+
+var intentMemoryPatterns = []string{
+	"what do you know about me", "forget that", "forget everything",
+	"my memories", "what do you remember",
+}
+
+func containsAny(text string, patterns []string) bool {
+	for _, p := range patterns {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// alwaysOnTools are offered every turn regardless of classified intent. They
+// cover the core money surfaces (balances, spending, income, bills, goals) so
+// Miriam can always ground the most common financial answers, plus the full
+// action toolset so she can stage a move the moment the user asks. Keeping
+// them unconditional mirrors the previous "everything, every turn" behavior
+// for these categories while still narrowing knowledge/memory/history/
+// portfolio/travel tools to the turns that need them.
+var alwaysOnTools = map[string]bool{
+	// Overview
+	"get_account_summary": true, "get_miriam_brief": true, "get_yield_status": true,
+	"get_goals": true, "list_obligations": true, "list_subscriptions": true,
+	"find_payment_matches": true,
+	// Spending
+	"get_money_flow": true, "get_spending_summary": true, "get_recent_transactions": true,
+	"get_spending_patterns": true, "get_spending_comparison": true, "get_merchant_insights": true,
+	"get_recurring_expenses": true, "audit_subscriptions": true, "list_blocked_merchants": true,
+	// History
+	"get_income_trend": true, "get_deposit_history": true, "get_withdrawal_history": true,
+	"get_card_transactions": true, "get_balance_history": true, "get_yield_earned": true,
+	// Planning
+	"get_upcoming_bills": true, "get_financial_profile": true, "get_financial_health": true,
+	"get_financial_plan": true, "get_financial_audit": true, "get_money_operating_plan": true,
+	"get_cash_flow_forecast": true, "get_savings_suggestions": true,
+	// Budget
+	"get_budget": true, "set_budget": true,
+	// Automation
+	"list_automations": true, "create_automation": true,
+	// Action (mutating tools are staged for confirmation by the chat loop,
+	// never executed inline, so offering them every turn is safe).
+	"transfer_funds": true, "initiate_withdrawal": true, "optimize_yield": true,
+	"setup_bill_autopay": true, "cancel_subscription": true, "execute_investment": true,
+	"block_merchant": true, "unblock_merchant": true, "pay_bill": true, "automate_bill": true,
+	"save_bill_beneficiary": true, "set_savings_goal": true, "create_obligation_reminder": true,
+	"mark_obligation_paid": true, "protect_subscription": true, "get_linked_banks": true,
+	"list_bill_providers": true, "get_data_plans": true, "get_cable_packages": true,
+	"validate_meter": true, "detect_network": true,
+	// Engagement
+	"celebrate": true, "send_poll": true,
 }
 
 // selectTools returns the subset of tools relevant to the user's intents.
+// The intent category's tools are unioned with the always-on money set, so a
+// turn classified "Spending" still offers balance/income/transfer tools. An
+// ambiguous (CategoryFull) message gets the whole registry.
 func (a *Agent) selectTools(intents []Intent) []*Tool {
 	if a.deps.ToolRegistry == nil {
 		return nil
 	}
+	// Ambiguous or empty intent: offer the full registry so no capability is lost.
+	if len(intents) == 0 {
+		return a.deps.ToolRegistry.GetAll()
+	}
 	cats := make([]ToolCategory, len(intents))
+	full := false
 	for i, intent := range intents {
 		cats[i] = intent.Category
+		if intent.Category == CategoryFull {
+			full = true
+		}
 	}
-	return a.deps.ToolRegistry.GetByCategories(cats)
+	if full {
+		return a.deps.ToolRegistry.GetAll()
+	}
+	byCategory := a.deps.ToolRegistry.GetByCategories(cats)
+	all := a.deps.ToolRegistry.GetAll()
+	byName := make(map[string]*Tool, len(byCategory)+len(alwaysOnTools))
+	for _, t := range byCategory {
+		byName[t.Name] = t
+	}
+	for _, t := range all {
+		if alwaysOnTools[t.Name] {
+			byName[t.Name] = t
+		}
+	}
+	// Nothing matched: fall back to the full registry rather than offering no
+	// tools, which previously left Miriam answering money questions blind.
+	if len(byName) == 0 {
+		return all
+	}
+	out := make([]*Tool, 0, len(byName))
+	for _, t := range all {
+		if byName[t.Name] != nil {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // pendingActionTTL bounds how long a staged action waits for user confirmation.

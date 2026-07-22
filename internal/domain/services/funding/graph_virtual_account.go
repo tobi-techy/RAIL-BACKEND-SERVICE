@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/graph"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
@@ -52,6 +54,9 @@ type GraphClient interface {
 type GraphVirtualAccountRepository interface {
 	VirtualAccountRepository
 	GetByGraphAccountID(ctx context.Context, graphAccountID string) (*entities.VirtualAccount, error)
+	GetProvisionedByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error)
+	GetFailedNGNByUserID(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error)
+	DeleteByID(ctx context.Context, id uuid.UUID) error
 }
 
 // GraphUserProvider reads and mutates the user identity fields Graph needs.
@@ -92,6 +97,9 @@ type GraphVirtualAccountService struct {
 	livenessInitiator   Tier2LivenessInitiator
 	developerFeePercent decimal.Decimal
 	logger              *logger.Logger
+	// Per-user mutex for ensurePerson — prevents two concurrent requests from
+	// creating duplicate Graph persons before either writes the VA record.
+	personMu sync.Map
 }
 
 // NewGraphVirtualAccountService constructs the Graph NGN virtual account service.
@@ -151,6 +159,20 @@ func (s *GraphVirtualAccountService) SetLivenessInitiator(l Tier2LivenessInitiat
 // ErrNGNRequiresBVNNIN is returned when a user tries to provision an NGN account
 // without supplying the Tier 2 prerequisites (BVN + a means of ID, NIN preferred).
 var ErrNGNRequiresBVNNIN = fmt.Errorf("graph: BVN and a means of ID (NIN preferred) are required to open an NGN account")
+var ErrNGNProfileIncomplete = fmt.Errorf("graph: profile is missing required fields for NGN account")
+var ErrNGNInvalidIdentity = fmt.Errorf("graph: invalid BVN or identity number")
+
+type NGNProfileIncompleteError struct {
+	Missing []string
+}
+
+func (e *NGNProfileIncompleteError) Error() string {
+	return fmt.Sprintf("%v: %s", ErrNGNProfileIncomplete, strings.Join(e.Missing, ", "))
+}
+
+func (e *NGNProfileIncompleteError) Unwrap() error {
+	return ErrNGNProfileIncomplete
+}
 
 // ProvisionNGNAccountRequest carries the transient PII needed to create a Graph
 // person and NGN account. BVN and ID number are never persisted.
@@ -160,6 +182,10 @@ type ProvisionNGNAccountRequest struct {
 	IDType        string // nin, voters_card, drivers_license, passport
 	IDNumber      string // transient
 	IDDocumentURL string // URL of the uploaded ID document (e.g. R2)
+	// Didit verification images — presigned URLs from a completed Didit session.
+	// These are passed directly to Graph to satisfy its document requirement.
+	DiditFrontImage string
+	DiditBackImage  string
 	// Optional KYC background information.
 	EmploymentStatus string
 	Occupation       string
@@ -183,10 +209,86 @@ func (s *GraphVirtualAccountService) ProvisionNGNAccount(ctx context.Context, re
 	if strings.TrimSpace(req.BVN) == "" || strings.TrimSpace(req.IDType) == "" || strings.TrimSpace(req.IDNumber) == "" {
 		return nil, ErrNGNRequiresBVNNIN
 	}
+	if err := validateIdentityForGraph(req); err != nil {
+		return nil, err
+	}
 
-	// Idempotent: return existing NGN account if present.
-	if existing, _ := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "NGN"); existing != nil {
+	// Idempotent: return an existing active or in-flight NGN account if present.
+	if existing, fetchErr := s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, req.UserID, "NGN"); existing != nil {
 		return existing, nil
+	} else if fetchErr != nil {
+		s.logger.Warn("Error checking existing NGN account", "user_id", req.UserID, "error", fetchErr)
+	}
+
+	// Per-user lock prevents two concurrent requests from both creating a Graph
+	// person or bank account before either writes the virtual account record
+	// (orphaned persons/bank accounts).
+	userKey := req.UserID.String()
+	val, _ := s.personMu.LoadOrStore(userKey, &sync.Mutex{})
+	mu := val.(*sync.Mutex)
+	mu.Lock()
+	defer func() {
+		mu.Unlock()
+		s.personMu.Delete(userKey)
+	}()
+
+	// Re-check after acquiring lock — another request may have completed provisioning.
+	if existing, _ := s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, req.UserID, "NGN"); existing != nil {
+		return existing, nil
+	}
+
+	// Check for failed accounts that the active/pending query missed.
+	// A failed VA WITH GraphPersonID: reuse the person and retry bank account creation,
+	// updating the existing record to satisfy the unique constraint on (user_id, currency).
+	// A failed VA without GraphPersonID: the stale record blocks the unique constraint;
+	// the main flow handles cleanup via DeleteByID after a unique-violation on Create.
+	if failed, _ := s.virtualAccountRepo.GetFailedNGNByUserID(ctx, req.UserID); failed != nil {
+		if failed.GraphPersonID != nil && *failed.GraphPersonID != "" {
+			s.logger.Info("Retrying NGN provisioning for previously failed account",
+				"user_id", req.UserID, "virtual_account_id", failed.ID, "graph_person_id", *failed.GraphPersonID)
+			personID := *failed.GraphPersonID
+			retryLabel := "Rail NGN"
+			if user.FirstName != nil && *user.FirstName != "" {
+				retryLabel = *user.FirstName + " NGN"
+			}
+			bankAcct, retryErr := s.graphClient.CreateBankAccount(ctx, &graph.CreateBankAccountRequest{
+				PersonID:         personID,
+				Label:            retryLabel,
+				Currency:         "NGN",
+				AutosweepEnabled: true,
+			})
+			if retryErr != nil {
+				return nil, fmt.Errorf("retry create graph bank account: %w", retryErr)
+			}
+			graphAccountID := bankAcct.ID
+			failed.GraphAccountID = &graphAccountID
+			failed.AccountNumber = bankAcct.AccountNumber
+			failed.RoutingNumber = bankAcct.RoutingNumber
+			failed.BankCode = bankAcct.BankCode
+			failed.BankName = bankAcct.BankName
+			if bankAcct.AccountName != "" {
+				failed.BeneficiaryName = bankAcct.AccountName
+			}
+			failed.Status = mapGraphAccountStatus(bankAcct.Status)
+			oldUpdatedAt := failed.UpdatedAt
+			failed.UpdatedAt = time.Now()
+			if err := s.virtualAccountRepo.UpdateWithVersion(ctx, failed, oldUpdatedAt); err != nil {
+				return nil, fmt.Errorf("update retried virtual account: %w", err)
+			}
+			s.logger.Info("NGN virtual account retried successfully",
+				"user_id", req.UserID,
+				"virtual_account_id", failed.ID,
+				"graph_account_id", graphAccountID,
+				"status", string(failed.Status))
+			return failed, nil
+		}
+		// Failed account has no person — the stale record is harmless and provides
+		// audit trail. The main flow will create a new person + bank account, and
+		// the unique constraint on (user_id, currency) will cause a conflict. We
+		// handle that in the Create call below by deleting the stale failed record
+		// and retrying.
+		s.logger.Info("Found stale failed NGN account (no graph person), will clean up",
+			"user_id", req.UserID, "virtual_account_id", failed.ID)
 	}
 
 	// Ensure a Graph person exists for this user.
@@ -233,12 +335,37 @@ func (s *GraphVirtualAccountService) ProvisionNGNAccount(ctx context.Context, re
 	}
 
 	if err := s.virtualAccountRepo.Create(ctx, va); err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			if existing, fetchErr := s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, req.UserID, "NGN"); fetchErr == nil && existing != nil {
-				return existing, nil
+		if isUniqueViolation(err) {
+			// A stale failed record (no GraphPersonID) from a prior attempt is blocking
+			// the unique constraint. Delete it and retry the insert.
+			if failed, fetchErr := s.virtualAccountRepo.GetFailedNGNByUserID(ctx, req.UserID); fetchErr == nil && failed != nil {
+				s.logger.Info("Removing stale failed NGN record to unblock retry",
+					"user_id", req.UserID, "virtual_account_id", failed.ID)
+				if delErr := s.virtualAccountRepo.DeleteByID(ctx, failed.ID); delErr != nil {
+					return nil, fmt.Errorf("delete stale failed NGN record: %w", delErr)
+				}
+				// Retry the insert — the stale record is gone.
+				if retryErr := s.virtualAccountRepo.Create(ctx, va); retryErr != nil {
+					return nil, fmt.Errorf("retry store graph virtual account: %w", retryErr)
+				}
+			} else {
+				// Active or pending record exists — return it (idempotent).
+				if existing, fetchErr := s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, req.UserID, "NGN"); fetchErr == nil && existing != nil {
+					return existing, nil
+				}
+				return nil, fmt.Errorf("store graph virtual account: %w", err)
 			}
+		} else {
+			// Log orphaned Graph resources for cleanup — person and bank account exist
+			// in Graph but won't be tracked. On retry, ensurePerson will reuse the
+			// person (GraphPersonID was persisted) but a new bank account will be created.
+			s.logger.Error("Orphaned Graph resources after DB write failure",
+				"user_id", req.UserID,
+				"graph_person_id", personID,
+				"graph_account_id", graphAccountID,
+				"error", err)
+			return nil, fmt.Errorf("store graph virtual account: %w", err)
 		}
-		return nil, fmt.Errorf("store graph virtual account: %w", err)
 	}
 
 	s.logger.Info("Graph NGN virtual account provisioned",
@@ -281,6 +408,38 @@ func (s *GraphVirtualAccountService) ProvisionNGNAccount(ctx context.Context, re
 	return va, nil
 }
 
+// isAllowedDocumentURL validates that a document URL uses HTTPS and does not
+// point to internal/private network addresses. This prevents SSRF via the
+// Graph API's document upload endpoint.
+func isAllowedDocumentURL(url string) bool {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		return true // empty is allowed (no document)
+	}
+	if !strings.HasPrefix(url, "https://") {
+		return false
+	}
+	// Block internal hostnames that could be used for SSRF.
+	lower := strings.ToLower(url)
+	blocklist := []string{
+		"localhost",
+		"127.0.0.1",
+		"0.0.0.0",
+		"169.254.",   // link-local / cloud metadata
+		"10.",        // RFC 1918
+		"172.16.",    // RFC 1918 (covers 172.16-31)
+		"192.168.",   // RFC 1918
+		"[::1]",      // IPv6 loopback
+		"metadata.google", // GCP metadata
+	}
+	for _, blocked := range blocklist {
+		if strings.Contains(lower, blocked) {
+			return false
+		}
+	}
+	return true
+}
+
 // ensurePerson returns the user's Graph person ID, creating the person if needed.
 func (s *GraphVirtualAccountService) ensurePerson(ctx context.Context, user *entities.UserProfile, req *ProvisionNGNAccountRequest) (string, error) {
 	if user.GraphPersonID != nil && *user.GraphPersonID != "" {
@@ -299,7 +458,7 @@ func (s *GraphVirtualAccountService) ensurePerson(ctx context.Context, user *ent
 	personReq := &graph.CreatePersonRequest{
 		NameFirst:    strings.TrimSpace(deref(user.FirstName)),
 		NameLast:     strings.TrimSpace(deref(user.LastName)),
-		NameOther:    strings.TrimSpace(deref(user.FirstName)), // Graph NGN requires name_other; reuse when no middle name on file
+		NameOther:    strings.TrimSpace(deref(user.MiddleName)),
 		Phone:        normalizePhone(deref(user.Phone)),
 		Email:        user.Email,
 		DOB:          user.DateOfBirth.Format("2006-01-02"),
@@ -325,8 +484,28 @@ func (s *GraphVirtualAccountService) ensurePerson(ctx context.Context, user *ent
 			PrimaryPurpose:   req.PrimaryPurpose,
 		}
 	}
-	if req.IDDocumentURL != "" {
-		personReq.Documents = []graph.Document{{Type: graphDocType(req.IDType), URL: req.IDDocumentURL}}
+	// Graph NGN accounts require at least one document. Prefer Didit front image
+	// (presigned, short-lived), then fall back to explicit IDDocumentURL.
+	docType := graphDocType(req.IDType)
+	if req.DiditFrontImage != "" {
+		if !isAllowedDocumentURL(req.DiditFrontImage) {
+			return "", fmt.Errorf("invalid Didit front image URL: must be a valid https URL")
+		}
+		doc := graph.Document{Type: docType, URL: req.DiditFrontImage}
+		personReq.Documents = []graph.Document{doc}
+		if req.DiditBackImage != "" {
+			if !isAllowedDocumentURL(req.DiditBackImage) {
+				return "", fmt.Errorf("invalid Didit back image URL: must be a valid https URL")
+			}
+			personReq.Documents = append(personReq.Documents, graph.Document{
+				Type: docType, URL: req.DiditBackImage,
+			})
+		}
+	} else if req.IDDocumentURL != "" {
+		if !isAllowedDocumentURL(req.IDDocumentURL) {
+			return "", fmt.Errorf("invalid document URL: must be a valid https URL")
+		}
+		personReq.Documents = []graph.Document{{Type: docType, URL: req.IDDocumentURL}}
 	}
 
 	person, err := s.graphClient.CreatePerson(ctx, personReq)
@@ -335,7 +514,7 @@ func (s *GraphVirtualAccountService) ensurePerson(ctx context.Context, user *ent
 	}
 
 	if err := s.userProvider.UpdateGraphPersonID(ctx, user.ID, person.ID); err != nil {
-		s.logger.Warn("Failed to persist graph person id", "user_id", user.ID, "error", err)
+		return "", fmt.Errorf("persist graph person id: %w", err)
 	}
 	return person.ID, nil
 }
@@ -532,6 +711,16 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 
 	s.logger.Info("Graph NGN deposit processed",
 		"user_id", userID, "ngn_amount", ngnAmount.String(), "usdc_amount", usdcAmount.String(), "deposit_id", depositID)
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventDepositCompleted, map[string]any{
+		"amount":        usdcAmount.InexactFloat64(),
+		"currency":      "USDC",
+		"provider":      "graph",
+		"method":        "ngn_fiat",
+		"ngn_amount":    ngnAmount.InexactFloat64(),
+		"deposit_id":    depositID.String(),
+	})
+
 	return nil
 }
 
@@ -586,7 +775,6 @@ func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAm
 	return decimal.Zero, fmt.Errorf("no NGN→USD rate available (all conversion paths exhausted)")
 }
 
-// HandleAccountActivated flips a pending NGN virtual account to active and fills
 // HandleAccountActivatedWithData updates the virtual account with bank details
 // from the webhook payload directly — no extra API call needed.
 // Uses optimistic concurrency via updated_at to prevent lost updates from
@@ -619,43 +807,74 @@ func (s *GraphVirtualAccountService) HandleAccountActivatedWithData(ctx context.
 	return nil
 }
 
-// HandleAccountActivated fetches bank details from Graph and updates the virtual
-// account in the bank details Graph delivers asynchronously via issuance webhook.
-// Prefer HandleAccountActivatedWithData when webhook data is already available.
-func (s *GraphVirtualAccountService) HandleAccountActivated(ctx context.Context, graphAccountID string) error {
+// GetNGNAccount returns the user's NGN virtual account, if any.
+// Returns active, pending, or failed accounts so the frontend can show retry UI.
+func (s *GraphVirtualAccountService) GetNGNAccount(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error) {
+	va, err := s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, userID, "NGN")
+	if err != nil {
+		return nil, err
+	}
+	if va != nil {
+		return va, nil
+	}
+	// No active/pending account — check for a failed one so the frontend can
+	// display retry UI instead of prompting re-verification from scratch.
+	return s.virtualAccountRepo.GetFailedNGNByUserID(ctx, userID)
+}
+
+// HandleAccountIssuanceFailed marks an NGN virtual account as failed when Graph
+// fires the account.issuance.failed webhook. This prevents the user from being
+// stuck in an infinite "pending" state.
+func (s *GraphVirtualAccountService) HandleAccountIssuanceFailed(ctx context.Context, graphAccountID string) error {
 	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
 	if err != nil {
 		return fmt.Errorf("get virtual account: %w", err)
 	}
 	if va == nil {
-		return fmt.Errorf("virtual account not found: %s", graphAccountID)
+		s.logger.Warn("Issuance failed for unknown graph account", "graph_account_id", graphAccountID)
+		return nil
 	}
 
-	acct, err := s.graphClient.FetchBankAccount(ctx, graphAccountID)
-	if err != nil {
-		return fmt.Errorf("fetch graph bank account: %w", err)
-	}
-
-	va.AccountNumber = acct.AccountNumber
-	va.RoutingNumber = acct.RoutingNumber
-	va.BankCode = acct.BankCode
-	va.BankName = acct.BankName
-	if acct.AccountName != "" {
-		va.BeneficiaryName = acct.AccountName
-	}
-	va.Status = mapGraphAccountStatus(acct.Status)
+	oldUpdatedAt := va.UpdatedAt
+	va.Status = entities.VirtualAccountStatusFailed
 	va.UpdatedAt = time.Now()
 
-	if err := s.virtualAccountRepo.Update(ctx, va); err != nil {
-		return fmt.Errorf("update virtual account: %w", err)
+	if err := s.virtualAccountRepo.UpdateWithVersion(ctx, va, oldUpdatedAt); err != nil {
+		return fmt.Errorf("update virtual account to failed: %w", err)
 	}
-	s.logger.Info("Graph NGN account activated", "graph_account_id", graphAccountID, "status", string(va.Status))
+	s.logger.Warn("Graph NGN account issuance failed",
+		"graph_account_id", graphAccountID,
+		"user_id", va.UserID)
 	return nil
 }
 
-// GetNGNAccount returns the user's NGN virtual account, if any.
-func (s *GraphVirtualAccountService) GetNGNAccount(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error) {
-	return s.virtualAccountRepo.GetActiveByUserIDAndCurrency(ctx, userID, "NGN")
+// HandleAccountClosed marks an NGN virtual account as closed when Graph fires
+// the account.closed webhook. This prevents deposits from being routed to a
+// closed account.
+func (s *GraphVirtualAccountService) HandleAccountClosed(ctx context.Context, graphAccountID string) error {
+	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
+	if err != nil {
+		return fmt.Errorf("get virtual account: %w", err)
+	}
+	if va == nil {
+		s.logger.Warn("Account closed for unknown graph account", "graph_account_id", graphAccountID)
+		return nil
+	}
+	if va.Status == entities.VirtualAccountStatusClosed {
+		return nil // already closed
+	}
+
+	oldUpdatedAt := va.UpdatedAt
+	va.Status = entities.VirtualAccountStatusClosed
+	va.UpdatedAt = time.Now()
+
+	if err := s.virtualAccountRepo.UpdateWithVersion(ctx, va, oldUpdatedAt); err != nil {
+		return fmt.Errorf("update virtual account to closed: %w", err)
+	}
+	s.logger.Warn("Graph NGN account closed",
+		"graph_account_id", graphAccountID,
+		"user_id", va.UserID)
+	return nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────
@@ -684,9 +903,41 @@ func validateProfileForGraph(user *entities.UserProfile, req *ProvisionNGNAccoun
 		missing = append(missing, "id")
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("missing required fields for NGN account: %s", strings.Join(missing, ", "))
+		return &NGNProfileIncompleteError{Missing: missing}
 	}
 	return nil
+}
+
+func validateIdentityForGraph(req *ProvisionNGNAccountRequest) error {
+	bvn := strings.TrimSpace(req.BVN)
+	if len(bvn) != 11 || !allDigits(bvn) {
+		return fmt.Errorf("%w: BVN must be 11 digits", ErrNGNInvalidIdentity)
+	}
+
+	idType := normalizeIDType(req.IDType)
+	idNumber := strings.TrimSpace(req.IDNumber)
+	switch idType {
+	case "nin":
+		if len(idNumber) != 11 || !allDigits(idNumber) {
+			return fmt.Errorf("%w: NIN must be 11 digits", ErrNGNInvalidIdentity)
+		}
+	case "voters_card", "drivers_license", "passport":
+		if len(idNumber) < 6 {
+			return fmt.Errorf("%w: ID number is too short", ErrNGNInvalidIdentity)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported id_type %q", ErrNGNInvalidIdentity, req.IDType)
+	}
+	return nil
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func mapGraphAccountStatus(status string) entities.VirtualAccountStatus {
@@ -728,13 +979,26 @@ func normalizePhone(phone string) string {
 	if phone == "" {
 		return phone
 	}
-	if strings.HasPrefix(phone, "+") {
-		return phone
+	// Strip any existing + prefix for clean processing.
+	stripped := strings.TrimPrefix(phone, "+")
+	// Handle numbers that already include the 234 country code.
+	if strings.HasPrefix(stripped, "234") && len(stripped) > 3 {
+		// Strip leading 0 after country code (e.g. +23408012345678 → +2348012345678).
+		rest := stripped[3:]
+		rest = strings.TrimLeft(rest, "0")
+		if rest == "" {
+			return "+234"
+		}
+		return "+234" + rest
 	}
-	if strings.HasPrefix(phone, "0") {
-		return "+234" + strings.TrimPrefix(phone, "0")
+	if strings.HasPrefix(stripped, "0") {
+		return "+234" + strings.TrimPrefix(stripped, "0")
 	}
-	return "+" + phone
+	// Bare local number without leading 0 (e.g. 8012345678).
+	if len(stripped) >= 10 && len(stripped) <= 11 {
+		return "+234" + stripped
+	}
+	return "+" + stripped
 }
 
 func normalizeIDType(idType string) string {

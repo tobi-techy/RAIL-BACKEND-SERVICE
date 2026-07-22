@@ -92,6 +92,7 @@ type WithdrawalRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.WithdrawalStatus) error
 	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID string) error
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
+	UpdateCompletedAt(ctx context.Context, id uuid.UUID, completedAt time.Time) error
 	MarkCompleted(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
 	MarkCancelled(ctx context.Context, id uuid.UUID) error
@@ -2951,6 +2952,60 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 	return nil
 }
 
+// forceCompleteCryptoWithdrawal transitions a terminal non-completed withdrawal
+// (e.g. cancelled/failed) to completed when the on-chain provider confirms the
+// transfer actually succeeded. This bypasses the regular MarkCompleted SQL guard
+// which blocks transitions from cancelled/failed states.
+func (s *WithdrawalService) forceCompleteCryptoWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal) error {
+	if withdrawal == nil {
+		return nil
+	}
+
+	now := time.Now()
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusCompleted); err != nil {
+		return fmt.Errorf("failed to force complete withdrawal: %w", err)
+	}
+	// Update timestamps separately.
+	if err := s.withdrawalRepo.UpdateCompletedAt(ctx, withdrawal.ID, now); err != nil {
+		s.logger.Error("forceComplete: failed to set completed_at",
+			"error", err, "withdrawal_id", withdrawal.ID.String())
+	}
+	if withdrawal.TxHash != nil {
+		_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, *withdrawal.TxHash)
+	}
+	withdrawal.Status = entities.WithdrawalStatusCompleted
+	withdrawal.CompletedAt = &now
+	withdrawal.UpdatedAt = now
+
+	if s.commitment != nil {
+		_ = s.commitment.RecordOutflow(ctx, withdrawal.UserID, withdrawal.Amount, string(withdrawal.Currency))
+	}
+	if s.limitsService != nil {
+		_ = s.limitsService.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount)
+	}
+	if s.tieredLimits != nil {
+		_ = s.tieredLimits.RecordWithdrawal(ctx, withdrawal.UserID, withdrawal.Amount)
+	}
+	if metrics.Business != nil {
+		metrics.Business.WithdrawalsCompleted.WithLabelValues("crypto").Inc()
+		metrics.Business.WithdrawalAmount.WithLabelValues("crypto").Observe(withdrawal.Amount.InexactFloat64())
+	}
+	analytics.TrackEvent(context.Background(), withdrawal.UserID.String(), analytics.EventWithdrawalCompleted, map[string]any{
+		"withdrawal_id": withdrawal.ID.String(),
+		"type":          "crypto",
+		"amount":        withdrawal.Amount.InexactFloat64(),
+		"currency":      string(withdrawal.Currency),
+		"fee_amount":    withdrawal.FeeAmount.InexactFloat64(),
+		"forced":        true,
+	})
+	analytics.G().Increment(context.Background(), withdrawal.UserID.String(), map[string]int{
+		analytics.PropWithdrawalCount: 1,
+	})
+	s.logger.Warn("forceCompleteCryptoWithdrawal: withdrawal forcibly completed from terminal state",
+		"withdrawal_id", withdrawal.ID.String())
+	return nil
+}
+
 func (s *WithdrawalService) settleCompletedFiatWithdrawal(ctx context.Context, withdrawal *entities.Withdrawal) error {
 	if withdrawal == nil {
 		return nil
@@ -3097,6 +3152,42 @@ func (s *WithdrawalService) CompleteWithdrawalByTransferID(ctx context.Context, 
 	if withdrawal.IsFiat() {
 		return s.settleCompletedFiatWithdrawal(ctx, withdrawal)
 	}
+
+	// Guard: if the withdrawal is already in a terminal non-completed state
+	// (failed/cancelled/reversed) the pending ledger may already be gone.
+	// Before giving up, double-check the on-chain reality via the provider.
+	// This prevents a race where a CANCELLED/FAILED webhook arrived before
+	// the COMPLETE webhook, marking the withdrawal terminal while the funds
+	// actually left the wallet.
+	if withdrawal.Status.IsTerminal() && withdrawal.Status != entities.WithdrawalStatusCompleted {
+		if s.circleTransfer != nil && withdrawal.ProviderTransferID != nil && strings.TrimSpace(*withdrawal.ProviderTransferID) != "" {
+			tx, txErr := s.circleTransfer.GetTransaction(ctx, strings.TrimSpace(*withdrawal.ProviderTransferID))
+			if txErr == nil && tx != nil {
+				state := strings.ToUpper(string(tx.State))
+				if state == "COMPLETE" || state == "COMPLETED" || state == "CONFIRMED" {
+					s.logger.Warn("CompleteWithdrawalByTransferID: on-chain confirmed despite terminal status — overriding",
+						"withdrawal_id", withdrawal.ID.String(),
+						"current_status", withdrawal.Status,
+						"provider_transfer_id", *withdrawal.ProviderTransferID,
+						"tx_hash", tx.TxHash)
+					if tx.TxHash != "" {
+						_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, tx.TxHash)
+					}
+					if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
+						s.logger.Error("CompleteWithdrawalByTransferID: on-chain confirmed but failed to commit ledger",
+							"error", commitErr, "withdrawal_id", withdrawal.ID.String())
+					}
+					return s.forceCompleteCryptoWithdrawal(ctx, withdrawal)
+				}
+			}
+		}
+		s.logger.Warn("CompleteWithdrawalByTransferID: withdrawal in terminal non-completed state — cannot settle",
+			"withdrawal_id", withdrawal.ID.String(),
+			"status", withdrawal.Status,
+			"transfer_id", transferID)
+		return nil
+	}
+
 	// Commit the pending ledger debit if the withdrawal has one.
 	if commitErr := s.commitPendingWithdrawalLedgerEntry(ctx, withdrawal); commitErr != nil {
 		s.logger.Error("webhook settled crypto withdrawal but failed to commit ledger",

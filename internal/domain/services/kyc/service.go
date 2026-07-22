@@ -48,6 +48,16 @@ var (
 	ErrTaxIDDecryptionFailed  = errors.New("failed to decrypt stored tax_id - cannot proceed")
 	ErrDiditGovIDDataMissing  = errors.New("didit gov ID document data missing")
 
+	ErrSproutPhoneRequired   = errors.New("phone number is required")
+	ErrSproutInvalidDOB      = errors.New("invalid date_of_birth format")
+	ErrSproutInvalidBVN      = errors.New("invalid BVN format")
+	ErrSproutMissingRequest  = errors.New("missing request")
+
+	ErrBloomNotAtSproutTier    = errors.New("must be at Sprout tier to upgrade to Bloom")
+	ErrBloomBridgeNotConfigured = errors.New("Bridge adapter not available")
+	ErrBloomBridgeSubmission   = errors.New("Bridge KYC submission failed")
+	ErrBloomMissingRequest     = errors.New("missing request")
+
 	BridgeCustomerExistsError = errors.New("Bridge customer already exists")
 )
 
@@ -2331,7 +2341,7 @@ func (s *Service) StartDiditSession(ctx context.Context, userID uuid.UUID, req *
 // 6. Promotes user to Tier 2
 func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *entities.SproutUpgradeRequest) (*entities.SproutUpgradeResponse, error) {
 	if req == nil {
-		return nil, fmt.Errorf("missing request")
+		return nil, ErrSproutMissingRequest
 	}
 	s.logger.Info("Sprout upgrade started",
 		zap.String("user_id", userID.String()),
@@ -2366,24 +2376,21 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 	// Validate phone format
 	phone := strings.TrimSpace(req.Phone)
 	if phone == "" {
-		return nil, fmt.Errorf("phone number is required")
+		return nil, ErrSproutPhoneRequired
 	}
 
 	// Step 3: Parse date of birth
 	dob, err := time.Parse("2006-01-02", req.DateOfBirth)
 	if err != nil {
-		return nil, fmt.Errorf("invalid date_of_birth format (expected YYYY-MM-DD): %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrSproutInvalidDOB, err)
 	}
 
 	// Step 4: Fetch Didit session results to get NIN, ID type, ID number, images
 	var diditVerification *didit.IDVerification
-	if s.diditAdapter != nil {
+	if s.diditAdapter != nil && req.DiditSessionID != "" {
 		decision, diditErr := s.diditAdapter.GetSessionDecision(ctx, req.DiditSessionID)
 		if diditErr != nil {
-			s.logger.Warn("Failed to fetch Didit session decision, continuing without document data",
-				zap.Error(diditErr),
-				zap.String("user_id", userID.String()),
-				zap.String("session_id", req.DiditSessionID))
+			return nil, fmt.Errorf("failed to fetch Didit verification results: %w", diditErr)
 		} else if decision != nil && len(decision.IDVerifications) > 0 {
 			diditVerification = &decision.IDVerifications[0]
 			docLast4 := ""
@@ -2407,6 +2414,13 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 		idNumber = diditVerification.DocumentNumber
 	}
 
+	// Validate BVN early — before any profile mutations — so an invalid BVN
+	// doesn't leave the profile partially updated.
+	bvn := strings.TrimSpace(req.BVN)
+	if len(bvn) != 11 || !isNumeric(bvn) {
+		return nil, ErrSproutInvalidBVN
+	}
+
 	// Step 6: Update user profile with phone + DOB
 	if user.Phone == nil || *user.Phone == "" {
 		if phoneErr := s.updateUserProfile(ctx, userID, map[string]interface{}{
@@ -2427,26 +2441,24 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 		}
 	}
 
-	// Validate BVN
-	bvn := strings.TrimSpace(req.BVN)
-	if len(bvn) != 11 || !isNumeric(bvn) {
-		return nil, fmt.Errorf("invalid BVN format (must be 11 digits)")
-	}
-
 	// Step 7: Provision Graph person + NGN bank account
 	var ngnaAccount *entities.NGNAccountInfo
-	var graphPersonID string
 	if s.graphVAService != nil {
-		va, graphErr := s.graphVAService.ProvisionNGNAccount(ctx, &funding.ProvisionNGNAccountRequest{
+		provisionReq := &funding.ProvisionNGNAccountRequest{
 			UserID:   userID,
 			BVN:      bvn,
 			IDType:   idType,
 			IDNumber: idNumber,
-		})
+		}
+		// Pass Didit document images to satisfy Graph's document requirement.
+		// These are presigned URLs from the completed Didit verification session.
+		if diditVerification != nil {
+			provisionReq.DiditFrontImage = diditVerification.FrontImage
+			provisionReq.DiditBackImage = diditVerification.BackImage
+		}
+		va, graphErr := s.graphVAService.ProvisionNGNAccount(ctx, provisionReq)
 		if graphErr != nil {
-			s.logger.Warn("Graph NGN provisioning failed during Sprout upgrade (non-fatal)",
-				zap.Error(graphErr),
-				zap.String("user_id", userID.String()))
+			return nil, fmt.Errorf("NGN account provisioning failed: %w", graphErr)
 		} else if va != nil {
 			ngnaAccount = &entities.NGNAccountInfo{
 				AccountNumber:   va.AccountNumber,
@@ -2454,13 +2466,11 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 				BeneficiaryName: va.BeneficiaryName,
 				Status:          string(va.Status),
 			}
-			if va.GraphPersonID != nil {
-				graphPersonID = *va.GraphPersonID
-			}
 		}
 	}
 
 	// Step 8: Submit to Bridge KYC (source of funds will be collected at Bloom tier)
+	var bridgeResult entities.KYCProviderResult
 	if s.bridgeAdapter != nil && profile.BridgeCustomerID != nil && diditVerification != nil {
 		bridgeUpdateReq := &bridge.UpdateCustomerRequest{
 			IdentifyingInformation: []bridge.IdentifyingInfo{
@@ -2475,11 +2485,15 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 		}
 		_, bridgeErr := s.bridgeAdapter.UpdateCustomer(ctx, *profile.BridgeCustomerID, bridgeUpdateReq)
 		if bridgeErr != nil {
+			bridgeResult = entities.KYCProviderResult{Success: false, Status: "failed", Error: "KYC data submission failed"}
 			s.logger.Warn("Bridge KYC submission failed during Sprout upgrade (non-fatal)",
 				zap.Error(bridgeErr),
 				zap.String("user_id", userID.String()))
+		} else {
+			bridgeResult = entities.KYCProviderResult{Success: true, Status: "submitted"}
 		}
 	} else if s.bridgeAdapter != nil && profile.BridgeCustomerID != nil {
+		bridgeResult = entities.KYCProviderResult{Success: false, Status: "skipped", Error: "no Didit verification data"}
 		s.logger.Info("Skipping Bridge KYC submission — no Didit verification data available",
 			zap.String("user_id", userID.String()))
 	}
@@ -2498,13 +2512,14 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 	if ngnaAccount != nil {
 		msg += " NGN account is ready."
 	} else {
-		msg += " NGN account provisioning pending — you can retry from settings."
+		msg += " NGN account provisioning is not configured."
 	}
 	response := &entities.SproutUpgradeResponse{
-		Status:   "upgraded",
-		Message:  msg,
-		KYCTier:  entities.KYCTierLevelBasic,
-		TierName: "basic",
+		Status:        "upgraded",
+		Message:       msg,
+		KYCTier:       entities.KYCTierLevelBasic,
+		TierName:      "basic",
+		BridgeResult:  bridgeResult,
 		Capabilities: entities.TierCapabilities{
 			Tier:               caps.Tier,
 			CanDepositCrypto:   caps.CanDepositCrypto,
@@ -2515,7 +2530,6 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 			CanInvestTokenized: caps.CanInvestTokenized,
 		},
 		NGNAccount:     ngnaAccount,
-		GraphPersonID:  graphPersonID,
 	}
 
 	s.logger.Info("Sprout upgrade completed",
@@ -2533,7 +2547,7 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 // 3. Promotes user to Tier 3
 func (s *Service) BloomUpgrade(ctx context.Context, userID uuid.UUID, req *entities.BloomUpgradeRequest) (*entities.BloomUpgradeResponse, error) {
 	if req == nil {
-		return nil, fmt.Errorf("missing request")
+		return nil, ErrBloomMissingRequest
 	}
 	s.logger.Info("Bloom upgrade started",
 		zap.String("user_id", userID.String()))
@@ -2546,7 +2560,7 @@ func (s *Service) BloomUpgrade(ctx context.Context, userID uuid.UUID, req *entit
 
 	// Must be at Sprout tier (Tier 2) to upgrade to Bloom
 	if profile.KYCTier < entities.KYCTierLevelBasic {
-		return nil, fmt.Errorf("must be at Sprout tier (Tier 2) to upgrade to Bloom")
+		return nil, ErrBloomNotAtSproutTier
 	}
 	if profile.KYCTier >= entities.KYCTierLevelAdvanced {
 		return &entities.BloomUpgradeResponse{
@@ -2565,7 +2579,7 @@ func (s *Service) BloomUpgrade(ctx context.Context, userID uuid.UUID, req *entit
 	// Step 2: Submit employment + financial profile to Bridge KYC
 	// Bridge success is required for Bloom tier — unlocks USD/EUR accounts, cards, investing
 	if s.bridgeAdapter == nil {
-		return nil, fmt.Errorf("Bridge adapter not available — cannot complete Bloom upgrade")
+		return nil, ErrBloomBridgeNotConfigured
 	}
 	bridgeUpdateReq := &bridge.UpdateCustomerRequest{
 		EmploymentStatus:           req.EmploymentStatus,
@@ -2579,7 +2593,7 @@ func (s *Service) BloomUpgrade(ctx context.Context, userID uuid.UUID, req *entit
 		s.logger.Error("Bridge KYC submission failed during Bloom upgrade",
 			zap.Error(bridgeErr),
 			zap.String("user_id", userID.String()))
-		return nil, fmt.Errorf("Bridge KYC submission failed: %w", bridgeErr)
+		return nil, fmt.Errorf("%w: %v", ErrBloomBridgeSubmission, bridgeErr)
 	}
 	bridgeResult := entities.KYCProviderResult{
 		Success: true,
@@ -3173,7 +3187,10 @@ func (s *Service) submitToBridgeFromDidit(ctx context.Context, bridgeCustomerID 
 	if err != nil {
 		s.logger.Warn("Failed to sync Didit KYC to Bridge",
 			zap.Error(err), zap.String("bridge_customer_id", bridgeCustomerID))
-		return entities.KYCProviderResult{Success: false, Status: "failed", Error: err.Error()}
+		// Clean up presigned document URLs even on failure — they contain auth
+		// tokens and should not persist in the database longer than necessary.
+		s.clearSensitiveDiditData(submission)
+		return entities.KYCProviderResult{Success: false, Status: "failed", Error: "verification sync failed"}
 	}
 	s.clearSensitiveDiditData(submission)
 	return entities.KYCProviderResult{Success: true, Status: string(customer.Status)}

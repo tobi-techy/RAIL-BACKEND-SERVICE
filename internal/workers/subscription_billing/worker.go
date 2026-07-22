@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"go.uber.org/zap"
 )
 
@@ -54,12 +55,20 @@ func (w *Worker) run(ctx context.Context) {
 	if charged > 0 || failed > 0 {
 		w.logger.Info("Subscription billing cycle complete",
 			zap.Int("charged", charged), zap.Int("failed", failed))
+		analytics.TrackEvent(ctx, "system", "subscription_billing_cycle", map[string]any{
+			"charged": charged,
+			"failed":  failed,
+		})
 	}
 
 	transferred, retryFailed := w.renewer.RetryFailedTransfers(ctx)
 	if transferred > 0 || retryFailed > 0 {
 		w.logger.Info("Subscription transfer retry complete",
 			zap.Int("transferred", transferred), zap.Int("failed", retryFailed))
+		analytics.TrackEvent(ctx, "system", "subscription_transfer_retry", map[string]any{
+			"transferred": transferred,
+			"failed":      retryFailed,
+		})
 	}
 }
 

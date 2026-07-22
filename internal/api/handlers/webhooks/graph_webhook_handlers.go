@@ -12,6 +12,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const maxWebhookBodySize = 1 << 20 // 1MB
+
 // GraphWebhookHandler handles inbound Graph (useoval.com) webhooks: NGN account
 // activation (issuance events) and NGN deposits (transaction events).
 type GraphWebhookHandler struct {
@@ -28,7 +30,7 @@ func NewGraphWebhookHandler(service *funding.GraphVirtualAccountService, webhook
 // HandleWebhook verifies the signature and routes Graph events.
 // POST /webhooks/graph
 func (h *GraphWebhookHandler) HandleWebhook(c *gin.Context) {
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 		return
@@ -92,6 +94,12 @@ func (h *GraphWebhookHandler) handleBankAccountEvent(c *gin.Context, event *grap
 			c.JSON(http.StatusOK, gin.H{"status": "ignored"})
 			return
 		}
+		if event.Data.AccountNumber == "" {
+			h.logger.Info("Graph account.created without account number — ignoring (bank details not yet ready)",
+				zap.String("account_id", event.Data.ID))
+			c.JSON(http.StatusOK, gin.H{"status": "ignored"})
+			return
+		}
 		// Use webhook data directly — no extra API call to Graph needed.
 		var bankAddr *graph.BankAddress
 		if event.Data.BankAddress != nil {
@@ -123,16 +131,27 @@ func (h *GraphWebhookHandler) handleBankAccountEvent(c *gin.Context, event *grap
 		if err := h.service.HandleAccountActivatedWithData(c.Request.Context(), event.Data.ID, bankAcct); err != nil {
 			h.logger.Error("Failed to activate Graph NGN account",
 				zap.Error(err), zap.String("account_id", event.Data.ID))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "activation_failed"})
+			// Return 200 to prevent Graph retry storms on non-recoverable errors.
+			c.JSON(http.StatusOK, gin.H{"status": "error"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "processed"})
 
 	case "account.issuance.failed":
-		h.logger.Warn("Graph account issuance failed",
-			zap.String("account_id", event.Data.ID),
-			zap.String("status", event.Data.Status))
-		c.JSON(http.StatusOK, gin.H{"status": "logged"})
+		if event.Data.ID == "" {
+			c.JSON(http.StatusOK, gin.H{"status": "ignored"})
+			return
+		}
+		if err := h.service.HandleAccountIssuanceFailed(c.Request.Context(), event.Data.ID); err != nil {
+			h.logger.Error("Failed to mark Graph account as failed",
+				zap.Error(err), zap.String("account_id", event.Data.ID))
+			// Return 200 to prevent Graph retry storms on non-recoverable errors.
+			c.JSON(http.StatusOK, gin.H{"status": "error"})
+			return
+		}
+		h.logger.Warn("Graph account issuance failed — account marked as failed",
+			zap.String("account_id", event.Data.ID))
+		c.JSON(http.StatusOK, gin.H{"status": "processed"})
 
 	case "account.migrated":
 		h.logger.Info("Graph account migrated",
@@ -140,9 +159,17 @@ func (h *GraphWebhookHandler) handleBankAccountEvent(c *gin.Context, event *grap
 		c.JSON(http.StatusOK, gin.H{"status": "logged"})
 
 	case "account.closed":
+		if event.Data.ID == "" {
+			c.JSON(http.StatusOK, gin.H{"status": "ignored"})
+			return
+		}
+		if err := h.service.HandleAccountClosed(c.Request.Context(), event.Data.ID); err != nil {
+			h.logger.Error("Failed to mark Graph account as closed",
+				zap.Error(err), zap.String("account_id", event.Data.ID))
+		}
 		h.logger.Warn("Graph account closed",
 			zap.String("account_id", event.Data.ID))
-		c.JSON(http.StatusOK, gin.H{"status": "logged"})
+		c.JSON(http.StatusOK, gin.H{"status": "processed"})
 
 	default:
 		h.logger.Info("Unhandled bank_account event", zap.String("event_type", event.EventType))
@@ -255,7 +282,8 @@ func (h *GraphWebhookHandler) handleAccountCredit(c *gin.Context, event *graph.W
 			zap.Error(err),
 			zap.String("account_id", accountID),
 			zap.String("tx_ref", txRef))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "deposit_processing_failed"})
+		// Return 200 to prevent Graph retry storms on non-recoverable errors.
+		c.JSON(http.StatusOK, gin.H{"status": "error"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})

@@ -318,6 +318,11 @@ func (a *Adapter) ExecuteContract(ctx context.Context, req *CreateContractExecut
 	return a.client.CreateContractExecution(ctx, req)
 }
 
+// ListTransactions returns transactions for a wallet, optionally filtered by operation and state.
+func (a *Adapter) ListTransactions(ctx context.Context, walletID string, operation string, state string) ([]Transaction, error) {
+	return a.client.ListTransactions(ctx, walletID, operation, state)
+}
+
 // FindWalletWithUSDC searches all wallets for a user (by refId) and returns the first
 // wallet+tokenId that holds USDC. Prefers Solana (primary custody chain), then EVM fallback.
 func (a *Adapter) FindWalletWithUSDC(ctx context.Context, userRefID string) (string, string, string, string, error) {

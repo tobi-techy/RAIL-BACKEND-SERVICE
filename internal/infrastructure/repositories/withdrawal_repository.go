@@ -234,6 +234,22 @@ func (r *WithdrawalRepository) UpdateTxHash(ctx context.Context, id uuid.UUID, t
 	return nil
 }
 
+// UpdateCompletedAt sets the completed_at timestamp for a withdrawal by ID.
+// Used by forceCompleteCryptoWithdrawal to backdate or set the completion
+// timestamp when overriding a terminal non-completed status.
+func (r *WithdrawalRepository) UpdateCompletedAt(ctx context.Context, id uuid.UUID, completedAt time.Time) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE withdrawals SET completed_at = $1, updated_at = $2 WHERE id = $3`,
+		completedAt, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update completed_at: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("withdrawal %s not found", id)
+	}
+	return nil
+}
+
 // MarkCompleted marks the withdrawal as completed, only from valid predecessor states.
 func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) error {
 	now := time.Now()

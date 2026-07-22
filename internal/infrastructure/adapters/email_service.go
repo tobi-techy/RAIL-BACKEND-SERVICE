@@ -23,7 +23,7 @@ import (
 
 const (
 	resendAPIBaseURL  = "https://api.resend.com"
-	unosendAPIBaseURL = "https://www.unosend.co/api/v1"
+	unosendAPIBaseURL = "https://api.unosend.co"
 	emailSendTimeout  = 30 * time.Second
 )
 
@@ -248,38 +248,61 @@ type BatchEmail struct {
 	ReplyTo string   `json:"reply_to,omitempty"`
 }
 
-// SendBatchEmails sends up to 100 emails in a single Resend batch API call.
+// SendBatchEmails sends up to 100 emails in a single batch API call.
 // Satisfies growthengine.BatchEmailSender interface.
 func (e *EmailService) SendBatchEmails(ctx context.Context, emails []BatchEmail) error {
 	if len(emails) == 0 {
 		return nil
 	}
 	if len(emails) > 100 {
-		return fmt.Errorf("resend batch: max 100 emails per batch, got %d", len(emails))
+		return fmt.Errorf("batch: max 100 emails per batch, got %d", len(emails))
 	}
 
-	body, _ := json.Marshal(emails)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIBaseURL+"/emails/batch", bytes.NewReader(body))
+	provider := strings.ToLower(strings.TrimSpace(e.config.Provider))
+
+	var batchURL string
+	var body []byte
+	var err error
+
+	switch provider {
+	case "resend":
+		batchURL = resendAPIBaseURL + "/emails/batch"
+		body, err = json.Marshal(emails)
+	case "unosend":
+		batchURL = unosendAPIBaseURL + "/emails/batch"
+		body, err = json.Marshal(map[string]any{"emails": emails})
+	default:
+		return fmt.Errorf("batch: unsupported provider %s", provider)
+	}
+
 	if err != nil {
-		return fmt.Errorf("resend batch: create request: %w", err)
+		return fmt.Errorf("batch: marshal emails: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, batchURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("batch: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("resend batch: send failed: %w", err)
+		return fmt.Errorf("batch: send failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 400 {
-		e.logger.Error("Resend batch returned error",
-			zap.Int("count", len(emails)), zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
-		return fmt.Errorf("resend batch: status %d", resp.StatusCode)
+		e.logger.Error("Batch email returned error",
+			zap.String("provider", provider),
+			zap.Int("count", len(emails)),
+			zap.Int("status", resp.StatusCode),
+			zap.String("body", string(respBody)))
+		return fmt.Errorf("batch (%s): status %d", provider, resp.StatusCode)
 	}
 
-	e.logger.Info("Batch email sent", zap.String("provider", "resend"), zap.Int("count", len(emails)))
+	e.logger.Info("Batch email sent", zap.String("provider", provider), zap.Int("count", len(emails)))
 	return nil
 }
 
@@ -299,10 +322,11 @@ func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlCont
 	}
 
 	payload := map[string]any{
-		"from":    from,
-		"to":      []string{to},
-		"subject": subject,
-		"html":    htmlContent,
+		"from":     from,
+		"to":       []string{to},
+		"subject":  subject,
+		"html":     htmlContent,
+		"priority": "high",
 	}
 
 	if textContent != "" {

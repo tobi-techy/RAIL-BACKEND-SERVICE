@@ -69,6 +69,19 @@ func (h *NGNHandlers) ProvisionNGNAccount(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bvn_nin_required", "message": err.Error()})
 			return
 		}
+		if errors.Is(err, funding.ErrNGNInvalidIdentity) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_identity", "message": err.Error()})
+			return
+		}
+		var missingProfile *funding.NGNProfileIncompleteError
+		if errors.As(err, &missingProfile) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "profile_incomplete",
+				"message": "Complete your profile before opening a Naira account.",
+				"missing": missingProfile.Missing,
+			})
+			return
+		}
 		h.logger.Error("Failed to provision NGN virtual account", "error", err, "user_id", userUUID)
 		common.SendInternalError(c, "NGN_ACCOUNT_ERROR", "Failed to provision NGN virtual account")
 		return

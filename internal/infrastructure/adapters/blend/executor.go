@@ -126,25 +126,31 @@ type ExecutedTx struct {
 	TransactionID string
 }
 
+// WalletResolver maps a Blend chain ID to the user's Circle wallet on that chain.
+// The executor uses this to execute steps on the correct chain (e.g. Ethereum vs Base).
+type WalletResolver func(ctx context.Context, chainID int64) (walletID, address string, err error)
+
 // Execute runs each step of a plan via Circle, returning the resulting tx hashes
 // in submission order. The caller is responsible for handing these to /intent/submit.
 //
+// resolveWallet maps each step's chain ID to the correct Circle wallet for that chain.
+// This ensures the tx executes on the chain where the vault contract lives, not always Base.
+//
 // trustedSafe (optional) is the route's own Safe, dynamically trusted for THIS call in
-// addition to the static allowlist. It is verified on-chain (contract bytecode + owner)
-// before being trusted when a SafeVerifier is configured; without a verifier it is
-// allowed with a loud warning (dev only).
+// addition to the static allowlist. On-chain verification is skipped for non-Base chains
+// (Blend's ResolveSafe already validated the Safe on that chain).
 //
 // Idempotency: idempotencyPrefix is combined with the step index to produce a stable
 // Circle idempotency key per step. Re-runs with the same prefix are safe.
-func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string, trustedSafe *TrustedSafe) ([]ExecutedTx, error) {
+func (e *PlanExecutor) Execute(ctx context.Context, resolveWallet WalletResolver, plan *ActionPlan, idempotencyPrefix string, trustedSafe *TrustedSafe) ([]ExecutedTx, error) {
 	if e == nil || e.circle == nil {
 		return nil, errors.New("blend executor not configured")
 	}
 	if plan == nil || len(plan.Steps) == 0 {
 		return nil, errors.New("blend plan: no steps to execute")
 	}
-	if strings.TrimSpace(walletID) == "" {
-		return nil, errors.New("blend plan: circle wallet id required")
+	if resolveWallet == nil {
+		return nil, errors.New("blend plan: wallet resolver required")
 	}
 
 	if e.allowlist.Empty() {
@@ -160,20 +166,24 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 		auditFields := []zap.Field{
 			zap.String("safe_address", safeAddr),
 			zap.String("owner_eoa", trustedSafe.OwnerEOA),
-			zap.String("wallet_id", walletID),
-			zap.String("idempotency_prefix", idempotencyPrefix),
 			zap.Int64("chain_id", trustedSafe.ChainID),
+			zap.String("idempotency_prefix", idempotencyPrefix),
 		}
-		if e.verifier != nil {
+		// Only verify Safe on-chain for Base — for other chains Blend's ResolveSafe
+		// already validated it, and we may not have an RPC endpoint for that chain.
+		if e.verifier != nil && trustedSafe.ChainID == BaseMainnetChainID {
 			if err := e.verifier.VerifySafe(ctx, trustedSafe.ChainID, safeAddr, trustedSafe.OwnerEOA); err != nil {
 				e.logger.Error("Blend: dynamic Safe trust REJECTED — on-chain verification failed",
 					append(auditFields, zap.Error(err))...)
 				return nil, fmt.Errorf("blend plan: refusing to trust Safe %s: %w", safeAddr, err)
 			}
 			e.logger.Info("Blend: dynamic Safe trust granted (on-chain verified)", auditFields...)
-		} else {
+		} else if e.verifier == nil {
 			// No verifier configured — refuse to trust without on-chain verification.
 			return nil, fmt.Errorf("blend plan: refusing to trust Safe %s without on-chain verification (verifier not configured)", safeAddr)
+		} else {
+			// Non-Base chain — Blend's ResolveSafe already validated; trust with a log.
+			e.logger.Info("Blend: dynamic Safe trust granted (non-Base chain, Blend-validated)", auditFields...)
 		}
 		dynamic[strings.ToLower(safeAddr)] = struct{}{}
 	}
@@ -182,7 +192,7 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 	// into a single Safe MultiSend executed via Safe.execTransaction (the Safe is the
 	// only contract Circle calls here, and it was just on-chain verified above).
 	if plan.DeployType == deployMultisend {
-		return e.executeMultisend(ctx, walletID, plan, idempotencyPrefix, trustedSafe)
+		return e.executeMultisend(ctx, resolveWallet, plan, idempotencyPrefix, trustedSafe)
 	}
 
 	results := make([]ExecutedTx, 0, len(plan.Steps))
@@ -203,10 +213,12 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 			return results, fmt.Errorf("blend plan step %d: invalid value: %w", i, err)
 		}
 
-		// Stable idempotency key: same (route/redemption, step index, exact tx) always
-		// produces the same key, so a retry resumes rather than re-broadcasting a
-		// duplicate on-chain transaction (a random key per call double-deposits/redeems).
-		// A genuinely different plan (re-quote with new calldata) yields a new key.
+		// Resolve the correct wallet for this step's chain.
+		walletID, _, wErr := resolveWallet(ctx, step.ChainID)
+		if wErr != nil {
+			return results, fmt.Errorf("blend plan step %d: resolve wallet for chain %d: %w", i, step.ChainID, wErr)
+		}
+
 		idemKey := uuid.NewSHA1(uuid.NameSpaceOID,
 			[]byte(fmt.Sprintf("%s|%d|%s", idempotencyPrefix, i, txDigest(step)))).String()
 		req := &circlepkg.CreateContractExecutionRequest{
@@ -214,12 +226,13 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 			WalletID:        walletID,
 			ContractAddress: step.To,
 			CallData:        callData,
-			Amount:          value, // wei value sent with the call
+			Amount:          value,
 			FeeLevel:        "MEDIUM",
 		}
 		e.logger.Info("Blend executor submitting step",
 			zap.Int("step", i),
 			zap.Int64("chain_id", step.ChainID),
+			zap.String("wallet_id", walletID),
 			zap.String("to", step.To),
 			zap.String("desc", step.Description),
 			zap.Bool("has_calldata", callData != ""),
@@ -248,7 +261,7 @@ func (e *PlanExecutor) Execute(ctx context.Context, walletID string, plan *Actio
 // MultiSend — the non-4337 equivalent of Blend's batched Safe UserOp. The owner (this
 // Circle wallet) authorizes via a pre-validated signature, valid because it is both the
 // caller and the Safe's sole owner (verified on-chain above, incl. threshold==1).
-func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, plan *ActionPlan, idempotencyPrefix string, trustedSafe *TrustedSafe) ([]ExecutedTx, error) {
+func (e *PlanExecutor) executeMultisend(ctx context.Context, resolveWallet WalletResolver, plan *ActionPlan, idempotencyPrefix string, trustedSafe *TrustedSafe) ([]ExecutedTx, error) {
 	if trustedSafe == nil || strings.TrimSpace(trustedSafe.Address) == "" {
 		return nil, errors.New("blend: multisend plan requires the route's Safe")
 	}
@@ -257,6 +270,13 @@ func (e *PlanExecutor) executeMultisend(ctx context.Context, walletID string, pl
 	}
 	if e.verifier == nil {
 		return nil, fmt.Errorf("blend: refusing Safe multisend without on-chain verification (verifier not configured)")
+	}
+
+	// Resolve the wallet for the Safe's chain — the multisend tx must be submitted
+	// from the same chain where the vault/Safe is deployed.
+	walletID, _, wErr := resolveWallet(ctx, trustedSafe.ChainID)
+	if wErr != nil {
+		return nil, fmt.Errorf("blend: resolve wallet for Safe chain %d: %w", trustedSafe.ChainID, wErr)
 	}
 
 	// Validate every inner step target against the same allowlist the direct path uses,

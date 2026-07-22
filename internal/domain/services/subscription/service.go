@@ -144,6 +144,12 @@ func (s *Service) Cancel(ctx context.Context, userID uuid.UUID) error {
 		return fmt.Errorf("update subscription: %w", err)
 	}
 	s.invalidateCache(ctx, userID)
+
+	analytics.TrackEvent(ctx, userID.String(), "subscription_cancelled", map[string]any{
+		"plan":   sub.Plan,
+		"status": string(sub.Status),
+	})
+
 	return nil
 }
 
@@ -279,6 +285,10 @@ func (s *Service) handleFailedCharge(ctx context.Context, sub *entities.Subscrip
 				"Your subscription has expired after multiple failed charges. Subscribe again anytime.",
 				map[string]interface{}{"type": "subscription_expired"})
 		}
+		analytics.TrackEvent(ctx, sub.UserID.String(), "subscription_expired", map[string]any{
+			"plan":       sub.Plan,
+			"fail_count": failCount,
+		})
 	} else {
 		sub.Status = entities.SubscriptionStatusPastDue
 		s.repo.UpdateSubscription(ctx, sub)
@@ -288,6 +298,10 @@ func (s *Service) handleFailedCharge(ctx context.Context, sub *entities.Subscrip
 				"We couldn't charge your spend balance for Rail Pro. Add funds to keep your subscription active.",
 				map[string]interface{}{"type": "subscription_past_due"})
 		}
+		analytics.TrackEvent(ctx, sub.UserID.String(), "subscription_payment_failed", map[string]any{
+			"plan":       sub.Plan,
+			"fail_count": failCount,
+		})
 	}
 }
 

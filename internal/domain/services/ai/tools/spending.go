@@ -606,6 +606,39 @@ func RegisterWithdrawalTools(r *Registry) {
 	))
 
 	r.Register(NewTool(
+		"transfer_funds",
+		"Move money between the user's Spend and Stash balances (e.g. 'move $200 into my stash'). Moves real money — it is staged for user confirmation, never executed inline.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"from":   {"type": "string", "description": "Source balance: 'spend' or 'stash'"},
+			"to":     {"type": "string", "description": "Destination balance: 'spend' or 'stash'"},
+			"amount": {"type": "string", "description": "Amount to move, e.g. '200.00'"},
+		}, []string{"to", "amount"}),
+		core.CategoryAction,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.FundsTransfer == nil {
+				return &core.ToolResult{Error: "transfer service not available"}, nil
+			}
+			from := GetArgString(args, "from")
+			if from == "" {
+				from = "spend"
+			}
+			to := GetArgString(args, "to")
+			amountStr := GetArgString(args, "amount")
+			if to == "" || amountStr == "" {
+				return &core.ToolResult{Error: "to and amount are required"}, nil
+			}
+			amount, err := decimal.NewFromString(amountStr)
+			if err != nil {
+				return &core.ToolResult{Error: fmt.Sprintf("invalid amount: %s", amountStr)}, nil
+			}
+			if err := deps.FundsTransfer.Transfer(ctx, userID, from, to, amount); err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"status": "transferred", "from": from, "to": to, "amount": amount.String()}}, nil
+		},
+	))
+
+	r.Register(NewTool(
 		"get_linked_banks",
 		"Get linked bank accounts for withdrawal",
 		SimpleArgs(nil, nil),

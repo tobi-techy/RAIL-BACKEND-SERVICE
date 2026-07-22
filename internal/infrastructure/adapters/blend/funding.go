@@ -57,6 +57,34 @@ func (r *DepositRouter) resolveUserBaseWallet(ctx context.Context, userID uuid.U
 	return r.resolveUserWalletByChains(ctx, userID, r.baseCircleChains(), "Base")
 }
 
+// chainIDToCircleChains maps a Blend/EVM chain ID to Circle blockchain names.
+// Used to resolve the correct wallet for a given chain when Blend's payload
+// specifies which chain the vault action must execute on.
+var chainIDToCircleChains = map[int64][]string{
+	1:         {"ETH"},
+	8453:      {"BASE"},
+	42161:     {"ARB"},
+	10:        {"OP"},
+	137:       {"MATIC"},
+	43114:     {"AVAX"},
+	11155111:  {"ETH-SEPOLIA"},
+	84532:     {"BASE-SEPOLIA"},
+	421614:    {"ARB-SEPOLIA"},
+	11155420:  {"OP-SEPOLIA"},
+	80002:     {"MATIC-AMOY"},
+	43113:     {"AVAX-FUJI"},
+}
+
+// resolveUserWalletByChainID resolves the user's Circle wallet for a specific EVM chain.
+func (r *DepositRouter) resolveUserWalletByChainID(ctx context.Context, userID uuid.UUID, chainID int64) (baseWallet, error) {
+	chains, ok := chainIDToCircleChains[chainID]
+	if !ok {
+		return baseWallet{}, fmt.Errorf("blend: unsupported chain ID %d for wallet resolution", chainID)
+	}
+	label := fmt.Sprintf("chain %d", chainID)
+	return r.resolveUserWalletByChains(ctx, userID, chains, label)
+}
+
 // resolveUserWalletByChains is the shared wallet resolution logic for any chain filter.
 func (r *DepositRouter) resolveUserWalletByChains(ctx context.Context, userID uuid.UUID, chains []string, label string) (baseWallet, error) {
 	var dbWallet struct {

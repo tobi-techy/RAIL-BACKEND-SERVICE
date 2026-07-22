@@ -969,17 +969,25 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
 				}
 
-				// RampHub: read-only best-rate lookups (no KYC required)
-				if container.RampHandlers != nil {
-					rampRO := funding.Group("/ramp")
-					rampRO.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-					rampRO.GET("/quote", container.RampHandlers.GetQuote)
-					rampRO.GET("/banks", container.RampHandlers.GetBanks)
-					rampRO.GET("/orders", container.RampHandlers.GetOrders)
-					rampRO.GET("/orders/:id/status", container.RampHandlers.GetOrderStatus)
-				}
+			// RampHub: read-only best-rate lookups (no KYC required)
+			if container.RampHandlers != nil {
+				rampRO := funding.Group("/ramp")
+				rampRO.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+				rampRO.GET("/quote", container.RampHandlers.GetQuote)
+				rampRO.GET("/banks", container.RampHandlers.GetBanks)
+				rampRO.GET("/orders", container.RampHandlers.GetOrders)
+				rampRO.GET("/orders/:id/status", container.RampHandlers.GetOrderStatus)
+			}
 
-				// KYC-gated funding operations
+			// Graph NGN named virtual account (no Bridge KYC — uses own Graph verification)
+			if container.NGNHandlers != nil {
+				funding.GET("/ngn/virtual-account", container.NGNHandlers.GetNGNAccount)
+				funding.POST("/ngn/virtual-account",
+					middleware.AuthRateLimit(5),
+					container.NGNHandlers.ProvisionNGNAccount)
+			}
+
+			// KYC-gated funding operations
 				// Deposit address — available to all users with Circle wallets (no KYC required)
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 
@@ -1590,9 +1598,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
 						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
 						// ElevenLabs server tool webhook (public, authenticated by webhook secret)
-						v1.POST("/ai/voice/server-tool/:tool_name", voiceHandler.HandleServerTool)
-					}
+					v1.POST("/ai/voice/server-tool/:tool_name", voiceHandler.HandleServerTool)
 				}
+
+				// Support agent (ElevenLabs)
+				if container.Config.AI.ElevenLabs.SupportAgentID != "" {
+					supportHandler := handlers.NewSupportHandler(
+						container.Config.AI.ElevenLabs.APIKey,
+						container.Config.AI.ElevenLabs.SupportAgentID,
+						container.ZapLog,
+					)
+					aiGroup.POST("/support/signed-url", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), supportHandler.IssueSignedURL)
+				}
+			}
 
 				// Conversation endpoints. The "gate-on + nil-passcode" invariant
 				// is validated at application startup (Application.validateSecurityConfig),

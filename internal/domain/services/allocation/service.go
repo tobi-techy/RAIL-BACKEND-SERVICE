@@ -377,8 +377,11 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 				span.RecordError(err)
 				return fmt.Errorf("failed to initialize allocation accounts: %w", err)
 			}
-			analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventFirstDeposit, map[string]any{
+			analytics.TrackEventWithProps(ctx, req.UserID.String(), analytics.EventFirstDeposit, map[string]any{
 				"amount": req.Amount.InexactFloat64(),
+			}, nil, map[string]any{
+				analytics.PropFirstDepositAt: time.Now().UTC().Format(time.RFC3339),
+				analytics.PropLifecycleStage: "activated",
 			})
 			analytics.G().Identify(ctx, req.UserID.String(), map[string]any{
 				analytics.PropFirstDepositAt: time.Now().UTC().Format(time.RFC3339),
@@ -581,23 +584,22 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		metrics.Business.AllocationStashAmount.Observe(stashAmount.InexactFloat64())
 	}
 
-	// Track deposit and net inflow for Mixpanel
-	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventDepositCompleted, map[string]any{
-		"amount":      req.Amount.InexactFloat64(),
-		"event_type":  string(req.EventType),
-	})
+	// Track deposit and net inflow for Mixpanel + PostHog with person properties
+	analytics.TrackEventWithProps(ctx, req.UserID.String(), analytics.EventDepositCompleted, map[string]any{
+		"amount":     req.Amount.InexactFloat64(),
+		"event_type": string(req.EventType),
+	}, map[string]any{
+		analytics.PropLastDepositAt: time.Now().UTC().Format(time.RFC3339),
+	}, nil)
 	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventNetInflowRecorded, map[string]any{
-		"amount":         req.Amount.InexactFloat64(),
-		"spend_amount":   spendingAmount.InexactFloat64(),
-		"stash_amount":   stashAmount.InexactFloat64(),
-		"direction":      "inflow",
-		"event_type":     string(req.EventType),
+		"amount":       req.Amount.InexactFloat64(),
+		"spend_amount": spendingAmount.InexactFloat64(),
+		"stash_amount": stashAmount.InexactFloat64(),
+		"direction":    "inflow",
+		"event_type":   string(req.EventType),
 	})
 	analytics.G().Increment(ctx, req.UserID.String(), map[string]int{
 		analytics.PropTotalDeposits: 1,
-	})
-	analytics.G().Identify(ctx, req.UserID.String(), map[string]any{
-		analytics.PropLastDepositAt: time.Now().UTC().Format(time.RFC3339),
 	})
 
 	// Route the stash principal into the yield provider as soon as a Circle-backed

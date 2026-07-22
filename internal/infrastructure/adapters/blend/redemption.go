@@ -440,7 +440,13 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 		red.PreRedeemBalance = decimal.NullDecimal{Decimal: pre, Valid: true}
 	}
 
-	executed, err := r.executor.Execute(ctx, acct.CircleWalletID, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
+	executed, err := r.executor.Execute(ctx, func(ctx context.Context, chainID int64) (string, string, error) {
+		w, err := r.resolveUserWalletByChainID(ctx, acct.UserID, chainID)
+		if err != nil {
+			return "", "", err
+		}
+		return w.CircleWalletID, w.Address, nil
+	}, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
 		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: acct.EOAAddress, ChainID: acct.ChainID})
 	if err != nil {
 		return fmt.Errorf("%w: execute withdraw plan: %v", ErrRedemptionRetrying, err)
