@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,4 +95,31 @@ func TestQualityCorrectionHint(t *testing.T) {
 func TestQualityGateEmptyResponse(t *testing.T) {
 	v := CheckResponseQuality("")
 	assert.True(t, v.Pass, "empty response should pass (handled elsewhere)")
+}
+
+func TestQualityGateCatchesVerbose(t *testing.T) {
+	// Rambling, low-information reply well past the ceiling with no figures.
+	verbose := "Well, I took a look at everything going on with your money right now, and honestly there is a lot to unpack here, so let me walk you through it step by step so nothing gets missed. First, I want to say that you are doing a genuinely good job staying on top of things, and that is not something I say lightly, because most people never check at all. Second, your spending this month looks broadly normal, though of course normal is a relative term and depends on what your baseline is, which I am still learning about you. Third, I think we should keep an eye on a few things together over the next couple of weeks, and I will be here watching along with you the whole time."
+	v := CheckResponseQuality(verbose)
+	assert.False(t, v.Pass, "rambling reply should fail")
+	assert.Contains(t, v.Failures, "too_verbose")
+}
+
+func TestQualityGateAllowsLongGroundedBreakdown(t *testing.T) {
+	// A long reply with several grounded figures (a real breakdown) passes.
+	var b strings.Builder
+	b.WriteString("Here's the full breakdown you asked for. ")
+	for i, line := range []string{
+		"Groceries took $420 this month, up a bit. ",
+		"Transport was $180, holding steady. ",
+		"Eating out hit $260, which is the one to watch. ",
+		"Subscriptions are $95 across five services. ",
+		"Rent is $1,200 as always. ",
+		"That leaves about $645 of breathing room before the 31st. ",
+	} {
+		b.WriteString(line)
+		_ = i
+	}
+	v := CheckResponseQuality(b.String())
+	assert.NotContains(t, v.Failures, "too_verbose", "grounded breakdown should not be flagged verbose")
 }

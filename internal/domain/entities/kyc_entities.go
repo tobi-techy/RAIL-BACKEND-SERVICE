@@ -247,14 +247,13 @@ type SproutUpgradeRequest struct {
 
 // SproutUpgradeResponse is returned after a successful Sprout tier upgrade.
 type SproutUpgradeResponse struct {
-	Status        string             `json:"status"` // "upgraded" | "pending_graph" | "pending_bridge"
-	Message       string             `json:"message"`
-	NGNAccount    *NGNAccountInfo    `json:"ngn_account,omitempty"`
-	BridgeResult  KYCProviderResult  `json:"bridge_result"`
-	GraphPersonID string             `json:"graph_person_id,omitempty"`
-	KYCTier       int                `json:"kyc_tier"`
-	TierName      string             `json:"kyc_tier_name"`
-	Capabilities  TierCapabilities   `json:"tier_capabilities"`
+	Status       string             `json:"status"` // "upgraded" | "pending_graph" | "pending_bridge"
+	Message      string             `json:"message"`
+	NGNAccount   *NGNAccountInfo    `json:"ngn_account,omitempty"`
+	BridgeResult KYCProviderResult  `json:"bridge_result"`
+	KYCTier      int                `json:"kyc_tier"`
+	TierName     string             `json:"kyc_tier_name"`
+	Capabilities TierCapabilities   `json:"tier_capabilities"`
 }
 
 // NGNAccountInfo contains the NGN virtual account details after Sprout upgrade.

@@ -67,6 +67,11 @@ func CheckResponseQuality(response string) QualityVerdict {
 		failures = append(failures, "has_markdown")
 	}
 
+	// 9. Too verbose — rambles past what a text reply should be
+	if isTooVerbose(response) {
+		failures = append(failures, "too_verbose")
+	}
+
 	return QualityVerdict{
 		Pass:     len(failures) == 0,
 		Failures: failures,
@@ -100,6 +105,8 @@ func QualityCorrectionHint(failures []string) string {
 			return "Add a question or follow-up at the end so the conversation keeps going."
 		case "has_markdown":
 			return "Rewrite in plain text only. No bold, no italics, no numbered lists, no markdown. You're texting, not writing a document."
+		case "too_verbose":
+			return "Rewrite much shorter. Lead with the direct answer in the first line, cut every sentence that doesn't add information, and stop. No preamble, no wrap-up questions unless the user is clearly chatting."
 		}
 	}
 	return ""
@@ -311,6 +318,25 @@ func hasNoHook(response string) bool {
 	return !strings.Contains(response, "?")
 }
 
+// isTooVerbose flags replies that run long for a text conversation. The user
+// asked for directness: default replies should be a few short sentences. The
+// threshold is generous (only clearly rambling replies trip it) so detailed
+// breakdowns the user explicitly requested still pass.
+func isTooVerbose(response string) bool {
+	const wordCeiling = 120
+	words := strings.Fields(response)
+	if len(words) <= wordCeiling {
+		return false
+	}
+	// A response the user explicitly asked to expand (a breakdown/audit) reads
+	// like a report — but those are driven by tools like get_financial_audit and
+	// go through the same gate, so allow long structured answers only when they
+	// contain multiple grounded figures (a real breakdown, not waffle).
+	figures := dollarAmountPattern.FindAllString(response, -1)
+	figures = append(figures, nairaAmountPattern.FindAllString(response, -1)...)
+	return len(figures) < 4
+}
+
 // hasCurrencyConfusion detects when both $ and ₦ appear without clear labels.
 func hasCurrencyConfusion(response string) bool {
 	hasDollar := strings.Contains(response, "$")
@@ -349,6 +375,9 @@ func hasMarkdownOrLists(response string) bool {
 
 // dollarAmountPattern matches dollar amounts like $64, $1,234.56, $64.00
 var dollarAmountPattern = regexp.MustCompile(`\$[\d,]+(?:\.\d{1,2})?`)
+
+// nairaAmountPattern matches Naira amounts like ₦500, ₦1,200.50
+var nairaAmountPattern = regexp.MustCompile(`₦[\d,]+(?:\.\d{1,2})?`)
 
 // looksFabricated flags responses that state specific dollar amounts as facts
 // without grounding from tool calls. It is deliberately conservative: the quality

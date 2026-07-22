@@ -2,6 +2,7 @@ package funding
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -64,6 +65,14 @@ func (r *fakeProvisionVARepo) Create(ctx context.Context, a *entities.VirtualAcc
 	return nil
 }
 func (r *fakeProvisionVARepo) GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if acct := r.byUserCC[userID.String()+currency]; acct != nil && acct.Status == entities.VirtualAccountStatusActive {
+		return acct, nil
+	}
+	return nil, nil
+}
+func (r *fakeProvisionVARepo) GetProvisionedByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.byUserCC[userID.String()+currency], nil
@@ -183,5 +192,56 @@ func TestProvisionNGNAccount_Idempotent(t *testing.T) {
 	}
 	if first.ID != second.ID {
 		t.Errorf("expected idempotent provision to return the same account, got %s vs %s", first.ID, second.ID)
+	}
+}
+
+func TestProvisionNGNAccount_PendingAccountIsReturnedForGetAndRetry(t *testing.T) {
+	up := &fakeUserProvider{profile: newProvisionUser()}
+	va := newFakeProvisionVARepo()
+	svc := newProvisionService(up, va)
+
+	req := &ProvisionNGNAccountRequest{
+		UserID:   up.profile.ID,
+		BVN:      "12345678901",
+		IDType:   "nin",
+		IDNumber: "98765432109",
+	}
+	first, err := svc.ProvisionNGNAccount(context.Background(), req)
+	if err != nil {
+		t.Fatalf("provision error: %v", err)
+	}
+	if first.Status != entities.VirtualAccountStatusPending {
+		t.Fatalf("expected pending account from fake Graph, got %s", first.Status)
+	}
+
+	got, err := svc.GetNGNAccount(context.Background(), up.profile.ID)
+	if err != nil {
+		t.Fatalf("get NGN account error: %v", err)
+	}
+	if got == nil || got.ID != first.ID {
+		t.Fatalf("expected pending account to be visible, got %+v", got)
+	}
+
+	second, err := svc.ProvisionNGNAccount(context.Background(), req)
+	if err != nil {
+		t.Fatalf("retry provision error: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected retry to return pending account, got %s vs %s", second.ID, first.ID)
+	}
+}
+
+func TestProvisionNGNAccount_InvalidNIN(t *testing.T) {
+	up := &fakeUserProvider{profile: newProvisionUser()}
+	svc := newProvisionService(up, newFakeProvisionVARepo())
+
+	_, err := svc.ProvisionNGNAccount(context.Background(), &ProvisionNGNAccountRequest{
+		UserID:   up.profile.ID,
+		BVN:      "12345678901",
+		IDType:   "nin",
+		IDNumber: "not-a-nin",
+	})
+	if !errors.Is(err, ErrNGNInvalidIdentity) {
+		t.Fatalf("expected ErrNGNInvalidIdentity, got %v", err)
 	}
 }

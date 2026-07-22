@@ -25,6 +25,10 @@ func (f *fakeContractExecutor) GetTransaction(_ context.Context, _ string) (*cir
 	return &circlepkg.Transaction{ID: "tx-1", TxHash: "0xhash"}, nil
 }
 
+func (f *fakeContractExecutor) ListTransactions(_ context.Context, _ string, _ string, _ string) ([]circlepkg.Transaction, error) {
+	return []circlepkg.Transaction{{ID: "tx-1", TxHash: "0xhash"}}, nil
+}
+
 type fakeVerifier struct{ called bool }
 
 func (f *fakeVerifier) VerifySafe(_ context.Context, _ int64, _, _ string) error {
@@ -47,7 +51,11 @@ func TestExecute_MultisendRoutesToSafe(t *testing.T) {
 		},
 	}
 
-	out, err := exec.Execute(context.Background(), "wallet-1", plan, "redeem-1",
+	resolveWallet := func(_ context.Context, _ int64) (string, string, error) {
+		return "wallet-1", "0x1111111111111111111111111111111111111111", nil
+	}
+
+	out, err := exec.Execute(context.Background(), resolveWallet, plan, "redeem-1",
 		&TrustedSafe{Address: safe, OwnerEOA: owner, ChainID: 8453})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -76,7 +84,10 @@ func TestExecute_MultisendRequiresVerifier(t *testing.T) {
 	exec := NewPlanExecutor(&fakeContractExecutor{}, NewAllowlist(nil), zap.NewNop())
 	// No verifier set → must refuse to trust the Safe.
 	plan := &ActionPlan{DeployType: deployMultisend, Steps: []ActionStep{{To: "0x0000000000000000000000000000000000000aaa", Data: "0x01"}}}
-	_, err := exec.Execute(context.Background(), "wallet-1", plan, "redeem-1",
+	resolveWallet := func(_ context.Context, _ int64) (string, string, error) {
+		return "wallet-1", "", nil
+	}
+	_, err := exec.Execute(context.Background(), resolveWallet, plan, "redeem-1",
 		&TrustedSafe{Address: "0x000000000000000000000000000000000000dead", OwnerEOA: "0x1111111111111111111111111111111111111111", ChainID: 8453})
 	if err == nil {
 		t.Fatal("expected refusal without a configured Safe verifier")

@@ -168,7 +168,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 	if c.logger != nil {
 		var bodySafe string
 		if len(bodyBytes) > 0 {
-			bodySafe = digitRun.ReplaceAllString(string(bodyBytes), "***")
+			bodySafe = maskPII(string(bodyBytes))
 		}
 		c.logger.Debug("Graph request",
 			zap.String("method", method),

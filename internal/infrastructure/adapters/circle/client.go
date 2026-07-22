@@ -473,6 +473,22 @@ func (c *HTTPClient) GetTransaction(ctx context.Context, txID string) (*Transact
 	return &resp.Data.Transaction, nil
 }
 
+func (c *HTTPClient) ListTransactions(ctx context.Context, walletID string, operation string, state string) ([]Transaction, error) {
+	var resp apiResponse[ListTransactionsData]
+	path := "/v1/w3s/transactions?walletIds=" + walletID
+	if operation != "" {
+		path += "&operation=" + operation
+	}
+	if state != "" {
+		path += "&state=" + state
+	}
+	path += "&pageSize=5&order=DESC"
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data.Transactions, nil
+}
+
 func (c *HTTPClient) SignTransaction(ctx context.Context, req *SignTransactionRequest) (*SignedTransaction, error) {
 	ciphertext, err := c.encryptEntitySecret()
 	if err != nil {

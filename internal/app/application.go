@@ -174,8 +174,9 @@ func (app *Application) Initialize() error {
 		return fmt.Errorf("failed to initialize tracing: %w", err)
 	}
 
-	// Initialize Mixpanel analytics
+	// Initialize analytics (Mixpanel + PostHog)
 	analytics.Init(log.Zap())
+	analytics.InitPostHog(log.Zap())
 
 	// Build dependency injection container
 	container, err := di.NewContainer(cfg, db, log)
@@ -1265,6 +1266,9 @@ func (app *Application) Shutdown() error {
 	if err := app.server.Shutdown(ctx); err != nil {
 		app.log.Fatal("Server forced to shutdown", "error", err)
 	}
+
+	// Flush PostHog buffered events
+	analytics.FlushPostHog()
 
 	// Shutdown tracing
 	if app.tracingShutdown != nil {

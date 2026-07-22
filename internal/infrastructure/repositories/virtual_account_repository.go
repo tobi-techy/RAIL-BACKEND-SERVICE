@@ -174,6 +174,7 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 
 // UpdateWithVersion updates a virtual account only if the updated_at timestamp
 // matches oldUpdatedAt, preventing lost updates from concurrent modifications.
+// Uses NOW() for the new updated_at to avoid clock skew between app and DB.
 func (r *VirtualAccountRepository) UpdateWithVersion(ctx context.Context, account *entities.VirtualAccount, oldUpdatedAt time.Time) error {
 	query := `
 		UPDATE virtual_accounts
@@ -189,8 +190,8 @@ func (r *VirtualAccountRepository) UpdateWithVersion(ctx context.Context, accoun
 			beneficiary_name = $11,
 			status = $12,
 			currency = $13,
-			updated_at = $14
-		WHERE id = $1 AND updated_at = $15
+			updated_at = NOW()
+		WHERE id = $1 AND updated_at = $14
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
@@ -207,7 +208,6 @@ func (r *VirtualAccountRepository) UpdateWithVersion(ctx context.Context, accoun
 		account.BeneficiaryName,
 		account.Status,
 		account.Currency,
-		account.UpdatedAt,
 		oldUpdatedAt,
 	)
 	if err != nil {
@@ -289,7 +289,9 @@ func (r *VirtualAccountRepository) GetByBridgeAccountID(ctx context.Context, bri
 	return &account, nil
 }
 
-// GetByGraphAccountID retrieves a virtual account by Graph bank account ID
+// GetByGraphAccountID retrieves a virtual account by Graph bank account ID.
+// Returns (nil, nil) when no matching record exists — callers should check both
+// the error and the nil account.
 func (r *VirtualAccountRepository) GetByGraphAccountID(ctx context.Context, graphAccountID string) (*entities.VirtualAccount, error) {
 	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE graph_account_id = $1`
 
@@ -297,7 +299,7 @@ func (r *VirtualAccountRepository) GetByGraphAccountID(ctx context.Context, grap
 	err := r.db.GetContext(ctx, &account, query, graphAccountID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("virtual account not found")
+			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get virtual account by graph id: %w", err)
 	}
@@ -360,6 +362,64 @@ func (r *VirtualAccountRepository) GetActiveByUserIDAndCurrency(ctx context.Cont
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get virtual account: %w", err)
+	}
+
+	return &account, nil
+}
+
+// GetProvisionedByUserIDAndCurrency retrieves the latest account that has been
+// provisioned or is still waiting on provider activation. This is used for
+// async providers such as Graph, where account details may arrive after create.
+func (r *VirtualAccountRepository) GetProvisionedByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
+	query := `SELECT ` + vaColumns + `
+		FROM virtual_accounts
+		WHERE user_id = $1 AND currency = $2 AND status IN ('active', 'pending')
+		ORDER BY
+			CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+			created_at DESC
+		LIMIT 1
+	`
+
+	var account entities.VirtualAccount
+	err := r.db.GetContext(ctx, &account, query, userID, currency)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get provisioned virtual account: %w", err)
+	}
+
+	return &account, nil
+}
+
+// DeleteByID removes a virtual account record. Used to clean up stale failed
+// records that block the unique constraint on (user_id, currency).
+func (r *VirtualAccountRepository) DeleteByID(ctx context.Context, id uuid.UUID) error {
+	query := `DELETE FROM virtual_accounts WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete virtual account: %w", err)
+	}
+	return nil
+}
+
+// GetFailedNGNByUserID retrieves the most recent failed NGN virtual account for a user.
+// Used by the retry flow to allow re-provisioning after a failure.
+func (r *VirtualAccountRepository) GetFailedNGNByUserID(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error) {
+	query := `SELECT ` + vaColumns + `
+		FROM virtual_accounts
+		WHERE user_id = $1 AND currency = 'NGN' AND status = 'failed'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var account entities.VirtualAccount
+	err := r.db.GetContext(ctx, &account, query, userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get failed NGN virtual account: %w", err)
 	}
 
 	return &account, nil

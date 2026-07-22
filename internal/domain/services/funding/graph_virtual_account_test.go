@@ -87,6 +87,14 @@ func (r *fakeVARepo) GetByAlpacaAccountID(ctx context.Context, id string) (*enti
 func (r *fakeVARepo) GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
 	return nil, nil
 }
+func (r *fakeVARepo) GetProvisionedByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
+	for _, a := range r.created {
+		if a.UserID == userID && a.Currency == currency && (a.Status == entities.VirtualAccountStatusActive || a.Status == entities.VirtualAccountStatusPending) {
+			return a, nil
+		}
+	}
+	return nil, nil
+}
 func (r *fakeVARepo) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.VirtualAccountStatus) error {
 	return nil
 }
@@ -95,6 +103,12 @@ func (r *fakeVARepo) ExistsByUserAndAlpacaAccount(ctx context.Context, userID uu
 }
 func (r *fakeVARepo) GetByGraphAccountID(ctx context.Context, graphAccountID string) (*entities.VirtualAccount, error) {
 	return r.byGraphID[graphAccountID], nil
+}
+func (r *fakeVARepo) GetFailedNGNByUserID(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error) {
+	return nil, nil
+}
+func (r *fakeVARepo) DeleteByID(ctx context.Context, id uuid.UUID) error {
+	return nil
 }
 
 type fakeDepositRepo struct {

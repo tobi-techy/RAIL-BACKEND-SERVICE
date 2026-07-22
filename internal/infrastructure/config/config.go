@@ -173,6 +173,7 @@ type AssemblyAIConfig struct {
 type ElevenLabsConfig struct {
 	APIKey          string  `mapstructure:"api_key"`
 	AgentID         string  `mapstructure:"agent_id"`          // ElevenLabs Conversational AI agent ID
+	SupportAgentID  string  `mapstructure:"support_agent_id"`  // ElevenLabs support agent ID
 	WebhookSecret   string  `mapstructure:"webhook_secret"`    // Secret for authenticating server tool webhook calls
 	VoiceID         string  `mapstructure:"voice_id"`          // Optional: override agent's default voice
 	PidginVoiceID   string  `mapstructure:"pidgin_voice_id"`   // Voice ID for Nigerian Pidgin speakers
@@ -1052,6 +1053,7 @@ func setDefaults() {
 	viper.BindEnv("ai.assemblyai.voice", "ASSEMBLYAI_VOICE")
 	viper.BindEnv("ai.elevenlabs.api_key", "ELEVENLABS_API_KEY")
 	viper.BindEnv("ai.elevenlabs.agent_id", "ELEVENLABS_AGENT_ID")
+	viper.BindEnv("ai.elevenlabs.support_agent_id", "ELEVENLABS_SUPPORT_AGENT_ID")
 	viper.BindEnv("ai.elevenlabs.webhook_secret", "ELEVENLABS_WEBHOOK_SECRET")
 	viper.BindEnv("ai.elevenlabs.voice_id", "ELEVENLABS_VOICE_ID")
 	viper.BindEnv("ai.elevenlabs.pidgin_voice_id", "ELEVENLABS_PIDGIN_VOICE_ID")

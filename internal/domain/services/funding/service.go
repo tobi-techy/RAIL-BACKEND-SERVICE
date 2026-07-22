@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/shopspring/decimal"
 )
@@ -1079,6 +1080,16 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		"usd_amount", usdAmount.String(),
 		"tx_hash", webhook.TxHash,
 	)
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventDepositCompleted, map[string]any{
+		"amount":     usdAmount.InexactFloat64(),
+		"currency":   string(webhook.Token),
+		"provider":   "circle",
+		"method":     "crypto",
+		"chain":      string(webhook.Chain),
+		"deposit_id": deposit.ID.String(),
+		"tx_hash":    webhook.TxHash,
+	})
 
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -290,6 +291,14 @@ func (w *Worker) recoverStuckWithdrawal(ctx context.Context, withdrawalID, userI
 		zap.String("withdrawal_id", withdrawalID.String()),
 		zap.String("user_id", userID.String()),
 		zap.String("amount", totalAmount.String()))
+
+	analytics.TrackEvent(ctx, userID.String(), "withdrawal_recovered", map[string]any{
+		"withdrawal_id":  withdrawalID.String(),
+		"amount":         totalAmount.InexactFloat64(),
+		"source_account": sourceAccount,
+		"reason":         "auto_recovery_stuck_processing",
+	})
+
 	return nil
 }
 
@@ -386,6 +395,13 @@ func (w *Worker) failChainRailsExpired(ctx context.Context) error {
 			zap.String("withdrawal_id", s.ID.String()),
 			zap.String("user_id", s.UserID.String()),
 			zap.String("amount", totalAmount.String()))
+
+		analytics.TrackEvent(ctx, s.UserID.String(), "withdrawal_recovered", map[string]any{
+			"withdrawal_id":  s.ID.String(),
+			"amount":         totalAmount.InexactFloat64(),
+			"source_account": s.SourceAccount,
+			"reason":         "chainrails_webhook_timeout",
+		})
 	}
 	return nil
 }

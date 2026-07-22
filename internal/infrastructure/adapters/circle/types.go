@@ -231,6 +231,22 @@ type EntityPublicKeyData struct {
 
 // CreateContractExecutionRequest signs and broadcasts an EVM contract call from a Circle wallet.
 // Used for non-transfer operations (e.g. ERC20 approve, DeFi protocol calls).
+// --- List Transactions ---
+
+type ListTransactionsRequest struct {
+	WalletIDs string `json:"walletIds,omitempty"`
+	Operation string `json:"operation,omitempty"` // CONTRACT_EXECUTION
+	State     string `json:"state,omitempty"`     // COMPLETE, etc.
+	PageSize  int    `json:"pageSize,omitempty"`
+	Order     string `json:"order,omitempty"` // ASC or DESC
+}
+
+type ListTransactionsData struct {
+	Transactions []Transaction `json:"transactions"`
+}
+
+// CreateContractExecutionRequest signs and broadcasts an EVM contract call from a Circle wallet.
+// Used for non-transfer operations (e.g. ERC20 approve, DeFi protocol calls).
 type CreateContractExecutionRequest struct {
 	IdempotencyKey         string     `json:"idempotencyKey"`
 	EntitySecretCiphertext string     `json:"entitySecretCiphertext"`

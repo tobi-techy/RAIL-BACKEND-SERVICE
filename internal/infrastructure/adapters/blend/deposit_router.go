@@ -663,7 +663,13 @@ func (r *DepositRouter) stepExecuteAndSubmit(ctx context.Context, route *deposit
 		return fmt.Errorf("blend: mark executing: %w", err)
 	}
 
-	executed, err := r.executor.Execute(ctx, route.CircleWalletID, plan, fmt.Sprintf("blend-deposit-%s", route.ID.String()),
+	executed, err := r.executor.Execute(ctx, func(ctx context.Context, chainID int64) (string, string, error) {
+		w, err := r.resolveUserWalletByChainID(ctx, route.UserID, chainID)
+		if err != nil {
+			return "", "", err
+		}
+		return w.CircleWalletID, w.Address, nil
+	}, plan, fmt.Sprintf("blend-deposit-%s", route.ID.String()),
 		&TrustedSafe{Address: route.SafeAddress, OwnerEOA: route.EOAAddress, ChainID: route.ChainID})
 	if err != nil {
 		return fmt.Errorf("blend: execute action plan: %w", err)

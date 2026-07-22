@@ -22,7 +22,7 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return ""
 	}
-	masked := truncate(digitRun.ReplaceAllString(e.Body, "***"))
+	masked := truncate(maskPII(e.Body))
 	return fmt.Sprintf("graph returned %d: %s", e.StatusCode, masked)
 }
 
@@ -41,6 +41,24 @@ func IsConflict(err error) bool {
 // digitRun matches runs of 6+ digits (e.g. BVN, account numbers) so they can be
 // masked out of anything we log.
 var digitRun = regexp.MustCompile(`\d{6,}`)
+
+// emailRun matches email addresses in JSON bodies.
+var emailRun = regexp.MustCompile(`"email"\s*:\s*"[^"]*"`)
+
+// nameRun matches name fields in JSON bodies.
+var nameRun = regexp.MustCompile(`"(name_first|name_last|name_other|phone)"\s*:\s*"[^"]*"`)
+
+// urlRun matches document URLs that may contain tokens or presigned paths.
+var urlRun = regexp.MustCompile(`"(url|document_url|id_document_url)"\s*:\s*"[^"]*"`)
+
+// maskPII applies all PII masking patterns to a string for safe logging.
+func maskPII(s string) string {
+	s = digitRun.ReplaceAllString(s, "***")
+	s = emailRun.ReplaceAllString(s, `"email":"***"`)
+	s = nameRun.ReplaceAllString(s, `"${1}":"***"`)
+	s = urlRun.ReplaceAllString(s, `"${1}":"***"`)
+	return s
+}
 
 // extractErrorMessage pulls Graph's human-readable `message` so 4xx failures are
 // debuggable, while masking long digit runs (BVN/account numbers) to keep logs
@@ -68,7 +86,7 @@ func extractErrorMessage(body []byte) string {
 		}
 		msg = strings.Join(many, "; ")
 	}
-	return truncate(digitRun.ReplaceAllString(msg, "***"))
+	return truncate(maskPII(msg))
 }
 
 // truncate keeps error strings log-safe: short and single-line.

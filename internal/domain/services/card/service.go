@@ -241,15 +241,14 @@ func (s *Service) CreateVirtualCard(ctx context.Context, userID uuid.UUID) (*ent
 		zap.String("card_id", card.ID.String()),
 		zap.String("bridge_card_id", card.BridgeCardID))
 
-	analytics.TrackEvent(ctx, userID.String(), analytics.EventCardCreated, map[string]any{
+	analytics.TrackEventWithProps(ctx, userID.String(), analytics.EventCardCreated, map[string]any{
 		"card_id":   card.ID.String(),
 		"card_type": string(card.Type),
 		"currency":  card.Currency,
 		"chain":     card.Chain,
-	})
-	analytics.IdentifyUser(ctx, userID.String(), map[string]any{
+	}, map[string]any{
 		analytics.PropHasCard: true,
-	})
+	}, nil)
 
 	return card, nil
 }
@@ -300,6 +299,11 @@ func (s *Service) FreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*en
 
 	card.Status = entities.CardStatusFrozen
 	s.logger.Info("Card frozen", zap.String("card_id", cardID.String()))
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventCardFrozen, map[string]any{
+		"card_id": cardID.String(),
+	})
+
 	return card, nil
 }
 
@@ -332,6 +336,11 @@ func (s *Service) UnfreezeCard(ctx context.Context, userID, cardID uuid.UUID) (*
 
 	card.Status = entities.CardStatusActive
 	s.logger.Info("Card unfrozen", zap.String("card_id", cardID.String()))
+
+	analytics.TrackEvent(ctx, userID.String(), "card_unfrozen", map[string]any{
+		"card_id": cardID.String(),
+	})
+
 	return card, nil
 }
 

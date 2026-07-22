@@ -11,6 +11,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"github.com/shopspring/decimal"
@@ -599,6 +600,14 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		"amount", amount,
 		"deposit_id", depositID)
 
+	analytics.TrackEvent(ctx, virtualAccount.UserID.String(), analytics.EventDepositCompleted, map[string]any{
+		"amount":     amount.InexactFloat64(),
+		"currency":   event.Currency,
+		"provider":   "bridge",
+		"method":     "fiat",
+		"deposit_id": depositID.String(),
+	})
+
 	return nil
 }
 
@@ -814,6 +823,15 @@ func (s *BridgeVirtualAccountService) ProcessCryptoDeposit(ctx context.Context, 
 		}
 		return fmt.Errorf("process allocation: %w", err)
 	}
+
+	analytics.TrackEvent(ctx, userID.String(), analytics.EventDepositCompleted, map[string]any{
+		"amount":     amount.InexactFloat64(),
+		"currency":   "USDC",
+		"provider":   "bridge",
+		"method":     "crypto",
+		"chain":      chain,
+		"deposit_id": depositID.String(),
+	})
 
 	return nil
 }

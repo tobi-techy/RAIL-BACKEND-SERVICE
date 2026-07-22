@@ -446,10 +446,10 @@ func (h *Handler) SproutUpgrade(c *gin.Context) {
 		switch {
 		case errors.Is(err, kyc.ErrNoBridgeCustomer):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete onboarding first"})
-		case strings.Contains(err.Error(), "phone number is required"),
-			strings.Contains(err.Error(), "invalid date_of_birth"),
-			strings.Contains(err.Error(), "invalid BVN"),
-			strings.Contains(err.Error(), "missing request"):
+		case errors.Is(err, kyc.ErrSproutPhoneRequired),
+			errors.Is(err, kyc.ErrSproutInvalidDOB),
+			errors.Is(err, kyc.ErrSproutInvalidBVN),
+			errors.Is(err, kyc.ErrSproutMissingRequest):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Sprout upgrade failed. Please try again."})
@@ -489,10 +489,10 @@ func (h *Handler) BloomUpgrade(c *gin.Context) {
 		switch {
 		case errors.Is(err, kyc.ErrNoBridgeCustomer):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Complete onboarding first"})
-		case strings.Contains(err.Error(), "must be at Sprout"),
-			strings.Contains(err.Error(), "Bridge adapter not available"),
-			strings.Contains(err.Error(), "Bridge KYC submission failed"),
-			strings.Contains(err.Error(), "missing request"):
+		case errors.Is(err, kyc.ErrBloomNotAtSproutTier),
+			errors.Is(err, kyc.ErrBloomBridgeNotConfigured),
+			errors.Is(err, kyc.ErrBloomBridgeSubmission),
+			errors.Is(err, kyc.ErrBloomMissingRequest):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Bloom upgrade failed. Please try again."})

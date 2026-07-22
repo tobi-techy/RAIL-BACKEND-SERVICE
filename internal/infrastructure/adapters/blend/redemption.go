@@ -440,7 +440,13 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 		red.PreRedeemBalance = decimal.NullDecimal{Decimal: pre, Valid: true}
 	}
 
-	executed, err := r.executor.Execute(ctx, acct.CircleWalletID, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
+	executed, err := r.executor.Execute(ctx, func(ctx context.Context, chainID int64) (string, string, error) {
+		w, err := r.resolveUserWalletByChainID(ctx, acct.UserID, chainID)
+		if err != nil {
+			return "", "", err
+		}
+		return w.CircleWalletID, w.Address, nil
+	}, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
 		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: acct.EOAAddress, ChainID: acct.ChainID})
 	if err != nil {
 		return fmt.Errorf("%w: execute withdraw plan: %v", ErrRedemptionRetrying, err)
@@ -454,18 +460,6 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 				return fmt.Errorf("blend: resolve circle withdraw tx %s: %w", ex.TransactionID, err)
 			}
 			ex.TxHash = tx.TxHash
-		}
-		if ex.TxHash == "" && ex.TransactionID == "" {
-			// Circle async execution — advance to submitted with cooldown.
-			if _, err := r.db.ExecContext(ctx, `
-				UPDATE blend_yield_redemptions SET status = $2, submitted_at = NOW(),
-					next_retry_at = NOW() + INTERVAL '60 seconds', updated_at = NOW()
-				WHERE id = $1
-			`, red.ID, redemptionStatusSubmitted); err != nil {
-				return fmt.Errorf("blend: mark redemption submitted (async): %w", err)
-			}
-			red.Status = redemptionStatusSubmitted
-			return nil
 		}
 		if ex.TxHash == "" {
 			return fmt.Errorf("blend: circle withdraw tx %s has no hash yet", ex.TransactionID)

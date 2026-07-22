@@ -4271,7 +4271,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			if err != nil || len(results) == 0 {
 				return ""
 			}
-			text := "[ANOMALIES DETECTED — YOU MUST MENTION THESE PROACTIVELY. The user may not know about them yet. Lead with the most severe one, be specific about amounts and merchants.]"
+			text := "[ANOMALIES DETECTED — YOU MUST MENTION THESE PROACTIVELY. The user may not know about them yet. Lead with the most severe one. Cite actual charge amounts and merchants from the descriptions below. Never restate projected run-rates or trailing averages as dollar figures — describe them qualitatively (e.g. \"way above your usual\"), since those are estimates, not real transactions.]"
 			for _, r := range results {
 				text += fmt.Sprintf("\n[%s] %s — %s", strings.ToUpper(string(r.Severity)), r.Title, r.Description)
 			}

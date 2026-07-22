@@ -234,6 +234,49 @@ func (r *WithdrawalRepository) UpdateTxHash(ctx context.Context, id uuid.UUID, t
 	return nil
 }
 
+// UpdateCompletedAt sets the completed_at timestamp for a withdrawal by ID.
+// Used by forceCompleteCryptoWithdrawal to backdate or set the completion
+// timestamp when overriding a terminal non-completed status.
+func (r *WithdrawalRepository) UpdateCompletedAt(ctx context.Context, id uuid.UUID, completedAt time.Time) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE withdrawals SET completed_at = $1, updated_at = $2 WHERE id = $3`,
+		completedAt, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update completed_at: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("withdrawal %s not found", id)
+	}
+	return nil
+}
+
+// ForceComplete atomically sets status to completed and completed_at in one
+// write, bypassing the transition-validation guard used by UpdateStatus.
+// Intended for force-complete flows where the on-chain provider confirms a
+// transfer succeeded despite the withdrawal being in a terminal non-completed
+// state (cancelled/failed).
+func (r *WithdrawalRepository) ForceComplete(ctx context.Context, id uuid.UUID, completedAt time.Time) error {
+	now := time.Now()
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3
+		 WHERE id = $4 AND status IN ($5, $6, $7)`,
+		entities.WithdrawalStatusCompleted, completedAt, now, id,
+		entities.WithdrawalStatusFailed,
+		entities.WithdrawalStatusReversed,
+		entities.WithdrawalStatusCancelled)
+	if err != nil {
+		return fmt.Errorf("failed to force complete withdrawal: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("withdrawal %s not eligible for force-complete (not found or already completed)", id)
+	}
+	return nil
+}
+
 // MarkCompleted marks the withdrawal as completed, only from valid predecessor states.
 func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) error {
 	now := time.Now()
