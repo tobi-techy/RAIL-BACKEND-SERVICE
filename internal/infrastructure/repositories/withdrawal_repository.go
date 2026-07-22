@@ -250,6 +250,25 @@ func (r *WithdrawalRepository) UpdateCompletedAt(ctx context.Context, id uuid.UU
 	return nil
 }
 
+// ForceComplete atomically sets status to completed and completed_at in one
+// write, bypassing the transition-validation guard used by UpdateStatus.
+// Intended for force-complete flows where the on-chain provider confirms a
+// transfer succeeded despite the withdrawal being in a terminal non-completed
+// state (cancelled/failed).
+func (r *WithdrawalRepository) ForceComplete(ctx context.Context, id uuid.UUID, completedAt time.Time) error {
+	now := time.Now()
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE withdrawals SET status = $1, completed_at = $2, updated_at = $3 WHERE id = $4`,
+		entities.WithdrawalStatusCompleted, completedAt, now, id)
+	if err != nil {
+		return fmt.Errorf("failed to force complete withdrawal: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("withdrawal %s not found", id)
+	}
+	return nil
+}
+
 // MarkCompleted marks the withdrawal as completed, only from valid predecessor states.
 func (r *WithdrawalRepository) MarkCompleted(ctx context.Context, id uuid.UUID) error {
 	now := time.Now()

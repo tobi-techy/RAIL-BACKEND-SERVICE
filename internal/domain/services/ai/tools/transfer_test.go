@@ -92,3 +92,75 @@ func TestTransferFundsTool_RequiresArgs(t *testing.T) {
 		t.Fatal("no transfer should run when amount is missing")
 	}
 }
+
+// TestTransferFundsTool_RejectsNonPositiveAmount rejects zero and negative amounts.
+func TestTransferFundsTool_RejectsNonPositiveAmount(t *testing.T) {
+	r := NewRegistry()
+	RegisterWithdrawalTools(r)
+	ft := &fakeFundsTransferer{}
+	deps := &core.Dependencies{FundsTransfer: ft}
+
+	for _, amt := range []string{"0", "-50", "-0.01"} {
+		res, err := r.Execute(context.Background(), uuid.New(), "transfer_funds",
+			map[string]interface{}{"to": "stash", "amount": amt}, deps)
+		if err != nil {
+			t.Fatalf("Execute(%s): %v", amt, err)
+		}
+		if res.Error == "" {
+			t.Fatalf("expected error for amount %s", amt)
+		}
+		if ft.calls != 0 {
+			t.Fatalf("no transfer should run for amount %s", amt)
+		}
+	}
+}
+
+// TestTransferFundsTool_RejectsInvalidFromTo rejects non-spend/stash values.
+func TestTransferFundsTool_RejectsInvalidFromTo(t *testing.T) {
+	r := NewRegistry()
+	RegisterWithdrawalTools(r)
+	ft := &fakeFundsTransferer{}
+	deps := &core.Dependencies{FundsTransfer: ft}
+
+	for _, tc := range []struct {
+		from, to string
+	}{
+		{"checking", "stash"},
+		{"spend", "savings"},
+		{"crypto", "invest"},
+	} {
+		res, err := r.Execute(context.Background(), uuid.New(), "transfer_funds",
+			map[string]interface{}{"from": tc.from, "to": tc.to, "amount": "100"}, deps)
+		if err != nil {
+			t.Fatalf("Execute(%s->%s): %v", tc.from, tc.to, err)
+		}
+		if res.Error == "" {
+			t.Fatalf("expected error for from=%s to=%s", tc.from, tc.to)
+		}
+		if ft.calls != 0 {
+			t.Fatalf("no transfer should run for from=%s to=%s", tc.from, tc.to)
+		}
+	}
+}
+
+// TestTransferFundsTool_RejectsSameFromTo rejects from == to.
+func TestTransferFundsTool_RejectsSameFromTo(t *testing.T) {
+	r := NewRegistry()
+	RegisterWithdrawalTools(r)
+	ft := &fakeFundsTransferer{}
+	deps := &core.Dependencies{FundsTransfer: ft}
+
+	for _, bal := range []string{"spend", "stash"} {
+		res, err := r.Execute(context.Background(), uuid.New(), "transfer_funds",
+			map[string]interface{}{"from": bal, "to": bal, "amount": "100"}, deps)
+		if err != nil {
+			t.Fatalf("Execute(%s->%s): %v", bal, bal, err)
+		}
+		if res.Error == "" {
+			t.Fatalf("expected error for from=%s to=%s", bal, bal)
+		}
+		if ft.calls != 0 {
+			t.Fatalf("no transfer should run for from=%s to=%s", bal, bal)
+		}
+	}
+}

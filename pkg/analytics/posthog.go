@@ -21,10 +21,11 @@ func NewPostHog(apiKey, host string, logger *zap.Logger) *PostHogClient {
 		host = "https://us.i.posthog.com"
 	}
 	client, err := posthog.NewWithConfig(apiKey, posthog.Config{
-		Endpoint:    host,
-		Interval:    10 * time.Second,
-		BatchSize:   50,
-		MaxRetries:  posthog.Ptr(3),
+		Endpoint:        host,
+		Interval:        10 * time.Second,
+		BatchSize:       50,
+		MaxRetries:      posthog.Ptr(3),
+		ShutdownTimeout: 5 * time.Second,
 	})
 	if err != nil {
 		logger.Error("failed to create posthog client", zap.Error(err))
@@ -76,5 +77,7 @@ func (c *PostHogClient) Close() {
 	if c.client == nil {
 		return
 	}
-	c.client.Close()
+	if err := c.client.Close(); err != nil {
+		c.logger.Error("posthog close failed", zap.Error(err))
+	}
 }

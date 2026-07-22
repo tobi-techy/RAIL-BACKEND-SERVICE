@@ -17,7 +17,7 @@ echo "  Intent:  $INTENT_ID"
 echo "  Account: $ACCOUNT_ID"
 echo "  Hash:    $TX_HASH"
 
-RESPONSE=$(curl -s -w "\n%{http_code}" \
+RESPONSE=$(curl -s --fail-with-body --connect-timeout 10 --max-time 30 -w "\n%{http_code}" \
   -X POST "${BASE_URL}/extern/svr/${ACCOUNT_TYPE_ID}/account/${ACCOUNT_ID}/intent/${INTENT_ID}/submit" \
   -H "X-API-Key: ${API_KEY}" \
   -H "Content-Type: application/json" \

@@ -591,6 +591,9 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 	}, map[string]any{
 		analytics.PropLastDepositAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil)
+	analytics.IdentifyUser(ctx, req.UserID.String(), map[string]any{
+		analytics.PropLastDepositAt: time.Now().UTC().Format(time.RFC3339),
+	})
 	analytics.TrackEvent(ctx, req.UserID.String(), analytics.EventNetInflowRecorded, map[string]any{
 		"amount":       req.Amount.InexactFloat64(),
 		"spend_amount": spendingAmount.InexactFloat64(),

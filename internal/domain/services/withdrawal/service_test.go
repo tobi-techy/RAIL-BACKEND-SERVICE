@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -96,6 +97,12 @@ func (m *mockWithdrawalRepo) UpdateBridgeTransfer(_ context.Context, id uuid.UUI
 }
 func (m *mockWithdrawalRepo) UpdateTxHash(_ context.Context, id uuid.UUID, txHash string) error {
 	return m.Called(id, txHash).Error(0)
+}
+func (m *mockWithdrawalRepo) UpdateCompletedAt(_ context.Context, id uuid.UUID, completedAt time.Time) error {
+	return m.Called(id, completedAt).Error(0)
+}
+func (m *mockWithdrawalRepo) ForceComplete(_ context.Context, id uuid.UUID, completedAt time.Time) error {
+	return m.Called(id, completedAt).Error(0)
 }
 func (m *mockWithdrawalRepo) MarkCompleted(_ context.Context, id uuid.UUID) error {
 	return m.Called(id).Error(0)

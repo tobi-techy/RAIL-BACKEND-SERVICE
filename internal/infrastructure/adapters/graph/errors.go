@@ -22,7 +22,7 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return ""
 	}
-	masked := truncate(digitRun.ReplaceAllString(e.Body, "***"))
+	masked := truncate(maskPII(e.Body))
 	return fmt.Sprintf("graph returned %d: %s", e.StatusCode, masked)
 }
 
@@ -86,7 +86,7 @@ func extractErrorMessage(body []byte) string {
 		}
 		msg = strings.Join(many, "; ")
 	}
-	return truncate(digitRun.ReplaceAllString(msg, "***"))
+	return truncate(maskPII(msg))
 }
 
 // truncate keeps error strings log-safe: short and single-line.

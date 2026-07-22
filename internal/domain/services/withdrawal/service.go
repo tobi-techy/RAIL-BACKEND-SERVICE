@@ -93,6 +93,7 @@ type WithdrawalRepository interface {
 	UpdateBridgeTransfer(ctx context.Context, id uuid.UUID, transferID string) error
 	UpdateTxHash(ctx context.Context, id uuid.UUID, txHash string) error
 	UpdateCompletedAt(ctx context.Context, id uuid.UUID, completedAt time.Time) error
+	ForceComplete(ctx context.Context, id uuid.UUID, completedAt time.Time) error
 	MarkCompleted(ctx context.Context, id uuid.UUID) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errorMsg string) error
 	MarkCancelled(ctx context.Context, id uuid.UUID) error
@@ -2962,13 +2963,8 @@ func (s *WithdrawalService) forceCompleteCryptoWithdrawal(ctx context.Context, w
 	}
 
 	now := time.Now()
-	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusCompleted); err != nil {
+	if err := s.withdrawalRepo.ForceComplete(ctx, withdrawal.ID, now); err != nil {
 		return fmt.Errorf("failed to force complete withdrawal: %w", err)
-	}
-	// Update timestamps separately.
-	if err := s.withdrawalRepo.UpdateCompletedAt(ctx, withdrawal.ID, now); err != nil {
-		s.logger.Error("forceComplete: failed to set completed_at",
-			"error", err, "withdrawal_id", withdrawal.ID.String())
 	}
 	if withdrawal.TxHash != nil {
 		_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, *withdrawal.TxHash)

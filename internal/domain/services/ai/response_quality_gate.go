@@ -333,6 +333,7 @@ func isTooVerbose(response string) bool {
 	// go through the same gate, so allow long structured answers only when they
 	// contain multiple grounded figures (a real breakdown, not waffle).
 	figures := dollarAmountPattern.FindAllString(response, -1)
+	figures = append(figures, nairaAmountPattern.FindAllString(response, -1)...)
 	return len(figures) < 4
 }
 
@@ -374,6 +375,9 @@ func hasMarkdownOrLists(response string) bool {
 
 // dollarAmountPattern matches dollar amounts like $64, $1,234.56, $64.00
 var dollarAmountPattern = regexp.MustCompile(`\$[\d,]+(?:\.\d{1,2})?`)
+
+// nairaAmountPattern matches Naira amounts like ₦500, ₦1,200.50
+var nairaAmountPattern = regexp.MustCompile(`₦[\d,]+(?:\.\d{1,2})?`)
 
 // looksFabricated flags responses that state specific dollar amounts as facts
 // without grounding from tool calls. It is deliberately conservative: the quality

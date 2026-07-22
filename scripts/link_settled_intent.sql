@@ -12,12 +12,8 @@ SET intent_id = '7240b8cc-40a9-443c-86e9-2c9fa319fad4',
     submitted_at = NOW(),
     next_retry_at = NOW(),
     updated_at = NOW()
-WHERE id::text LIKE '718d22db%'
-  AND status != 'completed';
-
--- Verify
-SELECT id, status, intent_id, intent_status, tx_hash, attempts, updated_at
-FROM blend_yield_redemptions
-WHERE id::text LIKE '718d22db%';
+WHERE id = '718d22db-0000-0000-0000-000000000000'
+  AND status != 'completed'
+RETURNING id, status, intent_id, intent_status, tx_hash, attempts, updated_at;
 
 COMMIT;

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -408,36 +410,62 @@ func (s *GraphVirtualAccountService) ProvisionNGNAccount(ctx context.Context, re
 	return va, nil
 }
 
-// isAllowedDocumentURL validates that a document URL uses HTTPS and does not
-// point to internal/private network addresses. This prevents SSRF via the
-// Graph API's document upload endpoint.
-func isAllowedDocumentURL(url string) bool {
-	url = strings.TrimSpace(url)
-	if url == "" {
-		return true // empty is allowed (no document)
+// isAllowedDocumentURL validates that a document URL uses HTTPS with a valid
+// host, resolves the hostname, and rejects loopback, private, link-local,
+// unspecified, and metadata/internal addresses for every resolved IP including
+// the full 172.16.0.0/12 range and IPv6 equivalents. Returns true for empty
+// URLs (no document). Denies malformed or unresolvable URLs.
+func isAllowedDocumentURL(rawURL string) bool {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return true
 	}
-	if !strings.HasPrefix(url, "https://") {
+	u, err := url.Parse(rawURL)
+	if err != nil {
 		return false
 	}
-	// Block internal hostnames that could be used for SSRF.
-	lower := strings.ToLower(url)
-	blocklist := []string{
-		"localhost",
-		"127.0.0.1",
-		"0.0.0.0",
-		"169.254.",   // link-local / cloud metadata
-		"10.",        // RFC 1918
-		"172.16.",    // RFC 1918 (covers 172.16-31)
-		"192.168.",   // RFC 1918
-		"[::1]",      // IPv6 loopback
-		"metadata.google", // GCP metadata
+	if u.Scheme != "https" {
+		return false
 	}
-	for _, blocked := range blocklist {
-		if strings.Contains(lower, blocked) {
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	// Block obvious internal hostnames before DNS resolution.
+	lower := strings.ToLower(host)
+	if lower == "localhost" || lower == "metadata.google" || lower == "169.254.169.254" {
+		return false
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if isReservedOrInternal(ip) {
 			return false
 		}
 	}
 	return true
+}
+
+// isReservedOrInternal reports whether an IP falls into loopback, link-local,
+// private (RFC 1918 / RFC 4193), unspecified, or cloud-metadata ranges.
+func isReservedOrInternal(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	if private := ip.IsPrivate(); private {
+		return true
+	}
+	// ip.IsPrivate() covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+	// and fc00::/7. Also catch 169.254.0.0/16 (cloud metadata / link-local).
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 169 && ip4[1] == 254 {
+			return true
+		}
+	}
+	return false
 }
 
 // ensurePerson returns the user's Graph person ID, creating the person if needed.

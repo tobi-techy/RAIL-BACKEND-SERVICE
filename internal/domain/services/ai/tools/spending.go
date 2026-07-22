@@ -631,6 +631,18 @@ func RegisterWithdrawalTools(r *Registry) {
 			if err != nil {
 				return &core.ToolResult{Error: fmt.Sprintf("invalid amount: %s", amountStr)}, nil
 			}
+			if amount.LessThanOrEqual(decimal.Zero) {
+				return &core.ToolResult{Error: "amount must be positive"}, nil
+			}
+			if from != "spend" && from != "stash" {
+				return &core.ToolResult{Error: fmt.Sprintf("invalid from: %s (must be spend or stash)", from)}, nil
+			}
+			if to != "spend" && to != "stash" {
+				return &core.ToolResult{Error: fmt.Sprintf("invalid to: %s (must be spend or stash)", to)}, nil
+			}
+			if from == to {
+				return &core.ToolResult{Error: "from and to must be different"}, nil
+			}
 			if err := deps.FundsTransfer.Transfer(ctx, userID, from, to, amount); err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}

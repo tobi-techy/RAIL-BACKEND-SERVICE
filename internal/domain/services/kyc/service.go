@@ -2593,7 +2593,7 @@ func (s *Service) BloomUpgrade(ctx context.Context, userID uuid.UUID, req *entit
 		s.logger.Error("Bridge KYC submission failed during Bloom upgrade",
 			zap.Error(bridgeErr),
 			zap.String("user_id", userID.String()))
-		return nil, fmt.Errorf("%w: %v", ErrBloomBridgeSubmission, bridgeErr)
+		return nil, ErrBloomBridgeSubmission
 	}
 	bridgeResult := entities.KYCProviderResult{
 		Success: true,

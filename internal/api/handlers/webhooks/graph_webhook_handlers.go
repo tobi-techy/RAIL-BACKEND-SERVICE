@@ -166,6 +166,8 @@ func (h *GraphWebhookHandler) handleBankAccountEvent(c *gin.Context, event *grap
 		if err := h.service.HandleAccountClosed(c.Request.Context(), event.Data.ID); err != nil {
 			h.logger.Error("Failed to mark Graph account as closed",
 				zap.Error(err), zap.String("account_id", event.Data.ID))
+			c.JSON(http.StatusOK, gin.H{"status": "error"})
+			return
 		}
 		h.logger.Warn("Graph account closed",
 			zap.String("account_id", event.Data.ID))

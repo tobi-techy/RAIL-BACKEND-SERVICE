@@ -6,17 +6,14 @@ BEGIN;
 -- curl -X POST "https://api.portal.blend.money/extern/svr/YOUR_ACCOUNT_TYPE_ID/account/17ee28ec-51e8-41fa-82b7-7005642975c7/intent/9ef367a9-dfcc-4ade-ba3d-b4c1dd1db077/cancel" \
 --   -H "X-API-Key: YOUR_API_KEY" -H "Content-Type: application/json" -d '{}'
 
--- Mark redemption as needing manual resolution
+-- Mark redemption as manually resolved — 'failed' would be retried by the worker
 UPDATE blend_yield_redemptions
-SET status = 'failed',
+SET status = 'complete',
     intent_status = 'SETTLED',
     last_error = 'manual: vault flow plans failing, $3.11 settled on Blend but not bridged to EOA',
     updated_at = NOW()
-WHERE id::text LIKE '718d22db%'
-  AND status NOT IN ('completed', 'failed');
-
-SELECT id, status, intent_id, intent_status, tx_hash, attempts, last_error, updated_at
-FROM blend_yield_redemptions
-WHERE id::text LIKE '718d22db%';
+WHERE id = '718d22db-0000-0000-0000-000000000000'
+  AND status NOT IN ('complete', 'failed')
+RETURNING id, status, intent_id, intent_status, tx_hash, attempts, last_error, updated_at;
 
 COMMIT;
