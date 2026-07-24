@@ -837,6 +837,7 @@ func (s *GraphVirtualAccountService) HandleAccountActivatedWithData(ctx context.
 
 // GetNGNAccount returns the user's NGN virtual account, if any.
 // Returns active, pending, or failed accounts so the frontend can show retry UI.
+// If no DB record exists but a Graph bank account does, reconciles automatically.
 func (s *GraphVirtualAccountService) GetNGNAccount(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error) {
 	va, err := s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, userID, "NGN")
 	if err != nil {
@@ -845,8 +846,60 @@ func (s *GraphVirtualAccountService) GetNGNAccount(ctx context.Context, userID u
 	if va != nil {
 		return va, nil
 	}
-	// No active/pending account — check for a failed one so the frontend can
-	// display retry UI instead of prompting re-verification from scratch.
+
+	// No DB record — try to recover from Graph.
+	// This handles cases where the DB write failed after Graph created the account,
+	// or the record was lost. List the user's Graph bank accounts and reconcile.
+	user, err := s.userProvider.GetByID(ctx, userID)
+	if err != nil || user.GraphPersonID == nil || *user.GraphPersonID == "" {
+		// No Graph person — check for a failed one so the frontend can show retry UI.
+		return s.virtualAccountRepo.GetFailedNGNByUserID(ctx, userID)
+	}
+
+	accounts, err := s.graphClient.ListBankAccounts(ctx, *user.GraphPersonID)
+	if err != nil || len(accounts) == 0 {
+		return s.virtualAccountRepo.GetFailedNGNByUserID(ctx, userID)
+	}
+
+	// Find the user's personal NGN bank account (holder_type == "person")
+	for _, acct := range accounts {
+		if acct.Currency != "NGN" || acct.HolderType != "person" {
+			continue
+		}
+		vaStatus := mapGraphAccountStatus(acct.Status)
+		now := time.Now()
+		va = &entities.VirtualAccount{
+			ID:              uuid.New(),
+			UserID:          userID,
+			Provider:        entities.VirtualAccountProviderGraph,
+			GraphPersonID:   user.GraphPersonID,
+			GraphAccountID:  &acct.ID,
+			AccountNumber:   acct.AccountNumber,
+			RoutingNumber:   acct.RoutingNumber,
+			BankCode:        acct.BankCode,
+			BankName:        acct.BankName,
+			BeneficiaryName: acct.AccountName,
+			Status:          vaStatus,
+			Currency:        "NGN",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		if va.BeneficiaryName == "" && user.FirstName != nil && user.LastName != nil {
+			va.BeneficiaryName = *user.FirstName + " " + *user.LastName
+		}
+		if err := s.virtualAccountRepo.Create(ctx, va); err != nil {
+			if isUniqueViolation(err) {
+				return s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, userID, "NGN")
+			}
+			s.logger.Warn("failed to store recovered NGN account from Graph",
+				"user_id", userID, "graph_account_id", acct.ID, "error", err)
+			// Return what we have from Graph even if DB write fails
+			return va, nil
+		}
+		return va, nil
+	}
+
+	// No NGN account in Graph either — check for a failed one in DB
 	return s.virtualAccountRepo.GetFailedNGNByUserID(ctx, userID)
 }
 
