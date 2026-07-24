@@ -951,11 +951,18 @@ func (s *WithdrawalService) submitApprovedCryptoWithdrawal(ctx context.Context, 
 
 	// Claim the withdrawal before debiting so a webhook retry cannot double-post
 	// the ledger entry. The external transfer still starts only after the debit.
-	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+	// For stash withdrawals, use 'pending' instead of 'processing' to indicate
+	// that the Blend yield redemption hasn't completed yet — the funds are not
+	// yet available to transfer.
+	initialStatus := entities.WithdrawalStatusProcessing
+	if req.SourceAccount == entities.WithdrawalSourceStashBalance {
+		initialStatus = entities.WithdrawalStatusPending
+	}
+	if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, initialStatus); err != nil {
 		s.logger.Error("Failed to mark withdrawal processing", "error", err)
 		return nil, fmt.Errorf("failed to update withdrawal status: %w", err)
 	}
-	withdrawal.Status = entities.WithdrawalStatusProcessing
+	withdrawal.Status = initialStatus
 
 	// Reserve Blend redemption BEFORE the ledger moves so a crash after the
 	// pending transaction always leaves a durable record for the reconciliation
@@ -1142,7 +1149,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	// resets the redemption for retry, but the async goroutine must survive to
 	// resume the withdrawal once the redemption succeeds. Without this loop the
 	// goroutine would exit on ErrRedemptionRetrying, leaving the withdrawal stuck
-	// in 'processing' with nobody to drive it to completion.
+	// in 'pending' with nobody to drive it to completion.
 	const maxRedemptionRetries = 15
 	for i := 0; i < maxRedemptionRetries; i++ {
 		err := s.prepareStashYieldForCryptoWithdrawal(ctx, withdrawal, req)
