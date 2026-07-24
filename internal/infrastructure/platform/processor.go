@@ -57,6 +57,12 @@ type InboundMessage struct {
 	IsVoice   bool   `json:"is_voice,omitempty"`
 	AudioB64  string `json:"audio_b64,omitempty"`
 	AudioMime string `json:"audio_mime,omitempty"`
+
+	// image attachment (e.g. a receipt photo — OCR'd and summarized before the
+	// AI sees it, so she can log or split it)
+	IsImage   bool   `json:"is_image,omitempty"`
+	ImageB64  string `json:"image_b64,omitempty"`
+	ImageMime string `json:"image_mime,omitempty"`
 }
 
 // ActionPostback is a poll vote — how a user confirms/cancels an action, since
@@ -99,6 +105,10 @@ type Orchestrator interface {
 	ConfirmPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform) (*PlatformReply, error)
 	// CancelPlatformAction discards the pending action staged in the thread.
 	CancelPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform) (*PlatformReply, error)
+	// HasPendingPlatformAction reports whether the thread currently has a staged
+	// pending action. Used to interpret bare YES/NO replies as confirm/cancel on
+	// platforms without interactive polls (Telegram, WhatsApp).
+	HasPendingPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform) bool
 }
 
 type Processor struct {
@@ -108,6 +118,7 @@ type Processor struct {
 	linking         *LinkingService
 	onboarder       *ChatOnboarder
 	voice           VoiceTranscoder
+	vision          ReceiptVision
 	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
 }
 
@@ -127,6 +138,16 @@ func NewProcessor(
 		voice:           voice,
 		sendFunc:        sendFunc,
 	}
+}
+
+// SetReceiptVision enables receipt-photo understanding. When unset, images get
+// a graceful "I can't look at photos yet" reply.
+func (p *Processor) SetReceiptVision(v ReceiptVision) {
+	p.vision = v
+}
+
+func (p *Processor) visionEnabled() bool {
+	return p.vision != nil && p.vision.Available()
 }
 
 // SetOnboarder enables chat-first onboarding for unlinked senders. When unset,
@@ -161,6 +182,24 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			return p.sendErrorMessage(ctx, msg, "I didn't catch anything in that note. Try again?")
 		}
 		msg.Text = transcript
+	}
+
+	// OCR a receipt/photo attachment into a quick summary before anything else
+	// sees it. The summary becomes the message text so the resolver, onboarder,
+	// and orchestrator all handle it like a normal turn.
+	if msg.IsImage {
+		if !p.visionEnabled() {
+			return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
+		}
+		summary, err := p.summarizeImage(ctx, msg)
+		if err != nil {
+			log.Printf("image OCR failed for %s: %v", msg.UserID, err)
+			return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
+		}
+		if strings.TrimSpace(summary) == "" {
+			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
+		}
+		msg.Text = summary
 	}
 
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
@@ -264,7 +303,42 @@ func (p *Processor) tryCompleteHandshake(ctx context.Context, msg InboundMessage
 	return nil
 }
 
+// affirmativeVote / negativeVote are the bare replies treated as confirm/cancel
+// on platforms without interactive polls. Kept deliberately short and
+// unambiguous so ordinary chat never triggers them accidentally.
+var affirmativeVote = map[string]bool{
+	"yes": true, "y": true, "confirm": true, "ok": true, "okay": true, "sure": true,
+}
+var negativeVote = map[string]bool{
+	"no": true, "n": true, "cancel": true, "nope": true, "stop": true,
+}
+
 func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage, resolved *ResolvedUser) error {
+	// Text-vote fallback: on platforms without polls, a bare YES/NO (or similar)
+	// while a pending action is staged is treated as confirm/cancel. Guarded by
+	// HasPendingPlatformAction so ordinary "yes" chatter never fires it.
+	if !msg.IsVoice && !msg.IsImage {
+		normalized := strings.ToLower(strings.TrimSpace(msg.Text))
+		railUserID := resolved.UserID.String()
+		pidStr := resolved.Identity.ID.String()
+		if (affirmativeVote[normalized] || negativeVote[normalized]) &&
+			p.orchestrator.HasPendingPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform) {
+			var reply *PlatformReply
+			var err error
+			if affirmativeVote[normalized] {
+				reply, err = p.orchestrator.ConfirmPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform)
+			} else {
+				reply, err = p.orchestrator.CancelPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform)
+			}
+			if err != nil {
+				log.Printf("text-vote %q failed for %s: %v", normalized, railUserID, err)
+				p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, friendlyActionError(err))
+				return nil
+			}
+			return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
+		}
+	}
+
 	// Show a typing indicator immediately for a responsive feel.
 	if err := p.sendFunc(ctx, p.responseBuilder.TypingResponse(resolved.Identity, msg.ThreadID)); err != nil {
 		log.Printf("typing indicator send failed (non-fatal): %v", err)
@@ -339,6 +413,17 @@ func (p *Processor) transcribe(ctx context.Context, msg InboundMessage) (string,
 		return "", fmt.Errorf("empty audio")
 	}
 	return p.voice.Transcribe(ctx, audio, msg.AudioMime)
+}
+
+func (p *Processor) summarizeImage(ctx context.Context, msg InboundMessage) (string, error) {
+	image, err := base64.StdEncoding.DecodeString(msg.ImageB64)
+	if err != nil {
+		return "", fmt.Errorf("decode image: %w", err)
+	}
+	if len(image) == 0 {
+		return "", fmt.Errorf("empty image")
+	}
+	return p.vision.SummarizeReceipt(ctx, image, msg.ImageMime)
 }
 
 func (p *Processor) synthesizeVoice(ctx context.Context, identity *entities.PlatformIdentity, threadID, text string) (*OutboundMessage, error) {

@@ -1,5 +1,6 @@
 import { Spectrum, type Space, type Message } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
+import { telegram } from "spectrum-ts/providers/telegram";
 import express from "express";
 import crypto from "node:crypto";
 import { loadConfig } from "./config";
@@ -21,7 +22,12 @@ app.use(
   }),
 );
 
-const rabbit = createRabbitMQ(config.AMQP_URL, config.AMQP_EXCHANGE);
+const rabbit = createRabbitMQ(
+  config.AMQP_URL,
+  config.AMQP_EXCHANGE,
+  config.AMQP_OUTBOUND_QUEUE,
+  config.AMQP_OUTBOUND_ROUTING_KEY,
+);
 const handler = new MessageHandler();
 
 // Persistent space store — survives bridge restarts so we know which threads exist.
@@ -162,6 +168,36 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     return;
   }
 
+  // Image attachment — treat as a receipt/photo for OCR on the backend.
+  if (content.type === "attachment") {
+    if (!content.mimeType?.startsWith("image/")) {
+      log.debug({ mime: content.mimeType }, "ignoring non-image attachment");
+      return;
+    }
+    let imageB64: string;
+    try {
+      const buf = await content.read();
+      imageB64 = Buffer.from(buf).toString("base64");
+    } catch (err) {
+      log.error({ err }, "failed to read attachment");
+      return;
+    }
+    const inbound: InboundMessage = {
+      platform: message.platform,
+      user_id: senderId,
+      thread_id: space.id,
+      text: "",
+      space_id: space.id,
+      msg_id: message.id,
+      is_image: true,
+      image_b64: imageB64,
+      image_mime: content.mimeType,
+    };
+    await rabbit.publishInbound(inbound);
+    log.info({ image_len: imageB64.length, mime: content.mimeType }, "published image attachment");
+    return;
+  }
+
   if (content.type === "text") {
     const text = content.text?.trim();
     if (!text) return;
@@ -188,10 +224,27 @@ async function start() {
     "starting spectrum bridge",
   );
 
+  // Providers are enabled by env. iMessage is always on; Telegram joins when a
+  // bot token is configured. Each bridge process binds its own outbound queue
+  // (AMQP_OUTBOUND_ROUTING_KEY=message.outbound.<platform>) so replies never
+  // cross platforms.
+  const providers = [imessage.config()];
+  if (config.TELEGRAM_BOT_TOKEN) {
+    providers.push(
+      telegram.config({
+        botToken: config.TELEGRAM_BOT_TOKEN,
+        ...(config.TELEGRAM_WEBHOOK_SECRET
+          ? { webhookSecret: config.TELEGRAM_WEBHOOK_SECRET }
+          : {}),
+      }) as never,
+    );
+    log.info("Telegram provider enabled");
+  }
+
   const agent = await Spectrum({
     projectId: config.SPECTRUM_PROJECT_ID,
     projectSecret: config.SPECTRUM_PROJECT_SECRET,
-    providers: [imessage.config()],
+    providers,
     ...(config.SPECTRUM_WEBHOOK_SECRET ? { webhookSecret: config.SPECTRUM_WEBHOOK_SECRET } : {}),
   });
 

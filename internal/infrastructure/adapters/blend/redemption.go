@@ -873,6 +873,15 @@ func (r *DepositRouter) markRedemptionFailed(ctx context.Context, idempotencyKey
 	return err
 }
 
+func (r *DepositRouter) markRedemptionFailedByID(ctx context.Context, id uuid.UUID, reason string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE blend_yield_redemptions
+		SET status = $2, last_error = $3, updated_at = NOW()
+		WHERE id = $1 AND status NOT IN ($4)
+	`, id, redemptionStatusFailed, reason, redemptionStatusComplete)
+	return err
+}
+
 func (r *DepositRouter) getRedemption(ctx context.Context, idempotencyKey string) (*redemption, error) {
 	var red redemption
 	err := r.db.GetContext(ctx, &red, `

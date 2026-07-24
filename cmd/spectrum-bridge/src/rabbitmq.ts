@@ -17,6 +17,11 @@ export interface InboundMessage {
   is_voice?: boolean;
   audio_b64?: string;
   audio_mime?: string;
+
+  // image attachment, e.g. a receipt photo (OCR'd on the backend)
+  is_image?: boolean;
+  image_b64?: string;
+  image_mime?: string;
 }
 
 export interface ActionEvent {
@@ -35,7 +40,12 @@ export interface RabbitMQHandle {
   close(): Promise<void>;
 }
 
-export function createRabbitMQ(amqpUrl: string, exchange: string, outboundQueue?: string): RabbitMQHandle {
+export function createRabbitMQ(
+  amqpUrl: string,
+  exchange: string,
+  outboundQueue?: string,
+  outboundRoutingKey = "message.outbound",
+): RabbitMQHandle {
   let connected = false;
   const connection = amqp.connect([amqpUrl]);
 
@@ -92,7 +102,7 @@ export function createRabbitMQ(amqpUrl: string, exchange: string, outboundQueue?
               arguments: { "x-dead-letter-exchange": dlx },
             }),
           )
-          .then((ok) => ch.bindQueue(ok.queue, exchange, "message.outbound"))
+          .then((ok) => ch.bindQueue(ok.queue, exchange, outboundRoutingKey))
           .then(() =>
             ch.consume(outboundQueueName, async (msg: ConsumeMessage | null) => {
               if (!msg) return;

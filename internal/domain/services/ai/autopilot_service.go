@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -77,12 +78,54 @@ type AutopilotService struct {
 	redis    cache.RedisClient
 	sentDate map[string]string
 
-	// Configurable thresholds.
+	// Configurable thresholds (USD-denominated; scaled per user by country PPP
+	// factor so NGN/EUR/GBP users get locally meaningful "low balance" and
+	// "surplus" cutoffs instead of values off by an order of magnitude).
 	OvernightAnomalyThreshold decimal.Decimal
 	LowBalanceThreshold       decimal.Decimal
 	SurplusMinThreshold       decimal.Decimal
 
 	metrics AutopilotMetrics
+}
+
+// countryPPPFactor approximates purchasing-power parity vs USD: how much local
+// currency one US dollar's spending power represents. Thresholds denominated in
+// USD are divided by this factor to get a locally meaningful cutoff. Countries
+// not listed fall back to 1.0 (treat as USD). These are deliberately rough —
+// they only steer alert sensitivity, never move money amounts.
+var countryPPPFactor = map[string]float64{
+	"NG": 1500, // Nigerian naira
+	"KE": 130,  // Kenyan shilling
+	"GH": 12,   // Ghanaian cedi
+	"ZA": 18,   // South African rand
+	"EG": 48,   // Egyptian pound
+	"TZ": 2500, // Tanzanian shilling
+	"UG": 3700, // Ugandan shilling
+	"IN": 83,   // Indian rupee
+	"PH": 56,   // Philippine peso
+	"BR": 5,    // Brazilian real
+	"MX": 17,   // Mexican peso
+	"GB": 0.79, // British pound
+	"IE": 0.92, // Euro (Ireland)
+	"DE": 0.92, // Euro
+	"FR": 0.92, // Euro
+	"ES": 0.92, // Euro
+	"NL": 0.92, // Euro
+	"CA": 1.35, // Canadian dollar
+	"AU": 1.5,  // Australian dollar
+}
+
+// scaledThreshold converts a USD-denominated threshold into a user's local
+// equivalent via their country's PPP factor. Unknown/empty country => factor 1.
+func scaledThreshold(usd decimal.Decimal, country string) decimal.Decimal {
+	factor := countryPPPFactor[strings.ToUpper(strings.TrimSpace(country))]
+	if factor <= 0 {
+		factor = 1
+	}
+	if factor == 1 {
+		return usd
+	}
+	return usd.Mul(decimal.NewFromFloat(factor))
 }
 
 func NewAutopilotService(
@@ -155,7 +198,7 @@ func (s *AutopilotService) RunMorningScan(ctx context.Context) {
 
 		var results []AnomalyResult
 
-		results = s.scanOvernightForAnomalies(ctx, u.ID, since, now)
+		results = s.scanOvernightForAnomalies(ctx, u.ID, u.Country, since, now)
 
 		if s.anomaly != nil {
 			results = append(results, s.anomaly.RunAllChecks(ctx, u.ID, now)...)
@@ -249,13 +292,14 @@ func (s *AutopilotService) RunMiddayCheck(ctx context.Context) {
 		}
 
 		remaining := budget.MonthlyLimit.Sub(projectedTotal)
-		if remaining.GreaterThan(s.SurplusMinThreshold) {
+		surplusThreshold := scaledThreshold(s.SurplusMinThreshold, u.Country)
+		if remaining.GreaterThan(surplusThreshold) {
 			balance, err := s.balances.GetAccountBalance(ctx, u.ID, entities.AccountTypeSpendingBalance)
 			if err != nil {
 				continue
 			}
 			surplus := decimal.Min(remaining, balance)
-			if surplus.GreaterThan(s.SurplusMinThreshold) {
+			if surplus.GreaterThan(surplusThreshold) {
 				_ = s.queue.Push(ctx, u.ID, AutopilotQueueAction{
 					Tool:   ToolTransferFunds,
 					Reason: fmt.Sprintf("Surplus detected: %s under budget this month", remaining.StringFixed(2)),
@@ -400,15 +444,18 @@ func (s *AutopilotService) loadFullAutopilotUsers(ctx context.Context) []struct 
 	return filtered
 }
 
-func (s *AutopilotService) scanOvernightForAnomalies(ctx context.Context, userID uuid.UUID, since, now time.Time) []AnomalyResult {
+func (s *AutopilotService) scanOvernightForAnomalies(ctx context.Context, userID uuid.UUID, country string, since, now time.Time) []AnomalyResult {
 	var results []AnomalyResult
+
+	overnightThreshold := scaledThreshold(s.OvernightAnomalyThreshold, country)
+	lowBalanceThreshold := scaledThreshold(s.LowBalanceThreshold, country)
 
 	flow, err := s.spending.GetMoneyFlow(ctx, userID, since, now)
 	if err != nil || flow == nil {
 		return nil
 	}
 
-	if flow.TotalCardSpend.GreaterThan(s.OvernightAnomalyThreshold) {
+	if flow.TotalCardSpend.GreaterThan(overnightThreshold) {
 		results = append(results, AnomalyResult{
 			Type:        "overnight_spend",
 			Severity:    SeverityHigh,
@@ -422,7 +469,7 @@ func (s *AutopilotService) scanOvernightForAnomalies(ctx context.Context, userID
 	}
 
 	balance, err := s.balances.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
-	if err == nil && balance.LessThan(s.LowBalanceThreshold) {
+	if err == nil && balance.LessThan(lowBalanceThreshold) {
 		results = append(results, AnomalyResult{
 			Type:        "low_balance",
 			Severity:    SeverityHigh,

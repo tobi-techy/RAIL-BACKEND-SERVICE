@@ -14,6 +14,13 @@ import (
 // Worker tuning.
 const (
 	defaultWorkerBatchSize = 25
+	// maxRetryAttempts is the hard cap on redemption retry attempts. After this
+	// many attempts the worker marks the redemption as 'failed' and stops
+	// retrying. The ledger is already ahead of Blend custody for these rows
+	// (reserve-before-debit), so manual reconciliation is required regardless.
+	// Set to 5 to prevent the continuous retry loop that was spamming the
+	// Blend API and creating dozens of failed flow plans.
+	maxRetryAttempts = 5
 	// leaseWindow is how far we push next_retry_at when claiming a route/redemption,
 	// preventing a second worker (or a second instance) from grabbing the same row
 	// while the first is still processing it.
@@ -265,6 +272,9 @@ func (r *DepositRouter) detectStrandedRedemptions(ctx context.Context) {
 // was held under a lease) and need a fresh session + quote to recover. Without this
 // detector they stay stuck until the 2-minute lease window expires and even then may
 // re-enter the same broken state.
+//
+// Also marks redemptions that have exceeded maxRetryAttempts (5) as 'failed' to stop
+// the continuous retry loop.
 func (r *DepositRouter) detectStuckRedemptions(ctx context.Context) {
 	type stuckRow struct {
 		ID        uuid.UUID `db:"id"`
@@ -272,19 +282,37 @@ func (r *DepositRouter) detectStuckRedemptions(ctx context.Context) {
 		Status    string    `db:"status"`
 		Amount    string    `db:"amount"`
 		Attempts  int       `db:"attempts"`
+		LastError sql.NullString `db:"last_error"`
 	}
 	var rows []stuckRow
 	if err := r.db.SelectContext(ctx, &rows, `
-		SELECT id, user_id, status, amount::text AS amount, attempts
+		SELECT id, user_id, status, amount::text AS amount, attempts, last_error
 		FROM blend_yield_redemptions
-		WHERE status IN ('executing', 'submitted')
-		  AND updated_at < NOW() - INTERVAL '30 minutes'
+		WHERE status IN ('pending', 'quoted', 'executing', 'submitted')
+		  AND (updated_at < NOW() - INTERVAL '30 minutes' OR attempts >= $1)
 		LIMIT 10
-	`); err != nil {
+	`, maxRetryAttempts); err != nil {
 		r.logger.Warn("Blend: stuck redemption query failed", zap.Error(err))
 		return
 	}
 	for _, row := range rows {
+		if row.Attempts >= maxRetryAttempts {
+			// Exceeded retry budget — mark as failed to stop the retry loop.
+			// The ledger is already ahead of Blend custody for these rows.
+			r.logger.Error("Blend: marking redemption as failed — exceeded max retry attempts",
+				zap.String("redemption_id", row.ID.String()),
+				zap.String("user_id", row.UserID.String()),
+				zap.String("status", row.Status),
+				zap.String("amount", row.Amount),
+				zap.Int("attempts", row.Attempts),
+				zap.String("last_error", row.LastError.String))
+			if err := r.markRedemptionFailedByID(ctx, row.ID,
+				fmt.Sprintf("exceeded max retry attempts (%d) — Blend redemption stuck, manual reconciliation required", maxRetryAttempts)); err != nil {
+				r.logger.Error("Blend: failed to mark redemption as failed",
+					zap.String("redemption_id", row.ID.String()), zap.Error(err))
+			}
+			continue
+		}
 		if !r.shouldAlert("stuck-redemption:" + row.ID.String()) {
 			continue
 		}
@@ -515,10 +543,11 @@ func (r *DepositRouter) reconcileRedemptions(ctx context.Context) {
 }
 
 // claimRedemptions leases due redemptions for the resume path. Redemptions past
-// the fast-retry budget (50 attempts) MUST keep retrying — the ledger may
-// already be ahead of Blend custody (reserve-before-debit), so abandoning a
-// non-terminal redemption strands user money permanently. Past the budget they
-// drop to an hourly cadence instead of stopping.
+// the fast-retry budget (5 attempts) are NOT claimed — they are marked as
+// 'failed' by detectStuckRedemptions instead. The ledger may already be ahead
+// of Blend custody (reserve-before-debit), so abandoned redemptions strand
+// user money — but the infinite retry loop that was creating dozens of failed
+// Blend flow plans is worse.
 func (r *DepositRouter) claimRedemptions(ctx context.Context, limit int) ([]string, error) {
 	rows, err := r.db.QueryxContext(ctx, `
 		UPDATE blend_yield_redemptions
@@ -527,13 +556,13 @@ func (r *DepositRouter) claimRedemptions(ctx context.Context, limit int) ([]stri
 			SELECT idempotency_key FROM blend_yield_redemptions
 			WHERE status IN ('pending', 'quoted', 'executing', 'submitted')
 				AND next_retry_at <= NOW()
-				AND (attempts < 50 OR updated_at < NOW() - INTERVAL '1 hour')
+				AND attempts < $3
 			ORDER BY next_retry_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING idempotency_key
-	`, limit, int(leaseWindow.Seconds()))
+	`, limit, int(leaseWindow.Seconds()), maxRetryAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -561,6 +590,18 @@ func (r *DepositRouter) resumeRedemption(ctx context.Context, idempotencyKey str
 		return
 	}
 	if red.Status == redemptionStatusComplete || red.Status == redemptionStatusFailed {
+		return
+	}
+	if red.Attempts >= maxRetryAttempts {
+		r.logger.Error("Blend: redemption exceeded max retry attempts — marking as failed to stop retry loop",
+			zap.String("redemption_id", red.ID.String()),
+			zap.Int("attempts", red.Attempts),
+			zap.String("status", red.Status))
+		if err := r.markRedemptionFailed(ctx, red.IdempotencyKey,
+			fmt.Sprintf("exceeded max retry attempts (%d) — Blend redemption stuck, manual reconciliation required", maxRetryAttempts)); err != nil {
+			r.logger.Error("Blend: failed to mark redemption as failed after exceeding retry budget",
+				zap.String("redemption_id", red.ID.String()), zap.Error(err))
+		}
 		return
 	}
 	acct, err := r.getUserAccount(ctx, red.UserID)

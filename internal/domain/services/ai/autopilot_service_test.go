@@ -166,6 +166,10 @@ func newTestAutopilotService(
 	return NewAutopilotService(users, control, queue, push, spending, balances, budgets, transferer, nil, zap.NewNop(), nil, nil)
 }
 
+// fullAutopilotUser returns a USD-denominated user so the existing threshold
+// tests (written with USD-magnitude values) stay valid. NGN/PPP scaling is
+// covered separately by TestAutopilotService_ScanOvernight_NGNThresholdsScaled
+// and TestScaledThreshold.
 func fullAutopilotUser(id uuid.UUID) struct {
 	ID      uuid.UUID
 	Country string
@@ -173,7 +177,7 @@ func fullAutopilotUser(id uuid.UUID) struct {
 	return struct {
 		ID      uuid.UUID
 		Country string
-	}{ID: id, Country: "NG"}
+	}{ID: id, Country: "US"}
 }
 
 // --- tests ---
@@ -451,7 +455,7 @@ func TestAutopilotService_ScanOvernight_HighSpend(t *testing.T) {
 		&mockBalanceReader{balance: decimal.NewFromInt(100)},
 		&mockBudgetReader{}, &mockTransferer{})
 
-	results := svc.scanOvernightForAnomalies(context.Background(), uid, time.Now().Add(-24*time.Hour), time.Now())
+	results := svc.scanOvernightForAnomalies(context.Background(), uid, "US", time.Now().Add(-24*time.Hour), time.Now())
 
 	require.Len(t, results, 1)
 	assert.Contains(t, results[0].Description, "$600")
@@ -464,7 +468,7 @@ func TestAutopilotService_ScanOvernight_LowBalance(t *testing.T) {
 		&mockBalanceReader{balance: decimal.NewFromInt(10)},
 		&mockBudgetReader{}, &mockTransferer{})
 
-	results := svc.scanOvernightForAnomalies(context.Background(), uid, time.Now().Add(-24*time.Hour), time.Now())
+	results := svc.scanOvernightForAnomalies(context.Background(), uid, "US", time.Now().Add(-24*time.Hour), time.Now())
 
 	require.Len(t, results, 1)
 	assert.Contains(t, results[0].Description, "$10")
@@ -477,7 +481,7 @@ func TestAutopilotService_ScanOvernight_BothIssues(t *testing.T) {
 		&mockBalanceReader{balance: decimal.NewFromInt(10)},
 		&mockBudgetReader{}, &mockTransferer{})
 
-	results := svc.scanOvernightForAnomalies(context.Background(), uid, time.Now().Add(-24*time.Hour), time.Now())
+	results := svc.scanOvernightForAnomalies(context.Background(), uid, "US", time.Now().Add(-24*time.Hour), time.Now())
 
 	require.Len(t, results, 2)
 }
@@ -489,9 +493,32 @@ func TestAutopilotService_ScanOvernight_NoIssues(t *testing.T) {
 		&mockBalanceReader{balance: decimal.NewFromInt(500)},
 		&mockBudgetReader{}, &mockTransferer{})
 
-	results := svc.scanOvernightForAnomalies(context.Background(), uid, time.Now().Add(-24*time.Hour), time.Now())
+	results := svc.scanOvernightForAnomalies(context.Background(), uid, "US", time.Now().Add(-24*time.Hour), time.Now())
 
 	assert.Empty(t, results)
+}
+
+func TestAutopilotService_ScanOvernight_NGNThresholdsScaled(t *testing.T) {
+	uid := uuid.New()
+	// ₦100,000 overnight spend is ~$67 — below the USD $500 anomaly bar but
+	// above a properly scaled NGN cutoff would not trigger. A spend of
+	// ₦900,000 (~$600) should trigger once thresholds are PPP-scaled.
+	svc := newTestAutopilotService(&mockAutopilotUsers{}, &mockAutopilotControl{}, &mockAutopilotQueue{}, &mockPushSender{},
+		&mockMoneySpender{flow: &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(900000)}},
+		&mockBalanceReader{balance: decimal.NewFromInt(20000)}, // ₦20k ≈ $13 -> below scaled ₦30k low-balance bar
+		&mockBudgetReader{}, &mockTransferer{})
+
+	results := svc.scanOvernightForAnomalies(context.Background(), uid, "NG", time.Now().Add(-24*time.Hour), time.Now())
+
+	require.Len(t, results, 2, "expected scaled NGN thresholds to flag both high spend and low balance")
+}
+
+func TestScaledThreshold(t *testing.T) {
+	usd := decimal.NewFromInt(500)
+	assert.True(t, scaledThreshold(usd, "NG").Equal(decimal.NewFromInt(750000)), "NG should scale by 1500")
+	assert.True(t, scaledThreshold(usd, "US").Equal(usd), "US unlisted => 1x")
+	assert.True(t, scaledThreshold(usd, "").Equal(usd), "empty => 1x")
+	assert.True(t, scaledThreshold(usd, "ng").Equal(decimal.NewFromInt(750000)), "case-insensitive")
 }
 
 func TestAutopilotService_LoadFullAutopilotUsers_SkipsOnError(t *testing.T) {

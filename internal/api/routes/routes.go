@@ -848,6 +848,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				users.POST("/me/tos", authHandlers.AcceptTOS)
 			}
 
+			// Messaging platform linking (iMessage/WhatsApp/Telegram). Issues the
+			// one-time handshake token users text to the bridge to bind their sender id.
+			if container.PlatformHandler != nil {
+				platformGroup := protected.Group("/platform")
+				{
+					platformGroup.POST("/link", middleware.AuthRateLimit(5), container.PlatformHandler.InitiateLink)
+					platformGroup.GET("/linked", container.PlatformHandler.ListLinked)
+					platformGroup.DELETE("/:platform", middleware.AuthRateLimit(5), container.PlatformHandler.Unlink)
+				}
+			}
+
 		// KYC status utilities (auth required but no KYC gate)
 		kycProtected := protected.Group("/kyc")
 		{
@@ -985,6 +996,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				funding.POST("/ngn/virtual-account",
 					middleware.AuthRateLimit(5),
 					container.NGNHandlers.ProvisionNGNAccount)
+				funding.POST("/ngn/auto-provision",
+					middleware.AuthRateLimit(10),
+					container.NGNHandlers.AutoProvisionNGN)
 			}
 
 			// KYC-gated funding operations
