@@ -893,8 +893,8 @@ func (s *GraphVirtualAccountService) GetNGNAccount(ctx context.Context, userID u
 			}
 			s.logger.Warn("failed to store recovered NGN account from Graph",
 				"user_id", userID, "graph_account_id", acct.ID, "error", err)
-			// Return what we have from Graph even if DB write fails
-			return va, nil
+			// Return error instead of phantom VA — caller needs a real DB record
+			return nil, fmt.Errorf("store recovered NGN account: %w", err)
 		}
 		return va, nil
 	}
@@ -1151,7 +1151,12 @@ func (s *GraphVirtualAccountService) AutoProvisionNGN(ctx context.Context, userI
 	}
 
 	// Check if a bank account already exists in Graph but not in our DB (orphaned)
-	accounts, _ := s.graphClient.ListBankAccounts(ctx, personID)
+	accounts, listErr := s.graphClient.ListBankAccounts(ctx, personID)
+	if listErr != nil {
+		s.logger.Warn("failed to list Graph bank accounts during auto-provision",
+			"user_id", userID, "person_id", personID, "error", listErr)
+		// Fall through to create a new account — Graph may have one, but we can't check
+	}
 	for _, acct := range accounts {
 		if acct.Currency == "NGN" {
 			vaStatus := mapGraphAccountStatus(acct.Status)

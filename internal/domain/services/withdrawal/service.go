@@ -1197,6 +1197,17 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 		return
 	}
 
+	// Blend redemption succeeded — transition from 'pending' to 'processing'
+	// so the user sees the withdrawal is now actively moving funds.
+	if withdrawal.Status == entities.WithdrawalStatusPending {
+		if err := s.withdrawalRepo.UpdateStatus(ctx, withdrawal.ID, entities.WithdrawalStatusProcessing); err != nil {
+			s.logger.Error("async: failed to transition stash withdrawal from pending to processing",
+				"error", err, "withdrawal_id", withdrawal.ID.String())
+		} else {
+			withdrawal.Status = entities.WithdrawalStatusProcessing
+		}
+	}
+
 	transferResult, err := s.executeCryptoTransfer(ctx, withdrawal, req.DestinationAddress, req.DestinationChain, req.SourceChain, req.SourceWalletAddress, req.CircleWalletID)
 	if err != nil {
 		s.logger.Error("async: crypto transfer failed — marking pending ledger failed",

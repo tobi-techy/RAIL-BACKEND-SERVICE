@@ -270,6 +270,15 @@ func (h *GraphWebhookHandler) handleAccountCredit(c *gin.Context, event *graph.W
 		txRef = event.Data.Deposit.ID
 	}
 
+	// Empty txRef means Graph sent an incomplete event. Return 5xx so Graph
+	// retries — we cannot process a deposit without a transaction reference.
+	if txRef == "" {
+		h.logger.Error("account.credit missing transaction ID — returning 5xx for retry",
+			zap.String("account_id", accountID))
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "error", "message": "missing transaction ID"})
+		return
+	}
+
 	amountNGN := fmt.Sprintf("%.2f", amount/100.0)
 
 	depEvent := &funding.GraphNGNDepositEvent{
