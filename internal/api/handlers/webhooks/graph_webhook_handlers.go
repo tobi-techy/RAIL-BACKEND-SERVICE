@@ -206,11 +206,21 @@ func (h *GraphWebhookHandler) handleTransactionEvent(c *gin.Context, event *grap
 		c.JSON(http.StatusOK, gin.H{"status": "logged"})
 
 	case "conversion.failed":
-		h.logger.Warn("Graph conversion failed",
+		if event.Data.AccountID == "" {
+			h.logger.Warn("conversion.failed missing account_id")
+			c.JSON(http.StatusOK, gin.H{"status": "ignored"})
+			return
+		}
+		if err := h.service.HandleConversionFailed(c.Request.Context(), event.Data.AccountID, event.Data.ConversionID); err != nil {
+			h.logger.Error("Failed to handle conversion.failed",
+				zap.Error(err),
+				zap.String("account_id", event.Data.AccountID),
+				zap.String("conversion_id", event.Data.ConversionID))
+		}
+		h.logger.Warn("Graph conversion failed — deposits marked failed",
 			zap.String("conversion_id", event.Data.ConversionID),
-			zap.String("account_id", event.Data.AccountID),
-			zap.Float64("amount", event.Data.Amount))
-		c.JSON(http.StatusOK, gin.H{"status": "logged"})
+			zap.String("account_id", event.Data.AccountID))
+		c.JSON(http.StatusOK, gin.H{"status": "processed"})
 
 	default:
 		h.logger.Info("Unhandled transaction event", zap.String("event_type", event.EventType))
@@ -242,8 +252,26 @@ func (h *GraphWebhookHandler) handleCardEvent(c *gin.Context, event *graph.Webho
 func (h *GraphWebhookHandler) handleAddressEvent(c *gin.Context, event *graph.WebhookEvent) {
 	switch event.EventType {
 	case "address.migrated":
-		h.logger.Warn("Graph deposit address migrated — old address replaced",
-			zap.String("address_id", event.Data.ID))
+		// Address migration means the deposit address changed. If we have a bank
+		// account ID, update the stored address so the user always sees the current one.
+		graphAccountID := ""
+		if event.Data.BankAccount != nil && event.Data.BankAccount.ID != "" {
+			graphAccountID = event.Data.BankAccount.ID
+		}
+		if graphAccountID != "" && event.Data.Code != "" {
+			if err := h.service.HandleAddressMigrated(c.Request.Context(), graphAccountID, event.Data.Code); err != nil {
+				h.logger.Error("Failed to handle address.migrated",
+					zap.Error(err),
+					zap.String("account_id", graphAccountID),
+					zap.String("address_id", event.Data.ID))
+			}
+			h.logger.Info("Graph deposit address migrated — stored address updated",
+				zap.String("account_id", graphAccountID),
+				zap.String("new_code", event.Data.Code))
+		} else {
+			h.logger.Warn("Graph deposit address migrated — no account_id in event, logged only",
+				zap.String("address_id", event.Data.ID))
+		}
 	default:
 		h.logger.Info("Unhandled address event", zap.String("event_type", event.EventType))
 	}

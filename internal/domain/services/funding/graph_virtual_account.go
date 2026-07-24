@@ -958,6 +958,71 @@ func (s *GraphVirtualAccountService) HandleAccountClosed(ctx context.Context, gr
 	return nil
 }
 
+// HandleConversionFailed marks a pending NGN deposit as failed when Graph fires
+// a conversion.failed webhook. This prevents the deposit from being stuck in
+// pending state indefinitely.
+func (s *GraphVirtualAccountService) HandleConversionFailed(ctx context.Context, graphAccountID string, conversionID string) error {
+	// Look up the virtual account to get the user
+	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
+	if err != nil || va == nil {
+		s.logger.Warn("conversion.failed for unknown graph account",
+			"graph_account_id", graphAccountID, "conversion_id", conversionID)
+		return nil
+	}
+
+	// The idempotency key format is "graph-{graphAccountID}-{txRef}".
+	// We don't have the txRef here, so search for any pending deposit for this user.
+	// Look up all deposits for this user and find pending NGN ones
+	deposits, err := s.depositRepo.GetByUserID(ctx, va.UserID, 100, 0)
+	if err != nil {
+		return fmt.Errorf("get deposits: %w", err)
+	}
+
+	updated := 0
+	for _, dep := range deposits {
+		if dep.Status == "pending" && dep.SourceCurrency != nil && *dep.SourceCurrency == "NGN" {
+			if err := s.depositRepo.UpdateStatus(ctx, dep.ID, "failed", nil); err != nil {
+				s.logger.Warn("failed to mark deposit as failed",
+					"deposit_id", dep.ID, "error", err)
+				continue
+			}
+			updated++
+			s.logger.Warn("NGN deposit marked failed due to conversion failure",
+				"deposit_id", dep.ID, "user_id", va.UserID,
+				"conversion_id", conversionID)
+		}
+	}
+
+	if updated == 0 {
+		s.logger.Warn("conversion.failed but no pending NGN deposits found",
+			"graph_account_id", graphAccountID, "conversion_id", conversionID)
+	}
+	return nil
+}
+
+// HandleAddressMigrated updates the stored bank address when Graph fires an
+// address.migrated webhook. This ensures the user always sees the current
+// deposit address.
+func (s *GraphVirtualAccountService) HandleAddressMigrated(ctx context.Context, graphAccountID string, newAddress string) error {
+	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
+	if err != nil || va == nil {
+		s.logger.Warn("address.migrated for unknown graph account",
+			"graph_account_id", graphAccountID)
+		return nil
+	}
+
+	oldUpdatedAt := va.UpdatedAt
+	va.BankAddress = newAddress
+	va.UpdatedAt = time.Now()
+
+	if err := s.virtualAccountRepo.UpdateWithVersion(ctx, va, oldUpdatedAt); err != nil {
+		return fmt.Errorf("update virtual account address: %w", err)
+	}
+	s.logger.Info("Graph NGN account address migrated",
+		"graph_account_id", graphAccountID, "new_address", newAddress)
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────
 
 func validateProfileForGraph(user *entities.UserProfile, req *ProvisionNGNAccountRequest) error {
