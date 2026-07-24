@@ -134,8 +134,18 @@ export class MessageHandler {
     }
     this.seen.set(dedupKey, now);
 
+    // Polls (Confirm/Cancel) are iMessage-only. On platforms without poll
+    // support (Telegram, WhatsApp), fall back to a YES/NO text prompt that the
+    // backend matches against the same pending action.
+    const supportsPoll = msg.platform === "imessage";
+
     switch (contentType) {
       case "poll": {
+        if (!supportsPoll) {
+          const prompt = `${msg.poll_title || msg.text}\n\nReply YES to confirm or NO to cancel.`;
+          await this.sendWithPacing(space, prompt, "text");
+          return;
+        }
         const options = msg.poll_options?.length ? msg.poll_options : ["Confirm", "Cancel"];
         await space.send(poll(msg.poll_title || msg.text, options));
         return;
@@ -159,7 +169,8 @@ export class MessageHandler {
       }
 
       case "effect": {
-        const id = msg.effect ? EFFECTS[msg.effect] : undefined;
+        // Effects are iMessage-only; degrade to a plain message elsewhere.
+        const id = msg.platform === "imessage" && msg.effect ? EFFECTS[msg.effect] : undefined;
         await space.send(typing());
         await this.delay(this.typingDurationMs(msg.text));
         await space.send(id ? effect(markdown(msg.text), id) : markdown(msg.text));

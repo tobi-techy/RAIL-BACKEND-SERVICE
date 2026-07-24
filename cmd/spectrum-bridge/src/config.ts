@@ -19,6 +19,11 @@ const envSchema = z.object({
   SPECTRUM_WEBHOOK_SECRET: z.string().optional(),
   SPECTRUM_WEBHOOK_PATH: z.string().default("/spectrum/webhook"),
 
+  // Telegram (optional). When TELEGRAM_BOT_TOKEN is set the bridge starts a
+  // Telegram provider alongside iMessage; otherwise it's iMessage-only.
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
+
   NODE_ENV: z.enum(["development", "production"]).default("development"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
 });

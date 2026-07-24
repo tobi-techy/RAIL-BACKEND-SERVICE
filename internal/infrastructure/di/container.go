@@ -1964,7 +1964,14 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 				if consumer == nil {
 					return fmt.Errorf("platform outbound publisher not ready")
 				}
-				if pubErr := consumer.Publish(ctx, cfg.Platform.AMQPExchange, "message.outbound", data); pubErr != nil {
+				// Per-platform routing key so multiple bridge consumers (iMessage,
+				// Telegram, WhatsApp) never cross-talk. Falls back to the bare key
+				// if the platform is somehow unset so the DLQ still catches it.
+				routingKey := "message.outbound"
+				if msg != nil && msg.Platform != "" {
+					routingKey = "message.outbound." + string(msg.Platform)
+				}
+				if pubErr := consumer.Publish(ctx, cfg.Platform.AMQPExchange, routingKey, data); pubErr != nil {
 					// Surface as an error so the caller does not ack the inbound
 					// message; it will be requeued and the reply retried.
 					zapLog.Warn("AMQP outbound publish failed", zap.Error(pubErr))
@@ -2009,6 +2016,29 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 			}
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
+
+			// Receipt photos texted to Miriam: build a lightweight vision pipeline
+			// (OCR -> classify -> extract) so she can summarize and offer to log or
+			// split. Reuses the same PaddleOCR sidecar + LLM enricher config as the
+			// async document worker, but runs synchronously inside the request so the
+			// reply arrives in the same conversation turn.
+			if docCfg := cfg.Document; docCfg.EnablePythonOCR && docCfg.OCRServiceURL != "" {
+				if ocrEngine := document.NewPythonOCRClient(docCfg.OCRServiceURL, zapLog); ocrEngine != nil {
+					var enricher document.Enricher
+					if cfg.AI.OpenAI.APIKey != "" {
+						enricher = document.NewLLMEnricher(cfg.AI.OpenAI.APIKey, "", "gpt-4o-mini", zapLog)
+					}
+					visionPipeline := document.NewPipeline(document.PipelineConfig{
+						OCR:              ocrEngine,
+						Enricher:         enricher,
+						MinOCRConfidence: docCfg.MinOCRConfidence,
+						Logger:           zapLog,
+					})
+					proc.SetReceiptVision(platform.NewDocumentReceiptVision(visionPipeline))
+					zapLog.Info("Platform receipt vision enabled (PaddleOCR pipeline)")
+				}
+			}
+
 			// Onboarder needs OnboardingService, wired after domain services init.
 			container.platformProcessor = proc
 			container.platformLinking = linkingSvc
@@ -6171,6 +6201,22 @@ func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID,
 		Text:   "✅ Done — " + actionSuccessSummary(action),
 		Effect: platform.EffectCelebration,
 	}, nil
+}
+
+// HasPendingPlatformAction reports whether the thread's conversation currently
+// has a staged pending action. Used to interpret bare YES/NO text replies as
+// confirm/cancel on platforms without interactive polls.
+func (a *orchestratorAdapter) HasPendingPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) bool {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return false
+	}
+	cid, err := a.resolveConvID(ctx, uid, platformIdentityID, threadID, plat)
+	if err != nil {
+		return false
+	}
+	_, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid)
+	return ok
 }
 
 func (a *orchestratorAdapter) CancelPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {

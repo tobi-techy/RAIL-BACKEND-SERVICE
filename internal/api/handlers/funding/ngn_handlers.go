@@ -111,3 +111,23 @@ func (h *NGNHandlers) GetNGNAccount(c *gin.Context) {
 
 	common.SendSuccess(c, gin.H{"virtual_account": va})
 }
+
+// AutoProvisionNGN handles POST /api/v1/funding/ngn/auto-provision
+// Checks Graph person verification state and creates the NGN bank account
+// if everything is verified. Zero user input required.
+func (h *NGNHandlers) AutoProvisionNGN(c *gin.Context) {
+	userUUID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
+	va, err := h.graphVAService.AutoProvisionNGN(c.Request.Context(), userUUID)
+	if err != nil {
+		h.logger.Error("Failed to auto-provision NGN virtual account", "error", err, "user_id", userUUID)
+		common.SendInternalError(c, "NGN_ACCOUNT_ERROR", err.Error())
+		return
+	}
+
+	common.SendSuccess(c, gin.H{"virtual_account": va})
+}

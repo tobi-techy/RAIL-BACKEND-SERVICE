@@ -1066,3 +1066,121 @@ func countryAlpha2(def string, override *string) string {
 	}
 	return def
 }
+
+// AutoProvisionNGN checks Graph person verification state and, if everything
+// is in order, creates the NGN bank account without requiring any user input.
+// Used for retry when a prior ProvisionNGNAccount call created the Graph person
+// but failed on CreateBankAccount.
+func (s *GraphVirtualAccountService) AutoProvisionNGN(ctx context.Context, userID uuid.UUID) (*entities.VirtualAccount, error) {
+	user, err := s.userProvider.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+
+	// Gate: user must have a Graph person
+	if user.GraphPersonID == nil || *user.GraphPersonID == "" {
+		return nil, fmt.Errorf("no Graph person — complete identity verification first")
+	}
+	personID := *user.GraphPersonID
+
+	// Idempotent: return existing active/pending NGN account
+	if existing, _ := s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, userID, "NGN"); existing != nil {
+		return existing, nil
+	}
+
+	// Verify the person is active and verified in Graph
+	person, err := s.graphClient.FetchPerson(ctx, personID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch graph person: %w", err)
+	}
+	if person.Status != "active" || person.KYCStatus != "verified" {
+		return nil, fmt.Errorf("graph person not ready: status=%s kyc_status=%s", person.Status, person.KYCStatus)
+	}
+
+	// Check if a bank account already exists in Graph but not in our DB (orphaned)
+	accounts, _ := s.graphClient.ListBankAccounts(ctx, personID)
+	for _, acct := range accounts {
+		if acct.Currency == "NGN" {
+			vaStatus := mapGraphAccountStatus(acct.Status)
+			if vaStatus == entities.VirtualAccountStatusActive || vaStatus == entities.VirtualAccountStatusPending {
+				now := time.Now()
+				va := &entities.VirtualAccount{
+					ID:              uuid.New(),
+					UserID:          userID,
+					Provider:        entities.VirtualAccountProviderGraph,
+					GraphPersonID:   &personID,
+					GraphAccountID:  &acct.ID,
+					AccountNumber:   acct.AccountNumber,
+					RoutingNumber:   acct.RoutingNumber,
+					BankCode:        acct.BankCode,
+					BankName:        acct.BankName,
+					BeneficiaryName: acct.AccountName,
+					Status:          vaStatus,
+					Currency:        "NGN",
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}
+				if va.BeneficiaryName == "" && user.FirstName != nil && user.LastName != nil {
+					va.BeneficiaryName = *user.FirstName + " " + *user.LastName
+				}
+				if err := s.virtualAccountRepo.Create(ctx, va); err != nil {
+					if isUniqueViolation(err) {
+						return s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, userID, "NGN")
+					}
+					return nil, fmt.Errorf("store recovered virtual account: %w", err)
+				}
+				return va, nil
+			}
+		}
+	}
+
+	// Create the NGN bank account
+	label := "Rail NGN"
+	if user.FirstName != nil && *user.FirstName != "" {
+		label = *user.FirstName + " NGN"
+	}
+	bankAcct, err := s.graphClient.CreateBankAccount(ctx, &graph.CreateBankAccountRequest{
+		PersonID:         personID,
+		Label:            label,
+		Currency:         "NGN",
+		AutosweepEnabled: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create graph bank account: %w", err)
+	}
+
+	now := time.Now()
+	graphAccountID := bankAcct.ID
+	va := &entities.VirtualAccount{
+		ID:              uuid.New(),
+		UserID:          userID,
+		Provider:        entities.VirtualAccountProviderGraph,
+		GraphPersonID:   &personID,
+		GraphAccountID:  &graphAccountID,
+		AccountNumber:   bankAcct.AccountNumber,
+		RoutingNumber:   bankAcct.RoutingNumber,
+		BankCode:        bankAcct.BankCode,
+		BankName:        bankAcct.BankName,
+		BeneficiaryName: bankAcct.AccountName,
+		Status:          mapGraphAccountStatus(bankAcct.Status),
+		Currency:        "NGN",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if va.BeneficiaryName == "" && user.FirstName != nil && user.LastName != nil {
+		va.BeneficiaryName = *user.FirstName + " " + *user.LastName
+	}
+	if err := s.virtualAccountRepo.Create(ctx, va); err != nil {
+		if isUniqueViolation(err) {
+			return s.virtualAccountRepo.GetProvisionedByUserIDAndCurrency(ctx, userID, "NGN")
+		}
+		return nil, fmt.Errorf("store virtual account: %w", err)
+	}
+
+	// Tier promotion if needed (idempotent)
+	if user.KYCTier < entities.KYCTierLevelBasic {
+		_ = s.userProvider.UpdateKYCTier(ctx, userID, entities.KYCTierLevelBasic)
+	}
+
+	return va, nil
+}
