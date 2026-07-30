@@ -448,6 +448,31 @@ func (r *MiriamIntelligenceRepository) MarkPredictionOutcome(ctx context.Context
 	return nil
 }
 
+func (r *MiriamIntelligenceRepository) BatchMarkPredictionOutcomes(ctx context.Context, outcomes []entities.MiriamPredictionOutcome) error {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, o := range outcomes {
+		if o.ActualOutcome == nil {
+			continue
+		}
+		_, err := tx.ExecContext(ctx, `
+			UPDATE miriam_prediction_outcomes
+			SET actual_outcome = $2, outcome_observed_at = $3
+			WHERE id = $1`, o.ID, *o.ActualOutcome, o.OutcomeObservedAt)
+		if err != nil {
+			return fmt.Errorf("batch mark prediction outcome: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 func (r *MiriamIntelligenceRepository) GetPredictionHitRate(ctx context.Context, userID uuid.UUID, predictionType string, since time.Time) (float64, error) {
 	var result struct {
 		Total   int     `db:"total"`

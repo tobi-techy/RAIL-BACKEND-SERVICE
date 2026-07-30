@@ -100,6 +100,7 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 	}
 
 	var resolved []entities.MiriamPredictionOutcome
+	var toMark []entities.MiriamPredictionOutcome
 	for _, o := range pending {
 		deadline := o.CreatedAt.Add(time.Duration(o.HorizonDays) * 24 * time.Hour)
 		if now.Before(deadline) {
@@ -107,17 +108,20 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 		}
 
 		outcome := t.evaluatePrediction(ctx, userID, o, spend)
-		if err := t.repo.MarkPredictionOutcome(ctx, o.ID, outcome, now); err != nil && t.logger != nil {
-			t.logger.Warn("failed to mark outcome",
-				zap.String("user_id", userID.String()),
-				zap.String("prediction_id", o.PredictionID.String()),
-				zap.Error(err))
-			continue
-		}
 		settled := outcome
 		o.ActualOutcome = &settled
 		o.OutcomeObservedAt = &now
+		toMark = append(toMark, o)
 		resolved = append(resolved, o)
+	}
+	if len(toMark) > 0 {
+		if err := t.repo.BatchMarkPredictionOutcomes(ctx, toMark); err != nil && t.logger != nil {
+			t.logger.Warn("failed to batch mark outcomes",
+				zap.String("user_id", userID.String()),
+				zap.Int("count", len(toMark)),
+				zap.Error(err))
+			return nil
+		}
 	}
 	return resolved
 }
