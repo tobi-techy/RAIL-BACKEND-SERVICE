@@ -264,7 +264,9 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			}
 			return q.Rate, nil
 		}
-		c.AIOrchestrator.SetCurrencyRateProvider(aiservice.NewRampHubRateProvider(getQuote))
+		if c.AIOrchestrator != nil {
+			c.AIOrchestrator.SetCurrencyRateProvider(aiservice.NewRampHubRateProvider(getQuote))
+		}
 	} else if c.Config.RampHub.APIKey != "" {
 		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is required when RampHub API key is configured — refusing to start with unauthenticated webhooks")
 	} else {
