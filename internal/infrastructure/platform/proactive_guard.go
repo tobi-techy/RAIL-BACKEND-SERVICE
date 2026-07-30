@@ -6,9 +6,37 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"go.uber.org/zap"
 )
+
+// Proactive message categories for category-aware Allow.
+const (
+	ProactiveCategoryBriefing  = "briefing"
+	ProactiveCategoryRisk      = "risk"
+	ProactiveCategoryNudge     = "nudge"
+	ProactiveCategoryFollowup  = "followup"
+	ProactiveCategoryReceipt   = "receipt"
+)
+
+// ProactivePrefs is the subset of miriam_preferences the guard needs.
+type ProactivePrefs struct {
+	QuietEnabled   bool
+	QuietStart     int
+	QuietEnd       int
+	DailyCap       int
+	Timezone       string // IANA; empty → fall back to country resolver
+	AllowBriefings bool
+	AllowRisk      bool
+	AllowNudges    bool
+	AllowFollowups bool
+}
+
+// PreferencesResolver returns per-user proactive prefs (defaults on miss).
+type PreferencesResolver interface {
+	ProactivePrefs(ctx context.Context, userID uuid.UUID) ProactivePrefs
+}
 
 // ProactiveGuard enforces "presence, not a notification machine": a per-user
 // daily cap on proactive messages plus quiet hours in the user's local time.
@@ -17,6 +45,7 @@ import (
 type ProactiveGuard struct {
 	redis         cache.RedisClient
 	tz            UserTimezoneResolver
+	prefs         PreferencesResolver
 	defaultLoc    *time.Location
 	dailyCap      int
 	quietStart    int // inclusive local hour [0-23]
@@ -43,7 +72,33 @@ func NewProactiveGuard(redis cache.RedisClient, tz UserTimezoneResolver, default
 	}
 }
 
-func (g *ProactiveGuard) location(ctx context.Context, userID uuid.UUID) *time.Location {
+// SetPreferencesResolver attaches per-user prefs (optional).
+func (g *ProactiveGuard) SetPreferencesResolver(p PreferencesResolver) {
+	g.prefs = p
+}
+
+func (g *ProactiveGuard) resolvePrefs(ctx context.Context, userID uuid.UUID) ProactivePrefs {
+	if g.prefs != nil {
+		return g.prefs.ProactivePrefs(ctx, userID)
+	}
+	return ProactivePrefs{
+		QuietEnabled:   true,
+		QuietStart:     g.quietStart,
+		QuietEnd:       g.quietEnd,
+		DailyCap:       g.dailyCap,
+		AllowBriefings: true,
+		AllowRisk:      true,
+		AllowNudges:    true,
+		AllowFollowups: true,
+	}
+}
+
+func (g *ProactiveGuard) location(ctx context.Context, userID uuid.UUID, p ProactivePrefs) *time.Location {
+	if p.Timezone != "" {
+		if loc, err := time.LoadLocation(p.Timezone); err == nil && loc != nil {
+			return loc
+		}
+	}
 	if g.tz != nil {
 		if loc := g.tz.UserTimezone(ctx, userID); loc != nil {
 			return loc
@@ -52,31 +107,63 @@ func (g *ProactiveGuard) location(ctx context.Context, userID uuid.UUID) *time.L
 	return g.defaultLoc
 }
 
-// InQuietHours reports whether the user's local time is inside the quiet window.
-func (g *ProactiveGuard) inQuietHours(local time.Time) bool {
-	if g.quietStart == g.quietEnd {
+// inQuietHoursPrefs reports quiet hours using per-user start/end when quiet is enabled.
+func inQuietHoursPrefs(local time.Time, quietEnabled bool, quietStart, quietEnd int) bool {
+	if !quietEnabled || quietStart == quietEnd {
 		return false
 	}
 	h := local.Hour()
-	if g.quietStart < g.quietEnd {
-		return h >= g.quietStart && h < g.quietEnd
+	if quietStart < quietEnd {
+		return h >= quietStart && h < quietEnd
 	}
-	// Window wraps past midnight (e.g. 22 → 6).
-	return h >= g.quietStart || h < g.quietEnd
+	return h >= quietStart || h < quietEnd
 }
 
-// Allow reports whether a proactive message may be sent to the user right now.
-// When allowed it consumes one unit of the user's daily budget. critical=true
-// bypasses both quiet hours and the daily cap (used for genuine money risks).
+// categoryAllowed checks per-category allow_* flags.
+func categoryAllowed(p ProactivePrefs, category string) bool {
+	switch category {
+	case ProactiveCategoryBriefing:
+		return p.AllowBriefings
+	case ProactiveCategoryRisk:
+		return p.AllowRisk
+	case ProactiveCategoryNudge:
+		return p.AllowNudges
+	case ProactiveCategoryFollowup:
+		return p.AllowFollowups
+	case ProactiveCategoryReceipt:
+		return true // money receipts always allowed (still may be critical)
+	default:
+		return true
+	}
+}
+
+// Allow reports whether a proactive message may be sent. critical=true bypasses
+// quiet hours and the daily cap (money risks / receipts).
 func (g *ProactiveGuard) Allow(ctx context.Context, userID uuid.UUID, critical bool) bool {
-	if critical {
+	return g.AllowCategory(ctx, userID, ProactiveCategoryNudge, critical)
+}
+
+// AllowCategory is category-aware: checks allow_* flags, quiet hours, daily cap.
+func (g *ProactiveGuard) AllowCategory(ctx context.Context, userID uuid.UUID, category string, critical bool) bool {
+	p := g.resolvePrefs(ctx, userID)
+
+	// Receipts and money-safety risks always deliver when marked critical.
+	if critical || category == ProactiveCategoryReceipt {
 		return true
 	}
 
-	loc := g.location(ctx, userID)
+	if !categoryAllowed(p, category) {
+		if g.logger != nil {
+			g.logger.Debug("proactive suppressed: category disabled",
+				zap.Stringer("user_id", userID), zap.String("category", category))
+		}
+		return false
+	}
+
+	loc := g.location(ctx, userID, p)
 	local := time.Now().In(loc)
 
-	if g.inQuietHours(local) {
+	if inQuietHoursPrefs(local, p.QuietEnabled, p.QuietStart, p.QuietEnd) {
 		if g.logger != nil {
 			g.logger.Debug("proactive suppressed: quiet hours",
 				zap.Stringer("user_id", userID), zap.Int("local_hour", local.Hour()))
@@ -84,27 +171,49 @@ func (g *ProactiveGuard) Allow(ctx context.Context, userID uuid.UUID, critical b
 		return false
 	}
 
-	if g.dailyCap <= 0 || g.redis == nil {
+	cap := p.DailyCap
+	if cap <= 0 {
+		cap = g.dailyCap
+	}
+	if cap <= 0 || g.redis == nil {
 		return true
 	}
 
 	key := "miriam:proactive:count:" + userID.String() + ":" + local.Format("2006-01-02")
 	count, err := g.redis.Incr(ctx, key)
 	if err != nil {
-		// Fail open: delivery matters more than the cap when Redis is down.
 		return true
 	}
 	if count == 1 {
 		_ = g.redis.Expire(ctx, key, 48*time.Hour)
 	}
-	if int(count) > g.dailyCap {
+	if int(count) > cap {
 		if g.logger != nil {
 			g.logger.Debug("proactive suppressed: daily cap reached",
-				zap.Stringer("user_id", userID), zap.Int64("count", count), zap.Int("cap", g.dailyCap))
+				zap.Stringer("user_id", userID), zap.Int64("count", count), zap.Int("cap", cap))
 		}
 		return false
 	}
 	return true
+}
+
+// PrefsFromEntity maps domain prefs into the guard shape.
+func PrefsFromEntity(p entities.MiriamPreferences) ProactivePrefs {
+	tz := ""
+	if p.Timezone != nil {
+		tz = *p.Timezone
+	}
+	return ProactivePrefs{
+		QuietEnabled:   p.QuietEnabled,
+		QuietStart:     p.QuietStart,
+		QuietEnd:       p.QuietEnd,
+		DailyCap:       p.DailyCap,
+		Timezone:       tz,
+		AllowBriefings: p.AllowBriefings,
+		AllowRisk:      p.AllowRisk,
+		AllowNudges:    p.AllowNudges,
+		AllowFollowups: p.AllowFollowups,
+	}
 }
 
 // userTimezoneAdapter resolves a user's timezone from their stored country.

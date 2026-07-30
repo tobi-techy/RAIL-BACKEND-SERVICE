@@ -83,8 +83,13 @@ func (e *DecisionEngine) MakeDecision(ctx context.Context, dc *entities.Decision
 }
 
 // ShouldExecute returns true if the decision type is execute.
+// ShouldExecute reports whether the decision should move money (or perform a
+// quiet action). adjust_amount is executable at the reduced size.
 func ShouldExecute(d *entities.MiriamDecision) bool {
-	return d.DecisionType == entities.DecisionExecute
+	if d == nil {
+		return false
+	}
+	return d.DecisionType == entities.DecisionExecute || d.DecisionType == entities.DecisionAdjustAmount
 }
 
 // ExecuteAmount returns the amount to use for execution (adjusted if decision is adjust_amount).

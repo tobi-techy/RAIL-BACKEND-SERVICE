@@ -118,6 +118,30 @@ const (
 	TransactionStatusFailed    TransactionStatus = "failed"
 )
 
+// InitiatedBy identifies the origin of a ledger transaction for audit trail
+type InitiatedBy string
+
+const (
+	InitiatedByUser       InitiatedBy = "user"
+	InitiatedBySystem     InitiatedBy = "system"
+	InitiatedByAdmin      InitiatedBy = "admin"
+	InitiatedByWebhook    InitiatedBy = "webhook"
+	InitiatedByBridge     InitiatedBy = "bridge"
+	InitiatedByAutomation InitiatedBy = "automation"
+)
+
+func (i InitiatedBy) String() string { return string(i) }
+
+func (i InitiatedBy) Validate() error {
+	switch i {
+	case InitiatedByUser, InitiatedBySystem, InitiatedByAdmin,
+		InitiatedByWebhook, InitiatedByBridge, InitiatedByAutomation:
+		return nil
+	default:
+		return fmt.Errorf("invalid initiated_by: %s", string(i))
+	}
+}
+
 // Validate checks if the transaction status is valid
 func (s TransactionStatus) Validate() error {
 	switch s {
@@ -206,17 +230,21 @@ func (a *LedgerAccount) IsSystemAccount() bool {
 
 // LedgerTransaction represents a group of balanced ledger entries
 type LedgerTransaction struct {
-	ID              uuid.UUID         `json:"id" db:"id"`
-	UserID          *uuid.UUID        `json:"user_id,omitempty" db:"user_id"`
-	TransactionType TransactionType   `json:"transaction_type" db:"transaction_type"`
-	ReferenceID     *uuid.UUID        `json:"reference_id,omitempty" db:"reference_id"`
-	ReferenceType   *string           `json:"reference_type,omitempty" db:"reference_type"`
-	Status          TransactionStatus `json:"status" db:"status"`
-	IdempotencyKey  string            `json:"idempotency_key" db:"idempotency_key"`
-	Description     *string           `json:"description,omitempty" db:"description"`
-	Metadata        map[string]any    `json:"metadata,omitempty" db:"metadata"`
-	CreatedAt       time.Time         `json:"created_at" db:"created_at"`
-	CompletedAt     *time.Time        `json:"completed_at,omitempty" db:"completed_at"`
+	ID                      uuid.UUID         `json:"id" db:"id"`
+	UserID                  *uuid.UUID        `json:"user_id,omitempty" db:"user_id"`
+	TransactionType         TransactionType   `json:"transaction_type" db:"transaction_type"`
+	ReferenceID             *uuid.UUID        `json:"reference_id,omitempty" db:"reference_id"`
+	ReferenceType           *string           `json:"reference_type,omitempty" db:"reference_type"`
+	Status                  TransactionStatus `json:"status" db:"status"`
+	IdempotencyKey          string            `json:"idempotency_key" db:"idempotency_key"`
+	Description             *string           `json:"description,omitempty" db:"description"`
+	Metadata                map[string]any    `json:"metadata,omitempty" db:"metadata"`
+	PreviousTransactionHash string            `json:"previous_transaction_hash" db:"previous_transaction_hash"`
+	TransactionHash         string            `json:"transaction_hash" db:"transaction_hash"`
+	InitiatedBy             string            `json:"initiated_by" db:"initiated_by"`
+	Reason                  *string           `json:"reason,omitempty" db:"reason"`
+	CreatedAt               time.Time         `json:"created_at" db:"created_at"`
+	CompletedAt             *time.Time        `json:"completed_at,omitempty" db:"completed_at"`
 }
 
 // Validate validates the ledger transaction
@@ -308,6 +336,29 @@ func (e *LedgerEntry) IsCredit() bool {
 	return e.EntryType == EntryTypeCredit
 }
 
+// LedgerVelocityBucket tracks daily outflow for circuit-breaker limits
+type LedgerVelocityBucket struct {
+	ID           uuid.UUID       `json:"id" db:"id"`
+	AccountID    uuid.UUID       `json:"account_id" db:"account_id"`
+	BucketDate   time.Time       `json:"bucket_date" db:"bucket_date"`
+	OutflowTotal decimal.Decimal `json:"outflow_total" db:"outflow_total"`
+	TxCount      int             `json:"tx_count" db:"tx_count"`
+	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
+}
+
+// VelocityConfig holds circuit-breaker limits for an account class.
+type VelocityConfig struct {
+	MaxDailyOutflow decimal.Decimal
+	MaxDailyTxCount int
+}
+
+// DefaultVelocityConfig is the default limits applied to all user accounts.
+var DefaultVelocityConfig = VelocityConfig{
+	MaxDailyOutflow: decimal.NewFromInt(50000),
+	MaxDailyTxCount: 200,
+}
+
 // UserBalances represents all balance accounts for a user
 type UserBalances struct {
 	UserID             uuid.UUID       `json:"user_id"`
@@ -353,6 +404,8 @@ type CreateTransactionRequest struct {
 	IdempotencyKey  string
 	Description     *string
 	Metadata        map[string]any
+	InitiatedBy     string
+	Reason          *string
 	Entries         []CreateEntryRequest
 }
 
@@ -364,6 +417,13 @@ func (r *CreateTransactionRequest) Validate() error {
 
 	if r.IdempotencyKey == "" {
 		return fmt.Errorf("idempotency key is required")
+	}
+
+	if r.InitiatedBy == "" {
+		return fmt.Errorf("initiated_by is required")
+	}
+	if err := InitiatedBy(r.InitiatedBy).Validate(); err != nil {
+		return fmt.Errorf("initiated_by: %w", err)
 	}
 
 	if len(r.Entries) < 2 {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"os"
@@ -10,13 +9,11 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/app"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/recovery"
-	wallet_migration "github.com/rail-service/rail_service/internal/workers/wallet_migration"
 	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -107,60 +104,6 @@ func runMigrations() error {
 		return err
 	}
 
-	// One-shot: migrate legacy Bridge wallets to Circle.
-	// No-ops once all wallets have circle_wallet_id set.
-	if err := runWalletMigration(dbURL); err != nil {
-		fmt.Fprintf(os.Stderr, "Wallet migration warning (non-fatal): %v\n", err)
-	}
-	return nil
-}
-
-func runWalletMigration(dbURL string) error {
-	bridgeAPIKey := os.Getenv("BRIDGE_API_KEY")
-	circleAPIKey := os.Getenv("CIRCLE_API_KEY")
-	circleEntitySecret := os.Getenv("CIRCLE_ENTITY_SECRET")
-	circleWalletSetID := os.Getenv("CIRCLE_DEFAULT_WALLET_SET_ID")
-
-	if bridgeAPIKey == "" || circleAPIKey == "" || circleEntitySecret == "" || circleWalletSetID == "" {
-		return nil // not configured, skip silently
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		return fmt.Errorf("open db: %w", err)
-	}
-	defer db.Close()
-
-	logger, err := zap.NewProduction(zap.AddStacktrace(zap.ErrorLevel))
-	if err != nil {
-		return fmt.Errorf("create logger: %w", err)
-	}
-	defer logger.Sync()
-
-	bridgeClient := bridge.NewClient(bridge.Config{APIKey: bridgeAPIKey, BaseURL: "https://api.bridge.xyz"}, logger)
-	circleClient, err := circleadapter.NewHTTPClient(circleadapter.Config{
-		APIKey:       circleAPIKey,
-		EntitySecret: circleEntitySecret,
-		Environment:  os.Getenv("CIRCLE_ENVIRONMENT"),
-	}, logger)
-	if err != nil {
-		return fmt.Errorf("circle client: %w", err)
-	}
-	circleAdapter := circleadapter.NewAdapter(circleClient, logger)
-
-	worker := wallet_migration.NewWorker(db, bridgeClient, circleAdapter, circleWalletSetID, logger)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	result, err := worker.Run(ctx, 500)
-	if err != nil {
-		return err
-	}
-	if result.Total > 0 {
-		fmt.Printf("Wallet migration: %d/%d migrated, %d failed, %s USDC transferred\n",
-			result.Migrated, result.Total, result.Failed, result.Transferred.String())
-	}
 	return nil
 }
 

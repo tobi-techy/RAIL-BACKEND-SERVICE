@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection sim sim-live sim-stub sim-soak
+.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection sim sim-live sim-stub sim-soak miriam-eval
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT ?= $(shell git rev-parse --short HEAD)
@@ -19,6 +19,13 @@ run:
 test:
 	@echo "Running tests..."
 	go test -v -race -coverprofile=coverage.out ./...
+
+# Operator Core golden eval (messaging/eval path). Requires a running API with
+# EVAL_ENABLED=true, EVAL_TOKEN, and a funded USER_ID.
+#   make miriam-eval EVAL_TOKEN=... USER_ID=...
+miriam-eval:
+	@echo "Running Miriam golden eval scenarios..."
+	@./scripts/miriam_golden/run.sh
 
 test-coverage:
 	@echo "Generating coverage report..."

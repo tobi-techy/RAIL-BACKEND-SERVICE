@@ -1,16 +1,13 @@
 package handlers
 
 import (
-	"context"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/yield"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
-	yield_distribution "github.com/rail-service/rail_service/internal/workers/yield_distribution"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -68,46 +65,5 @@ func TriggerStashReconciliation(worker *recon.Worker, logger *zap.Logger) gin.Ha
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	}
-}
-// TriggerYieldDistribution triggers yield distribution asynchronously.
-// Returns 202 immediately; check logs for completion.
-// POST /admin/yield/distribute
-// Body: { "period_start": "2026-03-01", "period_end": "2026-03-31" }
-func TriggerYieldDistribution(worker *yield_distribution.Worker, logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req struct {
-			PeriodStart string `json:"period_start" binding:"required"`
-			PeriodEnd   string `json:"period_end" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		start, err := time.Parse(time.DateOnly, req.PeriodStart)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "period_start must be YYYY-MM-DD"})
-			return
-		}
-		end, err := time.Parse(time.DateOnly, req.PeriodEnd)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "period_end must be YYYY-MM-DD"})
-			return
-		}
-		if !end.After(start) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "period_end must be after period_start"})
-			return
-		}
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-			defer cancel()
-			if err := worker.Run(ctx, start, end); err != nil {
-				logger.Error("Async yield distribution failed", zap.Error(err),
-					zap.String("period_start", req.PeriodStart),
-					zap.String("period_end", req.PeriodEnd),
-				)
-			}
-		}()
-		c.JSON(http.StatusAccepted, gin.H{"status": "accepted", "period_start": req.PeriodStart, "period_end": req.PeriodEnd})
 	}
 }

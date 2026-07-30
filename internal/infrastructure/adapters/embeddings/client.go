@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	cencori "github.com/cencori/cencori-go"
 	"go.uber.org/zap"
 )
 
@@ -159,6 +160,85 @@ func (c *Client) embedGemini(ctx context.Context, text string) ([]float32, error
 // EmbedBatch generates embeddings for multiple texts. Calls the API
 // sequentially to stay within rate limits.
 func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	results := make([][]float32, 0, len(texts))
+	for _, text := range texts {
+		emb, err := c.Embed(ctx, text)
+		if err != nil {
+			return nil, fmt.Errorf("embed chunk: %w", err)
+		}
+		results = append(results, emb)
+	}
+	return results, nil
+}
+
+// CencoriEmbeddingsClient uses the official Cencori Go SDK for embeddings.
+// It routes through the Cencori gateway, which handles provider selection,
+// failover, and billing automatically.
+type CencoriEmbeddingsClient struct {
+	client *cencori.Client
+	model  string
+	logger *zap.Logger
+}
+
+// NewCencoriEmbeddingsClient creates a new embeddings client using the Cencori SDK.
+func NewCencoriEmbeddingsClient(apiKey string, model string, logger *zap.Logger) *CencoriEmbeddingsClient {
+	if model == "" {
+		model = "text-embedding-3-small"
+	}
+
+	client, err := cencori.NewClient(
+		cencori.WithAPIKey(apiKey),
+		cencori.WithTimeout(30*time.Second),
+	)
+	if err != nil {
+		logger.Error("Failed to create Cencori embeddings client", zap.Error(err))
+		return &CencoriEmbeddingsClient{
+			model:  model,
+			logger: logger,
+		}
+	}
+
+	return &CencoriEmbeddingsClient{
+		client: client,
+		model:  model,
+		logger: logger,
+	}
+}
+
+// Embed generates an embedding vector for the given text via Cencori.
+func (c *CencoriEmbeddingsClient) Embed(ctx context.Context, text string) ([]float32, error) {
+	if c.client == nil {
+		return nil, fmt.Errorf("Cencori client not initialized")
+	}
+
+	resp, err := c.client.Chat.Embeddings(ctx, cencori.EmbeddingParams{
+		Input: text,
+		Model: c.model,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cencori embeddings: %w", err)
+	}
+
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("no embedding returned from Cencori")
+	}
+
+	// Convert float64 to float32
+	emb := make([]float32, len(resp.Data[0].Embedding))
+	for i, v := range resp.Data[0].Embedding {
+		emb[i] = float32(v)
+	}
+
+	c.logger.Debug("cencori embedding generated",
+		zap.Int("dimensions", len(emb)),
+		zap.Int("tokens", resp.Usage.TotalTokens),
+	)
+
+	return emb, nil
+}
+
+// EmbedBatch generates embeddings for multiple texts via Cencori.
+func (c *CencoriEmbeddingsClient) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	results := make([][]float32, 0, len(texts))
 	for _, text := range texts {
 		emb, err := c.Embed(ctx, text)

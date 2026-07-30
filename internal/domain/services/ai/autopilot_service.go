@@ -174,6 +174,8 @@ func (s *AutopilotService) Metrics() AutopilotMetrics {
 }
 
 // RunMorningScan checks overnight activity and alerts on anomalies.
+// Alerts go to full and guided users (monitor is alerts-only product-wise but we
+// still surface risk). No money moves here.
 func (s *AutopilotService) RunMorningScan(ctx context.Context) {
 	if !s.tryLockPhase(ctx, "morning") {
 		s.logger.Debug("autopilot morning: lock held by another replica")
@@ -181,7 +183,9 @@ func (s *AutopilotService) RunMorningScan(ctx context.Context) {
 	}
 	defer s.unlockPhase(ctx, "morning")
 
-	users := s.loadFullAutopilotUsers(ctx)
+	// Morning is alerts-only: include full + guided so default guided users still
+	// get risk signals. Monitor users opt out of autonomous action, not safety pings.
+	users := s.loadUsersAtLevels(ctx, entities.ControlLevelFull, entities.ControlLevelGuided)
 	if len(users) == 0 {
 		return
 	}
@@ -235,7 +239,9 @@ func (s *AutopilotService) RunMorningScan(ctx context.Context) {
 	s.logger.Info("autopilot morning scan complete", zap.Int("users", len(users)), zap.Int("alerted", alerted))
 }
 
-// RunMiddayCheck reviews spending pace vs budget and queues surplus transfers.
+// RunMiddayCheck reviews spending pace vs budget and queues surplus/overspend alerts.
+// Money is not moved here — silent transfers require Act (full) + an active mandate
+// via the intelligence orchestrator. Autopilot only surfaces suggestions.
 func (s *AutopilotService) RunMiddayCheck(ctx context.Context) {
 	if !s.tryLockPhase(ctx, "midday") {
 		s.logger.Debug("autopilot midday: lock held by another replica")
@@ -243,7 +249,9 @@ func (s *AutopilotService) RunMiddayCheck(ctx context.Context) {
 	}
 	defer s.unlockPhase(ctx, "midday")
 
-	users := s.loadFullAutopilotUsers(ctx)
+	// Full users get surplus suggestions; guided get overspend alerts only via morning
+	// and here for budget path. Use full for surplus CTAs that used to auto-transfer.
+	users := s.loadUsersAtLevels(ctx, entities.ControlLevelFull, entities.ControlLevelGuided)
 	if len(users) == 0 {
 		return
 	}
@@ -300,9 +308,13 @@ func (s *AutopilotService) RunMiddayCheck(ctx context.Context) {
 			}
 			surplus := decimal.Min(remaining, balance)
 			if surplus.GreaterThan(surplusThreshold) {
+				// Alert only — do not auto-transfer. Mandate path owns silent moves.
 				_ = s.queue.Push(ctx, u.ID, AutopilotQueueAction{
-					Tool:   ToolTransferFunds,
-					Reason: fmt.Sprintf("Surplus detected: %s under budget this month", remaining.StringFixed(2)),
+					Tool: "alert_surplus",
+					Reason: fmt.Sprintf(
+						"You have about $%s spare under budget. I can quietly move surplus to Stash when you accept a mandate and turn on Act.",
+						surplus.StringFixed(2),
+					),
 					Args: map[string]interface{}{
 						"from":   "spend",
 						"to":     "stash",
@@ -366,32 +378,20 @@ func (s *AutopilotService) RunEveningReview(ctx context.Context) {
 
 			switch act.Tool {
 			case ToolTransferFunds:
+				// Legacy queued transfers (pre-MVP) are not auto-executed anymore.
+				// Surface as a suggestion so money only moves via mandate + Act.
 				amount, _ := act.Args["amount"].(float64)
-				from, _ := act.Args["from"].(string)
-				to, _ := act.Args["to"].(string)
-				if amount <= 0 {
-					continue
-				}
-				idemKey := fmt.Sprintf("autopilot:%s:%s:transfer:%.2f", u.ID.String(), today, amount)
-				var txErr error
-				if from == "spend" && to == "stash" {
-					txErr = s.transferer.TransferSpendToStash(ctx, u.ID, decimal.NewFromFloat(amount), idemKey)
-				}
-				if txErr != nil {
-					s.logger.Warn("autopilot evening: transfer failed", zap.String("user_id", u.ID.String()), zap.Error(txErr))
-					hasError = true
-					atomic.AddInt64(&s.metrics.EveningErrors, 1)
-					summary = append(summary, fmt.Sprintf("Transfer $%.2f failed — will retry tomorrow", amount))
-					if requeueErr := s.queue.Push(ctx, u.ID, *act); requeueErr != nil {
-						s.logger.Warn("autopilot evening: requeue failed", zap.String("user_id", u.ID.String()), zap.Error(requeueErr))
-					}
+				alerted++
+				if amount > 0 {
+					summary = append(summary, fmt.Sprintf(
+						"I held off on moving $%.2f to Stash — silent moves need an approved mandate and Act mode",
+						amount,
+					))
 				} else {
-					executed++
-					atomic.AddInt64(&s.metrics.EveningTransfersDone, 1)
-					summary = append(summary, fmt.Sprintf("Moved $%.2f to savings", amount))
+					summary = append(summary, "I held a pending surplus transfer until you approve a mandate")
 				}
 
-			case "alert_overspend":
+			case "alert_overspend", "alert_surplus":
 				alerted++
 				summary = append(summary, act.Reason)
 			}
@@ -427,16 +427,30 @@ func (s *AutopilotService) loadFullAutopilotUsers(ctx context.Context) []struct 
 	ID      uuid.UUID
 	Country string
 } {
+	return s.loadUsersAtLevels(ctx, entities.ControlLevelFull)
+}
+
+// loadUsersAtLevels returns active users whose control level is in the allow-list.
+// Fail-closed: lookup errors skip the user.
+func (s *AutopilotService) loadUsersAtLevels(ctx context.Context, levels ...string) []struct {
+	ID      uuid.UUID
+	Country string
+} {
 	all, err := s.users.GetAllActiveUsers(ctx)
 	if err != nil {
 		s.logger.Error("autopilot: list users failed", zap.Error(err))
 		return nil
 	}
 
+	allowed := make(map[string]bool, len(levels))
+	for _, l := range levels {
+		allowed[l] = true
+	}
+
 	filtered := all[:0]
 	for _, u := range all {
 		level, err := s.control.GetControlLevel(ctx, u.ID)
-		if err != nil || level != entities.ControlLevelFull {
+		if err != nil || !allowed[level] {
 			continue
 		}
 		filtered = append(filtered, u)

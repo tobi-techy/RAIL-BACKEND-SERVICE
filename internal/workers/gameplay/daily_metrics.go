@@ -38,8 +38,6 @@ type DailyMetricsWorker struct {
 	challenges   ChallengeUpdater
 	streaks      StreakRecorder
 	logger       *zap.Logger
-	stop         chan struct{}
-	lastDate     string
 }
 
 func NewDailyMetricsWorker(
@@ -52,32 +50,11 @@ func NewDailyMetricsWorker(
 ) *DailyMetricsWorker {
 	return &DailyMetricsWorker{
 		userProvider: userProvider, cardCounter: cardCounter, balances: balances,
-		challenges: challenges, streaks: streaks, logger: logger, stop: make(chan struct{}),
+		challenges: challenges, streaks: streaks, logger: logger,
 	}
 }
 
-func (w *DailyMetricsWorker) Start(ctx context.Context) {
-	w.logger.Info("Daily metrics worker started")
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stop:
-			return
-		case <-ticker.C:
-			// Run at 3am UTC daily
-			if time.Now().UTC().Hour() == 3 && w.lastDate != time.Now().UTC().Format("2006-01-02") {
-				w.lastDate = time.Now().UTC().Format("2006-01-02")
-				w.run(ctx)
-			}
-		}
-	}
-}
-
-func (w *DailyMetricsWorker) run(ctx context.Context) {
+func (w *DailyMetricsWorker) ComputeDailyMetrics(ctx context.Context) {
 	userIDs, err := w.userProvider.GetActiveUserIDs(ctx)
 	if err != nil {
 		w.logger.Error("Failed to get active users for daily metrics", zap.Error(err))
@@ -116,5 +93,3 @@ func (w *DailyMetricsWorker) run(ctx context.Context) {
 			zap.Int("stash_growth_updates", stashGrowthCount))
 	}
 }
-
-func (w *DailyMetricsWorker) Stop() { close(w.stop) }

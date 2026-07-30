@@ -506,9 +506,50 @@ func (s *Service) evaluateMandates(ctx context.Context, state *entities.MiriamMo
 }
 
 func (s *Service) evaluateTransferToStash(ctx context.Context, state *entities.MiriamMoneyState, mandate entities.MiriamAutopilotMandate, eventType string) error {
+	// Compute candidate amount from mandate caps; SafeExecuteTransferToStash applies floors.
 	now := time.Now().UTC()
 	if mandate.LastExecutedAt != nil && now.Sub(*mandate.LastExecutedAt) < time.Duration(mandate.CooldownMinutes)*time.Minute {
 		return nil
+	}
+	spend, err := s.balances.GetAccountBalance(ctx, state.UserID, entities.AccountTypeSpendingBalance)
+	if err != nil {
+		return err
+	}
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	usedToday, err := s.repo.MandateExecutedAmountSince(ctx, mandate.ID, todayStart)
+	if err != nil {
+		return err
+	}
+	remainingToday := mandate.MaxAmountPerDay.Sub(usedToday)
+	if !remainingToday.IsPositive() {
+		return nil
+	}
+	availableAboveFloor := spend.Sub(mandate.MinSpendBalance)
+	amount := minDecimal(mandate.MaxAmountPerAction, remainingToday, availableAboveFloor)
+	amount = s.applyLearning(ctx, state.UserID, amount)
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		return nil
+	}
+	return s.SafeExecuteTransferToStash(ctx, state, mandate, amount, eventType)
+}
+
+// SafeExecuteTransferToStash applies cooldown, floors, day-cap, and mark-executed
+// before moving Spend→Stash. Used by both the classic worker path and the
+// intelligence orchestrator so silent money always shares one safety gate.
+// proposedAmount is clamped down (never up) against remaining day budget and
+// balance above MinSpendBalance.
+func (s *Service) SafeExecuteTransferToStash(
+	ctx context.Context,
+	state *entities.MiriamMoneyState,
+	mandate entities.MiriamAutopilotMandate,
+	proposedAmount decimal.Decimal,
+	eventType string,
+) error {
+	now := time.Now().UTC()
+	if mandate.LastExecutedAt != nil && mandate.CooldownMinutes > 0 {
+		if now.Sub(*mandate.LastExecutedAt) < time.Duration(mandate.CooldownMinutes)*time.Minute {
+			return nil
+		}
 	}
 	spend, err := s.balances.GetAccountBalance(ctx, state.UserID, entities.AccountTypeSpendingBalance)
 	if err != nil {
@@ -531,19 +572,16 @@ func (s *Service) evaluateTransferToStash(ctx context.Context, state *entities.M
 		return nil
 	}
 	availableAboveFloor := spend.Sub(mandate.MinSpendBalance)
-	amount := minDecimal(mandate.MaxAmountPerAction, remainingToday, availableAboveFloor)
-	amount = s.applyLearning(ctx, state.UserID, amount)
+	amount := minDecimal(proposedAmount, mandate.MaxAmountPerAction, remainingToday, availableAboveFloor)
 	if amount.LessThan(decimal.NewFromInt(1)) {
 		return nil
 	}
 	amount = amount.RoundBank(2)
 	reason := fmt.Sprintf("Moved $%s to Stash because Spend was $%s above the approved floor and safe-to-spend was $%s/day.",
 		amount.StringFixed(2), availableAboveFloor.StringFixed(2), state.SafeToSpendDaily.StringFixed(2))
-	// Idempotency key uses cooldown-window granularity to dedupe concurrent/retried
-	// evaluations while allowing multiple transfers per day (capped by MaxAmountPerDay).
 	windowSec := int64(mandate.CooldownMinutes) * 60
 	if windowSec <= 0 {
-		windowSec = 300 // 5-minute default window
+		windowSec = 300
 	}
 	idempotencyKey := fmt.Sprintf("miriam-autopilot-%s-%d", mandate.ID.String(), now.Unix()/windowSec)
 	if err := s.transfer.TransferSpendingToStash(ctx, state.UserID, amount, idempotencyKey); err != nil {
@@ -557,6 +595,7 @@ func (s *Service) evaluateTransferToStash(ctx context.Context, state *entities.M
 		return err
 	}
 	if s.notifier != nil {
+		// Critical path — user must hear about silent money moves.
 		_ = s.notifier.SendGenericNotification(ctx, state.UserID, "Miriam moved money forward", reason)
 	}
 	return nil

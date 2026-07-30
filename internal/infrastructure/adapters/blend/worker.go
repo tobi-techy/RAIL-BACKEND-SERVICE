@@ -335,14 +335,15 @@ func (r *DepositRouter) detectStuckRedemptions(ctx context.Context) {
 // don't race with a crypto transfer that may still be spending from the Base EOA.
 func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 	type row struct {
-		ID       uuid.UUID `db:"id"`
-		UserID   uuid.UUID `db:"user_id"`
-		Amount   string    `db:"amount"`
-		Attempts int       `db:"attempts"`
+		ID                uuid.UUID `db:"id"`
+		UserID            uuid.UUID `db:"user_id"`
+		Amount            string    `db:"amount"`
+		Attempts          int       `db:"attempts"`
+		DestinationChainID int64    `db:"destination_chain_id"`
 	}
 	var rows []row
 	if err := r.db.SelectContext(ctx, &rows, `
-		SELECT id, user_id, amount, attempts
+		SELECT id, user_id, amount, attempts, destination_chain_id
 		FROM blend_yield_redemptions
 		WHERE status = 'complete'
 		  AND swept_at IS NULL
@@ -411,7 +412,7 @@ func (r *DepositRouter) retryPendingSweeps(ctx context.Context) {
 		}
 
 		sweepCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-		r.sweepToSolana(sweepCtx, acct, amt, row.ID)
+		r.sweepToSolana(sweepCtx, acct, amt, row.ID, row.DestinationChainID)
 		cancel()
 	}
 }

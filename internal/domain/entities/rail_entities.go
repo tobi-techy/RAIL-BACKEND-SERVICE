@@ -188,6 +188,7 @@ type Deposit struct {
 	Amount             decimal.Decimal  `json:"amount" db:"amount"`
 	SourceAmount       *decimal.Decimal `json:"source_amount,omitempty" db:"source_amount"`     // Original amount before conversion (e.g. raw NGN)
 	SourceCurrency     *string          `json:"source_currency,omitempty" db:"source_currency"` // Original currency (e.g. "NGN")
+	ConversionID       *string          `json:"conversion_id,omitempty" db:"conversion_id"`     // Graph conversion ID for traceability
 	Status             string           `json:"status" db:"status"`                             // pending, confirmed, failed, off_ramp_initiated, off_ramp_completed, broker_funded
 	ConfirmedAt        *time.Time       `json:"confirmed_at" db:"confirmed_at"`
 	OffRampTxID        *string          `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`

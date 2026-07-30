@@ -9,7 +9,7 @@ import (
 )
 
 // LLM is the minimal completion surface the persona and judge need. The DI
-// container's *ai.ProviderManager satisfies it; stubLLM provides a deterministic
+// container's *ai.CencoriProvider satisfies it; stubLLM provides a deterministic
 // offline implementation for --stub-miriam self-tests.
 type LLM interface {
 	ChatCompletion(ctx context.Context, req *infraai.ChatRequest) (*infraai.ChatResponse, error)

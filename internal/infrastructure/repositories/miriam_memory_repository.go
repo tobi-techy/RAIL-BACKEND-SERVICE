@@ -171,19 +171,21 @@ func (r *MiriamMemoryRepository) SetPersonalityMode(ctx context.Context, userID 
 	return nil
 }
 
-// GetControlLevel returns the user's control level, or "full" if none is set.
+// GetControlLevel returns the user's control level, or "guided" if none is set.
+// MVP default is Guided: Miriam suggests and waits for approval; silent money
+// moves require an explicit switch to full plus an active mandate.
 func (r *MiriamMemoryRepository) GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error) {
 	var level sql.NullString
 	err := r.db.QueryRowContext(ctx, `
 		SELECT control_level FROM miriam_tone_profiles WHERE user_id = $1`, userID).Scan(&level)
 	if err == sql.ErrNoRows {
-		return "full", nil
+		return "guided", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("get control level: %w", err)
 	}
 	if !level.Valid || level.String == "" {
-		return "full", nil
+		return "guided", nil
 	}
 	return level.String, nil
 }

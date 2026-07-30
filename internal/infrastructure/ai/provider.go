@@ -99,12 +99,13 @@ func (e *ProviderError) Error() string {
 
 // Common error codes
 const (
-	ErrorCodeRateLimit      = "rate_limit"
-	ErrorCodeInvalidRequest = "invalid_request"
-	ErrorCodeAuthentication = "authentication"
-	ErrorCodeServerError    = "server_error"
-	ErrorCodeTimeout        = "timeout"
-	ErrorCodeUnavailable    = "unavailable"
+	ErrorCodeRateLimit       = "rate_limit"
+	ErrorCodeInvalidRequest  = "invalid_request"
+	ErrorCodeAuthentication  = "authentication"
+	ErrorCodeServerError     = "server_error"
+	ErrorCodeTimeout         = "timeout"
+	ErrorCodeUnavailable     = "unavailable"
+	ErrorCodeSecurityViolation = "security_violation"
 )
 
 // StreamChunk represents a single chunk in a streaming response.

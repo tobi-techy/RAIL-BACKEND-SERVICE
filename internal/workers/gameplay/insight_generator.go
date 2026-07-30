@@ -3,7 +3,6 @@ package gameplay
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -35,8 +34,6 @@ type InsightGenerator struct {
 	subChecker   SubscriptionChecker
 	notifier     PushNotifier
 	logger       *zap.Logger
-	stop         chan struct{}
-	lastRunDate  string
 }
 
 func NewInsightGenerator(
@@ -56,34 +53,10 @@ func NewInsightGenerator(
 		subChecker:   subChecker,
 		notifier:     notifier,
 		logger:       logger,
-		stop:         make(chan struct{}),
 	}
 }
 
-func (w *InsightGenerator) Start(ctx context.Context) {
-	w.logger.Info("Gameplay insight generator started")
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stop:
-			return
-		case <-ticker.C:
-			now := time.Now().UTC()
-			today := now.Format("2006-01-02")
-			// Monday + Thursday at 10:00 UTC
-			if now.Hour() == 10 && (now.Weekday() == time.Monday || now.Weekday() == time.Thursday) && w.lastRunDate != today {
-				w.lastRunDate = today
-				w.run(ctx)
-			}
-		}
-	}
-}
-
-func (w *InsightGenerator) run(ctx context.Context) {
+func (w *InsightGenerator) GenerateInsights(ctx context.Context) {
 	userIDs, err := w.userProvider.GetActiveUserIDs(ctx)
 	if err != nil {
 		w.logger.Error("Failed to get users for insights", zap.Error(err))
@@ -158,5 +131,3 @@ func nextLevelTitle(totalXP int64) string {
 	}
 	return "Legend"
 }
-
-func (w *InsightGenerator) Stop() { close(w.stop) }

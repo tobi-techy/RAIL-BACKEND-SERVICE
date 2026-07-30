@@ -19,8 +19,8 @@ import (
 
 // MiriamChat is the single orchestrator method the simulation drives. Depending on
 // this narrow surface (rather than the full aiservice.ChatEngine) keeps the harness
-// decoupled and makes an offline stub trivial. The production *aiservice.AgentAdapter
-// satisfies it.
+// decoupled and makes an offline stub trivial. The production aiservice.ChatEngine
+// (backed by core.Agent) satisfies it.
 type MiriamChat interface {
 	ChatWithConversationWithOptions(ctx context.Context, userID uuid.UUID, conv *entities.AIConversation, message string, opts aiservice.ChatOptions) (*aiservice.ChatResponse, error)
 }
@@ -170,8 +170,8 @@ func (h *Harness) DrainBackgroundWrites(ctx context.Context) {
 // ModelName returns a best-effort identifier of the model powering Miriam, for
 // stamping persisted run records. Falls back to the provider manager name.
 func (h *Harness) ModelName() string {
-	if h.container != nil && h.container.AIProviderManager != nil {
-		return h.container.AIProviderManager.Name()
+	if h.container != nil && h.container.AIProvider != nil {
+		return h.container.AIProvider.Name()
 	}
 	return "unknown"
 }

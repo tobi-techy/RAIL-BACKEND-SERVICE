@@ -154,6 +154,8 @@ type DepositRepository interface {
 	GetRecentByUserIDAndAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, within time.Duration) (*entities.Deposit, error)
 	DeletePendingDeposit(ctx context.Context, id uuid.UUID) error
 	UpdateDepositAmount(ctx context.Context, id uuid.UUID, amount decimal.Decimal) error
+	GetLatestPendingNGNByUserID(ctx context.Context, userID uuid.UUID) (*entities.Deposit, error)
+	UpdateConversionID(ctx context.Context, id uuid.UUID, conversionID string) error
 }
 
 // WalletRepository interface for wallet operations

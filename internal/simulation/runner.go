@@ -32,8 +32,8 @@ type RunnerOptions struct {
 // provider manager from the container (so real Miriam is judged by a real model).
 func NewRunner(h *Harness, opts RunnerOptions) *Runner {
 	var pm LLM
-	if h.container.AIProviderManager != nil {
-		pm = h.container.AIProviderManager
+	if h.container.AIProvider != nil {
+		pm = h.container.AIProvider
 	}
 	personaLLM := opts.PersonaLLM
 	if personaLLM == nil {
@@ -114,5 +114,5 @@ func (r *Runner) RunSuite(ctx context.Context, scenarios []*Scenario) SuiteResul
 	return res
 }
 
-// compile-time assurance the provider manager satisfies the LLM surface.
-var _ LLM = (*infraai.ProviderManager)(nil)
+// compile-time assurance the Cencori provider satisfies the LLM surface.
+var _ LLM = (*infraai.CencoriProvider)(nil)

@@ -134,6 +134,10 @@ func (o *fakeOrchestrator) ConfirmPlatformAction(_ context.Context, _, _, thread
 	o.lastConvID = threadID
 	return &PlatformReply{Text: "done", Effect: EffectCelebration}, nil
 }
+func (o *fakeOrchestrator) HasPendingPlatformAction(_ context.Context, _, _, _ string, _ entities.Platform) bool {
+	return false
+}
+
 func (o *fakeOrchestrator) CancelPlatformAction(_ context.Context, _, _, _ string, _ entities.Platform) (*PlatformReply, error) {
 	o.cancelCalls++
 	return &PlatformReply{Text: "cancelled"}, nil

@@ -49,7 +49,11 @@ func isExecutionActionTool(name string) bool {
 		ToolOptimizeYield, ToolBlockMerchant, ToolUnblockMerchant,
 		ToolCopyTrader, ToolPauseTradeCopying, ToolResumeTradeCopying,
 		ToolStopTradeCopying,
-		ToolPayBill, ToolAutomateBill, ToolSaveBillBeneficiary:
+		ToolPayBill, ToolAutomateBill, ToolSaveBillBeneficiary,
+		// Mandate acceptance re-runs the core registry tool with confirm=true.
+		"accept_mandate_suggestion", "create_miriam_mandate",
+		// P2P + receipt split + automation create — execute via registry on confirm.
+		"send_money", "split_receipt", "create_automation":
 		return true
 	default:
 		return false
@@ -72,6 +76,16 @@ func executionActionDescription(name string, args map[string]interface{}) string
 		return ""
 	}
 	switch name {
+	case "accept_mandate_suggestion":
+		return "Activate this quiet-money mandate so Miriam can act within its limits"
+	case "create_miriam_mandate":
+		return "Create a new Miriam autopilot mandate"
+	case "send_money":
+		return fmt.Sprintf("Send $%s to %s", arg("amount"), arg("identifier"))
+	case "split_receipt":
+		return fmt.Sprintf("Split receipt with %s", arg("participants"))
+	case "create_automation":
+		return fmt.Sprintf("Create automation: %s", arg("name"))
 	case ToolSetupBillAutopay:
 		if payee := arg("payee"); payee != "" {
 			label := arg("payee_name")

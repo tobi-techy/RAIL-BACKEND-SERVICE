@@ -109,8 +109,8 @@ func NewSoak(ctx context.Context, h *Harness, cfg SoakConfig) (*Soak, error) {
 	// Meter persona + judge through the governor. Miriam's own tokens are charged
 	// per-run via gov.Charge once we know them.
 	var base LLM
-	if h.container.AIProviderManager != nil {
-		base = h.container.AIProviderManager
+	if h.container.AIProvider != nil {
+		base = h.container.AIProvider
 	}
 	runner := NewRunner(h, RunnerOptions{
 		PersonaLLM: NewMeteredLLM(base, gov),

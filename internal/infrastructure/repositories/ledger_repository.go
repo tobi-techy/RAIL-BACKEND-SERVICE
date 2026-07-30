@@ -428,9 +428,11 @@ func (r *LedgerRepository) CreateTransaction(ctx context.Context, tx *entities.L
 	query := `
 		INSERT INTO ledger_transactions (
 			id, user_id, transaction_type, reference_id, reference_type,
-			status, idempotency_key, description, metadata, created_at
+			status, idempotency_key, description, metadata,
+			previous_transaction_hash, transaction_hash, initiated_by, reason,
+			created_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING created_at
 	`
 
@@ -446,6 +448,10 @@ func (r *LedgerRepository) CreateTransaction(ctx context.Context, tx *entities.L
 		tx.IdempotencyKey,
 		tx.Description,
 		metadataJSON,
+		tx.PreviousTransactionHash,
+		tx.TransactionHash,
+		tx.InitiatedBy,
+		tx.Reason,
 		tx.CreatedAt,
 	).Scan(&tx.CreatedAt)
 
@@ -465,7 +471,9 @@ func (r *LedgerRepository) CreateTransaction(ctx context.Context, tx *entities.L
 func (r *LedgerRepository) GetTransactionByID(ctx context.Context, txID uuid.UUID) (*entities.LedgerTransaction, error) {
 	query := `
 		SELECT id, user_id, transaction_type, reference_id, reference_type,
-		       status, idempotency_key, description, metadata, created_at, completed_at
+		       status, idempotency_key, description, metadata,
+		       previous_transaction_hash, transaction_hash, initiated_by, reason,
+		       created_at, completed_at
 		FROM ledger_transactions
 		WHERE id = $1
 	`
@@ -483,6 +491,10 @@ func (r *LedgerRepository) GetTransactionByID(ctx context.Context, txID uuid.UUI
 		&tx.IdempotencyKey,
 		&tx.Description,
 		&metadataJSON,
+		&tx.PreviousTransactionHash,
+		&tx.TransactionHash,
+		&tx.InitiatedBy,
+		&tx.Reason,
 		&tx.CreatedAt,
 		&tx.CompletedAt,
 	)
@@ -507,7 +519,9 @@ func (r *LedgerRepository) GetTransactionByID(ctx context.Context, txID uuid.UUI
 func (r *LedgerRepository) GetTransactionByIdempotencyKey(ctx context.Context, key string) (*entities.LedgerTransaction, error) {
 	query := `
 		SELECT id, user_id, transaction_type, reference_id, reference_type,
-		       status, idempotency_key, description, metadata, created_at, completed_at
+		       status, idempotency_key, description, metadata,
+		       previous_transaction_hash, transaction_hash, initiated_by, reason,
+		       created_at, completed_at
 		FROM ledger_transactions
 		WHERE idempotency_key = $1
 	`
@@ -525,6 +539,10 @@ func (r *LedgerRepository) GetTransactionByIdempotencyKey(ctx context.Context, k
 		&tx.IdempotencyKey,
 		&tx.Description,
 		&metadataJSON,
+		&tx.PreviousTransactionHash,
+		&tx.TransactionHash,
+		&tx.InitiatedBy,
+		&tx.Reason,
 		&tx.CreatedAt,
 		&tx.CompletedAt,
 	)
@@ -1079,4 +1097,385 @@ func (r *LedgerRepository) GetProtectedGoalAllocated(ctx context.Context, userID
 		userID,
 	).Scan(&total)
 	return total, err
+}
+
+// OutboxRecord represents a row in the ledger_outbox table.
+type OutboxRecord struct {
+	ID            uuid.UUID       `db:"id"`
+	EventType     string          `db:"event_type"`
+	AggregateID   uuid.UUID       `db:"aggregate_id"`
+	AggregateType string          `db:"aggregate_type"`
+	Payload       json.RawMessage `db:"payload"`
+	RetryCount    int             `db:"retry_count"`
+	LastError     *string         `db:"last_error"`
+	CreatedAt     time.Time       `db:"created_at"`
+	PublishedAt   *time.Time      `db:"published_at"`
+}
+
+// ===== Outbox Operations =====
+
+// InsertOutboxRecord inserts a record into the ledger_outbox table within the
+// current transaction (must be called inside a ledger transaction).
+func (r *LedgerRepository) InsertOutboxRecord(ctx context.Context, eventType string, aggregateID uuid.UUID, aggregateType string, payload json.RawMessage) error {
+	query := `
+		INSERT INTO ledger_outbox (id, event_type, aggregate_id, aggregate_type, payload, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
+	`
+	_, err := r.execContext(ctx, query, eventType, aggregateID, aggregateType, payload)
+	if err != nil {
+		return fmt.Errorf("insert outbox record: %w", err)
+	}
+	return nil
+}
+
+// GetUnpublishedOutboxEvents returns unpublished outbox records without claiming.
+// Use for monitoring/debugging only. Production publishing must use
+// ClaimUnpublishedOutbox to avoid TOCTOU races between workers.
+func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxRecord, error) {
+	query := `
+		SELECT id, event_type, aggregate_id, aggregate_type, payload,
+		       retry_count, last_error, created_at, published_at
+		FROM ledger_outbox
+		WHERE published_at IS NULL
+		ORDER BY created_at
+		LIMIT $1
+	`
+	rows, err := r.queryxContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get unpublished outbox events: %w", err)
+	}
+	defer rows.Close()
+
+	var records []OutboxRecord
+	for rows.Next() {
+		var rec OutboxRecord
+		if err := rows.Scan(&rec.ID, &rec.EventType, &rec.AggregateID, &rec.AggregateType, &rec.Payload,
+			&rec.RetryCount, &rec.LastError, &rec.CreatedAt, &rec.PublishedAt); err != nil {
+			return nil, fmt.Errorf("scan outbox record: %w", err)
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+// ClaimUnpublishedOutbox atomically claims a batch of unpublished outbox records
+// using FOR UPDATE SKIP LOCKED, so multiple concurrent publisher workers can
+// coexist without double-publishing. Must be called within a transaction.
+func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize int, maxRetries int) ([]OutboxRecord, error) {
+	if txFromContext(ctx) == nil {
+		return nil, fmt.Errorf("ClaimUnpublishedOutbox must be called within a transaction")
+	}
+
+	query := `
+		UPDATE ledger_outbox
+		SET published_at = NOW()
+		WHERE id IN (
+			SELECT id
+			FROM ledger_outbox
+			WHERE published_at IS NULL
+			  AND retry_count < $2
+			ORDER BY created_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		RETURNING id, event_type, aggregate_id, aggregate_type, payload,
+		          retry_count, last_error, created_at, published_at
+	`
+
+	rows, err := r.queryxContext(ctx, query, batchSize, maxRetries)
+	if err != nil {
+		return nil, fmt.Errorf("claim unpublished outbox: %w", err)
+	}
+	defer rows.Close()
+
+	var records []OutboxRecord
+	for rows.Next() {
+		var rec OutboxRecord
+		if err := rows.Scan(&rec.ID, &rec.EventType, &rec.AggregateID, &rec.AggregateType, &rec.Payload,
+			&rec.RetryCount, &rec.LastError, &rec.CreatedAt, &rec.PublishedAt); err != nil {
+			return nil, fmt.Errorf("scan outbox record: %w", err)
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+// IncrementOutboxRetry increments the retry_count and sets last_error for a
+// failed publish attempt, without touching published_at.
+func (r *LedgerRepository) IncrementOutboxRetry(ctx context.Context, id uuid.UUID, lastErr string) error {
+	query := `
+		UPDATE ledger_outbox
+		SET retry_count = retry_count + 1,
+		    last_error = $2,
+		    published_at = NULL
+		WHERE id = $1
+	`
+	_, err := r.execContext(ctx, query, id, lastErr)
+	if err != nil {
+		return fmt.Errorf("increment outbox retry: %w", err)
+	}
+	return nil
+}
+
+// DeletePublishedOutboxBefore deletes outbox records that were published before
+// the given cutoff. Returns the number of rows deleted.
+func (r *LedgerRepository) DeletePublishedOutboxBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	query := `DELETE FROM ledger_outbox WHERE published_at IS NOT NULL AND published_at < $1`
+	res, err := r.execContext(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete published outbox: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// MarkOutboxPublished sets published_at for the given outbox records.
+func (r *LedgerRepository) MarkOutboxPublished(ctx context.Context, ids []uuid.UUID) error {
+	query := `UPDATE ledger_outbox SET published_at = NOW() WHERE id = ANY($1)`
+	_, err := r.execContext(ctx, query, ids)
+	if err != nil {
+		return fmt.Errorf("mark outbox published: %w", err)
+	}
+	return nil
+}
+
+// CountUnpublishedOutbox returns the number of unpublished outbox records.
+func (r *LedgerRepository) CountUnpublishedOutbox(ctx context.Context) (int, error) {
+	query := `SELECT COUNT(*) FROM ledger_outbox WHERE published_at IS NULL`
+	var count int
+	err := r.queryRowxContext(ctx, query).Scan(&count)
+	return count, err
+}
+
+// GetOldestUnpublishedOutbox returns the oldest unpublished outbox event time.
+func (r *LedgerRepository) GetOldestUnpublishedOutbox(ctx context.Context) (*time.Time, error) {
+	query := `SELECT MIN(created_at) FROM ledger_outbox WHERE published_at IS NULL`
+	var t *time.Time
+	err := r.queryRowxContext(ctx, query).Scan(&t)
+	return t, err
+}
+
+// ===== Snapshot Operations =====
+
+// InsertBalanceSnapshot records a balance snapshot for an account at a given date.
+// Returns true if a new row was inserted, false if a snapshot already existed.
+func (r *LedgerRepository) InsertBalanceSnapshot(ctx context.Context, accountID uuid.UUID, balance decimal.Decimal, date time.Time) (bool, error) {
+	query := `
+		INSERT INTO ledger_balance_snapshots (account_id, balance, snapshot_date)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (account_id, snapshot_date) DO NOTHING
+	`
+	res, err := r.execContext(ctx, query, accountID, balance, date)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// GetBalanceSnapshot retrieves the balance for an account at a specific date.
+func (r *LedgerRepository) GetBalanceSnapshot(ctx context.Context, accountID uuid.UUID, date time.Time) (*decimal.Decimal, error) {
+	query := `SELECT balance FROM ledger_balance_snapshots WHERE account_id = $1 AND snapshot_date = $2`
+	var balance decimal.Decimal
+	err := r.queryRowxContext(ctx, query, accountID, date.Truncate(24*time.Hour)).Scan(&balance)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get balance snapshot: %w", err)
+	}
+	return &balance, nil
+}
+
+// GetLatestSnapshotDate returns the most recent date with balance snapshots.
+func (r *LedgerRepository) GetLatestSnapshotDate(ctx context.Context) (*time.Time, error) {
+	query := `SELECT MAX(snapshot_date) FROM ledger_balance_snapshots`
+	var date *time.Time
+	err := r.queryRowxContext(ctx, query).Scan(&date)
+	return date, err
+}
+
+// GetAllAccountIDs returns the IDs of every ledger account.
+func (r *LedgerRepository) GetAllAccountIDs(ctx context.Context) ([]uuid.UUID, error) {
+	query := `SELECT id FROM ledger_accounts ORDER BY id`
+	var ids []uuid.UUID
+	err := r.selectContext(ctx, &ids, query)
+	if err != nil {
+		return nil, fmt.Errorf("get all account IDs: %w", err)
+	}
+	return ids, nil
+}
+
+// GetAccountIDsBatch returns a page of account IDs using keyset pagination.
+// afterID should be uuid.Nil for the first page; subsequent calls pass the last
+// ID from the previous page. Returns fewer than batchSize for the final page.
+func (r *LedgerRepository) GetAccountIDsBatch(ctx context.Context, afterID uuid.UUID, batchSize int) ([]uuid.UUID, error) {
+	query := `SELECT id FROM ledger_accounts WHERE id > $1 ORDER BY id LIMIT $2`
+	var ids []uuid.UUID
+	err := r.selectContext(ctx, &ids, query, afterID, batchSize)
+	if err != nil {
+		return nil, fmt.Errorf("get account IDs batch: %w", err)
+	}
+	return ids, nil
+}
+
+// GetTransactionDeltaByAccount returns the net balance change per account for
+// transactions created within the given time range [start, end).
+// Debit entries increase the balance (counted as positive), credit entries
+// decrease the balance (counted as negative). Only completed transactions
+// are included. Used by ReconcileDay to verify snapshot integrity.
+func (r *LedgerRepository) GetTransactionDeltaByAccount(ctx context.Context, start, end time.Time) (map[uuid.UUID]decimal.Decimal, error) {
+	query := `
+		SELECT le.account_id,
+		       SUM(CASE WHEN le.entry_type = 'debit' THEN le.amount ELSE -le.amount END) AS net_change
+		FROM ledger_entries le
+		JOIN ledger_transactions lt ON le.transaction_id = lt.id
+		WHERE lt.created_at >= $1 AND lt.created_at < $2
+		  AND lt.status = 'completed'
+		GROUP BY le.account_id
+	`
+	rows, err := r.queryxContext(ctx, query, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("get transaction delta by account: %w", err)
+	}
+	defer rows.Close()
+
+	deltas := make(map[uuid.UUID]decimal.Decimal)
+	for rows.Next() {
+		var accountID uuid.UUID
+		var netChange decimal.Decimal
+		if err := rows.Scan(&accountID, &netChange); err != nil {
+			return nil, fmt.Errorf("scan delta row: %w", err)
+		}
+		deltas[accountID] = netChange
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate delta rows: %w", err)
+	}
+	return deltas, nil
+}
+
+// ===== Integrity Check Operations =====
+
+// CountNegativeBalanceAccounts returns the number of user accounts with negative balance.
+func (r *LedgerRepository) CountNegativeBalanceAccounts(ctx context.Context) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM ledger_accounts
+		WHERE user_id IS NOT NULL AND balance < 0
+	`
+	var count int
+	err := r.queryRowxContext(ctx, query).Scan(&count)
+	return count, err
+}
+
+// CountSystemAccountDeficits returns the number of system accounts whose balance
+// is below the given max deficit threshold.
+func (r *LedgerRepository) CountSystemAccountDeficits(ctx context.Context, maxDeficit decimal.Decimal) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM ledger_accounts
+		WHERE user_id IS NULL AND balance < $1
+	`
+	var count int
+	err := r.queryRowxContext(ctx, query).Scan(&count)
+	return count, err
+}
+
+// --- Velocity Bucket Methods ---
+
+// GetOrCreateVelocityBucket retrieves the velocity bucket for an account on a given date,
+// creating it if it doesn't exist.
+func (r *LedgerRepository) GetOrCreateVelocityBucket(ctx context.Context, accountID uuid.UUID, date time.Time) (*entities.LedgerVelocityBucket, error) {
+	query := `
+		INSERT INTO ledger_velocity_buckets (account_id, bucket_date, outflow_total, tx_count, updated_at)
+		VALUES ($1, $2, 0, 0, NOW())
+		ON CONFLICT (account_id, bucket_date) DO UPDATE SET updated_at = ledger_velocity_buckets.updated_at
+		RETURNING id, account_id, bucket_date, outflow_total, tx_count, created_at, updated_at
+	`
+	// The ON CONFLICT DO UPDATE with a no-op ensures RETURNING always returns a row.
+
+	var bucket entities.LedgerVelocityBucket
+	err := r.queryRowxContext(ctx, query, accountID, date).Scan(
+		&bucket.ID, &bucket.AccountID, &bucket.BucketDate,
+		&bucket.OutflowTotal, &bucket.TxCount,
+		&bucket.CreatedAt, &bucket.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get or create velocity bucket: %w", err)
+	}
+	return &bucket, nil
+}
+
+// IncrementVelocityBucket atomically increments the outflow total and tx count for a bucket row.
+// Uses UPDATE within the caller's FOR UPDATE lock context (called in the same tx as balance updates).
+func (r *LedgerRepository) IncrementVelocityBucket(ctx context.Context, accountID uuid.UUID, date time.Time, amount decimal.Decimal) error {
+	query := `
+		UPDATE ledger_velocity_buckets
+		SET outflow_total = outflow_total + $3,
+		    tx_count = tx_count + 1,
+		    updated_at = NOW()
+		WHERE account_id = $1 AND bucket_date = $2
+	`
+	_, err := r.execContext(ctx, query, accountID, date, amount)
+	return err
+}
+
+// GetLatestTransactionHash returns the transaction_hash of the most recent
+// completed transaction, or empty string if no transactions exist.
+// Used for hash chain linking.
+func (r *LedgerRepository) GetLatestTransactionHash(ctx context.Context) (string, error) {
+	query := `SELECT COALESCE(transaction_hash, '') FROM ledger_transactions ORDER BY created_at DESC LIMIT 1`
+	var hash string
+	err := r.queryRowxContext(ctx, query).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get latest transaction hash: %w", err)
+	}
+	return hash, nil
+}
+
+// GetTransactionsForHashVerification returns a window of transactions ordered by
+// created_at for hash chain verification. Used by CheckIntegrity.
+// Returns minimal fields needed for hash recomputation (skips metadata to avoid
+// JSONB scanning complexity with sqlx).
+func (r *LedgerRepository) GetTransactionsForHashVerification(ctx context.Context, limit, offset int) ([]*entities.LedgerTransaction, error) {
+	query := `
+		SELECT id, user_id, transaction_type, idempotency_key,
+		       previous_transaction_hash, transaction_hash, reason,
+		       created_at
+		FROM ledger_transactions
+		ORDER BY created_at, id
+		LIMIT $1 OFFSET $2
+	`
+	var txs []*entities.LedgerTransaction
+	err := r.selectContext(ctx, &txs, query, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("get transactions for hash verification: %w", err)
+	}
+	return txs, nil
+}
+
+// CountTransactions returns the total number of ledger transactions.
+func (r *LedgerRepository) CountTransactions(ctx context.Context) (int, error) {
+	query := `SELECT COUNT(*) FROM ledger_transactions`
+	var count int
+	err := r.queryRowxContext(ctx, query).Scan(&count)
+	return count, err
+}
+
+// CountTransactionsWithoutEntries returns the number of transactions that have
+// no associated entries in the ledger_entries table.
+func (r *LedgerRepository) CountTransactionsWithoutEntries(ctx context.Context) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM ledger_transactions lt
+		LEFT JOIN ledger_entries le ON le.transaction_id = lt.id
+		WHERE le.id IS NULL
+	`
+	var count int
+	err := r.queryRowxContext(ctx, query).Scan(&count)
+	return count, err
 }

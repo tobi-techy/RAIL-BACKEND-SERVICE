@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -206,6 +208,7 @@ type MemoryContext struct {
 }
 
 type Fact struct {
+	ID         string
 	Category   string
 	Fact       string
 	Confidence float64
@@ -219,8 +222,10 @@ type Episode struct {
 }
 
 type SupermemoryResult struct {
-	Memory     string
-	Similarity float64
+	Memory      string
+	Similarity  float64
+	EventUnix   int64
+	UpdatedUnix int64
 }
 
 // ChatOptions carries per-request options.
@@ -283,6 +288,7 @@ type Dependencies struct {
 	MiriamIntell  MiriamIntelligenceProvider
 	Investment    InvestmentProvider
 	Receipt       ReceiptProvider
+	P2P           P2PProvider
 	Warranty      WarrantyProvider
 	PriceTracker  PriceTrackerProvider
 	Merchant      MerchantProvider
@@ -346,6 +352,120 @@ type Dependencies struct {
 	// recent enriched transactions (top merchants, essential ratio, detected patterns).
 	// Nil disables enrichment context in the core agent path.
 	EnrichmentSummaryFn func(ctx context.Context, userID uuid.UUID) (string, error)
+
+	// --- ChatEngine delegation providers ---
+
+	// PendingActions persists actions awaiting user confirmation (ConfirmAction/CancelAction/PeekPendingAction).
+	PendingActions PendingActionStore
+
+	// Supermemory provides long-term memory ingestion and search.
+	Supermemory SupermemoryClient
+
+	// AggregateStats reads account balances (spending, stash).
+	AggregateStats AggregateStatsProvider
+
+	// FullUserProfile returns the full user profile (for BuildRealtimeDynamicVars).
+	FullUserProfile FullUserProfileProvider
+
+	// UserProfile returns country/email for the user.
+	UserProfile UserProfileProvider
+
+	// GoalProtection reads goal accounts and stash balances.
+	GoalProtection GoalProtectionProvider
+
+	// ObligationManager lists and manages financial obligations.
+	ObligationManager FinancialObligationManager
+
+	// SavingsGoals persists and retrieves savings goals.
+	SavingsGoals SavingsGoalStore
+
+	// ConversationsPersister builds context from and records exchanges to a conversation.
+	ConversationsPersister ConversationPersister
+
+	// UsageTrackerFn records AI usage for cost tracking.
+	UsageTrackerFn UsageTracker
+
+	// SpendingAnalyzer reads spending summaries and flows (time-range based).
+	SpendingAnalyzer SpendingAnalyzer
+
+	// BalanceHistory reads historical balances.
+	BalanceHistory BalanceHistoryProvider
+
+	// Patterns reads spending patterns.
+	Patterns PatternAnalyzer
+
+	// FinancialProfile reads the financial profile.
+	FinancialProfile FinancialProfileProvider
+
+	// Activity reads investment activity (contributions, streaks).
+	Activity ActivityDataProvider
+
+	// News reads weekly news for portfolio holdings.
+	News NewsDataProvider
+
+	// ContextSignals reads active behavioral signals.
+	ContextSignals ContextSignalProvider
+
+	// SharedGoalCreator creates persistent ledger-backed savings goals.
+	SharedGoalCreator SharedGoalCreator
+
+	// ObligationCreator creates manual financial obligations.
+	ObligationCreator ObligationCreator
+
+	// WithdrawalHistory reads recent withdrawals.
+	WithdrawalHistory WithdrawalHistoryProvider
+
+	// BankStatementCtx returns bank statement context as a system prompt.
+	BankStatementCtx BankStatementContextProvider
+
+	// MemoryStore provides persistence for long-term memory (tone profiles).
+	MemoryStore MemoryStore
+
+	// Redis is the cache client for voice dynamic vars caching.
+	Redis cache.RedisClient
+
+	// --- Complex delegation function pointers ---
+	// These delegate to orchestrator logic that is too deeply coupled to rewrite
+	// in Phase 1. They will be replaced with direct implementations in Phase 3.
+
+	// ChatStreamFn delegates the streaming chat path.
+	ChatStreamFn func(ctx context.Context, userID uuid.UUID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error
+
+	// BuildRealtimeGreetingFn delegates greeting construction.
+	BuildRealtimeGreetingFn func(ctx context.Context, userID uuid.UUID) string
+
+	// BuildRealtimeInstructionsFn delegates voice instructions construction.
+	BuildRealtimeInstructionsFn func(ctx context.Context, userID uuid.UUID) string
+
+	// BuildRealtimeDynamicVarsFn delegates dynamic vars construction.
+	BuildRealtimeDynamicVarsFn func(ctx context.Context, userID uuid.UUID) map[string]interface{}
+
+	// GenerateEnhancedNudgeFn delegates enhanced nudge generation.
+	GenerateEnhancedNudgeFn func(ctx context.Context, userID uuid.UUID, screen, amount, currency, timeOfDay string, dayOfWeek int, daysUntilPayday int, merchantHint string) (map[string]interface{}, error)
+
+	// GenerateNudgeFn delegates nudge generation.
+	GenerateNudgeFn func(ctx context.Context, userID uuid.UUID, screen, amount, currency string) (map[string]interface{}, error)
+
+	// GetProactiveVoiceInsightFn delegates voice insight generation.
+	GetProactiveVoiceInsightFn func(ctx context.Context, userID uuid.UUID) string
+
+	// GenerateWrappedCardsFn delegates wrapped card generation.
+	GenerateWrappedCardsFn func(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
+
+	// GetPersonalizedSuggestionsFn delegates suggestion generation.
+	GetPersonalizedSuggestionsFn func(ctx context.Context, userID uuid.UUID) []string
+
+	// StageOperatingPlanActionFn delegates operating plan action staging.
+	StageOperatingPlanActionFn func(ctx context.Context, userID, convID uuid.UUID, actionType string, params map[string]interface{}) (map[string]interface{}, error)
+
+	// ConfirmActionFn delegates action confirmation (complex switch on action type).
+	ConfirmActionFn func(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, error)
+
+	// CancelActionFn delegates action cancellation.
+	CancelActionFn func(ctx context.Context, userID, convID uuid.UUID) error
+
+	// PrepareVoiceActionFn delegates voice action preparation.
+	PrepareVoiceActionFn func(ctx context.Context, userID, convID uuid.UUID, action string, params map[string]interface{}) (*entities.PendingAction, error)
 }
 
 // WorkingMemoryStore provides read/write to Redis for conversation working memory.
@@ -381,6 +501,8 @@ type MemoryService interface {
 	GetMemorySummary(ctx context.Context, userID uuid.UUID, message string) (string, error)
 	RunDecay(ctx context.Context) error
 	SaveTransactionPattern(ctx context.Context, userID uuid.UUID, patternType string, data map[string]interface{}) error
+	// ForgetFact soft-deletes a stored fact by id. Used by the forget_memory tool.
+	ForgetFact(ctx context.Context, userID, factID uuid.UUID) error
 }
 
 type StateService interface {
@@ -490,14 +612,29 @@ type MiriamIntelligenceProvider interface {
 	GetMoneyState(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error)
 	GetMandates(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
 	GetDecisionReceipts(ctx context.Context, userID uuid.UUID, limit int) ([]map[string]interface{}, error)
+	ListMandateSuggestions(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
+	AcceptMandateSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (map[string]interface{}, error)
+	DismissMandateSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error
 }
 
 type InvestmentProvider interface {
 	GetProducts(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
 }
 
+// ReceiptProvider splits a scanned receipt by requesting money from friends
+// (Rail tags) or sending claim links to non-users. Moves real money via P2P.
 type ReceiptProvider interface {
-	Split(ctx context.Context, receiptID uuid.UUID, participants []string) (map[string]interface{}, error)
+	// Split divides the receipt equally among participants (payer keeps their share).
+	// participants are rail_tags, emails, or phones. message is optional note.
+	Split(ctx context.Context, userID, receiptID uuid.UUID, participants []string, message string) (map[string]interface{}, error)
+}
+
+// P2PProvider sends money to Rail tags or external identifiers (claim link).
+type P2PProvider interface {
+	// Lookup previews a recipient without moving money.
+	Lookup(ctx context.Context, identifier string) (map[string]interface{}, error)
+	// Send moves Spend balance to a Rail user or reserves funds + claim link for invites.
+	Send(ctx context.Context, userID uuid.UUID, identifier, amount, note, idempotencyKey string) (map[string]interface{}, error)
 }
 
 type WarrantyProvider interface {
@@ -591,6 +728,162 @@ type FinancialGovernanceProvider interface {
 
 type NudgeProvider interface {
 	GenerateNudge(ctx context.Context, userID uuid.UUID, req map[string]interface{}) (map[string]interface{}, error)
+}
+
+// --- Provider interfaces for ChatEngine delegation ---
+
+// PendingActionStore persists actions awaiting user confirmation.
+type PendingActionStore interface {
+	Set(ctx context.Context, convID uuid.UUID, action *entities.PendingAction) error
+	Get(ctx context.Context, convID uuid.UUID) *entities.PendingAction
+	Delete(ctx context.Context, convID uuid.UUID)
+}
+
+// SupermemoryClient provides long-term memory ingestion and search.
+type SupermemoryClient interface {
+	IngestConversation(ctx context.Context, userID string, messages []SupermemoryMessage) error
+	SearchMemory(ctx context.Context, userID, query string, limit int) ([]SupermemoryResult, error)
+	SearchMemoryRanked(ctx context.Context, userID, query string, limit int) ([]SupermemoryResult, error)
+}
+
+// SupermemoryMessage is a single conversation turn for Supermemory ingestion.
+type SupermemoryMessage struct {
+	Role    string
+	Content string
+}
+
+// AggregateStatsProvider reads account balances (spending, stash).
+type AggregateStatsProvider interface {
+	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
+}
+
+// FullUserProfileProvider returns the full user profile.
+type FullUserProfileProvider interface {
+	GetProfile(ctx context.Context, userID uuid.UUID) (*entities.UserProfile, error)
+}
+
+// UserProfileProvider returns country/email for the user.
+type UserProfileProvider interface {
+	GetCountry(ctx context.Context, userID uuid.UUID) (string, error)
+	GetEmail(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// GoalProtectionProvider reads goal accounts and stash balances.
+type GoalProtectionProvider interface {
+	GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+	GetGoalAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error)
+	GetUnallocatedStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+	GetWithdrawableStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
+}
+
+// FinancialObligationManager lists and manages financial obligations.
+type FinancialObligationManager interface {
+	List(ctx context.Context, userID uuid.UUID, status, obligationType string) ([]entities.FinancialObligation, error)
+	MarkPaid(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error)
+	MarkCancelled(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error)
+}
+
+// SavingsGoalData is a savings goal record.
+type SavingsGoalData struct {
+	Name      string `json:"name"`
+	Target    string `json:"target"`
+	Deadline  string `json:"deadline,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// SavingsGoalStore persists and retrieves savings goals.
+type SavingsGoalStore interface {
+	Set(ctx context.Context, userID uuid.UUID, goal *SavingsGoalData) error
+	Get(ctx context.Context, userID uuid.UUID) (*SavingsGoalData, error)
+}
+
+// ConversationPersister builds context from and records exchanges to a conversation.
+type ConversationPersister interface {
+	BuildContext(ctx context.Context, conv *entities.AIConversation) ([]ai.Message, error)
+	RecordExchange(ctx context.Context, convID uuid.UUID, userMsg, assistantMsg string, tokens int, cost decimal.Decimal, model string, cards []entities.InsightCard) error
+	UpdateTitle(ctx context.Context, convID uuid.UUID, title string) error
+	SaveToolMessages(ctx context.Context, convID uuid.UUID, messages []ai.Message) error
+}
+
+// UsageTracker records AI usage for cost tracking.
+type UsageTracker interface {
+	TrackInteraction(ctx context.Context, userID uuid.UUID, model string, tokens int) error
+	IsOverCostCeiling(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+// SpendingAnalyzer reads spending summaries and flows (time-range based).
+type SpendingAnalyzer interface {
+	GetSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (interface{}, error)
+	GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error)
+}
+
+// BalanceHistoryProvider reads historical balances.
+type BalanceHistoryProvider interface {
+	GetBalanceHistory(ctx context.Context, userID uuid.UUID, days int) (interface{}, error)
+}
+
+// PatternAnalyzer reads spending patterns.
+type PatternAnalyzer interface {
+	GetPatterns(ctx context.Context, userID uuid.UUID) (interface{}, error)
+}
+
+// FinancialProfileProvider reads the financial profile.
+type FinancialProfileProvider interface {
+	GetFinancialProfile(ctx context.Context, userID uuid.UUID) (*entities.FinancialProfile, error)
+}
+
+// ActivityDataProvider reads investment activity (contributions, streaks).
+type ActivityDataProvider interface {
+	GetContributions(ctx context.Context, userID uuid.UUID, contributionType string, startDate, endDate time.Time) (*ContributionSummary, error)
+	GetStreak(ctx context.Context, userID uuid.UUID) (*entities.InvestmentStreak, error)
+}
+
+// NewsDataProvider reads weekly news for portfolio holdings.
+type NewsDataProvider interface {
+	GetWeeklyNews(ctx context.Context, userID uuid.UUID) ([]*entities.UserNews, error)
+}
+
+// ContextSignalProvider reads active behavioral signals.
+type ContextSignalProvider interface {
+	GetActiveByUser(ctx context.Context, userID uuid.UUID) ([]entities.UserContextSignal, error)
+}
+
+// SharedGoalCreator creates persistent ledger-backed savings goals.
+type SharedGoalCreator interface {
+	CreateGoalFromAI(ctx context.Context, userID uuid.UUID, name, targetAmount string, deadline *string) (uuid.UUID, error)
+}
+
+// ObligationCreator creates manual financial obligations.
+type ObligationCreator interface {
+	CreateObligationFromAI(ctx context.Context, userID uuid.UUID, req map[string]interface{}) (*entities.FinancialObligation, error)
+}
+
+// WithdrawalHistoryProvider reads recent withdrawals.
+type WithdrawalHistoryProvider interface {
+	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]entities.Withdrawal, error)
+}
+
+// BankStatementContextProvider returns bank statement context as a system prompt.
+type BankStatementContextProvider interface {
+	GetContext(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// VoiceDailyLimiterer enforces daily voice transfer caps.
+type VoiceDailyLimiterer interface {
+	CheckAndRecord(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) error
+}
+
+// MemoryStore provides persistence for long-term memory (tone profiles, facts).
+type MemoryStore interface {
+	GetToneProfile(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error)
+}
+
+// ContributionSummary represents contribution totals.
+type ContributionSummary struct {
+	Deposits decimal.Decimal
+	Roundups decimal.Decimal
+	Cashback decimal.Decimal
+	Total    decimal.Decimal
 }
 
 // Config holds configuration for the agent.

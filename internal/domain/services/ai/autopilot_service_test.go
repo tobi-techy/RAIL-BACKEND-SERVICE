@@ -141,9 +141,11 @@ func (m *mockBudgetReader) GetByUserID(_ context.Context, _ uuid.UUID) (*entitie
 type mockTransferer struct {
 	transferErr error
 	spendBal    decimal.Decimal
+	calls       int
 }
 
 func (m *mockTransferer) TransferSpendToStash(_ context.Context, _ uuid.UUID, _ decimal.Decimal, _ string) error {
+	m.calls++
 	return m.transferErr
 }
 
@@ -228,7 +230,8 @@ func TestAutopilotService_MorningScan_AlertOnLowBalance(t *testing.T) {
 	assert.Contains(t, push.sent[0].body, "$10")
 }
 
-func TestAutopilotService_MorningScan_SkipsNonFullAutopilot(t *testing.T) {
+func TestAutopilotService_MorningScan_IncludesGuidedUsers(t *testing.T) {
+	// Guided users get risk alerts; they just don't auto-move money.
 	uid := uuid.New()
 	users := &mockAutopilotUsers{users: []struct {
 		ID      uuid.UUID
@@ -236,7 +239,29 @@ func TestAutopilotService_MorningScan_SkipsNonFullAutopilot(t *testing.T) {
 	}{fullAutopilotUser(uid)}}
 	control := &mockAutopilotControl{level: entities.ControlLevelGuided}
 	push := &mockPushSender{}
-	svc := newTestAutopilotService(users, control, &mockAutopilotQueue{}, push, &mockMoneySpender{}, &mockBalanceReader{}, &mockBudgetReader{}, &mockTransferer{})
+	spending := &mockMoneySpender{
+		flow: &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(600)},
+	}
+	svc := newTestAutopilotService(users, control, &mockAutopilotQueue{}, push, spending, &mockBalanceReader{balance: decimal.NewFromInt(100)}, &mockBudgetReader{}, &mockTransferer{})
+
+	svc.RunMorningScan(context.Background())
+
+	require.Len(t, push.sent, 1)
+	assert.Contains(t, push.sent[0].title, "Miriam Alert")
+}
+
+func TestAutopilotService_MorningScan_SkipsMonitorUsers(t *testing.T) {
+	uid := uuid.New()
+	users := &mockAutopilotUsers{users: []struct {
+		ID      uuid.UUID
+		Country string
+	}{fullAutopilotUser(uid)}}
+	control := &mockAutopilotControl{level: entities.ControlLevelMonitor}
+	push := &mockPushSender{}
+	spending := &mockMoneySpender{
+		flow: &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(600)},
+	}
+	svc := newTestAutopilotService(users, control, &mockAutopilotQueue{}, push, spending, &mockBalanceReader{balance: decimal.NewFromInt(100)}, &mockBudgetReader{}, &mockTransferer{})
 
 	svc.RunMorningScan(context.Background())
 
@@ -284,7 +309,7 @@ func TestAutopilotService_MorningScan_NoAlertWhenFine(t *testing.T) {
 	assert.Empty(t, push.sent)
 }
 
-func TestAutopilotService_Midday_QueuesTransferOnSurplus(t *testing.T) {
+func TestAutopilotService_Midday_QueuesSurplusAlertNotTransfer(t *testing.T) {
 	uid := uuid.New()
 	users := &mockAutopilotUsers{users: []struct {
 		ID      uuid.UUID
@@ -306,7 +331,8 @@ func TestAutopilotService_Midday_QueuesTransferOnSurplus(t *testing.T) {
 
 	actions, _ := queue.List(context.Background(), uid)
 	require.Len(t, actions, 1)
-	assert.Equal(t, ToolTransferFunds, actions[0].Tool)
+	// MVP: surplus is an alert/suggestion only — money moves via mandate path.
+	assert.Equal(t, "alert_surplus", actions[0].Tool)
 }
 
 func TestAutopilotService_Midday_QueuesOverspendAlert(t *testing.T) {
@@ -366,7 +392,7 @@ func TestAutopilotService_Midday_SkipsNonFullAutopilot(t *testing.T) {
 	assert.Empty(t, actions)
 }
 
-func TestAutopilotService_Evening_ExecutesTransfer(t *testing.T) {
+func TestAutopilotService_Evening_HoldsLegacyTransferAsSuggestion(t *testing.T) {
 	uid := uuid.New()
 	users := &mockAutopilotUsers{users: []struct {
 		ID      uuid.UUID
@@ -385,7 +411,8 @@ func TestAutopilotService_Evening_ExecutesTransfer(t *testing.T) {
 	svc.RunEveningReview(context.Background())
 
 	require.Len(t, push.sent, 1)
-	assert.Contains(t, push.sent[0].body, "Moved")
+	assert.Contains(t, push.sent[0].body, "held off")
+	assert.Equal(t, 0, transferer.calls)
 }
 
 func TestAutopilotService_Evening_ReportsOverspend(t *testing.T) {

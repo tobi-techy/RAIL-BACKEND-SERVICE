@@ -56,6 +56,17 @@ type NudgeGenerator interface {
 	GenerateNudge(ctx context.Context, snapshot string) string
 }
 
+// PulsePreferencesReader returns per-user briefing prefs for the daily pulse.
+// Nil-safe — falls back to country 09:00 defaults.
+type PulsePreferencesReader interface {
+	// ShouldSendBriefing reports whether the user wants morning briefs.
+	ShouldSendBriefing(ctx context.Context, userID uuid.UUID) bool
+	// BriefingHourLocal returns the preferred local hour (0-23); default 9.
+	BriefingHourLocal(ctx context.Context, userID uuid.UUID) int
+	// TimezoneOverride returns IANA tz if set, else "".
+	TimezoneOverride(ctx context.Context, userID uuid.UUID) string
+}
+
 // Worker sends a daily personalized money pulse notification from Miriam.
 type Worker struct {
 	users    UserRepo
@@ -66,6 +77,7 @@ type Worker struct {
 	push     PushSender
 	brief    BriefProvider
 	nudger   NudgeGenerator
+	prefs    PulsePreferencesReader
 	logger   *zap.Logger
 	sentDate map[string]string
 }
@@ -91,6 +103,9 @@ func (w *Worker) SetBriefProvider(p BriefProvider) { w.brief = p }
 
 // SetNudger sets an optional AI nudge generator for personalized pulse messages.
 func (w *Worker) SetNudger(n NudgeGenerator) { w.nudger = n }
+
+// SetPreferences attaches per-user briefing prefs (optional).
+func (w *Worker) SetPreferences(p PulsePreferencesReader) { w.prefs = p }
 
 // Start runs the daily pulse loop. Sends once per user in their local 9am window.
 func (w *Worker) Start(ctx context.Context) {
@@ -121,7 +136,16 @@ func (w *Worker) sendPulses(ctx context.Context) {
 	nowUTC := time.Now().UTC()
 
 	for _, u := range users {
-		localDate, ok := dueForDailyPulse(u.Country, nowUTC)
+		if w.prefs != nil && !w.prefs.ShouldSendBriefing(ctx, u.ID) {
+			continue
+		}
+		hour := 9
+		tzOverride := ""
+		if w.prefs != nil {
+			hour = w.prefs.BriefingHourLocal(ctx, u.ID)
+			tzOverride = w.prefs.TimezoneOverride(ctx, u.ID)
+		}
+		localDate, ok := dueForDailyPulseAt(u.Country, nowUTC, hour, tzOverride)
 		if !ok {
 			continue
 		}
@@ -393,9 +417,26 @@ func truncateNotification(s string, max int) string {
 }
 
 func dueForDailyPulse(country string, nowUTC time.Time) (string, bool) {
-	loc := locationForCountry(country)
+	return dueForDailyPulseAt(country, nowUTC, 9, "")
+}
+
+// dueForDailyPulseAt is true when local hour matches briefingHour (0-23).
+// tzOverride is an IANA timezone; empty uses country mapping.
+func dueForDailyPulseAt(country string, nowUTC time.Time, briefingHour int, tzOverride string) (string, bool) {
+	if briefingHour < 0 || briefingHour > 23 {
+		briefingHour = 9
+	}
+	var loc *time.Location
+	if tzOverride != "" {
+		if l, err := time.LoadLocation(tzOverride); err == nil && l != nil {
+			loc = l
+		}
+	}
+	if loc == nil {
+		loc = locationForCountry(country)
+	}
 	local := nowUTC.In(loc)
-	if local.Hour() != 9 {
+	if local.Hour() != briefingHour {
 		return "", false
 	}
 	return local.Format("2006-01-02"), true

@@ -25,31 +25,7 @@ func NewWorker(service *growthengine.Service, logger *zap.Logger) *Worker {
 	}
 }
 
-func (w *Worker) Start(ctx context.Context) {
-	if w.service == nil {
-		return
-	}
-	if w.interval <= 0 {
-		w.interval = 2 * time.Hour
-	}
-	w.logger.Info("Growth engine worker started", zap.Duration("interval", w.interval))
-
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-
-	w.run(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			w.logger.Info("Growth engine worker stopped")
-			return
-		case <-ticker.C:
-			w.run(ctx)
-		}
-	}
-}
-
-func (w *Worker) run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context) {
 	segmented, queued, err := w.service.RunSegmentation(ctx)
 	if err != nil {
 		w.logger.Error("Growth engine run failed", zap.Error(err))

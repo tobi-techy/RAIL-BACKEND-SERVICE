@@ -11,12 +11,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// sweepToSolana bridges redeemed USDC from the user's Base EOA back to their Solana
-// wallet via ChainRails. Called after finalizeRedemption confirms funds are on-chain in
-// the Base EOA. Best-effort: failures are persisted to swept_failed_reason so the worker
-// can retry; success stamps swept_at so the worker ignores it.
-func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccount, amount decimal.Decimal, redemptionID uuid.UUID) {
-	r.sweepFromChainToSolana(ctx, acct, amount, redemptionID, acct.ChainID)
+// sweepToSolana bridges redeemed USDC from the user's EOA on the redemption's destination
+// chain back to their Solana wallet via ChainRails. Called after finalizeRedemption
+// confirms funds are on-chain. Best-effort: failures are persisted to swept_failed_reason
+// so the worker can retry; success stamps swept_at so the worker ignores it.
+func (r *DepositRouter) sweepToSolana(ctx context.Context, acct *blendUserAccount, amount decimal.Decimal, redemptionID uuid.UUID, chainID int64) {
+	if chainID == 0 {
+		chainID = acct.ChainID // fallback to the account's native chain
+	}
+	r.sweepFromChainToSolana(ctx, acct, amount, redemptionID, chainID)
 }
 
 // sweepFromChainToSolana bridges redeemed USDC from the user's EOA on the given chain

@@ -226,7 +226,14 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		return nil
 	}
 
-	return p.sendErrorMessage(ctx, msg, "Please link your account first. Open the RAIL app and tap 'Link iMessage'.")
+	linkHint := "Link iMessage"
+	switch msg.Platform {
+	case entities.PlatformTelegram:
+		linkHint = "Link Telegram"
+	case entities.PlatformWhatsApp:
+		linkHint = "Link WhatsApp"
+	}
+	return p.sendErrorMessage(ctx, msg, "Please link your account first. Open the RAIL app and tap '"+linkHint+"'.")
 }
 
 // handleOnboarding drives one step of chat-first account creation and delivers

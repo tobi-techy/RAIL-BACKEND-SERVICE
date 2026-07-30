@@ -65,9 +65,20 @@ func (h *PlatformHandler) InitiateLink(c *gin.Context) {
 
 	// Deep link opens a message TO the bridge address with the token pre-filled;
 	// the user simply hits send and the bridge captures their real sender id.
+	// Platform-aware: iMessage/sms, WhatsApp wa.me, Telegram share (MVP: iMessage primary).
 	var deepLink string
 	if h.bridgeAddress != "" {
-		deepLink = "sms:" + url.QueryEscape(h.bridgeAddress) + "&body=" + url.QueryEscape(result.Token)
+		body := url.QueryEscape(result.Token)
+		switch platformType {
+		case entities.PlatformWhatsApp:
+			// bridgeAddress should be E.164 without + for wa.me
+			deepLink = "https://wa.me/" + url.PathEscape(h.bridgeAddress) + "?text=" + body
+		case entities.PlatformTelegram:
+			// bridgeAddress as @bot username without @
+			deepLink = "https://t.me/" + url.PathEscape(h.bridgeAddress) + "?start=" + body
+		default:
+			deepLink = "sms:" + url.QueryEscape(h.bridgeAddress) + "&body=" + body
+		}
 	}
 
 	c.JSON(http.StatusOK, initiateLinkResponse{

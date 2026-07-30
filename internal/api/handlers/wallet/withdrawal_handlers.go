@@ -538,6 +538,10 @@ func (h *WithdrawalHandlers) handleWithdrawalError(c *gin.Context, err error, us
 			innerMsg = "Insufficient balance in custody wallet."
 		}
 		common.SendBadRequest(c, "TRANSFER_FAILED", innerMsg)
+	case strings.Contains(errMsg, "not whitelisted"):
+		common.SendBadRequest(c, common.ErrCodeAddressNotWhitelisted, errMsg)
+	case strings.Contains(errMsg, "cooling period"):
+		common.SendBadRequest(c, common.ErrCodeAddressNotWhitelisted, errMsg)
 	case strings.Contains(errMsg, "failed to post ledger"),
 		strings.Contains(errMsg, "failed to create withdrawal"):
 		common.SendInternalError(c, "WITHDRAWAL_ERROR", "Failed to record withdrawal. Please try again.")

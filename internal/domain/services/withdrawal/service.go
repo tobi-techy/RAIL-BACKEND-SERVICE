@@ -468,6 +468,26 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 		return nil, fmt.Errorf("insufficient stash balance: have %s, need %s (amount %s + fee %s)", balance.String(), total.String(), amount.String(), fee.String())
 	}
 
+	// Compliance screening — submit to Didit for AML/sanctions monitoring.
+	// Emergency access fails open if compliance is unavailable, but hard-blocks
+	// on a DECLINED verdict.
+	if s.complianceScreener != nil {
+		screenStatus, screenErr := s.complianceScreener.ScreenTransaction(ctx, userID, "emergency-stash-"+idempotencyKey, "emergency_stash_to_spending", amount, "USD", "")
+		if screenErr != nil {
+			s.logger.Error("Compliance screening unavailable — proceeding with emergency transfer",
+				"user_id", userID.String(), "error", screenErr)
+		} else if screenStatus == "DECLINED" {
+			return nil, domainerrors.NewDomainError(
+				domainerrors.ErrConflict,
+				"COMPLIANCE_DECLINED",
+				"Emergency transfer was declined by compliance screening.",
+			).WithDetails(map[string]interface{}{"status": screenStatus})
+		} else if screenStatus != "APPROVED" {
+			s.logger.Warn("Emergency transfer not immediately approved by compliance — proceeding",
+				"user_id", userID.String(), "status", screenStatus)
+		}
+	}
+
 	// Reserve the Blend redemption BEFORE the ledger moves so a crash after the
 	// transfer always leaves a durable record for the reconciliation worker —
 	// otherwise the ledger can run ahead of Blend custody with nothing to retry.
@@ -1205,6 +1225,36 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 				"error", err, "withdrawal_id", withdrawal.ID.String())
 		} else {
 			withdrawal.Status = entities.WithdrawalStatusProcessing
+		}
+	}
+
+	// Re-check source balance before executing the transfer. The balance was
+	// checked during InitiateCryptoWithdrawal, but by now the yield redemption
+	// retry loop could have taken minutes — another concurrent withdrawal or
+	// deduction could have consumed the funds in the meantime.
+	{
+		sourceAcct := entities.AccountTypeSpendingBalance
+		if req.SourceAccount == entities.WithdrawalSourceStashBalance {
+			sourceAcct = entities.AccountTypeStashBalance
+		}
+		curBal, balErr := s.ledgerService.GetAccountBalance(ctx, req.UserID, sourceAcct)
+		if balErr != nil {
+			s.logger.Error("async: failed to re-check balance before crypto transfer — proceeding anyway",
+				"error", balErr, "withdrawal_id", withdrawal.ID.String())
+		} else if curBal.LessThan(req.Amount) {
+			s.logger.Error("async: insufficient balance at execution time — failing withdrawal",
+				"current_balance", curBal.String(),
+				"required", req.Amount.String(),
+				"withdrawal_id", withdrawal.ID.String())
+			if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
+				s.logger.Error("async: failed to mark pending ledger as failed",
+					"error", failErr, "withdrawal_id", withdrawal.ID.String())
+			}
+			_ = s.withdrawalRepo.MarkFailed(ctx, withdrawal.ID, "insufficient balance at execution time")
+			if s.notificationService != nil {
+				_ = s.notificationService.NotifyWithdrawalFailed(ctx, req.UserID, req.Amount, "Insufficient balance when processing your withdrawal. Your funds are still available.")
+			}
+			return
 		}
 	}
 

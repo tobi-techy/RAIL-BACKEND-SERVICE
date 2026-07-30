@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
@@ -14,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/socialauth"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -43,27 +43,27 @@ func NewSecurityServicesBuilder(db *sql.DB, cfg *config.Config, logger *zap.Logg
 
 // SecurityServices holds all security-related services
 type SecurityServices struct {
-	SessionService          *session.Service
-	TwoFAService            *twofa.Service
-	APIKeyService           *apikey.Service
-	SocialAuthService       *socialauth.Service
-	WebAuthnService         *webauthn.Service
-	PasscodeService         *passcode.Service
-	LoginProtection         *security.LoginProtectionService
-	DeviceTracking          *security.DeviceTrackingService
-	WithdrawalSecurity      *security.WithdrawalSecurityService
-	IPWhitelist             *security.IPWhitelistService
-	PasswordPolicy          *security.PasswordPolicyService
-	SecurityEventLogger     *security.SecurityEventLogger
-	PasswordService         *security.PasswordService
-	MFAService              *security.MFAService
-	GeoSecurity             *security.GeoSecurityService
-	FraudDetection          *security.FraudDetectionService
-	IncidentResponse        *security.IncidentResponseService
-	TokenBlacklist          *auth.TokenBlacklist
-	JWTService              *auth.JWTService
-	TieredRateLimiter       *ratelimit.TieredLimiter
-	LoginAttemptTracker     *ratelimit.LoginAttemptTracker
+	SessionService      *session.Service
+	TwoFAService        *twofa.Service
+	APIKeyService       *apikey.Service
+	SocialAuthService   *socialauth.Service
+	WebAuthnService     *webauthn.Service
+	PasscodeService     *passcode.Service
+	LoginProtection     *security.LoginProtectionService
+	DeviceTracking      *security.DeviceTrackingService
+	WithdrawalSecurity  *security.WithdrawalSecurityService
+	IPWhitelist         *security.IPWhitelistService
+	PasswordPolicy      *security.PasswordPolicyService
+	SecurityEventLogger *security.SecurityEventLogger
+	PasswordService     *security.PasswordService
+	MFAService          *security.MFAService
+	GeoSecurity         *security.GeoSecurityService
+	FraudDetection      *security.FraudDetectionService
+	IncidentResponse    *security.IncidentResponseService
+	TokenBlacklist      *auth.TokenBlacklist
+	JWTService          *auth.JWTService
+	TieredRateLimiter   *ratelimit.TieredLimiter
+	LoginAttemptTracker *ratelimit.LoginAttemptTracker
 }
 
 // Build builds all security services
@@ -146,9 +146,9 @@ func (b *SecurityServicesBuilder) Build(userRepo *repositories.UserRepository) (
 		UserLimit:    200,
 		UserWindow:   time.Minute,
 		EndpointLimits: map[string]ratelimit.EndpointLimit{
-			"POST /api/v1/auth/login":        {Limit: 5, Window: 15 * time.Minute},
-			"POST /api/v1/auth/register":     {Limit: 3, Window: time.Hour},
-			"POST /api/v1/funding/withdraw":  {Limit: 10, Window: time.Hour},
+			"POST /api/v1/auth/login":       {Limit: 5, Window: 15 * time.Minute},
+			"POST /api/v1/auth/register":    {Limit: 3, Window: time.Hour},
+			"POST /api/v1/funding/withdraw": {Limit: 10, Window: time.Hour},
 		},
 	}
 	services.TieredRateLimiter = ratelimit.NewTieredLimiter(redisNativeClient, tieredConfig, b.logger)
@@ -159,12 +159,12 @@ func (b *SecurityServicesBuilder) Build(userRepo *repositories.UserRepository) (
 
 // FundingServicesBuilder builds funding-related services
 type FundingServicesBuilder struct {
-	db          *sql.DB
-	sqlxDB      *sqlx.DB
-	cfg         *config.Config
-	logger      *logger.Logger
-	zapLog      *zap.Logger
-	alpaca      *alpaca.Client
+	db     *sql.DB
+	sqlxDB *sqlx.DB
+	cfg    *config.Config
+	logger *logger.Logger
+	zapLog *zap.Logger
+	alpaca *alpaca.Client
 }
 
 // NewFundingServicesBuilder creates a new funding services builder
@@ -250,7 +250,6 @@ func (b *RepositoryBuilder) Build() *Repositories {
 		OnboardingJobRepo:         repositories.NewOnboardingJobRepository(b.db, b.logger),
 	}
 }
-
 
 // InvestingServicesBuilder builds investing-related services
 type InvestingServicesBuilder struct {

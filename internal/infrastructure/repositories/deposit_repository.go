@@ -193,7 +193,8 @@ func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, l
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			   source_amount, source_currency, conversion_id
 		FROM deposits
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -261,7 +262,8 @@ func (r *DepositRepository) GetByIdempotencyKey(ctx context.Context, idempotency
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			   source_amount, source_currency, conversion_id
 		FROM deposits
 		WHERE idempotency_key = $1
 	`
@@ -317,6 +319,49 @@ func (r *DepositRepository) UpdateStatus(ctx context.Context, id uuid.UUID, stat
 	_, err := r.db.ExecContext(ctx, query, id, status, confirmedAt)
 	if err != nil {
 		return fmt.Errorf("failed to update deposit status: %w", err)
+	}
+
+	return nil
+}
+
+// GetLatestPendingNGNByUserID returns the most recent pending deposit with
+// source_currency = 'NGN' for the given user, or nil if none exists.
+func (r *DepositRepository) GetLatestPendingNGNByUserID(ctx context.Context, userID uuid.UUID) (*entities.Deposit, error) {
+	query := `
+		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
+			   tx_hash, chain, token, confirmed_at,
+			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
+			   alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			   source_amount, source_currency, conversion_id
+		FROM deposits
+		WHERE user_id = $1 AND status = 'pending' AND source_currency = 'NGN'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	var dep entities.Deposit
+	err := r.db.GetContext(ctx, &dep, query, userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get latest pending NGN deposit: %w", err)
+	}
+
+	return &dep, nil
+}
+
+// UpdateConversionID sets the Graph conversion ID on a deposit for traceability.
+func (r *DepositRepository) UpdateConversionID(ctx context.Context, id uuid.UUID, conversionID string) error {
+	query := `
+		UPDATE deposits
+		SET conversion_id = $2
+		WHERE id = $1
+	`
+
+	_, err := r.db.ExecContext(ctx, query, id, conversionID)
+	if err != nil {
+		return fmt.Errorf("failed to update conversion ID: %w", err)
 	}
 
 	return nil

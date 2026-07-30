@@ -1486,6 +1486,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 							miriam.POST("/suggestions/:id/dismiss", middleware.AuthRateLimit(10), miriamHandler.DismissSuggestion)
 						}
 					}
+					if container.MiriamPreferencesService != nil {
+						prefsHandler := handlers.NewMiriamPreferencesHandler(container.MiriamPreferencesService, container.ZapLog)
+						aiGroup.GET("/miriam/preferences", middleware.AuthRateLimit(20), prefsHandler.Get)
+						aiGroup.PUT("/miriam/preferences", middleware.AuthRateLimit(10), prefsHandler.Put)
+					}
 					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
 					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
 					aiGroup.GET("/proactive-opener", middleware.AuthRateLimit(10), aiChatHandlers.GetProactiveOpener)
@@ -1506,24 +1511,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						}
 					}
 
-					// Image analysis (receipt scanning) — prefers Kimi k2.6 for vision
+					// Image analysis (receipt scanning) — uses Cencori gateway (OpenAI-compatible)
 					var imageHandler *handlers.ImageAnalysisHandler
-					if container.Config.AI.Kimi.APIKey != "" {
-						kimiBase := container.Config.AI.Kimi.BaseURL
-						if kimiBase == "" {
-							kimiBase = "https://api.moonshot.ai/v1"
-						}
+					if container.Config.AI.Cencori.APIKey != "" {
+						cencoriBase := "https://api.cencori.com/v1"
 						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
-							container.Config.AI.Kimi.APIKey,
-							kimiBase,
-							"moonshot-v1-32k-vision-preview",
-							container.GetAIOrchestrator(),
-							container.ReceiptRepo,
-							container.ZapLog,
-						)
-					} else if container.Config.AI.OpenAI.APIKey != "" {
-						imageHandler = handlers.NewImageAnalysisHandler(
-							container.Config.AI.OpenAI.APIKey,
+							container.Config.AI.Cencori.APIKey,
+							cencoriBase,
+							"gpt-4o",
 							container.GetAIOrchestrator(),
 							container.ReceiptRepo,
 							container.ZapLog,
@@ -1727,11 +1722,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.POST("/wallet/retry-provisioning", walletFundingHandlers.RetryWalletProvisioning)
 			admin.GET("/wallet/health", walletFundingHandlers.HealthCheck)
 			admin.POST("/reconcile/:user_id", walletFundingHandlers.ReconcileUserBalance)
-
-			// Yield distribution — manually trigger for a period (format: YYYY-MM-DD)
-			if container.YieldDistributionWorker != nil {
-				admin.POST("/yield/distribute", handlers.TriggerYieldDistribution(container.YieldDistributionWorker, container.ZapLog))
-			}
 
 			// Stash reconciliation — manually trigger a check of ledger vs yield-provider balance
 			if container.StashReconciliation != nil {

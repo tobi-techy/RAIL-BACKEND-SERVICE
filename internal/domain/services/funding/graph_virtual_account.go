@@ -617,17 +617,20 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 
 	// Compliance screening (NGN inbound). Only screen on the first attempt; a
 	// resume already passed screening when the pending row was created.
+	// Non-blocking: if screening fails or flags the transaction, the deposit
+	// still proceeds but is flagged for manual review. This prevents a
+	// temporarily unavailable screening service from losing deposits.
+	complianceFlagged := false
 	if !resuming && s.complianceScreener != nil {
 		status, screenErr := s.complianceScreener.ScreenTransaction(ctx, userID, txRef, "inbound", ngnAmount, "NGN", "")
 		if screenErr != nil {
-			s.logger.Error("Compliance screening unavailable, blocking NGN deposit",
+			s.logger.Warn("Compliance screening unavailable, proceeding with flag",
 				"user_id", userID.String(), "ref", txRef, "error", screenErr)
-			return fmt.Errorf("deposit held: compliance screening unavailable")
-		}
-		if status != "APPROVED" {
-			s.logger.Warn("NGN deposit not approved by compliance",
+			complianceFlagged = true
+		} else if status != "APPROVED" {
+			s.logger.Warn("NGN deposit flagged by compliance (not blocking)",
 				"user_id", userID.String(), "ref", txRef, "status", status)
-			return fmt.Errorf("deposit held: compliance status %s", status)
+			complianceFlagged = true
 		}
 	}
 
@@ -640,6 +643,10 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 		vaID := va.ID
 		ngnCurrency := "NGN"
 		sourceAmount := ngnAmount
+		correlationID := ""
+		if complianceFlagged {
+			correlationID = "compliance_flagged"
+		}
 		pending := &entities.Deposit{
 			ID:               depositID,
 			IdempotencyKey:   idempotencyKey,
@@ -651,6 +658,7 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 			Amount:           decimal.Zero,
 			SourceAmount:     &sourceAmount,
 			SourceCurrency:   &ngnCurrency,
+			CorrelationID:    correlationID,
 			Status:           "pending",
 			CreatedAt:        time.Now(),
 		}
@@ -667,7 +675,7 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 	// Convert NGN → USDC (net of developer fee). Graph dedupes by reference, so a
 	// resume re-issues the same conversion safely. On failure the pending row is
 	// intentionally left in place for the recovery worker / next webhook retry.
-	usdcAmount, err := s.convertNGNToUSDC(ctx, ngnAmount, txRef)
+	usdcAmount, conversionID, err := s.convertNGNToUSDC(ctx, ngnAmount, txRef)
 	if err != nil {
 		return fmt.Errorf("convert NGN to USDC: %w", err)
 	}
@@ -675,10 +683,17 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 		return fmt.Errorf("converted USDC amount must be greater than zero")
 	}
 
-	// Persist the resolved settlement amount now that conversion succeeded.
+	// Persist the resolved settlement amount and conversion ID now that
+	// conversion succeeded. The conversion ID enables targeted matching when
+	// Graph fires conversion.failed webhooks.
 	if s.depositRepo != nil {
 		if err := s.depositRepo.UpdateDepositAmount(ctx, depositID, usdcAmount); err != nil {
 			s.logger.Warn("Failed to persist resolved NGN deposit amount", "deposit_id", depositID, "error", err)
+		}
+		if conversionID != "" {
+			if err := s.depositRepo.UpdateConversionID(ctx, depositID, conversionID); err != nil {
+				s.logger.Warn("Failed to persist conversion ID", "deposit_id", depositID, "conversion_id", conversionID, "error", err)
+			}
 		}
 	}
 
@@ -755,7 +770,7 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 // convertNGNToUSDC converts a NGN amount to USDC net of the developer fee. It
 // prefers a real Graph conversion (actual proceeds) and falls back to the live
 // FX rate when the conversion API is unavailable.
-func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAmount decimal.Decimal, reference string) (decimal.Decimal, error) {
+func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAmount decimal.Decimal, reference string) (decimal.Decimal, string, error) {
 	feeMultiplier := decimal.NewFromInt(1).Sub(s.developerFeePercent.Div(decimal.NewFromInt(100)))
 	if feeMultiplier.LessThan(decimal.Zero) {
 		feeMultiplier = decimal.Zero
@@ -773,7 +788,7 @@ func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAm
 	if convErr == nil && conv != nil {
 		if target, perr := decimal.NewFromString(conv.TargetAmount); perr == nil && target.GreaterThan(decimal.Zero) {
 			result := target.Mul(feeMultiplier).Round(2)
-			return result, nil
+			return result, conv.ID, nil
 		}
 	}
 	// Log primary path failure so production conversion issues are debuggable.
@@ -787,8 +802,9 @@ func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAm
 		if rate, err := s.currencyRates.GetLatestRate(ctx, "USD", "NGN"); err == nil && rate.GreaterThan(decimal.Zero) {
 			result := ngnAmount.Div(rate).Mul(feeMultiplier).Round(2)
 			s.logger.Infow("NGN→USD conversion used CurrencyRateProvider fallback",
-				"rate", rate.String(), "result_usd", result.String(), "reference", reference)
-			return result, nil
+				"rate", rate.String(), "result_usd", result.String(), "reference", reference,
+				"source", "CurrencyRateProvider", "ngn_input", ngnAmount.String())
+			return result, "", nil
 		}
 	}
 
@@ -796,11 +812,12 @@ func (s *GraphVirtualAccountService) convertNGNToUSDC(ctx context.Context, ngnAm
 	if rate, err := s.graphClient.FetchRate(ctx, "NGN", "USDC"); err == nil && rate != nil && rate.Rate > 0 {
 		result := ngnAmount.Mul(decimal.NewFromFloat(rate.Rate)).Mul(feeMultiplier).Round(2)
 		s.logger.Infow("NGN→USD conversion used Graph FetchRate fallback",
-			"rate", rate.Rate, "result_usd", result.String(), "reference", reference)
-		return result, nil
+			"rate", rate.Rate, "result_usd", result.String(), "reference", reference,
+			"source", "GraphFetchRate", "ngn_input", ngnAmount.String())
+		return result, "", nil
 	}
 
-	return decimal.Zero, fmt.Errorf("no NGN→USD rate available (all conversion paths exhausted)")
+	return decimal.Zero, "", fmt.Errorf("no NGN→USD rate available (all conversion paths exhausted)")
 }
 
 // HandleAccountActivatedWithData updates the virtual account with bank details
@@ -958,9 +975,10 @@ func (s *GraphVirtualAccountService) HandleAccountClosed(ctx context.Context, gr
 	return nil
 }
 
-// HandleConversionFailed marks a pending NGN deposit as failed when Graph fires
-// a conversion.failed webhook. This prevents the deposit from being stuck in
-// pending state indefinitely.
+// HandleConversionFailed marks the most recent pending NGN deposit as failed
+// when Graph fires a conversion.failed webhook. This prevents the deposit from
+// being stuck in pending state indefinitely. Only fails the most recent pending
+// deposit — not all pending deposits — to avoid collateral damage.
 func (s *GraphVirtualAccountService) HandleConversionFailed(ctx context.Context, graphAccountID string, conversionID string) error {
 	// Look up the virtual account to get the user
 	va, err := s.virtualAccountRepo.GetByGraphAccountID(ctx, graphAccountID)
@@ -970,33 +988,23 @@ func (s *GraphVirtualAccountService) HandleConversionFailed(ctx context.Context,
 		return nil
 	}
 
-	// The idempotency key format is "graph-{graphAccountID}-{txRef}".
-	// We don't have the txRef here, so search for any pending deposit for this user.
-	// Look up all deposits for this user and find pending NGN ones
-	deposits, err := s.depositRepo.GetByUserID(ctx, va.UserID, 100, 0)
+	// Find only the most recent pending NGN deposit for this user
+	dep, err := s.depositRepo.GetLatestPendingNGNByUserID(ctx, va.UserID)
 	if err != nil {
-		return fmt.Errorf("get deposits: %w", err)
+		return fmt.Errorf("get latest pending NGN deposit: %w", err)
 	}
-
-	updated := 0
-	for _, dep := range deposits {
-		if dep.Status == "pending" && dep.SourceCurrency != nil && *dep.SourceCurrency == "NGN" {
-			if err := s.depositRepo.UpdateStatus(ctx, dep.ID, "failed", nil); err != nil {
-				s.logger.Warn("failed to mark deposit as failed",
-					"deposit_id", dep.ID, "error", err)
-				continue
-			}
-			updated++
-			s.logger.Warn("NGN deposit marked failed due to conversion failure",
-				"deposit_id", dep.ID, "user_id", va.UserID,
-				"conversion_id", conversionID)
-		}
-	}
-
-	if updated == 0 {
+	if dep == nil {
 		s.logger.Warn("conversion.failed but no pending NGN deposits found",
 			"graph_account_id", graphAccountID, "conversion_id", conversionID)
+		return nil
 	}
+
+	if err := s.depositRepo.UpdateStatus(ctx, dep.ID, "failed", nil); err != nil {
+		return fmt.Errorf("mark deposit as failed: %w", err)
+	}
+	s.logger.Warn("NGN deposit marked failed due to conversion failure",
+		"deposit_id", dep.ID, "user_id", va.UserID,
+		"conversion_id", conversionID, "source_amount", dep.SourceAmount)
 	return nil
 }
 

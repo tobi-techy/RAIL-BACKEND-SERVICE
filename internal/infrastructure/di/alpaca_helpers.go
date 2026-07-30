@@ -20,4 +20,3 @@ func (c *Container) InitializeBrokerageOnboarding() *services.BrokerageOnboardin
 func (c *Container) InitializeInstantFunding(firmAccountNumber string) *funding.InstantFundingService {
 	return c.InstantFundingService
 }
-

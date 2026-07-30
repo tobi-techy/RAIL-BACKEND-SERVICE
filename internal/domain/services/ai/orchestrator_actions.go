@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -579,6 +580,38 @@ func (o *AgentAdapter) PeekPendingAction(ctx context.Context, userID, convID uui
 	return action, true
 }
 
+// participantsFromParams normalizes staged split participants from either a
+// comma-separated string (core/messaging tools) or a JSON array (stream path).
+func participantsFromParams(raw interface{}) []string {
+	var out []string
+	switch v := raw.(type) {
+	case string:
+		for _, p := range strings.Split(v, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+	case []interface{}:
+		for _, p := range v {
+			if s, ok := p.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	case []string:
+		for _, s := range v {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
 // IsFundMovingAction reports whether a staged action type moves money and
 // therefore warrants the same passcode step-up that the direct withdrawal and
 // stash-transfer routes enforce.
@@ -590,7 +623,11 @@ func IsFundMovingAction(action string) bool {
 		// app's own automation endpoints also gate behind passcode consent.
 		ToolExecuteInvestment, ToolOptimizeYield, ToolCopyTrader, ToolSetupBillAutopay,
 		// Airbills bill payments debit the user's Spend balance in USDC.
-		ToolPayBill, ToolAutomateBill:
+		ToolPayBill, ToolAutomateBill,
+		// P2P send / receipt splits debit or reserve Spend (claim links for non-users).
+		"send_money", ToolSplitReceipt,
+		// Automations can schedule recurring transfers — require Face ID step-up.
+		ToolCreateAutomation:
 		return true
 	default:
 		return false
@@ -647,7 +684,14 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	case ToolSetBudget:
 		_, execErr = o.executeSetBudget(ctx, userID, action.Params)
 	case ToolCreateAutomation:
-		_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
+		// Prefer core registry: understands both full {trigger_type,action_type,...}
+		// and simple messaging-tool {name,type,schedule,amount,from,to} shapes.
+		// Falls back to the stream-only executor when no agent is wired.
+		if o.agent != nil {
+			execErr = o.executeConfirmedExecutionAction(ctx, userID, action)
+		} else {
+			_, execErr = o.executeCreateAutomation(ctx, userID, action.Params)
+		}
 	case ToolCreateObligationReminder:
 		_, execErr = o.executeCreateObligationReminder(ctx, userID, action.Params)
 	case ToolInitiateWithdrawal:
@@ -674,35 +718,28 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		o.logger.Info("Subscription ignored via Miriam",
 			zap.String("user_id", userID.String()),
 			zap.Any("params", action.Params))
-	case ToolSplitReceipt:
-		if o.receiptSplitter == nil {
-			execErr = fmt.Errorf("receipt split service unavailable")
-		} else {
+	case ToolSplitReceipt, "send_money":
+		// Prefer the core registry (real P2P) so messaging + app share one path.
+		// Falls back to stream-only receiptSplitter for split when registry is unavailable.
+		if o.agent != nil {
+			execErr = o.executeConfirmedExecutionAction(ctx, userID, action)
+		} else if action.Action == ToolSplitReceipt && o.receiptSplitter != nil {
 			receiptIDStr, ok := action.Params["receipt_id"].(string)
 			if !ok || receiptIDStr == "" {
 				execErr = fmt.Errorf("missing or invalid receipt_id in action params")
 			} else if receiptID, parseErr := uuid.Parse(receiptIDStr); parseErr != nil {
 				execErr = fmt.Errorf("invalid receipt_id format: %w", parseErr)
 			} else {
-				participantsRaw, ok := action.Params["participants"].([]interface{})
-				if !ok || len(participantsRaw) == 0 {
+				participants := participantsFromParams(action.Params["participants"])
+				if len(participants) == 0 {
 					execErr = fmt.Errorf("invalid or missing participants in action params")
 				} else {
-					participants := make([]string, 0, len(participantsRaw))
-					for _, p := range participantsRaw {
-						if tag, ok := p.(string); ok && tag != "" {
-							participants = append(participants, tag)
-						}
-					}
-					if len(participants) == 0 {
-						execErr = fmt.Errorf("no valid participants for receipt split")
-					} else {
-						message, _ := action.Params["message"].(string)
-						// ExecuteSplit must verify receipt ownership (userID owns receiptID)
-						_, execErr = o.receiptSplitter.ExecuteSplit(ctx, userID, receiptID, participants, message)
-					}
+					message, _ := action.Params["message"].(string)
+					_, execErr = o.receiptSplitter.ExecuteSplit(ctx, userID, receiptID, participants, message)
 				}
 			}
+		} else {
+			execErr = fmt.Errorf("%s service unavailable", action.Action)
 		}
 	case ToolUpdateFinancialProfile:
 		if o.financialProfile == nil {

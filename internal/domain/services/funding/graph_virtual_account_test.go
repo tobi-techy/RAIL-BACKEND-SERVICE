@@ -170,6 +170,29 @@ func (r *fakeDepositRepo) UpdateDepositAmount(ctx context.Context, id uuid.UUID,
 	}
 	return nil
 }
+func (r *fakeDepositRepo) GetLatestPendingNGNByUserID(ctx context.Context, userID uuid.UUID) (*entities.Deposit, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var latest *entities.Deposit
+	for _, d := range r.byKey {
+		if d.UserID == userID && d.Status == "pending" && d.SourceCurrency != nil && *d.SourceCurrency == "NGN" {
+			if latest == nil || d.CreatedAt.After(latest.CreatedAt) {
+				latest = d
+			}
+		}
+	}
+	return latest, nil
+}
+func (r *fakeDepositRepo) UpdateConversionID(ctx context.Context, id uuid.UUID, conversionID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, d := range r.byKey {
+		if d.ID == id {
+			d.ConversionID = &conversionID
+		}
+	}
+	return nil
+}
 
 type fakeAllocation struct{ calls int }
 

@@ -72,12 +72,13 @@ const (
 	ErrCode2FAInvalidCode      = "2FA_INVALID_CODE"
 
 	// Funding & Wallet errors
-	ErrCodeInsufficientFunds   = "INSUFFICIENT_FUNDS"
+	ErrCodeInsufficientFunds    = "INSUFFICIENT_FUNDS"
 	ErrCodeInsufficientPosition = "INSUFFICIENT_POSITION"
 	ErrCodeWalletCreationFailed = "WALLET_CREATION_FAILED"
-	ErrCodeDepositFailed       = "DEPOSIT_FAILED"
-	ErrCodeWithdrawalFailed    = "WITHDRAWAL_FAILED"
-	ErrCodeProvisioningFailed  = "PROVISIONING_FAILED"
+	ErrCodeDepositFailed        = "DEPOSIT_FAILED"
+	ErrCodeWithdrawalFailed     = "WITHDRAWAL_FAILED"
+	ErrCodeProvisioningFailed   = "PROVISIONING_FAILED"
+	ErrCodeAddressNotWhitelisted = "ADDRESS_NOT_WHITELISTED"
 
 	// KYC errors
 	ErrCodeKYCUnavailable      = "KYC_UNAVAILABLE"

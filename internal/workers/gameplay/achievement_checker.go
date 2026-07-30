@@ -2,7 +2,6 @@ package gameplay
 
 import (
 	"context"
-	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -23,35 +22,13 @@ type AchievementChecker struct {
 	achievementSvc AchievementService
 	userProvider   ActiveUserProvider
 	logger         *zap.Logger
-	stop           chan struct{}
-	lastDate       string
 }
 
 func NewAchievementChecker(achievementSvc AchievementService, userProvider ActiveUserProvider, logger *zap.Logger) *AchievementChecker {
-	return &AchievementChecker{achievementSvc: achievementSvc, userProvider: userProvider, logger: logger, stop: make(chan struct{})}
+	return &AchievementChecker{achievementSvc: achievementSvc, userProvider: userProvider, logger: logger}
 }
 
-func (w *AchievementChecker) Start(ctx context.Context) {
-	w.logger.Info("Achievement checker worker started")
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stop:
-			return
-		case <-ticker.C:
-			if time.Now().UTC().Hour() == 2 && w.lastDate != time.Now().UTC().Format("2006-01-02") {
-				w.lastDate = time.Now().UTC().Format("2006-01-02")
-				w.run(ctx)
-			}
-		}
-	}
-}
-
-func (w *AchievementChecker) run(ctx context.Context) {
+func (w *AchievementChecker) CheckAchievements(ctx context.Context) {
 	userIDs, err := w.userProvider.GetActiveUserIDs(ctx)
 	if err != nil {
 		w.logger.Error("Failed to get active users for achievement check", zap.Error(err))
@@ -71,5 +48,3 @@ func (w *AchievementChecker) run(ctx context.Context) {
 		w.logger.Info("Achievement checker completed", zap.Int("unlocked", totalUnlocked), zap.Int("users_checked", len(userIDs)))
 	}
 }
-
-func (w *AchievementChecker) Stop() { close(w.stop) }

@@ -77,7 +77,7 @@ func (r *DepositRouter) RedeemStashYield(ctx context.Context, userID uuid.UUID, 
 	// Reserve the redemption before doing anything irreversible. The unique
 	// idempotency key guarantees only one redemption row per withdrawal.
 	if existing == nil {
-		if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount, idempotencyKey); err != nil {
+		if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount, r.chainID, idempotencyKey); err != nil {
 			return err
 		}
 		existing, err = r.getRedemption(ctx, idempotencyKey)
@@ -168,7 +168,7 @@ func (r *DepositRouter) RedeemStashYieldForTransfer(ctx context.Context, userID 
 	}
 
 	if existing == nil {
-		if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount, idempotencyKey); err != nil {
+		if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount, r.chainID, idempotencyKey); err != nil {
 			return err
 		}
 		existing, err = r.getRedemption(ctx, idempotencyKey)
@@ -264,8 +264,12 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 	micro := USDCMicroUnits(amount)
 
 	// 3. Quote the withdraw (idempotent: re-quoting an OPEN session is safe).
+	destChain := red.DestinationChainID
+	if destChain == 0 {
+		destChain = r.chainID
+	}
 	if red.Status == redemptionStatusPending {
-		quote, err := r.blend.QuoteWithdraw(ctx, acct.BlendAccountID, intentID, r.chainID, micro, false)
+		quote, err := r.blend.QuoteWithdraw(ctx, acct.BlendAccountID, intentID, destChain, micro, false)
 		if err != nil {
 			return fmt.Errorf("%w: quote withdraw: %v", ErrRedemptionRetrying, err)
 		}
@@ -284,7 +288,7 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 
 	// 3. Lock + execute + submit (tolerant of re-entry).
 	if red.Status == redemptionStatusQuoted || red.Status == redemptionStatusExecuting {
-		if err := r.executeWithdraw(ctx, acct, red, intentID); err != nil {
+		if err := r.executeWithdraw(ctx, acct, red, intentID, destChain); err != nil {
 			return err
 		}
 	}
@@ -316,7 +320,7 @@ func (r *DepositRouter) driveRedemption(ctx context.Context, acct *blendUserAcco
 			}
 		}()
 		defer sweepCancel()
-		r.sweepToSolana(sweepCtx, acct, amount, red.ID)
+		r.sweepToSolana(sweepCtx, acct, amount, red.ID, red.DestinationChainID)
 	}()
 
 	return nil
@@ -368,7 +372,18 @@ func (r *DepositRouter) acquireWithdrawSession(ctx context.Context, accountID, e
 	return session, nil
 }
 
-func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAccount, red *redemption, intentID string) error {
+func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAccount, red *redemption, intentID string, destChainID int64) error {
+	if destChainID == 0 {
+		destChainID = r.chainID
+	}
+
+	// Resolve the wallet for the destination chain — the EOA that executes the Safe
+	// transaction varies per chain (e.g. Base vs Ethereum use different Circle wallets).
+	destWallet, destErr := r.resolveUserWalletByChainID(ctx, acct.UserID, destChainID)
+	if destErr != nil {
+		return fmt.Errorf("blend: resolve wallet for chain %d: %w", destChainID, destErr)
+	}
+
 	plan, err := ParseActionPlan(red.QuotePayload)
 	if err != nil {
 		// Corrupt/stale quote payload — reset to pending so the retry re-quotes,
@@ -387,7 +402,7 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 	}
 	switch current.Status {
 	case IntentStatusOpen:
-		if _, err := r.blend.LockSession(ctx, acct.BlendAccountID, intentID, acct.EOAAddress); err != nil {
+		if _, err := r.blend.LockSession(ctx, acct.BlendAccountID, intentID, destWallet.Address); err != nil {
 			return fmt.Errorf("%w: lock withdraw session: %v", ErrRedemptionRetrying, err)
 		}
 	case IntentStatusLocked, IntentStatusSubmitted, IntentStatusSettled:
@@ -421,15 +436,14 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 		return fmt.Errorf("blend: mark redemption executing: %w", err)
 	}
 
-	// Snapshot the EOA's on-chain USDC balance BEFORE the withdraw moves any funds, and
-	// persist it once. finalizeRedemption then requires have >= pre_balance + amount, so a
-	// redemption can only settle if the balance actually rose by ITS amount — concurrent
-	// redemptions can't all pass against the same balance. Captured before execution;
-	// resumes reuse the stored value.
+	// Snapshot the destination wallet's on-chain USDC balance BEFORE the withdraw moves
+	// any funds, and persist it once. finalizeRedemption then requires have >= pre_balance
+	// + amount, so a redemption can only settle if the balance actually rose by ITS amount
+	// — concurrent redemptions can't all pass against the same balance.
 	if !red.PreRedeemBalance.Valid {
-		pre, balErr := r.usdcBalance(ctx, acct.CircleWalletID)
+		pre, balErr := r.usdcBalance(ctx, destWallet.CircleWalletID)
 		if balErr != nil {
-			return fmt.Errorf("blend: snapshot pre-redeem EOA balance: %w", balErr)
+			return fmt.Errorf("blend: snapshot pre-redeem balance on chain %d: %w", destChainID, balErr)
 		}
 		if _, err := r.db.ExecContext(ctx, `
 			UPDATE blend_yield_redemptions SET pre_redeem_eoa_balance = $2, updated_at = NOW()
@@ -447,7 +461,7 @@ func (r *DepositRouter) executeWithdraw(ctx context.Context, acct *blendUserAcco
 		}
 		return w.CircleWalletID, w.Address, nil
 	}, plan, fmt.Sprintf("blend-redeem-%s", red.ID.String()),
-		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: acct.EOAAddress, ChainID: acct.ChainID})
+		&TrustedSafe{Address: acct.SafeAddress, OwnerEOA: destWallet.Address, ChainID: destChainID})
 	if err != nil {
 		return fmt.Errorf("%w: execute withdraw plan: %v", ErrRedemptionRetrying, err)
 	}
@@ -617,19 +631,26 @@ func (r *DepositRouter) tryOnChainSettlementFallback(ctx context.Context, acct *
 }
 
 // finalizeRedemption decrements positions FIFO and marks the redemption complete,
-// atomically — but only after confirming the redeemed USDC actually landed in the user's
-// EOA on-chain. Blend reporting SETTLED is necessary but not sufficient: the withdrawal
-// pipeline spends these funds immediately, so we must not mark success unless they are
-// truly present and spendable in the wallet.
+// atomically — but only after confirming the redeemed USDC actually landed in the
+// destination chain's EOA on-chain. Blend reporting SETTLED is necessary but not
+// sufficient: the withdrawal pipeline spends these funds immediately, so we must not
+// mark success unless they are truly present and spendable in the wallet.
 func (r *DepositRouter) finalizeRedemption(ctx context.Context, acct *blendUserAccount, red *redemption, amount decimal.Decimal, session *Session) error {
+	// Resolve the wallet for the destination chain — the balance must be checked on
+	// whichever chain the withdrawal targeted (e.g. Ethereum, not Base).
+	destWallet, dErr := r.resolveUserWalletByChainID(ctx, acct.UserID, red.DestinationChainID)
+	if dErr != nil {
+		return fmt.Errorf("blend: resolve wallet for destination chain %d: %w", red.DestinationChainID, dErr)
+	}
+
 	// Fetch on-chain balance BEFORE acquiring any DB locks to minimise lock hold time.
 	// The advisory-lock check inside the transaction uses this pre-fetched value.
 	var have decimal.Decimal
-	if acct != nil && acct.CircleWalletID != "" {
+	if destWallet.CircleWalletID != "" {
 		var balErr error
-		have, balErr = r.usdcBalance(ctx, acct.CircleWalletID)
+		have, balErr = r.usdcBalance(ctx, destWallet.CircleWalletID)
 		if balErr != nil {
-			return fmt.Errorf("blend: verify redeemed funds in EOA %s: %w", acct.CircleWalletID, balErr)
+			return fmt.Errorf("blend: verify redeemed funds in EOA %s on chain %d: %w", destWallet.CircleWalletID, red.DestinationChainID, balErr)
 		}
 	}
 
@@ -751,7 +772,7 @@ func (r *DepositRouter) EnsureRedemptionReserved(ctx context.Context, userID uui
 	if acct == nil || acct.BlendAccountID == "" || acct.SafeStatus != SafeStatusValidated {
 		return false, nil // funds are not in Blend custody for this user
 	}
-	if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount.Truncate(6), idempotencyKey); err != nil {
+	if err := r.reserveRedemption(ctx, userID, acct.BlendAccountID, amount.Truncate(6), r.chainID, idempotencyKey); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -769,7 +790,10 @@ func (r *DepositRouter) AbandonRedemption(ctx context.Context, idempotencyKey, r
 
 // --- helpers ---
 
-func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID, accountID string, amount decimal.Decimal, idempotencyKey string) error {
+func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID, accountID string, amount decimal.Decimal, destChainID int64, idempotencyKey string) error {
+	if destChainID == 0 {
+		destChainID = r.chainID
+	}
 	// Insert a fresh reservation, or REVIVE one that a prior attempt abandoned
 	// (status 'failed') back to 'pending'. Without the revive, ON CONFLICT DO
 	// NOTHING would silently no-op against a failed row and the caller would move
@@ -784,7 +808,7 @@ func (r *DepositRouter) reserveRedemption(ctx context.Context, userID uuid.UUID,
 		ON CONFLICT (idempotency_key) DO UPDATE
 			SET status = $7, amount = EXCLUDED.amount, next_retry_at = NOW(), updated_at = NOW()
 			WHERE blend_yield_redemptions.status = 'failed'
-	`, uuid.New(), userID, accountID, amount, r.chainID, idempotencyKey, redemptionStatusPending)
+	`, uuid.New(), userID, accountID, amount, destChainID, idempotencyKey, redemptionStatusPending)
 	if err != nil {
 		return fmt.Errorf("blend: reserve redemption: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -392,6 +393,23 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	suggestions, err := o.suggestions.GenerateSuggestions(ctx, userID, state, memoryFacts)
 	if err == nil {
 		result.SuggestionsMade = len(suggestions)
+		// One CTA per evaluate when we have something new to propose — discreet,
+		// high-signal onboarding into silent wins. Users on guided can accept via
+		// chat tool accept_mandate_suggestion, then switch to Act (full).
+		if len(suggestions) > 0 && o.notifier != nil {
+			s0 := suggestions[0]
+			msg := strings.TrimSpace(s0.Reasoning)
+			if msg == "" {
+				msg = fmt.Sprintf(
+					"I can quietly handle %s — up to $%s when it's safe. Text me \"accept mandate\" or open suggestions if you want me on it.",
+					strings.ToLower(s0.Name),
+					s0.SuggestedMaxAmount.StringFixed(0),
+				)
+			} else {
+				msg = msg + " Text me \"accept mandate\" if you want me on it — then switch to Act so I can run it quietly."
+			}
+			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
+		}
 	}
 
 	// 9. Detect recurring obligations from transactions (weekly check)
@@ -517,12 +535,19 @@ func (o *IntelligenceOrchestrator) autonomyGateReason(ctx context.Context, userI
 func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, userID uuid.UUID, mandate entities.MiriamAutopilotMandate, amount decimal.Decimal) error {
 	var err error
 	switch mandate.ActionType {
-	case entities.MiriamMandateTransferToStash:
-		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
+	case entities.MiriamMandateTransferToStash, MiriamMandateStashTopUp, MiriamMandateIdleSweep, MiriamMandateGoalContribution:
+		// Shared safety gate: floors, cooldown, day cap, MarkMandateExecuted, receipt.
+		state, stErr := o.service.GetMoneyState(ctx, userID)
+		if stErr != nil || state == nil {
+			state, stErr = o.service.RefreshMoneyState(ctx, userID)
+		}
+		if stErr != nil {
+			err = stErr
+			break
+		}
+		err = o.service.SafeExecuteTransferToStash(ctx, state, mandate, amount, EventWorkerSweep)
 	case MiriamMandateTransferToSpend:
 		err = o.executeTransferToSpend(ctx, userID, amount, mandate.ID)
-	case MiriamMandateStashTopUp, MiriamMandateIdleSweep:
-		err = o.executeTransferToStash(ctx, userID, amount, mandate.ID)
 	case MiriamMandateBillReservation:
 		if err = o.recordBillReservation(ctx, userID, amount, mandate); err == nil {
 			if o.notifier != nil {
@@ -533,13 +558,6 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 		o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
 		if o.notifier != nil {
 			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", "Spending cooldown is on. Paused non-essential spending for now.")
-		}
-	case MiriamMandateGoalContribution:
-		if err = o.executeTransferToStash(ctx, userID, amount, mandate.ID); err == nil {
-			o.recordReceipt(ctx, userID, amount, mandate, "goal_contribution", fmt.Sprintf("Auto-contributed $%s to savings goals.", amount.StringFixed(2)))
-			if o.notifier != nil {
-				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("$%s moved to Stash for your savings goals.", amount.StringFixed(2)))
-			}
 		}
 	default:
 		return fmt.Errorf("unknown mandate action type: %s", mandate.ActionType)

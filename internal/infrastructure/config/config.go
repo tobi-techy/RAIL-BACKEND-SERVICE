@@ -117,18 +117,13 @@ type CCTPConfig struct {
 
 // AIConfig contains AI provider configuration
 type AIConfig struct {
-	OpenAI      OpenAIConfig      `mapstructure:"openai"`
-	Gemini      GeminiConfig      `mapstructure:"gemini"`
-	Kimi        KimiConfig        `mapstructure:"kimi"`
-	Groq        GroqConfig        `mapstructure:"groq"`
-	Bedrock     BedrockConfig     `mapstructure:"bedrock"`
+	Cencori     CencoriConfig     `mapstructure:"cencori"`
 	AssemblyAI  AssemblyAIConfig  `mapstructure:"assemblyai"` // Deprecated: use ElevenLabs
 	ElevenLabs  ElevenLabsConfig  `mapstructure:"elevenlabs"`
 	Supermemory SupermemoryConfig `mapstructure:"supermemory"`
 	Qdrant      QdrantConfig      `mapstructure:"qdrant"`
 	Tavily      TavilyConfig      `mapstructure:"tavily"`
 	Langfuse    LangfuseConfig    `mapstructure:"langfuse"`
-	Primary     string            `mapstructure:"primary"` // "openai", "gemini", "kimi", "groq", or "bedrock"
 
 	// ResponseGuard enables Miriam's deterministic pre-delivery guard (strips
 	// ungrounded currency figures, surfaces missed anomalies, sanitizes
@@ -183,28 +178,18 @@ type ElevenLabsConfig struct {
 	UseSpeakerBoost bool    `mapstructure:"use_speaker_boost"` // enhance speaker clarity
 }
 
-// BedrockConfig contains Amazon Bedrock configuration
-type BedrockConfig struct {
-	Region           string  `mapstructure:"region"`
-	ModelID          string  `mapstructure:"model_id"`
+// CencoriConfig contains Cencori AI gateway configuration.
+// Cencori provides multi-provider routing, automatic failover, PII detection,
+// prompt injection protection, and end-user billing via an OpenAI-compatible API.
+type CencoriConfig struct {
+	APIKey           string  `mapstructure:"api_key"`
+	Model            string  `mapstructure:"model"`             // Model ID to route through Cencori
 	MaxTokens        int     `mapstructure:"max_tokens"`
+	MaxContextTokens int     `mapstructure:"max_context_tokens"`
 	Temperature      float64 `mapstructure:"temperature"`
 	TopP             float64 `mapstructure:"top_p"`
 	TimeoutSeconds   int     `mapstructure:"timeout_seconds"`
-	GuardrailID      string  `mapstructure:"guardrail_id"`
-	GuardrailVersion string  `mapstructure:"guardrail_version"`
-}
-
-// KimiConfig contains Kimi (Moonshot) API configuration
-type KimiConfig struct {
-	APIKey         string  `mapstructure:"api_key"`
-	BaseURL        string  `mapstructure:"base_url"`
-	Model          string  `mapstructure:"model"`
-	MaxTokens      int     `mapstructure:"max_tokens"`
-	Temperature    float64 `mapstructure:"temperature"`
-	TopP           float64 `mapstructure:"top_p"`
-	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
-	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
+	RateLimitRPM     int     `mapstructure:"rate_limit_rpm"`
 }
 
 // RateLimitConfig contains distributed rate limiting configuration
@@ -226,40 +211,6 @@ type RateLimitConfig struct {
 type EndpointLimitConfig struct {
 	Limit  int64 `mapstructure:"limit"`
 	Window int   `mapstructure:"window"` // Window in seconds
-}
-
-// OpenAIConfig contains OpenAI API configuration
-type OpenAIConfig struct {
-	APIKey         string  `mapstructure:"api_key"`
-	Model          string  `mapstructure:"model"`
-	MaxTokens      int     `mapstructure:"max_tokens"`
-	Temperature    float64 `mapstructure:"temperature"`
-	TopP           float64 `mapstructure:"top_p"`
-	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
-	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
-	RealtimeModel  string  `mapstructure:"realtime_model"`
-}
-
-// GeminiConfig contains Google Gemini API configuration
-type GeminiConfig struct {
-	APIKey         string  `mapstructure:"api_key"`
-	Model          string  `mapstructure:"model"`
-	MaxTokens      int     `mapstructure:"max_tokens"`
-	Temperature    float64 `mapstructure:"temperature"`
-	TopP           float64 `mapstructure:"top_p"`
-	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
-	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
-}
-
-// GroqConfig contains Groq API configuration (OpenAI-compatible)
-type GroqConfig struct {
-	APIKey         string  `mapstructure:"api_key"`
-	Model          string  `mapstructure:"model"`
-	MaxTokens      int     `mapstructure:"max_tokens"`
-	Temperature    float64 `mapstructure:"temperature"`
-	TopP           float64 `mapstructure:"top_p"`
-	TimeoutSeconds int     `mapstructure:"timeout_seconds"`
-	RateLimitRPM   int     `mapstructure:"rate_limit_rpm"`
 }
 
 type ServerConfig struct {
@@ -1063,24 +1014,18 @@ func setDefaults() {
 	viper.BindEnv("ai.elevenlabs.style", "ELEVENLABS_STYLE")
 	viper.BindEnv("ai.elevenlabs.use_speaker_boost", "ELEVENLABS_USE_SPEAKER_BOOST")
 	viper.BindEnv("ai.tavily.api_key", "TAVILY_API_KEY")
-	viper.BindEnv("ai.openai.api_key", "OPENAI_API_KEY")
-	viper.BindEnv("ai.gemini.api_key", "GEMINI_API_KEY")
-	viper.BindEnv("ai.kimi.api_key", "KIMI_API_KEY")
-	viper.BindEnv("ai.kimi.model", "KIMI_MODEL")
 	viper.BindEnv("document.ocr_service_url", "DOCUMENT_OCR_SERVICE_URL")
 	viper.BindEnv("document.enable_python_ocr", "DOCUMENT_ENABLE_PYTHON_OCR")
 	viper.BindEnv("document.min_ocr_confidence", "DOCUMENT_MIN_OCR_CONFIDENCE")
-	viper.BindEnv("ai.groq.api_key", "GROQ_API_KEY")
-	viper.BindEnv("ai.primary", "AI_PRIMARY")
-	viper.BindEnv("ai.bedrock.region", "BEDROCK_REGION")
-	viper.BindEnv("ai.bedrock.model_id", "BEDROCK_MODEL_ID")
-	viper.BindEnv("ai.bedrock.guardrail_id", "BEDROCK_GUARDRAIL_ID")
-	viper.BindEnv("ai.bedrock.guardrail_version", "BEDROCK_GUARDRAIL_VERSION")
-	viper.SetDefault("ai.bedrock.model_id", "")
-	viper.SetDefault("ai.bedrock.max_tokens", 4096)
-	viper.SetDefault("ai.bedrock.temperature", 0.7)
-	viper.SetDefault("ai.bedrock.top_p", 0.9)
-	viper.SetDefault("ai.bedrock.timeout_seconds", 30)
+
+	// Cencori AI gateway
+	viper.BindEnv("ai.cencori.api_key", "CENCORI_API_KEY")
+	viper.BindEnv("ai.cencori.model", "CENCORI_MODEL")
+	viper.SetDefault("ai.cencori.model", "gpt-4o")
+	viper.SetDefault("ai.cencori.max_tokens", 4096)
+	viper.SetDefault("ai.cencori.temperature", 0.7)
+	viper.SetDefault("ai.cencori.top_p", 0.9)
+	viper.SetDefault("ai.cencori.timeout_seconds", 60)
 
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")
@@ -1452,24 +1397,6 @@ func overrideFromEnv() {
 		if v, err := strconv.ParseBool(elevenLabsSpeakerBoost); err == nil {
 			viper.Set("ai.elevenlabs.use_speaker_boost", v)
 		}
-	}
-	if openaiKey := os.Getenv("OPENAI_API_KEY"); openaiKey != "" {
-		viper.Set("ai.openai.api_key", openaiKey)
-	} else {
-		viper.Set("ai.openai.api_key", "")
-	}
-	if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
-		viper.Set("ai.gemini.api_key", geminiKey)
-	} else {
-		viper.Set("ai.gemini.api_key", "")
-	}
-	if kimiKey := os.Getenv("KIMI_API_KEY"); kimiKey != "" {
-		viper.Set("ai.kimi.api_key", kimiKey)
-	} else {
-		viper.Set("ai.kimi.api_key", "")
-	}
-	if aiPrimary := os.Getenv("AI_PRIMARY_PROVIDER"); aiPrimary != "" {
-		viper.Set("ai.primary", aiPrimary)
 	}
 
 	// 0G Network

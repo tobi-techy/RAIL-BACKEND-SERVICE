@@ -17,29 +17,7 @@ func NewWorker(service *growthmail.Service, logger *zap.Logger) *Worker {
 	return &Worker{service: service, logger: logger}
 }
 
-func (w *Worker) Start(ctx context.Context) {
-	if w.service == nil {
-		return
-	}
-	w.logger.Info("Growth mail worker started")
-
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	w.run(ctx)
-
-	for {
-		select {
-		case <-ctx.Done():
-			w.logger.Info("Growth mail worker stopped")
-			return
-		case <-ticker.C:
-			w.run(ctx)
-		}
-	}
-}
-
-func (w *Worker) run(ctx context.Context) {
+func (w *Worker) Run(ctx context.Context) {
 	now := time.Now().UTC()
 	if now.Hour() != 11 {
 		return

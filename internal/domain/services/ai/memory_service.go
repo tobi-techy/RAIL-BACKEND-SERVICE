@@ -562,7 +562,7 @@ func (m *MemoryService) SetPersonalityMode(ctx context.Context, userID uuid.UUID
 	return m.store.SetPersonalityMode(ctx, userID, mode)
 }
 
-// GetControlLevel returns the user's control level, defaulting to "full".
+// GetControlLevel returns the user's control level, defaulting to "guided".
 func (m *MemoryService) GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error) {
 	return m.store.GetControlLevel(ctx, userID)
 }

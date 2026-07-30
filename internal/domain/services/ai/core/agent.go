@@ -397,7 +397,18 @@ func (a *Agent) assembleContext(ctx context.Context, userID uuid.UUID, message s
 
 	// Balance slot (index 1)
 	if state != nil && state.Balances != nil {
-		slotCh <- slotResult{index: 1, content: fmt.Sprintf("[User balances — Spend: $%s | Stash: $%s]", state.Balances.Spend.String(), state.Balances.Stash.String())}
+		slotCh <- slotResult{index: 1, content: fmt.Sprintf("[User balances — Spend: $%s | Stash: $%s]", state.Balances.Spend.StringFixed(2), state.Balances.Stash.StringFixed(2))}
+		// First-session / cold-start: empty ledger → forbid inventing dollars and
+		// orient the user toward funding + one useful next step.
+		zero := state.Balances.Spend.IsZero() && state.Balances.Stash.IsZero()
+		if zero {
+			slotCh <- slotResult{index: 15, content: `[FIRST SESSION — cold start]
+The user has no Spend or Stash balance yet (both $0.00).
+RULES: Do NOT invent dollar amounts, spending, or income. Do NOT claim they spent or saved anything.
+Be warm and brief. Orient them: load money into Rail, then you can watch movement, catch spikes, and set quiet stash rules.
+If they ask for balances, say both are $0.00 and invite them to fund.
+One helpful question max (e.g. when they get paid next).`}
+		}
 	}
 
 	// Financial profile slot (index 2)
@@ -826,11 +837,12 @@ func stripConfirm(args map[string]interface{}) map[string]interface{} {
 
 // isActionTool reports whether a tool mutates state and therefore must be staged
 // for explicit user confirmation instead of executing inline. This mirrors the
-// streaming path's isExecutionActionTool set plus raw fund moves. Low-risk
-// record-keeping tools (set_budget, set_savings_goal, create_obligation_reminder,
-// mark_obligation_paid, protect_subscription, create_automation) auto-execute —
-// they don't move money at call time (transfer automations are separately gated
-// by the automation service's consent-stamp requirement).
+// streaming path's isExecutionActionTool set plus raw fund moves.
+//
+// MVP: stage high-stakes writes (money + automations + mandate acceptance).
+// Low-risk record-keeping (set_budget, set_savings_goal, create_obligation_reminder,
+// mark_obligation_paid, protect_subscription) still auto-execute — they don't move
+// money at call time.
 func (a *Agent) isActionTool(name string) bool {
 	actionTools := map[string]bool{
 		"transfer_funds": true, "initiate_withdrawal": true,
@@ -844,6 +856,12 @@ func (a *Agent) isActionTool(name string) bool {
 		// Nigerian bill payments (Airbills). pay_bill/automate_bill move money;
 		// save_bill_beneficiary is a confirmed write.
 		"pay_bill": true, "automate_bill": true, "save_bill_beneficiary": true,
+		// P2P + receipt splits move real Spend balance (or reserve for claim links).
+		"send_money": true, "split_receipt": true,
+		// Automations and mandate acceptance create lasting autonomous behavior.
+		"create_automation":         true,
+		"accept_mandate_suggestion": true,
+		"create_miriam_mandate":     true,
 	}
 	return actionTools[name]
 }

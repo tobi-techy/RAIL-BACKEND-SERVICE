@@ -22,6 +22,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	ledger_service "github.com/rail-service/rail_service/internal/domain/services/ledger"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
@@ -53,9 +54,10 @@ import (
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	graph_ngn_recovery "github.com/rail-service/rail_service/internal/workers/graph_ngn_recovery"
-	growth_engine "github.com/rail-service/rail_service/internal/workers/growth_engine"
-	growth_mail "github.com/rail-service/rail_service/internal/workers/growth_mail"
+	engagement_worker "github.com/rail-service/rail_service/internal/workers/engagement_worker"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
+	ledger_maintenance "github.com/rail-service/rail_service/internal/workers/ledger_maintenance"
+	ledger_outbox_publisher "github.com/rail-service/rail_service/internal/workers/ledger_outbox_publisher"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
 	miriam_worker "github.com/rail-service/rail_service/internal/workers/miriam_worker"
@@ -68,7 +70,6 @@ import (
 	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
-	scheduled_notifications "github.com/rail-service/rail_service/internal/workers/scheduled_notifications"
 	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
@@ -109,13 +110,8 @@ type Application struct {
 	balanceReconciliationWorker  *balance_reconciliation.Worker
 	bridgeGovIDRepairWorker      *bridge_govid_repair.Worker
 	bridgeGovIDRepairCancel      context.CancelFunc
-	scheduledNotificationsWorker *scheduled_notifications.Worker
 	subscriptionBillingWorker    *subscription_billing.Worker
-	streakEvaluatorWorker        *gameplay_workers.StreakEvaluator
-	challengeRotatorWorker       *gameplay_workers.ChallengeRotator
-	achievementCheckerWorker     *gameplay_workers.AchievementChecker
-	insightGeneratorWorker       *gameplay_workers.InsightGenerator
-	dailyMetricsWorker           *gameplay_workers.DailyMetricsWorker
+	gameplayWorker               *gameplay_workers.Worker
 	aiInsightsWorker             *ai_insights.Worker
 	automationWorker             *automation_worker.Worker
 	memoryWorker                 *memory_worker.Worker
@@ -124,11 +120,10 @@ type Application struct {
 	autopilotWorker              *autopilot_worker.Worker
 	autopilotCancel              context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
-	growthEngineWorker           *growth_engine.Worker
-	growthEngineCancel           context.CancelFunc
+	engagementWorker             *engagement_worker.Worker
+	ledgerOutboxPublisher        *ledger_outbox_publisher.Worker
+	ledgerMaintenance            *ledger_maintenance.Worker
 	workerMu                     sync.Mutex
-	growthMailWorker             *growth_mail.Worker
-	growthMailCancel             context.CancelFunc
 	opportunitySyncWorker        *opportunity_sync.Worker
 	depositAutoSweepWorker       *deposit_autosweep.Worker
 
@@ -434,17 +429,6 @@ func (app *Application) initializeWorkers() error {
 		return fmt.Errorf("failed to initialize KYC sync worker: %w", err)
 	}
 
-	// Scheduled push notifications (KYC reminders + daily engagement)
-	if app.container.ExpoPushService != nil && app.container.UserRepo != nil {
-		app.scheduledNotificationsWorker = scheduled_notifications.NewWorker(
-			app.container.UserRepo,
-			app.container.ExpoPushService,
-			app.log.Zap(),
-		)
-		go app.scheduledNotificationsWorker.Start(context.Background())
-		app.log.Info("Scheduled notifications worker started")
-	}
-
 	// Subscription billing worker
 	if app.container.SubscriptionService != nil {
 		app.subscriptionBillingWorker = subscription_billing.NewWorker(
@@ -455,9 +439,8 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Subscription billing worker started")
 	}
 
-	// Gameplay workers
+	// Gameplay worker — consolidated daily ticker
 	if app.container.GameplayStreakService != nil {
-		// Resolve push notifier: SNS preferred, Expo fallback
 		var pushSender gameplay_workers.PushNotifier
 		if app.container.SNSPushService != nil {
 			pushSender = app.container.SNSPushService
@@ -465,38 +448,31 @@ func (app *Application) initializeWorkers() error {
 			pushSender = app.container.ExpoPushService
 		}
 
-		app.streakEvaluatorWorker = gameplay_workers.NewStreakEvaluator(
-			app.container.GameplayStreakService, pushSender, app.log.Zap())
-		go app.streakEvaluatorWorker.Start(context.Background())
-
-		app.challengeRotatorWorker = gameplay_workers.NewChallengeRotator(
-			app.container.GameplayChallengeService, app.log.Zap())
-		go app.challengeRotatorWorker.Start(context.Background())
-
-		app.achievementCheckerWorker = gameplay_workers.NewAchievementChecker(
-			app.container.GameplayAchievementService, app.container.GameplayRepo, app.log.Zap())
-		go app.achievementCheckerWorker.Start(context.Background())
-
-		app.insightGeneratorWorker = gameplay_workers.NewInsightGenerator(
-			app.container.GameplayRepo,
-			app.container.LedgerService,
-			app.container.GameplayXPService,
-			app.container.GameplayStreakService,
-			app.container.SubscriptionService,
-			pushSender,
-			app.log.Zap())
-		go app.insightGeneratorWorker.Start(context.Background())
-
-		app.dailyMetricsWorker = gameplay_workers.NewDailyMetricsWorker(
-			app.container.GameplayRepo,
-			app.container.GameplayRepo,
-			app.container.LedgerService,
-			app.container.GameplayChallengeService,
-			app.container.GameplayStreakService,
-			app.log.Zap())
-		go app.dailyMetricsWorker.Start(context.Background())
-
-		app.log.Info("Gameplay workers started (streak evaluator, challenge rotator, achievement checker, insight generator, daily metrics)")
+		app.gameplayWorker = gameplay_workers.NewWorker(
+			gameplay_workers.NewStreakEvaluator(app.container.GameplayStreakService, pushSender, app.log.Zap()),
+			gameplay_workers.NewChallengeRotator(app.container.GameplayChallengeService, app.log.Zap()),
+			gameplay_workers.NewAchievementChecker(app.container.GameplayAchievementService, app.container.GameplayRepo, app.log.Zap()),
+			gameplay_workers.NewInsightGenerator(
+				app.container.GameplayRepo,
+				app.container.LedgerService,
+				app.container.GameplayXPService,
+				app.container.GameplayStreakService,
+				app.container.SubscriptionService,
+				pushSender,
+				app.log.Zap(),
+			),
+			gameplay_workers.NewDailyMetricsWorker(
+				app.container.GameplayRepo,
+				app.container.GameplayRepo,
+				app.container.LedgerService,
+				app.container.GameplayChallengeService,
+				app.container.GameplayStreakService,
+				app.log.Zap(),
+			),
+			app.log.Zap(),
+		)
+		go app.gameplayWorker.Start(context.Background())
+		app.log.Info("Gameplay worker started (consolidated)")
 	}
 
 	if app.container.UserRepo != nil && app.container.LedgerSpendingRepo != nil && app.container.LedgerService != nil {
@@ -623,8 +599,11 @@ func (app *Application) initializeWorkers() error {
 		if app.container.AIOrchestrator != nil {
 			app.dailyPulseWorker.SetBriefProvider(&dailyPulseBriefProvider{orchestrator: app.container.AIOrchestrator})
 		}
-		if app.container.AIProviderManager != nil {
-			app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProviderManager, app.log.Zap()))
+		if app.container.AIProvider != nil {
+			app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProvider, app.log.Zap()))
+		}
+		if app.container.MiriamPreferencesService != nil {
+			app.dailyPulseWorker.SetPreferences(&dailyPulsePrefsAdapter{svc: app.container.MiriamPreferencesService})
 		}
 		go app.dailyPulseWorker.Start(context.Background())
 		app.log.Info("Miriam daily pulse worker started (iMessage-only)")
@@ -680,52 +659,25 @@ func (app *Application) initializeWorkers() error {
 		}
 	}
 
-	if app.container.GrowthMailService != nil {
-		app.growthMailWorker = growth_mail.NewWorker(app.container.GrowthMailService, app.log.Zap())
-		ctx, cancel := context.WithCancel(context.Background())
-		app.growthMailCancel = cancel
-		go app.growthMailWorker.Start(ctx)
-		app.log.Info("Growth mail worker started")
-	}
-
-	if app.container.GrowthEngineService != nil {
-		w := growth_engine.NewWorker(app.container.GrowthEngineService, app.log.Zap())
-		app.workerMu.Lock()
-		app.growthEngineWorker = w
-		app.workerMu.Unlock()
-		ctx, cancel := context.WithCancel(context.Background())
-		app.growthEngineCancel = cancel
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					app.log.Error("growth engine worker panicked", "panic", r)
-					app.workerMu.Lock()
-					app.growthEngineWorker = nil
-					app.workerMu.Unlock()
-					// TODO: implement automatic restart with exponential backoff
-					// TODO: alert monitoring systems on worker panic
-				}
-			}()
-			app.log.Info("Growth engine worker started")
-			app.workerMu.Lock()
-			worker := app.growthEngineWorker
-			if worker == nil {
-				app.workerMu.Unlock()
-				return
-			}
-			app.workerMu.Unlock()
-			worker.Start(ctx)
-			app.log.Info("Growth engine worker stopped")
-		}()
+	if app.container.UserRepo != nil && app.container.ExpoPushService != nil {
+		app.engagementWorker = engagement_worker.NewWorker(
+			app.container.UserRepo,
+			app.container.ExpoPushService,
+			app.container.GrowthMailService,
+			app.container.GrowthEngineService,
+			app.log.Zap(),
+		)
+		go app.engagementWorker.Start(context.Background())
+		app.log.Info("Engagement worker started (notifications, mail, growth engine)")
 	}
 
 	// Statement processor worker: processes uploaded bank statement PDFs via multi-strategy pipeline
 	if app.container.BankStatementRepo != nil && app.container.JobQueueInstance != nil {
-		kimiKey := app.container.Config.AI.Kimi.APIKey
-		kimiBase := app.container.Config.AI.Kimi.BaseURL
-		kimiModel := app.container.Config.AI.Kimi.Model
-		if kimiKey != "" {
-			parser := statement.NewTransactionParserWithConfig(kimiKey, kimiBase, kimiModel, app.log.Zap())
+		cencoriKey := app.container.Config.AI.Cencori.APIKey
+		if cencoriKey != "" {
+			cencoriBase := "https://api.cencori.com/v1"
+			cencoriModel := "gpt-4o"
+			parser := statement.NewTransactionParserWithConfig(cencoriKey, cencoriBase, cencoriModel, app.log.Zap())
 
 			// Build V2 pipeline with multi-strategy extraction and LLM failover
 			var textractClient statement.TextractClient
@@ -742,20 +694,18 @@ func (app *Application) initializeWorkers() error {
 			}
 
 			var visionClient statement.VisionClient
-			if app.container.Config.AI.Kimi.APIKey != "" {
-				visionClient = statement.NewOpenAIVisionClientWithConfig(
-					app.container.Config.AI.Kimi.APIKey,
-					"https://api.moonshot.ai/v1",
-					"moonshot-v1-32k-vision-preview",
-					app.log.Zap(),
-				)
-			}
+			visionClient = statement.NewOpenAIVisionClientWithConfig(
+				cencoriKey,
+				cencoriBase,
+				"gpt-4o",
+				app.log.Zap(),
+			)
 
 			extractor := statement.NewDocumentExtractor(textractClient, visionClient, app.log.Zap())
 
-			// Primary parser: Kimi (has credit, handles long contexts)
+			// Primary parser: Cencori gateway (OpenAI-compatible)
 			var primaryParser *statement.TransactionParser
-			primaryParser = parser // Kimi primary
+			primaryParser = parser
 
 			// File store: S3 if configured, nil falls back to DB BLOB
 			var fileStore statement.FileStore
@@ -859,9 +809,9 @@ func (app *Application) initializeWorkers() error {
 				app.log.Warn("document OCR client not configured, pipeline disabled")
 			} else {
 				var enricher documentsvc.Enricher
-				if app.container.Config.AI.OpenAI.APIKey != "" {
+				if app.container.Config.AI.Cencori.APIKey != "" {
 					enricher = documentsvc.NewLLMEnricher(
-						app.container.Config.AI.OpenAI.APIKey, "", "gpt-4o-mini", app.log.Zap())
+						app.container.Config.AI.Cencori.APIKey, "", "gpt-4o-mini", app.log.Zap())
 				}
 				docPipeline := documentsvc.NewPipeline(documentsvc.PipelineConfig{
 					OCR:              ocrEngine,
@@ -950,6 +900,23 @@ func (app *Application) initializeKYCSyncWorker() error {
 	)
 	go app.balanceReconciliationWorker.Start(context.Background())
 	app.log.Info("Balance reconciliation worker started")
+
+	// Initialize ledger outbox publisher (polls unpublished events every 5s)
+	app.ledgerOutboxPublisher = ledger_outbox_publisher.NewWorker(
+		app.container.LedgerRepo,
+		app.log.Zap(),
+	)
+	go app.ledgerOutboxPublisher.Start(context.Background())
+	app.log.Info("Ledger outbox publisher started")
+
+	// Initialize ledger maintenance worker (daily snapshots + integrity checks)
+	app.ledgerMaintenance = ledger_maintenance.NewWorker(
+		app.container.LedgerService,
+		app.container.LedgerRepo,
+		app.log.Zap(),
+	)
+	go app.ledgerMaintenance.Start(context.Background())
+	app.log.Info("Ledger maintenance worker started")
 
 	app.bridgeGovIDRepairWorker = bridge_govid_repair.NewWorker(
 		app.container.UserRepo,
@@ -1387,36 +1354,15 @@ func (app *Application) stopWorkers() {
 		app.subscriptionBillingWorker.Stop()
 	}
 
-	// Stop gameplay workers
-	if app.streakEvaluatorWorker != nil {
-		app.streakEvaluatorWorker.Stop()
-	}
-	if app.challengeRotatorWorker != nil {
-		app.challengeRotatorWorker.Stop()
-	}
-	if app.achievementCheckerWorker != nil {
-		app.achievementCheckerWorker.Stop()
-	}
-	if app.insightGeneratorWorker != nil {
-		app.insightGeneratorWorker.Stop()
-	}
-	if app.dailyMetricsWorker != nil {
-		app.dailyMetricsWorker.Stop()
-	}
+	// Stop deposit auto-sweep worker
 	if app.depositAutoSweepWorker != nil {
 		app.depositAutoSweepWorker.Stop()
-	}
-	if app.growthMailCancel != nil {
-		app.growthMailCancel()
 	}
 	if app.miriamWorkerCancel != nil {
 		app.miriamWorkerCancel()
 	}
 	if app.autopilotCancel != nil {
 		app.autopilotCancel()
-	}
-	if app.growthEngineCancel != nil {
-		app.growthEngineCancel()
 	}
 
 	// Stop Redis health monitor.
@@ -1442,8 +1388,46 @@ func (noopPushSender) SendToUser(ctx context.Context, userID uuid.UUID, title, b
 	return nil
 }
 
+// dailyPulsePrefsAdapter bridges PreferencesService → daily pulse worker.
+type dailyPulsePrefsAdapter struct {
+	svc *miriamservice.PreferencesService
+}
+
+func (a *dailyPulsePrefsAdapter) ShouldSendBriefing(ctx context.Context, userID uuid.UUID) bool {
+	if a == nil || a.svc == nil {
+		return true
+	}
+	p, err := a.svc.Get(ctx, userID)
+	if err != nil {
+		return true
+	}
+	return p.BriefingEnabled && p.AllowBriefings
+}
+
+func (a *dailyPulsePrefsAdapter) BriefingHourLocal(ctx context.Context, userID uuid.UUID) int {
+	if a == nil || a.svc == nil {
+		return 9
+	}
+	p, err := a.svc.Get(ctx, userID)
+	if err != nil {
+		return 9
+	}
+	return p.BriefingHour
+}
+
+func (a *dailyPulsePrefsAdapter) TimezoneOverride(ctx context.Context, userID uuid.UUID) string {
+	if a == nil || a.svc == nil {
+		return ""
+	}
+	p, err := a.svc.Get(ctx, userID)
+	if err != nil || p.Timezone == nil {
+		return ""
+	}
+	return *p.Timezone
+}
+
 type dailyPulseBriefProvider struct {
-	orchestrator *aiservice.AgentAdapter
+	orchestrator aiservice.ChatEngine
 }
 
 func (p *dailyPulseBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {

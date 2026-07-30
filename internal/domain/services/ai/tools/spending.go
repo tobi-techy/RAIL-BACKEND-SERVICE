@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
@@ -29,6 +30,9 @@ func RegisterSpendingTools(r *Registry) {
 			if err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
+			if result == nil {
+				return &core.ToolResult{Data: map[string]interface{}{"empty": true, "period": period, "message": "No spending data for this period."}}, nil
+			}
 			return &core.ToolResult{Data: result}, nil
 		},
 	))
@@ -41,8 +45,8 @@ func RegisterSpendingTools(r *Registry) {
 		}, nil),
 		core.CategorySpending,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
-			if deps.Transactions == nil {
-				return &core.ToolResult{Error: "transactions service not available"}, nil
+			if deps.Spending == nil {
+				return &core.ToolResult{Error: "spending service not available"}, nil
 			}
 			limit := 10
 			if l, _ := args["limit"].(float64); l > 0 {
@@ -52,7 +56,14 @@ func RegisterSpendingTools(r *Registry) {
 			if err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
-			return &core.ToolResult{Data: map[string]interface{}{"transactions": txns}}, nil
+			if len(txns) == 0 {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"transactions": []interface{}{},
+					"empty":        true,
+					"message":      "No recent transactions found.",
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"transactions": txns, "count": len(txns)}}, nil
 		},
 	))
 
@@ -464,27 +475,78 @@ func RegisterAutomationTools(r *Registry) {
 
 	r.Register(NewTool(
 		"create_automation",
-		"Create a new automation or scheduled transfer",
+		"Create a new automation or scheduled transfer (e.g. every Friday move $50 spend→stash). Moves future money on a schedule — staged for Face ID confirmation.",
 		SimpleArgs(map[string]map[string]interface{}{
 			"name":     {"type": "string", "description": "Automation name"},
 			"type":     {"type": "string", "description": "Type: transfer, budget, bill"},
-			"schedule": {"type": "string", "description": "Cron or frequency description"},
+			"schedule": {"type": "string", "description": "Frequency e.g. 'weekly on friday', 'monthly on the 1st'"},
 			"amount":   {"type": "string", "description": "Amount for transfers"},
-			"from":     {"type": "string", "description": "Source account"},
-			"to":       {"type": "string", "description": "Destination account"},
-		}, []string{"name", "type"}),
+			"from":     {"type": "string", "description": "Source: spend or stash"},
+			"to":       {"type": "string", "description": "Destination: spend or stash"},
+			// Full schema (stream parity) — optional; preferred when present.
+			"trigger_type":   {"type": "string", "description": "schedule | threshold | event"},
+			"action_type":    {"type": "string", "description": "transfer_to_stash | transfer_to_spend | ..."},
+			"trigger_config": {"type": "object", "description": "Trigger config map"},
+			"action_config":  {"type": "object", "description": "Action config map"},
+		}, []string{"name"}),
 		core.CategoryAutomation,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
 			if deps.Automation == nil {
 				return &core.ToolResult{Error: "automation service not available"}, nil
 			}
+			// Face ID / confirm path: stamp transfer consent so the automation
+			// engine accepts future Spend↔Stash moves (same as in-app setup).
+			if confirm, _ := args["confirm"].(bool); confirm {
+				args = stampAutomationConsent(args)
+			}
 			err := deps.Automation.Create(ctx, userID, args)
 			if err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
-			return &core.ToolResult{Data: map[string]interface{}{"status": "ok"}}, nil
+			return &core.ToolResult{Data: map[string]interface{}{"status": "ok", "name": args["name"]}}, nil
 		},
 	))
+}
+
+// stampAutomationConsent injects passcode/Face-ID consent metadata required by
+// the automation service for transfer actions. Only call after real user confirm.
+func stampAutomationConsent(args map[string]interface{}) map[string]interface{} {
+	if args == nil {
+		return args
+	}
+	out := make(map[string]interface{}, len(args)+2)
+	for k, v := range args {
+		out[k] = v
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	// Simple-schema path builds action_config in the adapter; stamp both shapes.
+	ac, _ := out["action_config"].(map[string]interface{})
+	if ac == nil {
+		ac = map[string]interface{}{}
+		// Prefer explicit amount when present so transfer automations have a payload.
+		if amt, ok := out["amount"]; ok {
+			ac["amount"] = amt
+		}
+		if from, ok := out["from"]; ok {
+			ac["from_wallet"] = from
+		}
+		if to, ok := out["to"]; ok {
+			ac["to_wallet"] = to
+		}
+	} else {
+		// Copy so we don't mutate the caller's nested map unexpectedly.
+		cp := make(map[string]interface{}, len(ac)+4)
+		for k, v := range ac {
+			cp[k] = v
+		}
+		ac = cp
+	}
+	ac["acknowledged_future_transfer"] = true
+	ac["passcode_session_verified_at"] = now
+	// 90-day reauth window matches app automation consent policy.
+	ac["reauthorization_due_at"] = time.Now().UTC().Add(90 * 24 * time.Hour).Format(time.RFC3339)
+	out["action_config"] = ac
+	return out
 }
 
 func RegisterSubscriptionTools(r *Registry) {

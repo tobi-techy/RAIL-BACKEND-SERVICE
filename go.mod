@@ -1,6 +1,6 @@
 module github.com/rail-service/rail_service
 
-go 1.25.0
+go 1.25.4
 
 toolchain go1.25.5
 
@@ -76,6 +76,7 @@ require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/boombuler/barcode v1.0.1 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
+	github.com/cencori/cencori-go v1.4.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

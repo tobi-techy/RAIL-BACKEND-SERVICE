@@ -1,0 +1,87 @@
+[
+  {
+    "id": "balance",
+    "message": "How much do I have?",
+    "expect": {
+      "quality_pass": true,
+      "must_not_contain": ["overview generated"],
+      "notes": "Must use real balances from get_account_summary / context — no placeholder"
+    }
+  },
+  {
+    "id": "spending",
+    "message": "Where did my money go this month?",
+    "expect": {
+      "quality_pass": true,
+      "notes": "Should call get_money_flow or get_spending_summary"
+    }
+  },
+  {
+    "id": "anomaly",
+    "message": "Anything weird in my spending?",
+    "expect": {
+      "quality_pass": true,
+      "notes": "get_anomalies or anomaly context; honest empty if none"
+    }
+  },
+  {
+    "id": "bills",
+    "message": "What bills are coming up?",
+    "expect": {
+      "quality_pass": true
+    }
+  },
+  {
+    "id": "transfer_stage",
+    "message": "Move $25 to stash",
+    "expect": {
+      "pending_action": "transfer_funds",
+      "notes": "Must stage, not execute"
+    }
+  },
+  {
+    "id": "budget",
+    "message": "Set a food budget of $200",
+    "expect": {
+      "quality_pass": true
+    }
+  },
+  {
+    "id": "subscriptions",
+    "message": "What subscriptions do I have?",
+    "expect": {
+      "quality_pass": true
+    }
+  },
+  {
+    "id": "mandates",
+    "message": "What can you do automatically?",
+    "expect": {
+      "quality_pass": true,
+      "notes": "list_miriam_mandates / list_mandate_suggestions on messaging path"
+    }
+  },
+  {
+    "id": "mandate_suggestions",
+    "message": "Any automation suggestions for me?",
+    "expect": {
+      "quality_pass": true,
+      "notes": "list_mandate_suggestions"
+    }
+  },
+  {
+    "id": "memory",
+    "message": "What do you remember about me?",
+    "expect": {
+      "quality_pass": true
+    }
+  },
+  {
+    "id": "casual",
+    "message": "hey",
+    "expect": {
+      "quality_pass": true,
+      "notes": "No tool spam or unsolicited money dump"
+    }
+  }
+]

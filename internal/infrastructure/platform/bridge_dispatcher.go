@@ -52,28 +52,44 @@ func (d *BridgeDispatcher) SetGuard(g *ProactiveGuard) {
 // SendChatMessage delivers a proactive nudge to the user's iMessage thread.
 // Subject to the frequency/quiet-hours guard.
 func (d *BridgeDispatcher) SendChatMessage(ctx context.Context, userID uuid.UUID, message string) error {
-	return d.deliver(ctx, userID, message, false)
+	return d.deliver(ctx, userID, message, ProactiveCategoryNudge, false)
 }
 
 // SendGenericNotification satisfies the Miriam Notifier interface. Title and body
 // are folded into a single iMessage; action receipts (money moved) are treated as
 // important and bypass the daily cap so users always hear about their own money.
 func (d *BridgeDispatcher) SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
-	return d.deliver(ctx, userID, composeMessage(title, message), true)
+	// Money-move / mandate receipts use the receipt category (critical bypass).
+	category := ProactiveCategoryReceipt
+	critical := true
+	lower := strings.ToLower(title + " " + message)
+	if strings.Contains(lower, "mandate") || strings.Contains(lower, "suggest") {
+		category = ProactiveCategoryNudge
+		critical = false
+	}
+	return d.deliver(ctx, userID, composeMessage(title, message), category, critical)
 }
 
 // SendToUser satisfies the worker push-sender shape (autopilot, daily pulse). The
 // briefing/summary is delivered to iMessage. data is intentionally ignored — an
 // iMessage has no notification payload. Non-critical, so it respects quiet hours.
 func (d *BridgeDispatcher) SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error {
-	return d.deliver(ctx, userID, composeMessage(title, body), false)
+	category := ProactiveCategoryBriefing
+	critical := false
+	if data != nil {
+		if t, _ := data["type"].(string); t == "autopilot_morning" || t == "anomaly" {
+			category = ProactiveCategoryRisk
+			critical = true
+		}
+	}
+	return d.deliver(ctx, userID, composeMessage(title, body), category, critical)
 }
 
-func (d *BridgeDispatcher) deliver(ctx context.Context, userID uuid.UUID, message string, critical bool) error {
+func (d *BridgeDispatcher) deliver(ctx context.Context, userID uuid.UUID, message, category string, critical bool) error {
 	if strings.TrimSpace(message) == "" {
 		return nil
 	}
-	if d.guard != nil && !d.guard.Allow(ctx, userID, critical) {
+	if d.guard != nil && !d.guard.AllowCategory(ctx, userID, category, critical) {
 		return nil
 	}
 

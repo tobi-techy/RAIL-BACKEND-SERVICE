@@ -3,7 +3,9 @@ package ledger
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -23,11 +25,13 @@ var ErrAccountNotFound = errors.New("ledger account not found")
 
 // Service handles ledger operations using double-entry bookkeeping
 type Service struct {
-	ledgerRepo *repositories.LedgerRepository
-	db         *sqlx.DB
-	logger     *logger.Logger
-	stashLock  StashLockChecker
-	stashRaids StashRaidObserver
+	ledgerRepo     *repositories.LedgerRepository
+	db             *sqlx.DB
+	logger         *logger.Logger
+	stashLock      StashLockChecker
+	stashRaids     StashRaidObserver
+	outbox         *OutboxWriter
+	velocityConfig *entities.VelocityConfig
 }
 
 // StashLockChecker enforces the 90-day lock / 7-day window rule.
@@ -50,16 +54,55 @@ func (s *Service) SetStashRaidObserver(o StashRaidObserver) {
 	s.stashRaids = o
 }
 
+// SetVelocityConfig overrides the default velocity limit configuration.
+// Pass nil to reset to defaults.
+func (s *Service) SetVelocityConfig(cfg *entities.VelocityConfig) {
+	if cfg == nil {
+		cfg := entities.DefaultVelocityConfig
+		s.velocityConfig = &cfg
+		return
+	}
+	s.velocityConfig = cfg
+}
+
+// computeTransactionHash builds the SHA256 hash for a ledger transaction.
+// The hash is computed from the previous transaction hash + all normalized
+// fields that define the transaction. Any mutation to a historical row will
+// cause a cascade of broken hashes.
+func computeTransactionHash(prevHash string, tx *entities.LedgerTransaction, entries []entities.CreateEntryRequest) string {
+	h := sha256.New()
+	h.Write([]byte(prevHash))
+	h.Write([]byte(tx.ID.String()))
+	if tx.UserID != nil {
+		h.Write([]byte(tx.UserID.String()))
+	}
+	h.Write([]byte(string(tx.TransactionType)))
+	h.Write([]byte(tx.IdempotencyKey))
+	if tx.Reason != nil {
+		h.Write([]byte(*tx.Reason))
+	}
+	// Include sorted entries so hash captures economic intent
+	for _, e := range orderedEntriesForLocking(entries) {
+		h.Write([]byte(e.AccountID.String()))
+		h.Write([]byte(string(e.EntryType)))
+		h.Write([]byte(e.Amount.String()))
+		h.Write([]byte(e.Currency))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // NewService creates a new ledger service
 func NewService(
 	ledgerRepo *repositories.LedgerRepository,
 	db *sqlx.DB,
 	logger *logger.Logger,
+	outbox *OutboxWriter,
 ) *Service {
 	return &Service{
 		ledgerRepo: ledgerRepo,
 		db:         db,
 		logger:     logger,
+		outbox:     outbox,
 	}
 }
 
@@ -80,6 +123,9 @@ func (s *Service) GetTransactionByIdempotencyKey(ctx context.Context, key string
 // succeeds. If the transfer fails, FailPendingTransaction marks the tx as
 // failed with zero balance impact.
 func (s *Service) CreatePendingTransaction(ctx context.Context, req *entities.CreateTransactionRequest) error {
+	if req.InitiatedBy == "" {
+		req.InitiatedBy = entities.InitiatedBySystem.String()
+	}
 	if err := req.Validate(); err != nil {
 		return fmt.Errorf("validate request: %w", err)
 	}
@@ -105,6 +151,11 @@ func (s *Service) CreatePendingTransaction(ctx context.Context, req *entities.Cr
 	txCtx := repositories.WithTx(ctx, tx)
 	now := time.Now()
 
+	initiatedBy := req.InitiatedBy
+	if initiatedBy == "" {
+		initiatedBy = entities.InitiatedBySystem.String()
+	}
+
 	ledgerTx := &entities.LedgerTransaction{
 		ID:              uuid.New(),
 		UserID:          req.UserID,
@@ -115,7 +166,19 @@ func (s *Service) CreatePendingTransaction(ctx context.Context, req *entities.Cr
 		IdempotencyKey:  req.IdempotencyKey,
 		Description:     req.Description,
 		Metadata:        req.Metadata,
+		InitiatedBy:     initiatedBy,
+		Reason:          req.Reason,
 		CreatedAt:       now,
+	}
+
+	// Compute hash chain link for pending transaction.
+	if ledgerTx.TransactionHash == "" {
+		prevHash, err := s.ledgerRepo.GetLatestTransactionHash(txCtx)
+		if err != nil {
+			return fmt.Errorf("get previous hash: %w", err)
+		}
+		ledgerTx.PreviousTransactionHash = prevHash
+		ledgerTx.TransactionHash = computeTransactionHash(prevHash, ledgerTx, req.Entries)
 	}
 
 	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
@@ -280,6 +343,10 @@ var ledgerTxRetryConfig = retry.RetryConfig{
 }
 
 func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, bool, error) {
+	// Default initiated_by to system if not explicitly set.
+	if req.InitiatedBy == "" {
+		req.InitiatedBy = entities.InitiatedBySystem.String()
+	}
 	// Validate request
 	if err := req.Validate(); err != nil {
 		return nil, false, fmt.Errorf("validate request: %w", err)
@@ -327,11 +394,34 @@ func (s *Service) createTransaction(ctx context.Context, req *entities.CreateTra
 	return resultTx, created, nil
 }
 
+// checkVelocityLimit verifies that a debit entry would not exceed the
+// configured daily velocity limits. Returns nil if the entry is allowed.
+func (s *Service) checkVelocityLimit(ctx context.Context, accountID uuid.UUID, amount decimal.Decimal, date time.Time) error {
+	cfg := s.velocityConfig
+	if cfg == nil {
+		return nil
+	}
+	bucket, err := s.ledgerRepo.GetOrCreateVelocityBucket(ctx, accountID, date)
+	if err != nil {
+		return fmt.Errorf("get velocity bucket: %w", err)
+	}
+	if cfg.MaxDailyOutflow.IsPositive() && bucket.OutflowTotal.Add(amount).GreaterThan(cfg.MaxDailyOutflow) {
+		return fmt.Errorf("daily outflow limit exceeded: current=%s + amount=%s > max=%s (account=%s)",
+			bucket.OutflowTotal.String(), amount.String(), cfg.MaxDailyOutflow.String(), accountID)
+	}
+	if cfg.MaxDailyTxCount > 0 && bucket.TxCount+1 > cfg.MaxDailyTxCount {
+		return fmt.Errorf("daily transaction count limit exceeded: current=%d + 1 > max=%d (account=%s)",
+			bucket.TxCount, cfg.MaxDailyTxCount, accountID)
+	}
+	return nil
+}
+
 // executeTransaction performs the full double-entry write inside a single
-// database transaction: insert the transaction header, insert each entry, and
-// lock + update each affected account balance. It enforces deterministic lock
-// ordering to prevent deadlocks and treats a unique-key collision on the
-// idempotency key as a successful idempotent replay rather than an error.
+// database transaction: insert the transaction header, pre-lock all affected
+// accounts with SELECT FOR UPDATE, insert each entry, and update each
+// account balance. It enforces deterministic lock ordering to prevent
+// deadlocks and treats a unique-key collision on the idempotency key as a
+// successful idempotent replay rather than an error.
 func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTransactionRequest) (*entities.LedgerTransaction, bool, error) {
 	// Reuse the caller's transaction if present; otherwise open our own.
 	var (
@@ -366,7 +456,19 @@ func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTr
 		IdempotencyKey:  req.IdempotencyKey,
 		Description:     req.Description,
 		Metadata:        req.Metadata,
+		InitiatedBy:     req.InitiatedBy,
+		Reason:          req.Reason,
 		CreatedAt:       now,
+	}
+
+	// Compute hash chain link.
+	if ledgerTx.TransactionHash == "" {
+		prevHash, err := s.ledgerRepo.GetLatestTransactionHash(txCtx)
+		if err != nil {
+			return nil, false, fmt.Errorf("get previous hash: %w", err)
+		}
+		ledgerTx.PreviousTransactionHash = prevHash
+		ledgerTx.TransactionHash = computeTransactionHash(prevHash, ledgerTx, req.Entries)
 	}
 
 	if err := s.ledgerRepo.CreateTransaction(txCtx, ledgerTx); err != nil {
@@ -392,10 +494,33 @@ func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTr
 		return nil, false, fmt.Errorf("create transaction: %w", err)
 	}
 
-	// Lock + update each affected account in a deterministic global order
-	// (sorted by account ID) so that two transactions touching the same set of
-	// accounts in different request orders cannot deadlock against each other.
-	for _, entryReq := range orderedEntriesForLocking(req.Entries) {
+	// Pre-lock all affected accounts in sorted order BEFORE inserting any
+	// entries. FK checks on ledger_entries.account_id acquire FOR KEY SHARE
+	// locks; if we insert entries first, concurrent transactions holding
+	// FOR KEY SHARE block each other's FOR UPDATE, causing deadlocks.
+	sortedEntries := orderedEntriesForLocking(req.Entries)
+	locked := make(map[uuid.UUID]struct{}, len(sortedEntries))
+	for _, entryReq := range sortedEntries {
+		if _, seen := locked[entryReq.AccountID]; !seen {
+			if _, err := s.ledgerRepo.GetAccountBalanceForUpdate(txCtx, entryReq.AccountID); err != nil {
+				return nil, false, fmt.Errorf("lock account: %w", err)
+			}
+			locked[entryReq.AccountID] = struct{}{}
+		}
+	}
+
+	// Insert entries and update balances. Each account already holds FOR
+	// UPDATE, so the repeated lock inside updateAccountBalanceInTx is a
+	// no-op within the same transaction.
+	today := now.Truncate(24 * time.Hour)
+	for _, entryReq := range sortedEntries {
+		// Circuit-breaker: check velocity limits before debiting an account.
+		if entryReq.EntryType == entities.EntryTypeCredit {
+			if err := s.checkVelocityLimit(txCtx, entryReq.AccountID, entryReq.Amount, today); err != nil {
+				return nil, false, fmt.Errorf("velocity limit: %w", err)
+			}
+		}
+
 		entry := &entities.LedgerEntry{
 			ID:            uuid.New(),
 			TransactionID: ledgerTx.ID,
@@ -416,12 +541,34 @@ func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTr
 		if err := s.updateAccountBalanceInTx(txCtx, entryReq.AccountID, entryReq.EntryType, entryReq.Amount); err != nil {
 			return nil, false, fmt.Errorf("update account balance: %w", err)
 		}
+
+		// Increment velocity bucket for debit entries.
+		if entryReq.EntryType == entities.EntryTypeCredit {
+			if err := s.ledgerRepo.IncrementVelocityBucket(txCtx, entryReq.AccountID, today, entryReq.Amount); err != nil {
+				s.logger.Error("Failed to increment velocity bucket (tx will still commit)",
+					"account_id", entryReq.AccountID,
+					"error", err)
+			}
+		}
 	}
 
 	// Mark transaction as completed
 	ledgerTx.MarkCompleted()
 	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, ledgerTx.ID, entities.TransactionStatusCompleted); err != nil {
 		return nil, false, fmt.Errorf("update transaction status: %w", err)
+	}
+
+	// Write outbox event inside the same DB transaction.
+	// This ensures at-least-once delivery: if the commit succeeds, the event is
+	// durable. The outbox publisher picks it up asynchronously.
+	if s.outbox != nil {
+		if err := s.outbox.WriteTransactionEvents(txCtx, ledgerTx); err != nil {
+			s.logger.Error("Failed to write outbox event (tx will still commit)",
+				"transaction_id", ledgerTx.ID,
+				"error", err)
+			// Non-fatal: the transaction is valid, the outbox publisher can
+			// reconstruct events from the ledger tables if needed.
+		}
 	}
 
 	// Commit only if we own the transaction; otherwise the caller commits.
@@ -456,7 +603,7 @@ func orderedEntriesForLocking(entries []entities.CreateEntryRequest) []entities.
 // updateAccountBalanceInTx updates an account balance within a database transaction
 func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.UUID, entryType entities.EntryType, amount decimal.Decimal) error {
 	// Acquire row-level lock and get current balance atomically
-	currentBalance, err := s.ledgerRepo.GetAccountBalanceForUpdate(ctx, accountID)
+	oldBalance, err := s.ledgerRepo.GetAccountBalanceForUpdate(ctx, accountID)
 	if err != nil {
 		return fmt.Errorf("get account balance: %w", err)
 	}
@@ -465,11 +612,9 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 	var newBalance decimal.Decimal
 	switch entryType {
 	case entities.EntryTypeDebit:
-		// Debit increases asset accounts
-		newBalance = currentBalance.Add(amount)
+		newBalance = oldBalance.Add(amount)
 	case entities.EntryTypeCredit:
-		// Credit decreases asset accounts
-		newBalance = currentBalance.Sub(amount)
+		newBalance = oldBalance.Sub(amount)
 	}
 
 	// Ensure balance doesn't go negative (skip for system accounts — they track external reserves)
@@ -477,7 +622,7 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 		account, accountErr := s.ledgerRepo.GetAccountByID(ctx, accountID)
 		if accountErr != nil || !account.AccountType.IsSystemAccountType() {
 			return fmt.Errorf("insufficient balance: current=%s, adjustment=%s %s",
-				currentBalance.String(), amount.String(), entryType)
+				oldBalance.String(), amount.String(), entryType)
 		}
 		// SECURITY: Solvency guard — system accounts cannot go below -$100,000.
 		// This prevents unbounded liability from bugs in yield distribution or reconciliation.
@@ -493,8 +638,17 @@ func (s *Service) updateAccountBalanceInTx(ctx context.Context, accountID uuid.U
 	// if the balance changed between the locked read and this write (which the
 	// lock should make impossible), the guarded update aborts instead of
 	// silently overwriting a concurrent modification.
-	if err := s.ledgerRepo.UpdateAccountBalanceGuarded(ctx, accountID, currentBalance, newBalance); err != nil {
+	if err := s.ledgerRepo.UpdateAccountBalanceGuarded(ctx, accountID, oldBalance, newBalance); err != nil {
 		return fmt.Errorf("update account balance: %w", err)
+	}
+
+	// Write balance change outbox event inside the same transaction.
+	if s.outbox != nil {
+		if err := s.outbox.WriteBalanceEvent(ctx, accountID, oldBalance, newBalance); err != nil {
+			s.logger.Error("Failed to write balance outbox event (tx will still commit)",
+				"account_id", accountID,
+				"error", err)
+		}
 	}
 
 	return nil
@@ -966,6 +1120,7 @@ func (s *Service) TransferSpendingToStash(ctx context.Context, userID uuid.UUID,
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedBySystem.String(),
 		Entries: []entities.CreateEntryRequest{
 			{
 				AccountID:   spendAccount.ID,
@@ -1022,6 +1177,7 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByUser.String(),
 		Entries: []entities.CreateEntryRequest{
 			{
 				AccountID:   stashAccount.ID,
@@ -1083,6 +1239,8 @@ func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByAdmin.String(),
+		Reason:          &reason,
 		Entries: []entities.CreateEntryRequest{
 			{
 				AccountID:   stashAccount.ID,
@@ -1168,6 +1326,7 @@ func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID u
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByUser.String(),
 		Entries:         entries,
 	}
 
@@ -1240,6 +1399,7 @@ func (s *Service) CreatePendingEmergencyTransfer(ctx context.Context, userID uui
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByUser.String(),
 		Entries:         entries,
 	}
 
@@ -1453,6 +1613,7 @@ func (s *Service) AutomationTransferSpendToStash(ctx context.Context, userID uui
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByAutomation.String(),
 		Metadata:        map[string]any{"source": "automation", "automation_name": automationName},
 		Entries: []entities.CreateEntryRequest{
 			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
@@ -1494,6 +1655,7 @@ func (s *Service) TransferSpendToGoal(ctx context.Context, userID, goalID uuid.U
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByUser.String(),
 		Metadata:        map[string]any{"goal_id": goalID.String()},
 		Entries: []entities.CreateEntryRequest{
 			{AccountID: spendAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
@@ -1529,6 +1691,7 @@ func (s *Service) TransferGoalToSpend(ctx context.Context, userID, goalID uuid.U
 		ReferenceType:   &refType,
 		IdempotencyKey:  idempotencyKey,
 		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByUser.String(),
 		Metadata:        map[string]any{"goal_id": goalID.String()},
 		Entries: []entities.CreateEntryRequest{
 			{AccountID: goalAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},
@@ -1607,4 +1770,312 @@ func (s *Service) GetWithdrawableStashBalance(ctx context.Context, userID uuid.U
 		return decimal.Zero, nil
 	}
 	return withdrawable, nil
+}
+
+// RecordDailySnapshots records the balance of every account for today's date
+// by iterating in batches of 1000. Idempotent: existing (account, date) rows
+// are skipped via ON CONFLICT DO NOTHING.
+//
+// Snapshot consistency: each batch is read within its own transaction (one
+// snapshot per batch) rather than a single giant transaction, which keeps lock
+// contention low while still providing point-in-time consistency per batch.
+func (s *Service) RecordDailySnapshots(ctx context.Context, snapshotDate time.Time) (int, error) {
+	const batchSize = 1000
+	date := snapshotDate.Truncate(24 * time.Hour)
+	var total int
+	var afterID uuid.UUID
+
+	for {
+		batch, err := s.ledgerRepo.GetAccountIDsBatch(ctx, afterID, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("get account batch after %s: %w", afterID, err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+
+		for _, accountID := range batch {
+			balance, err := s.ledgerRepo.GetAccountBalance(ctx, accountID)
+			if err != nil {
+				return total, fmt.Errorf("get balance for account %s: %w", accountID, err)
+			}
+			inserted, err := s.ledgerRepo.InsertBalanceSnapshot(ctx, accountID, balance, date)
+			if err != nil {
+				return total, fmt.Errorf("insert snapshot for account %s: %w", accountID, err)
+			}
+			if inserted {
+				total++
+			}
+		}
+
+		afterID = batch[len(batch)-1]
+	}
+
+	return total, nil
+}
+
+// ReconcileDay compares balance snapshots against transaction deltas for a
+// given date. For each account with a closing snapshot, it verifies:
+//
+//	opening_snapshot(date-1) + net_transaction_delta(date) == closing_snapshot(date)
+//
+// Accounts with activity but no opening snapshot are flagged (first-day or
+// missing-snapshot edge case). Returns the number of accounts checked, number
+// of failures, a list of error descriptions, and any hard error.
+func (s *Service) ReconcileDay(ctx context.Context, date time.Time) (checked, failures int, errors []string, _ error) {
+	start := date.Truncate(24 * time.Hour)
+	end := start.Add(24 * time.Hour)
+
+	deltas, err := s.ledgerRepo.GetTransactionDeltaByAccount(ctx, start, end)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("get transaction deltas: %w", err)
+	}
+
+	for accountID, netChange := range deltas {
+		closeSnap, err := s.ledgerRepo.GetBalanceSnapshot(ctx, accountID, date)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("get close snapshot for %s: %s", accountID, err))
+			failures++
+			continue
+		}
+		if closeSnap == nil {
+			errors = append(errors, fmt.Sprintf("account %s: no closing snapshot for %s", accountID, date.Format("2006-01-02")))
+			failures++
+			continue
+		}
+
+		openSnap, err := s.ledgerRepo.GetBalanceSnapshot(ctx, accountID, date.AddDate(0, 0, -1))
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("get open snapshot for %s: %s", accountID, err))
+			failures++
+			continue
+		}
+
+		if netChange.IsZero() {
+			checked++
+			continue
+		}
+
+		checked++
+		if openSnap != nil {
+			expectedClose := openSnap.Add(netChange)
+			if !expectedClose.Equal(*closeSnap) {
+				failures++
+				diff := closeSnap.Sub(expectedClose)
+				errors = append(errors,
+					fmt.Sprintf("account %s: reconciliation mismatch (open=%s + net=%s = expected=%s, actual=%s, diff=%s)",
+						accountID, openSnap, netChange, expectedClose, closeSnap, diff))
+			}
+		} else {
+			errors = append(errors,
+				fmt.Sprintf("account %s: no opening snapshot for %s (close=%s, net=%s)",
+					accountID, date.AddDate(0, 0, -1).Format("2006-01-02"), closeSnap, netChange))
+		}
+	}
+
+	return checked, failures, errors, nil
+}
+
+// CheckIntegrity runs all ledger invariant checks and returns a diagnostic report.
+// The deficitThreshold is the minimum balance a system account can have before it
+// is flagged (e.g. -100000 means accounts with balance < -100000 are flagged).
+// Pass nil to use the default threshold of -100000.
+func (s *Service) CheckIntegrity(ctx context.Context, deficitThreshold ...decimal.Decimal) *IntegrityReport {
+	report := &IntegrityReport{}
+
+	debits, credits, err := s.ledgerRepo.GetTotalDebitsAndCredits(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("get total debits/credits: %s", err))
+	} else {
+		report.TotalDebits = debits
+		report.TotalCredits = credits
+		report.Balanced = debits.Equal(credits)
+		if !report.Balanced {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("LEDGER OUT OF BALANCE: debits=%s credits=%s diff=%s",
+					debits.String(), credits.String(), debits.Sub(credits).String()))
+		}
+	}
+
+	negCount, err := s.ledgerRepo.CountNegativeBalanceAccounts(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("count negative balances: %s", err))
+	} else {
+		report.NegativeBalanceAccounts = negCount
+		if negCount > 0 {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("%d account(s) have negative balance", negCount))
+		}
+	}
+
+	threshold := decimal.NewFromInt(-100000)
+	if len(deficitThreshold) > 0 {
+		threshold = deficitThreshold[0]
+	}
+	defCount, err := s.ledgerRepo.CountSystemAccountDeficits(ctx, threshold)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("count system deficits: %s", err))
+	} else {
+		report.SystemAccountDeficits = defCount
+		if defCount > 0 {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("%d system account(s) exceed solvency limit of %s", defCount, threshold))
+		}
+	}
+
+	orphanCount, err := s.ledgerRepo.CountOrphanedEntries(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("count orphaned entries: %s", err))
+	} else {
+		report.OrphanedEntries = orphanCount
+		if orphanCount > 0 {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("%d orphaned entries (no matching transaction)", orphanCount))
+		}
+	}
+
+	txCount, err := s.ledgerRepo.CountTransactionsWithoutEntries(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("count transactions without entries: %s", err))
+	} else {
+		report.TransactionsWithoutEntries = txCount
+		if txCount > 0 {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("%d transaction(s) with 0 entries", txCount))
+		}
+	}
+
+	latestSnap, err := s.ledgerRepo.GetLatestSnapshotDate(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("get latest snapshot date: %s", err))
+	} else if latestSnap != nil {
+		report.LatestSnapshotDate = latestSnap
+		since := time.Since(*latestSnap)
+		if since > 30*24*time.Hour {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("balance snapshots stale: last snapshot was %s ago on %s",
+					formatDuration(since), latestSnap.Format("2006-01-02")))
+		}
+	}
+
+	outboxCount, err := s.ledgerRepo.CountUnpublishedOutbox(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("count unpublished outbox: %s", err))
+	} else {
+		report.UnpublishedOutboxCount = outboxCount
+		if outboxCount > 1000 {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("%d unpublished outbox events (possible publisher stall)", outboxCount))
+		}
+	}
+
+	oldestOutbox, err := s.ledgerRepo.GetOldestUnpublishedOutbox(ctx)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("get oldest unpublished outbox: %s", err))
+	} else if oldestOutbox != nil {
+		report.OldestUnpublishedOutbox = oldestOutbox
+	}
+
+	// Hash chain integrity verification (sample first 1000 txs for performance).
+	broken, err := s.VerifyHashChain(ctx, 1000)
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("hash chain verification: %s", err))
+	} else {
+		report.HashChainBroken = len(broken)
+		if len(broken) > 0 {
+			report.Errors = append(report.Errors,
+				fmt.Sprintf("%d broken hash(es) in chain (first: %s)", len(broken), broken[0]))
+		}
+	}
+
+	// 9. Daily snapshot reconciliation (only if we have recent snapshots).
+	if latestSnap != nil {
+		report.ReconciliationDate = latestSnap
+		reconciled, failures, reconcilErrs, err := s.ReconcileDay(ctx, *latestSnap)
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("snapshot reconciliation: %s", err))
+		} else {
+			report.ReconciledAccounts = reconciled
+			report.ReconciliationFailures = failures
+			report.ReconciliationErrors = reconcilErrs
+			if failures > 0 {
+				report.Errors = append(report.Errors,
+					fmt.Sprintf("%d of %d reconciliation check(s) failed for %s",
+						failures, reconciled+1, latestSnap.Format("2006-01-02")))
+				for _, rErr := range reconcilErrs {
+					report.Errors = append(report.Errors, "reconciliation: "+rErr)
+				}
+			}
+		}
+	}
+
+	return report
+}
+
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	if days > 0 {
+		return fmt.Sprintf("%dd", days)
+	}
+	hours := int(d.Hours())
+	if hours > 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dm", int(d.Minutes()))
+}
+
+// VerifyHashChain checks that the hash chain is unbroken.
+// Verifies previous_transaction_hash links (full content hash would require
+// loading entries; the entry-content check is done separately by the
+// double-entry balance check in CheckIntegrity).
+func (s *Service) VerifyHashChain(ctx context.Context, maxCheck int) ([]uuid.UUID, error) {
+	if maxCheck <= 0 || maxCheck > 10000 {
+		maxCheck = 1000
+	}
+	total, err := s.ledgerRepo.CountTransactions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count transactions: %w", err)
+	}
+	if total == 0 {
+		return nil, nil
+	}
+	var broken []uuid.UUID
+	prevHash := ""
+	for offset := 0; offset < total; offset += maxCheck {
+		txs, err := s.ledgerRepo.GetTransactionsForHashVerification(ctx, maxCheck, offset)
+		if err != nil {
+			return nil, fmt.Errorf("get txs at offset %d: %w", offset, err)
+		}
+		for _, ltx := range txs {
+			if ltx.PreviousTransactionHash != prevHash {
+				broken = append(broken, ltx.ID)
+				// Update prevHash to this tx's hash so subsequent checks
+				// still validate against the actual stored chain.
+				prevHash = ltx.TransactionHash
+				continue
+			}
+			prevHash = ltx.TransactionHash
+		}
+	}
+	return broken, nil
+}
+
+// IntegrityReport contains the results of a ledger integrity verification.
+type IntegrityReport struct {
+	TotalDebits                decimal.Decimal `json:"total_debits"`
+	TotalCredits               decimal.Decimal `json:"total_credits"`
+	Balanced                   bool            `json:"balanced"`
+	NegativeBalanceAccounts    int             `json:"negative_balance_accounts"`
+	SystemAccountDeficits      int             `json:"system_account_deficits"`
+	OrphanedEntries            int             `json:"orphaned_entries"`
+	TransactionsWithoutEntries int             `json:"transactions_without_entries"`
+	LatestSnapshotDate         *time.Time      `json:"latest_snapshot_date,omitempty"`
+	UnpublishedOutboxCount     int             `json:"unpublished_outbox_count"`
+	OldestUnpublishedOutbox    *time.Time      `json:"oldest_unpublished_outbox,omitempty"`
+	HashChainBroken            int             `json:"hash_chain_broken"`
+	ReconciliationDate         *time.Time      `json:"reconciliation_date,omitempty"`
+	ReconciledAccounts         int             `json:"reconciled_accounts"`
+	ReconciliationFailures     int             `json:"reconciliation_failures"`
+	ReconciliationErrors       []string        `json:"reconciliation_errors,omitempty"`
+	Errors                     []string        `json:"errors,omitempty"`
 }

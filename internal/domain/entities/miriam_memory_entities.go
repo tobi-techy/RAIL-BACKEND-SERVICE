@@ -99,9 +99,11 @@ const (
 )
 
 // ControlLevel constants control how autonomous Miriam is for a user.
+// MVP default for new users is ControlLevelGuided (suggest + confirm).
+// Silent money moves require ControlLevelFull plus an active mandate.
 const (
-	ControlLevelFull    = "full"    // Full Autopilot — act on all pre-approved actions, ask on new ones
-	ControlLevelGuided  = "guided"  // Guided — suggest actions, wait for approval
+	ControlLevelFull    = "full"    // Full Autopilot — act on pre-approved mandates, ask on new ones
+	ControlLevelGuided  = "guided"  // Guided — suggest actions, wait for approval (default)
 	ControlLevelMonitor = "monitor" // Manual — only alert and advise, never create actions
 )
 

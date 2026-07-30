@@ -22,6 +22,7 @@ import (
 	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationsvc "github.com/rail-service/rail_service/internal/domain/services/obligation"
+	p2pservice "github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/premium"
 	"github.com/rail-service/rail_service/internal/domain/services/sharedgoal"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
@@ -71,9 +72,9 @@ type workingMemorySnapshot struct {
 	entry *aimemory.WorkingMemoryEntry
 }
 
-func (s *workingMemorySnapshot) GetSummary() string      { return s.entry.Summary }
-func (s *workingMemorySnapshot) GetTopic() string        { return s.entry.Topic }
-func (s *workingMemorySnapshot) GetMessageCount() int    { return s.entry.MessageCount }
+func (s *workingMemorySnapshot) GetSummary() string   { return s.entry.Summary }
+func (s *workingMemorySnapshot) GetTopic() string     { return s.entry.Topic }
+func (s *workingMemorySnapshot) GetMessageCount() int { return s.entry.MessageCount }
 
 type memoryAdapter struct {
 	oldMemory   *aiservice.MemoryService
@@ -127,6 +128,39 @@ func (m *memoryAdapter) SearchMemory(ctx context.Context, userID uuid.UUID, quer
 }
 
 func (m *memoryAdapter) SearchFacts(ctx context.Context, userID uuid.UUID, query string, limit int) ([]aicore.Fact, error) {
+	// Prefer durable SQL facts (source of truth for list_memory / forget).
+	if m.oldMemory != nil {
+		facts, err := m.oldMemory.GetActiveFacts(ctx, userID)
+		if err == nil && len(facts) > 0 {
+			out := make([]aicore.Fact, 0, len(facts))
+			q := strings.ToLower(strings.TrimSpace(query))
+			for _, f := range facts {
+				if f == nil {
+					continue
+				}
+				if q != "" {
+					hay := strings.ToLower(f.Fact + " " + f.Category)
+					if !strings.Contains(hay, q) {
+						continue
+					}
+				}
+				out = append(out, aicore.Fact{
+					ID:         f.ID.String(),
+					Category:   f.Category,
+					Fact:       f.Fact,
+					Confidence: f.Confidence.InexactFloat64(),
+					Source:     "miriam_facts",
+				})
+				if limit > 0 && len(out) >= limit {
+					break
+				}
+			}
+			if len(out) > 0 {
+				return out, nil
+			}
+		}
+	}
+
 	if m.qdrantStore == nil {
 		return nil, nil
 	}
@@ -144,6 +178,13 @@ func (m *memoryAdapter) SearchFacts(ctx context.Context, userID uuid.UUID, query
 		})
 	}
 	return out, nil
+}
+
+func (m *memoryAdapter) ForgetFact(ctx context.Context, userID, factID uuid.UUID) error {
+	if m.oldMemory == nil {
+		return fmt.Errorf("memory service not available")
+	}
+	return m.oldMemory.ForgetFact(ctx, userID, factID)
 }
 
 func (m *memoryAdapter) SearchEpisodic(ctx context.Context, userID uuid.UUID, query string, limit int) ([]aicore.Episode, error) {
@@ -1106,11 +1147,15 @@ func buildMiriamIntelligenceProvider(c *Container) aicore.MiriamIntelligenceProv
 	if c.MiriamIntelligenceService == nil {
 		return &stubGeneric{}
 	}
-	return &miriamAdapter{m: c.MiriamIntelligenceService}
+	return &miriamAdapter{
+		m:           c.MiriamIntelligenceService,
+		suggestions: c.MiriamMandateSuggestionEngine,
+	}
 }
 
 type miriamAdapter struct {
-	m *miriamservice.Service
+	m           *miriamservice.Service
+	suggestions *miriamservice.MandateSuggestionEngine
 }
 
 func (a *miriamAdapter) GetMoneyState(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
@@ -1119,10 +1164,16 @@ func (a *miriamAdapter) GetMoneyState(ctx context.Context, userID uuid.UUID) (ma
 		return nil, nil
 	}
 	return map[string]interface{}{
-		"confidence_level":      state.ConfidenceLevel,
-		"confidence_score":      state.ConfidenceScore,
-		"safe_to_spend_daily":   state.SafeToSpendDaily.String(),
-		"liquidity_runway_days": state.LiquidityRunwayDays,
+		"confidence_level":        state.ConfidenceLevel,
+		"confidence_score":        state.ConfidenceScore,
+		"safe_to_spend_daily":     state.SafeToSpendDaily.StringFixed(2),
+		"liquidity_runway_days":   state.LiquidityRunwayDays,
+		"income_cadence":          state.IncomeCadence,
+		"avg_monthly_income":      state.AvgMonthlyIncome.StringFixed(2),
+		"upcoming_obligations":    state.UpcomingObligations.StringFixed(2),
+		"recurring_spend_monthly": state.RecurringSpendMonthly.StringFixed(2),
+		"anomaly_count":           state.AnomalyCount,
+		"currency":                "USD",
 	}, nil
 }
 
@@ -1141,6 +1192,55 @@ func (a *miriamAdapter) GetMandates(ctx context.Context, userID uuid.UUID) ([]ma
 		})
 	}
 	return out, nil
+}
+
+func (a *miriamAdapter) ListMandateSuggestions(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error) {
+	if a.suggestions == nil {
+		return nil, nil
+	}
+	list, err := a.suggestions.ListSuggestions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]interface{}, 0, len(list))
+	for _, s := range list {
+		out = append(out, map[string]interface{}{
+			"id":                   s.ID.String(),
+			"name":                 s.Name,
+			"action_type":          s.ActionType,
+			"reasoning":            s.Reasoning,
+			"suggested_max_amount": s.SuggestedMaxAmount.StringFixed(2),
+			"suggested_max_day":    s.SuggestedMaxDay.StringFixed(2),
+			"confidence":           s.Confidence,
+			"status":               s.Status,
+		})
+	}
+	return out, nil
+}
+
+func (a *miriamAdapter) AcceptMandateSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (map[string]interface{}, error) {
+	if a.suggestions == nil {
+		return nil, fmt.Errorf("mandate suggestions not available")
+	}
+	mandate, err := a.suggestions.Accept(ctx, userID, suggestionID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"status":      "accepted",
+		"mandate_id":  mandate.ID.String(),
+		"name":        mandate.Name,
+		"action_type": mandate.ActionType,
+		"max_amount":  mandate.MaxAmountPerAction.StringFixed(2),
+		"next_step":   "Mandate is active. Switch to Act (set_control_level full) so I can run it quietly. I'll always text you when money moves.",
+	}, nil
+}
+
+func (a *miriamAdapter) DismissMandateSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error {
+	if a.suggestions == nil {
+		return fmt.Errorf("mandate suggestions not available")
+	}
+	return a.suggestions.Dismiss(ctx, userID, suggestionID)
 }
 
 func (a *miriamAdapter) GetDecisionReceipts(ctx context.Context, userID uuid.UUID, limit int) ([]map[string]interface{}, error) {
@@ -1293,13 +1393,6 @@ func buildBankStatementProvider(c *Container) aicore.ContextProvider {
 		return nil
 	}
 	return &bankStatementCtxAdapter{inner: provider}
-}
-
-func buildReceiptProvider(c *Container) aicore.ReceiptProvider {
-	if c.ReceiptSplitService == nil {
-		return &stubGeneric{}
-	}
-	return &receiptAdapter{svc: c.ReceiptSplitService}
 }
 
 func buildWarrantyProvider(c *Container) aicore.WarrantyProvider {
@@ -1839,12 +1932,199 @@ func (a *bankStatementCtxAdapter) GetContext(ctx context.Context, userID uuid.UU
 	return a.inner.BuildContext(ctx, userID), nil
 }
 
-type receiptAdapter struct {
-	svc *premium.ReceiptSplitService
+// receiptP2PSplitAdapter executes equal receipt splits via the real P2P service
+// (Rail tags get instant transfer requests; email/phone get claim-link invites).
+type receiptP2PSplitAdapter struct {
+	receipts  *repositories.ReceiptRepository
+	p2p       *p2pservice.Service
+	claimBase string
+	logger    *zap.Logger
 }
 
-func (a *receiptAdapter) Split(ctx context.Context, receiptID uuid.UUID, participants []string) (map[string]interface{}, error) {
-	return nil, fmt.Errorf("receipt split not wired in agent wiring; use the action engine")
+func buildReceiptProvider(c *Container) aicore.ReceiptProvider {
+	if c.ReceiptRepo == nil || c.P2PService == nil {
+		return &stubGeneric{}
+	}
+	base := ""
+	if c.Config != nil {
+		base = strings.TrimRight(c.Config.Email.BaseURL, "/")
+	}
+	return &receiptP2PSplitAdapter{
+		receipts:  c.ReceiptRepo,
+		p2p:       c.P2PService,
+		claimBase: base,
+		logger:    c.ZapLog,
+	}
+}
+
+func (a *receiptP2PSplitAdapter) Split(ctx context.Context, userID, receiptID uuid.UUID, participants []string, message string) (map[string]interface{}, error) {
+	return a.ExecuteSplit(ctx, userID, receiptID, participants, message)
+}
+
+// ExecuteSplit satisfies aiservice.ReceiptSplitter for the stream confirm path.
+func (a *receiptP2PSplitAdapter) ExecuteSplit(ctx context.Context, userID, receiptID uuid.UUID, participants []string, message string) (map[string]interface{}, error) {
+	if a == nil || a.receipts == nil || a.p2p == nil {
+		return nil, fmt.Errorf("receipt split not available")
+	}
+	receipt, err := a.receipts.GetByID(ctx, userID, receiptID)
+	if err != nil || receipt == nil {
+		return nil, fmt.Errorf("receipt not found")
+	}
+	if !receipt.Amount.IsPositive() {
+		return nil, fmt.Errorf("receipt has no valid amount to split")
+	}
+	tags := make([]string, 0, len(participants))
+	for _, p := range participants {
+		p = strings.TrimPrefix(strings.TrimSpace(p), "@")
+		if p != "" {
+			tags = append(tags, p)
+		}
+	}
+	if len(tags) == 0 {
+		return nil, fmt.Errorf("no valid participants")
+	}
+	if message == "" {
+		message = "Receipt split"
+	}
+	totalPeople := len(tags) + 1
+	share := receipt.Amount.Div(decimal.NewFromInt(int64(totalPeople))).Round(2)
+	othersTotal := share.Mul(decimal.NewFromInt(int64(len(tags))))
+	yourShare := receipt.Amount.Sub(othersTotal)
+
+	splits := make([]map[string]interface{}, 0, len(tags))
+	failed := 0
+	for _, tag := range tags {
+		resp, p2pErr := a.p2p.Send(ctx, userID, &entities.P2PSendRequest{
+			Identifier:     tag,
+			Amount:         share.StringFixed(2),
+			Note:           message,
+			IdempotencyKey: fmt.Sprintf("split-%s-%s-%s", receiptID.String(), tag, share.StringFixed(2)),
+		})
+		entry := map[string]interface{}{
+			"identifier": tag,
+			"amount":     share.StringFixed(2),
+			"status":     "failed",
+		}
+		if p2pErr != nil {
+			failed++
+			entry["error"] = p2pErr.Error()
+			if a.logger != nil {
+				a.logger.Warn("miriam receipt split P2P failed", zap.String("tag", tag), zap.Error(p2pErr))
+			}
+		} else if resp != nil && resp.Transfer != nil {
+			entry["status"] = string(resp.Transfer.Status)
+			entry["transfer_id"] = resp.Transfer.ID.String()
+			if resp.Transfer.ClaimToken != nil && *resp.Transfer.ClaimToken != "" {
+				entry["claim_link"] = claimURL(a.claimBase, *resp.Transfer.ClaimToken)
+				entry["invite"] = true
+			}
+		}
+		splits = append(splits, entry)
+	}
+	out := map[string]interface{}{
+		"receipt_id":   receipt.ID.String(),
+		"total_amount": receipt.Amount.StringFixed(2),
+		"your_share":   yourShare.StringFixed(2),
+		"share_each":   share.StringFixed(2),
+		"splits":       splits,
+		"currency":     "USD",
+	}
+	if failed > 0 && failed < len(splits) {
+		out["partial_success"] = true
+		out["failed_count"] = failed
+	}
+	if failed == len(splits) {
+		return out, fmt.Errorf("all split requests failed")
+	}
+	return out, nil
+}
+
+func claimURL(base, token string) string {
+	if base == "" {
+		return "/claim/" + token
+	}
+	return strings.TrimRight(base, "/") + "/claim/" + token
+}
+
+// p2pAgentAdapter powers send_money / lookup_recipient tools.
+type p2pAgentAdapter struct {
+	svc       *p2pservice.Service
+	claimBase string
+}
+
+func buildP2PProvider(c *Container) aicore.P2PProvider {
+	if c.P2PService == nil {
+		return nil
+	}
+	base := ""
+	if c.Config != nil {
+		base = strings.TrimRight(c.Config.Email.BaseURL, "/")
+	}
+	return &p2pAgentAdapter{svc: c.P2PService, claimBase: base}
+}
+
+func (a *p2pAgentAdapter) Lookup(ctx context.Context, identifier string) (map[string]interface{}, error) {
+	if a == nil || a.svc == nil {
+		return nil, fmt.Errorf("P2P not available")
+	}
+	res, err := a.svc.LookupRecipient(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]interface{}{
+		"found":           res.Found,
+		"can_send":        res.CanSend,
+		"identifier_type": string(res.IdentifierType),
+		"message":         res.Message,
+	}
+	if res.User != nil {
+		u := map[string]interface{}{"id": res.User.ID.String()}
+		if res.User.RailTag != nil {
+			u["rail_tag"] = *res.User.RailTag
+		}
+		if res.User.FirstName != nil {
+			u["first_name"] = *res.User.FirstName
+		}
+		out["user"] = u
+	}
+	if res.Found {
+		out["note"] = "Recipient is on Rail — send will transfer after Face ID."
+	} else if res.CanSend {
+		out["note"] = "Recipient is not on Rail yet — send will reserve funds and create a claim link."
+	}
+	return out, nil
+}
+
+func (a *p2pAgentAdapter) Send(ctx context.Context, userID uuid.UUID, identifier, amount, note, idempotencyKey string) (map[string]interface{}, error) {
+	if a == nil || a.svc == nil {
+		return nil, fmt.Errorf("P2P not available")
+	}
+	resp, err := a.svc.Send(ctx, userID, &entities.P2PSendRequest{
+		Identifier:     strings.TrimPrefix(strings.TrimSpace(identifier), "@"),
+		Amount:         amount,
+		Note:           note,
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]interface{}{
+		"status":  "sent",
+		"message": resp.Message,
+		"amount":  amount,
+		"to":      identifier,
+	}
+	if resp.Transfer != nil {
+		out["transfer_id"] = resp.Transfer.ID.String()
+		out["transfer_status"] = string(resp.Transfer.Status)
+		if resp.Transfer.ClaimToken != nil && *resp.Transfer.ClaimToken != "" {
+			out["claim_link"] = claimURL(a.claimBase, *resp.Transfer.ClaimToken)
+			out["invite"] = true
+			out["status"] = "pending_claim"
+			out["message"] = "Funds reserved. Share the claim link so they can collect on Rail."
+		}
+	}
+	return out, nil
 }
 
 type warrantyAdapter struct {
@@ -2194,6 +2474,15 @@ func (s *stubGeneric) GetMandates(ctx context.Context, userID uuid.UUID) ([]map[
 func (s *stubGeneric) GetDecisionReceipts(ctx context.Context, userID uuid.UUID, limit int) ([]map[string]interface{}, error) {
 	return nil, nil
 }
+func (s *stubGeneric) ListMandateSuggestions(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error) {
+	return nil, nil
+}
+func (s *stubGeneric) AcceptMandateSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) (map[string]interface{}, error) {
+	return nil, fmt.Errorf("not wired")
+}
+func (s *stubGeneric) DismissMandateSuggestion(ctx context.Context, userID uuid.UUID, suggestionID uuid.UUID) error {
+	return fmt.Errorf("not wired")
+}
 func (s *stubGeneric) GetProducts(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error) {
 	return nil, nil
 }
@@ -2226,8 +2515,8 @@ func (s *stubGeneric) GetSuggestions(ctx context.Context, userID uuid.UUID) ([]m
 func (s *stubGeneric) GetChallenges(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error) {
 	return nil, nil
 }
-func (s *stubGeneric) Split(ctx context.Context, receiptID uuid.UUID, participants []string) (map[string]interface{}, error) {
-	return nil, fmt.Errorf("not wired")
+func (s *stubGeneric) Split(ctx context.Context, userID, receiptID uuid.UUID, participants []string, message string) (map[string]interface{}, error) {
+	return nil, fmt.Errorf("receipt split not wired")
 }
 func (s *stubGeneric) GetItems(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error) {
 	return nil, nil

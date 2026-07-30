@@ -36,29 +36,8 @@ func NewWorker(userRepo UserRepo, pushSender PushSender, logger *zap.Logger) *Wo
 	return &Worker{userRepo: userRepo, pushSender: pushSender, logger: logger}
 }
 
-// Start blocks and runs the scheduler loop until ctx is cancelled.
-func (w *Worker) Start(ctx context.Context) {
-	w.logger.Info("Scheduled notifications worker started")
-
-	// Run immediately on startup so we don't wait up to 1 hour for first tick.
-	w.runIfDue(ctx)
-
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			w.logger.Info("Scheduled notifications worker stopped")
-			return
-		case <-ticker.C:
-			w.runIfDue(ctx)
-		}
-	}
-}
-
-// runIfDue checks the current time and fires the appropriate jobs.
-func (w *Worker) runIfDue(ctx context.Context) {
+// RunIfDue checks the current time and fires the appropriate jobs.
+func (w *Worker) RunIfDue(ctx context.Context) {
 	now := time.Now().UTC()
 	hour := now.Hour()
 	weekday := now.Weekday()

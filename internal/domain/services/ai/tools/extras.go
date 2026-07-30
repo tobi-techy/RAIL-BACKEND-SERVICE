@@ -255,12 +255,46 @@ func RegisterOperatingPlanTool(r *Registry) {
 func RegisterMiriamBriefTool(r *Registry) {
 	r.Register(NewTool(
 		"get_miriam_brief",
-		"Get a quick financial brief — key numbers and updates the user should know right now",
+		"Get a quick financial brief — key numbers and updates the user should know right now. ALWAYS call this for 'how am I doing' / overview. Never invent numbers.",
 		SimpleArgs(nil, nil),
 		core.CategoryOverview,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			// Build a real brief from the same sources as the streaming path so
+			// iMessage/eval never get a placeholder string.
 			result := map[string]interface{}{
-				"message": "Here's your quick financial brief.",
+				"currency": "USD",
+			}
+			if deps.State != nil {
+				state, err := deps.State.GetState(ctx, userID)
+				if err != nil {
+					return &core.ToolResult{Error: "could not load balances: " + err.Error()}, nil
+				}
+				if state != nil && state.Balances != nil {
+					b := state.Balances
+					result["spend_balance"] = "$" + b.Spend.StringFixed(2)
+					result["stash_balance"] = "$" + b.Stash.StringFixed(2)
+					result["total_balance"] = "$" + b.Spend.Add(b.Stash).StringFixed(2)
+				}
+			}
+			if deps.Spending != nil {
+				flow, err := deps.Spending.GetMoneyFlow(ctx, userID, 1)
+				if err != nil {
+					result["money_flow_error"] = err.Error()
+				} else if flow != nil {
+					result["this_month"] = flow
+				} else {
+					result["this_month"] = map[string]interface{}{"empty": true}
+				}
+			}
+			if deps.MiriamIntell != nil {
+				if ms, err := deps.MiriamIntell.GetMoneyState(ctx, userID); err == nil && ms != nil {
+					result["money_state"] = ms
+				}
+			}
+			if deps.AnomalyContextFn != nil {
+				if a := deps.AnomalyContextFn(ctx, userID); a != "" {
+					result["anomaly_context"] = a
+				}
 			}
 			return &core.ToolResult{Data: result}, nil
 		},
@@ -352,18 +386,20 @@ func RegisterMerchantInsightTool(r *Registry) {
 func RegisterSplitReceiptTool(r *Registry) {
 	r.Register(NewTool(
 		"split_receipt",
-		"Split a receipt with friends — divides the total among participants",
+		"Split a scanned receipt with friends. Divides the total equally among you + participants. Each friend is charged via P2P to their Rail tag (@name), email, or phone (non-users get a claim link). Moves real money — staged for Face ID confirmation. Use after a receipt was scanned and you have receipt_id.",
 		SimpleArgs(map[string]map[string]interface{}{
-			"receipt_id":   {"type": "string", "description": "Receipt ID to split"},
-			"participants": {"type": "string", "description": "Comma-separated participant names"},
+			"receipt_id":   {"type": "string", "description": "UUID of the scanned receipt"},
+			"participants": {"type": "string", "description": "Comma-separated rail tags, emails, or phones (e.g. '@john,@jane,friend@email.com')"},
+			"message":      {"type": "string", "description": "Optional note on the split requests"},
 		}, []string{"receipt_id", "participants"}),
 		core.CategoryAction,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
 			if deps.Receipt == nil {
-				return &core.ToolResult{Error: "receipt service not available"}, nil
+				return &core.ToolResult{Error: "receipt split not available"}, nil
 			}
 			receiptIDStr, _ := args["receipt_id"].(string)
 			participantsStr, _ := args["participants"].(string)
+			message, _ := args["message"].(string)
 			if receiptIDStr == "" || participantsStr == "" {
 				return &core.ToolResult{Error: "receipt_id and participants are required"}, nil
 			}
@@ -372,11 +408,71 @@ func RegisterSplitReceiptTool(r *Registry) {
 				return &core.ToolResult{Error: fmt.Sprintf("invalid receipt_id: %s", receiptIDStr)}, nil
 			}
 			participants := splitComma(participantsStr)
-			result, err := deps.Receipt.Split(ctx, receiptID, participants)
+			if len(participants) == 0 {
+				return &core.ToolResult{Error: "at least one participant is required"}, nil
+			}
+			result, err := deps.Receipt.Split(ctx, userID, receiptID, participants, message)
 			if err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
 			return &core.ToolResult{Data: result}, nil
+		},
+	))
+}
+
+// RegisterP2PTools registers send-money tools (Rail tag or claim-link invite).
+func RegisterP2PTools(r *Registry) {
+	r.Register(NewTool(
+		"lookup_recipient",
+		"Look up whether a Rail tag, email, or phone can receive money. Call before send_money when the user names someone. Does not move money.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"identifier": {"type": "string", "description": "Rail tag (@name), email, or phone"},
+		}, []string{"identifier"}),
+		core.CategoryAction,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.P2P == nil {
+				return &core.ToolResult{Error: "P2P transfers not available"}, nil
+			}
+			id := strings.TrimSpace(GetArgString(args, "identifier"))
+			if id == "" {
+				return &core.ToolResult{Error: "identifier is required"}, nil
+			}
+			res, err := deps.P2P.Lookup(ctx, id)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: res}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"send_money",
+		"Send money from Spend to a friend. Identifier is a Rail tag (@name), email, or phone. If they are on Rail, funds transfer immediately after Face ID. If not, funds are reserved and a claim link is created for them. Moves real money — always staged for Face ID confirmation.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"identifier": {"type": "string", "description": "Rail tag (@name), email, or phone of recipient"},
+			"amount":     {"type": "string", "description": "USD amount e.g. '25.00'"},
+			"note":       {"type": "string", "description": "Optional note for the recipient"},
+		}, []string{"identifier", "amount"}),
+		core.CategoryAction,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.P2P == nil {
+				return &core.ToolResult{Error: "P2P transfers not available"}, nil
+			}
+			identifier := strings.TrimSpace(GetArgString(args, "identifier"))
+			amount := strings.TrimSpace(GetArgString(args, "amount"))
+			note := GetArgString(args, "note")
+			if identifier == "" || amount == "" {
+				return &core.ToolResult{Error: "identifier and amount are required"}, nil
+			}
+			idem := GetArgString(args, "idempotency_key")
+			if idem == "" {
+				idem = fmt.Sprintf("miriam-p2p-%s-%s-%s", userID.String(), identifier, amount)
+			}
+			res, err := deps.P2P.Send(ctx, userID, identifier, amount, note, idem)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: res}, nil
 		},
 	))
 }
@@ -491,21 +587,78 @@ func RegisterMemoryTools(r *Registry) {
 			if err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
-			return &core.ToolResult{Data: map[string]interface{}{"facts": facts}}, nil
+			if len(facts) == 0 {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"facts":   []interface{}{},
+					"empty":   true,
+					"message": "I don't have stored facts about you yet.",
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"facts": facts, "count": len(facts)}}, nil
 		},
 	))
 
 	r.Register(NewTool(
 		"forget_memory",
-		"Tell Miriam to forget a specific fact or memory",
+		"Tell Miriam to forget a specific fact or memory. Prefer fact_id from list_memory when available; otherwise pass a text description to match.",
 		SimpleArgs(map[string]map[string]interface{}{
-			"fact": {"type": "string", "description": "Description of what to forget"},
-		}, []string{"fact"}),
+			"fact":    {"type": "string", "description": "Description of what to forget"},
+			"fact_id": {"type": "string", "description": "Fact UUID from list_memory, when known"},
+		}, nil),
 		core.CategoryMemory,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
-			return &core.ToolResult{
-				Data: map[string]interface{}{"status": "forgotten"},
-			}, nil
+			if deps.Memory == nil {
+				return &core.ToolResult{Error: "memory service not available"}, nil
+			}
+			factIDStr, _ := args["fact_id"].(string)
+			factText, _ := args["fact"].(string)
+			if factIDStr == "" && factText == "" {
+				return &core.ToolResult{Error: "fact_id or fact description is required"}, nil
+			}
+			if factIDStr != "" {
+				fid, err := uuid.Parse(factIDStr)
+				if err != nil {
+					return &core.ToolResult{Error: "invalid fact_id"}, nil
+				}
+				if err := deps.Memory.ForgetFact(ctx, userID, fid); err != nil {
+					return &core.ToolResult{Error: err.Error()}, nil
+				}
+				return &core.ToolResult{Data: map[string]interface{}{"status": "forgotten", "fact_id": factIDStr}}, nil
+			}
+			// Text match: search facts and forget the best match.
+			facts, err := deps.Memory.SearchFacts(ctx, userID, factText, 5)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			if len(facts) == 0 {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"status":  "not_found",
+					"message": "I couldn't find a matching memory to forget.",
+				}}, nil
+			}
+			// Prefer a fact with an ID; otherwise report we need the id.
+			for _, f := range facts {
+				if f.ID == "" {
+					continue
+				}
+				fid, err := uuid.Parse(f.ID)
+				if err != nil {
+					continue
+				}
+				if err := deps.Memory.ForgetFact(ctx, userID, fid); err != nil {
+					return &core.ToolResult{Error: err.Error()}, nil
+				}
+				return &core.ToolResult{Data: map[string]interface{}{
+					"status":  "forgotten",
+					"fact_id": f.ID,
+					"fact":    f.Fact,
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{
+				"status":  "needs_fact_id",
+				"message": "I found matching memories but need a fact_id to forget them safely. Call list_memory first.",
+				"matches": facts,
+			}}, nil
 		},
 	))
 }
@@ -557,14 +710,255 @@ func RegisterControlLevelTool(r *Registry) {
 func RegisterAccountSummaryTool(r *Registry) {
 	r.Register(NewTool(
 		"get_account_summary",
-		"Get the user's full financial overview — balances, this month's totals, budget status, streak",
+		"Get the user's full financial overview — balances, this month's totals, budget status, streak. ALWAYS call this for balance/overview questions. Never invent dollar amounts.",
 		SimpleArgs(nil, nil),
 		core.CategoryOverview,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			// Real overview for messaging/eval path (core registry). Must not return
+			// a placeholder — iMessage uses this path exclusively.
 			result := map[string]interface{}{
-				"status": "overview generated",
+				"currency":      "USD",
+				"currency_note": "All balances are in US Dollars (USDC).",
 			}
+
+			if deps.State == nil {
+				return &core.ToolResult{Error: "balance data is unavailable"}, nil
+			}
+			state, err := deps.State.GetState(ctx, userID)
+			if err != nil {
+				return &core.ToolResult{Error: "balance fetch failed: " + err.Error()}, nil
+			}
+			if state != nil && state.Balances != nil {
+				b := state.Balances
+				result["spend_balance"] = "$" + b.Spend.StringFixed(2)
+				result["stash_balance"] = "$" + b.Stash.StringFixed(2)
+				result["total_balance"] = "$" + b.Spend.Add(b.Stash).StringFixed(2)
+			} else {
+				result["balances_error"] = "balance data is unavailable"
+			}
+
+			if deps.Spending != nil {
+				flow, err := deps.Spending.GetMoneyFlow(ctx, userID, 1)
+				if err != nil {
+					result["this_month_error"] = err.Error()
+				} else if flow != nil {
+					result["this_month"] = flow
+				} else {
+					result["this_month"] = map[string]interface{}{"empty": true}
+				}
+			}
+
+			if deps.Budget != nil {
+				budget, err := deps.Budget.GetByUserID(ctx, userID)
+				if err != nil {
+					result["budget_error"] = err.Error()
+				} else if budget != nil {
+					result["budget"] = budget
+				} else {
+					result["budget"] = map[string]interface{}{"has_budget": false}
+				}
+			}
+
+			if deps.Portfolio != nil {
+				if streak, err := deps.Portfolio.GetStreak(ctx, userID); err == nil && streak != nil {
+					result["streak_days"] = streak.Days
+				}
+			}
+
 			return &core.ToolResult{Data: result}, nil
+		},
+	))
+}
+
+// RegisterMiriamIntelligenceTools exposes mandate / money-state tools on the core
+// registry so iMessage and eval can answer "what can you do automatically?".
+func RegisterMiriamIntelligenceTools(r *Registry) {
+	r.Register(NewTool(
+		"get_miriam_money_state",
+		"Get Miriam's durable money state: safe-to-spend, runway, confidence, income cadence, upcoming obligations. Use before explaining what Miriam quietly sees.",
+		SimpleArgs(nil, nil),
+		core.CategoryOverview,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.MiriamIntell == nil {
+				return &core.ToolResult{Error: "money state not available"}, nil
+			}
+			state, err := deps.MiriamIntell.GetMoneyState(ctx, userID)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			if state == nil {
+				return &core.ToolResult{Data: map[string]interface{}{"empty": true, "message": "No money state yet — fund the account first."}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"state": state}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"list_miriam_mandates",
+		"List user-approved Miriam autopilot mandates and their rules. Use when the user asks what Miriam is allowed to do automatically.",
+		SimpleArgs(nil, nil),
+		core.CategoryAutomation,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.MiriamIntell == nil {
+				return &core.ToolResult{Error: "mandates not available"}, nil
+			}
+			mandates, err := deps.MiriamIntell.GetMandates(ctx, userID)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			if len(mandates) == 0 {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"mandates": []interface{}{},
+					"count":    0,
+					"empty":    true,
+					"message":  "No active mandates. You can approve one so I can quietly move surplus to Stash when safe.",
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"mandates": mandates, "count": len(mandates)}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"get_miriam_decision_receipts",
+		"Get recent Miriam decision receipts for quiet actions, skips, and failures. Use when the user asks what Miriam did or why money moved.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"limit": {"type": "integer", "description": "Number of receipts (default 5, max 20)"},
+		}, nil),
+		core.CategoryOverview,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.MiriamIntell == nil {
+				return &core.ToolResult{Error: "decision receipts not available"}, nil
+			}
+			limit := 5
+			if l, _ := args["limit"].(float64); l > 0 {
+				limit = int(l)
+			}
+			if limit > 20 {
+				limit = 20
+			}
+			receipts, err := deps.MiriamIntell.GetDecisionReceipts(ctx, userID, limit)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			if len(receipts) == 0 {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"receipts": []interface{}{},
+					"count":    0,
+					"empty":    true,
+					"message":  "No decision receipts yet.",
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"receipts": receipts, "count": len(receipts)}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"get_anomalies",
+		"Get recent unusual spending signals Miriam detected (bill spikes, duplicates, fraud signals, spending acceleration). Use for 'anything weird' / anomaly questions.",
+		SimpleArgs(nil, nil),
+		core.CategorySpending,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.AnomalyContextFn == nil {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"empty":   true,
+					"message": "No anomaly scan data right now.",
+				}}, nil
+			}
+			ctxStr := deps.AnomalyContextFn(ctx, userID)
+			if strings.TrimSpace(ctxStr) == "" {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"empty":   true,
+					"message": "Nothing unusual in the latest scan.",
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"anomalies": ctxStr}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"list_mandate_suggestions",
+		"List pending mandate suggestions Miriam wants the user to approve (e.g. quiet stash moves). Use when user asks what you can automate or after proposing autopilot.",
+		SimpleArgs(nil, nil),
+		core.CategoryAutomation,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.MiriamIntell == nil {
+				return &core.ToolResult{Error: "mandate suggestions not available"}, nil
+			}
+			list, err := deps.MiriamIntell.ListMandateSuggestions(ctx, userID)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			if len(list) == 0 {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"suggestions": []interface{}{},
+					"count":       0,
+					"empty":       true,
+					"message":     "No pending mandate suggestions right now.",
+				}}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"suggestions": list, "count": len(list)}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"accept_mandate_suggestion",
+		"Accept a pending mandate suggestion so Miriam can act within its limits. Requires suggestion_id from list_mandate_suggestions. After accept, tell the user to switch to Act (set_control_level full) for quiet execution.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"suggestion_id": {"type": "string", "description": "UUID of the pending suggestion"},
+			"confirm":       {"type": "boolean", "description": "Must be true after user explicitly agrees"},
+		}, []string{"suggestion_id"}),
+		core.CategoryAction,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.MiriamIntell == nil {
+				return &core.ToolResult{Error: "mandate suggestions not available"}, nil
+			}
+			idStr, _ := args["suggestion_id"].(string)
+			sid, err := uuid.Parse(idStr)
+			if err != nil {
+				return &core.ToolResult{Error: "invalid suggestion_id"}, nil
+			}
+			// Staging path strips confirm; on re-execute after user yes, confirm is true.
+			if confirm, _ := args["confirm"].(bool); !confirm {
+				return &core.ToolResult{
+					Data: map[string]interface{}{
+						"status":  "needs_confirmation",
+						"message": "I'll activate this mandate so I can act within its limits. Confirm to proceed.",
+					},
+					Action: &core.PendingAction{
+						Type:        "accept_mandate_suggestion",
+						Description: "Accept mandate suggestion " + idStr,
+						Params:      map[string]interface{}{"suggestion_id": idStr},
+					},
+				}, nil
+			}
+			out, err := deps.MiriamIntell.AcceptMandateSuggestion(ctx, userID, sid)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: out}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"dismiss_mandate_suggestion",
+		"Dismiss a pending mandate suggestion the user does not want.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"suggestion_id": {"type": "string", "description": "UUID of the pending suggestion"},
+		}, []string{"suggestion_id"}),
+		core.CategoryAutomation,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.MiriamIntell == nil {
+				return &core.ToolResult{Error: "mandate suggestions not available"}, nil
+			}
+			idStr, _ := args["suggestion_id"].(string)
+			sid, err := uuid.Parse(idStr)
+			if err != nil {
+				return &core.ToolResult{Error: "invalid suggestion_id"}, nil
+			}
+			if err := deps.MiriamIntell.DismissMandateSuggestion(ctx, userID, sid); err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"status": "dismissed", "suggestion_id": idStr}}, nil
 		},
 	))
 }
@@ -602,11 +996,13 @@ func RegisterAllRemainingTools(r *Registry) {
 	RegisterFinancialIntelligenceTools(r)
 	RegisterOperatingPlanTool(r)
 	RegisterMiriamBriefTool(r)
+	RegisterMiriamIntelligenceTools(r)
 	RegisterWarrantyTool(r)
 	RegisterReceiptChallengeTool(r)
 	RegisterPriceTrackingTool(r)
 	RegisterMerchantInsightTool(r)
 	RegisterSplitReceiptTool(r)
+	RegisterP2PTools(r)
 	RegisterWebSearchTool(r)
 	RegisterInvestmentProductTool(r)
 	RegisterEngagementTools(r)
