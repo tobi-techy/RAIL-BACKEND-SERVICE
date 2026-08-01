@@ -378,3 +378,56 @@ func TestProcessor_HandshakeTokenSkipsOnboarding(t *testing.T) {
 		t.Fatalf("expected handshake failure reply, got: %+v", *sent)
 	}
 }
+
+func TestCompletionMessage_PersonalizedFirstInsight(t *testing.T) {
+	ob, _, _, _, _, _ := newTestOnboarder()
+
+	msg := ob.completionMessage("Ada", "NG")
+	if !strings.Contains(msg, "You're all set, Ada!") {
+		t.Fatalf("expected personalized greeting, got: %q", msg)
+	}
+	if !strings.Contains(msg, "stable dollars and convert to naira") {
+		t.Fatalf("expected country-aware naira line, got: %q", msg)
+	}
+	if !strings.Contains(msg, "what are you saving for?") {
+		t.Fatalf("expected first-savings prompt, got: %q", msg)
+	}
+	if !strings.Contains(msg, "https://app.example/join") {
+		t.Fatalf("completion should re-share app link, got: %q", msg)
+	}
+}
+
+func TestCompletionMessage_CountryVariants(t *testing.T) {
+	ob, _, _, _, _, _ := newTestOnboarder()
+
+	if msg := ob.completionMessage("Kofi", "GH"); !strings.Contains(msg, "convert to cedis") {
+		t.Fatalf("expected cedi line for GH, got: %q", msg)
+	}
+	if msg := ob.completionMessage("John", "US"); strings.Contains(msg, "convert to") {
+		t.Fatalf("expected generic line for US, got: %q", msg)
+	}
+	if msg := ob.completionMessage("", ""); !strings.Contains(msg, "You're all set!") {
+		t.Fatalf("expected fallback greeting for empty name, got: %q", msg)
+	}
+}
+
+func TestCompletionMessage_EndToEndPrompt(t *testing.T) {
+	ob, _, _, _, prov, linker := newTestOnboarder()
+	sender := "+15557777"
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ada")
+	step(t, ob, sender, "NG")
+	step(t, ob, sender, "+2348012345678")
+	done := step(t, ob, sender, "123456")
+	if !strings.Contains(strings.ToUpper(done), "YES") {
+		t.Fatalf("expected consent prompt, got: %q", done)
+	}
+	done = step(t, ob, sender, "YES")
+	if !strings.Contains(done, "what are you saving for?") {
+		t.Fatalf("expected first-savings prompt at completion, got: %q", done)
+	}
+	if prov.lastCC != "NG" || linker.calls != 1 {
+		t.Fatalf("expected provision/link on completion, got prov=%d link=%d", prov.calls, linker.calls)
+	}
+}

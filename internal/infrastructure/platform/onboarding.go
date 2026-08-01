@@ -267,7 +267,7 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 		return textReply("I couldn't finish linking this chat to your account just now. Reply YES to try again."), nil
 	}
 	_ = c.store.Del(ctx, key)
-	return textReply(c.completionMessage(st.FirstName)), nil
+	return textReply(c.completionMessage(st.FirstName, st.Country)), nil
 }
 
 // ensureUser finds an existing user by the verified phone or creates a new
@@ -317,12 +317,23 @@ func (c *ChatOnboarder) consentMessage() string {
 	return "Almost done. Do you agree to RAIL's Terms of Service and Privacy Policy? Reply YES to continue."
 }
 
-func (c *ChatOnboarder) completionMessage(name string) string {
+func (c *ChatOnboarder) completionMessage(name, country string) string {
 	greeting := "You're all set"
 	if strings.TrimSpace(name) != "" {
 		greeting = fmt.Sprintf("You're all set, %s", name)
 	}
-	return fmt.Sprintf("%s! Your RAIL account is ready and your wallet is being created now.\n\nOpen the app to approve transactions, add money, and unlock USD accounts, cards and investing: %s\n\nAsk me anything about your money any time.", greeting, c.appLink())
+
+	countryLine := "Your money will be kept safe in stable dollars, ready to spend or invest whenever you are."
+	switch strings.ToUpper(strings.TrimSpace(country)) {
+	case "NG":
+		countryLine = "I'll keep your money safe in stable dollars and convert to naira the moment you need it."
+	case "GH":
+		countryLine = "I'll keep your money safe in stable dollars and convert to cedis the moment you need it."
+	case "KE":
+		countryLine = "I'll keep your money safe in stable dollars and convert to shillings the moment you need it."
+	}
+
+	return fmt.Sprintf("%s! Your RAIL account is ready and your wallet is being created now.\n\n%s\n\nOpen the app to approve money moves, add money, and unlock USD accounts, cards and investing: %s\n\nOne last thing — what are you saving for? Text me a goal (like an emergency fund or a new phone) and I'll set up a plan and track it for you. Ask me anything any time.", greeting, countryLine, c.appLink())
 }
 
 func textReply(s string) *PlatformReply {
