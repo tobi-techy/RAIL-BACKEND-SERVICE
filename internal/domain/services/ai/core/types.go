@@ -458,6 +458,10 @@ type Dependencies struct {
 	// GetPersonalizedSuggestionsFn delegates suggestion generation.
 	GetPersonalizedSuggestionsFn func(ctx context.Context, userID uuid.UUID) []string
 
+	// GetConversationStartersFn delegates data-driven conversation starter
+	// generation (predictive suggestions ranked from user patterns).
+	GetConversationStartersFn func(ctx context.Context, userID uuid.UUID) []ConversationStarter
+
 	// StageOperatingPlanActionFn delegates operating plan action staging.
 	StageOperatingPlanActionFn func(ctx context.Context, userID, convID uuid.UUID, actionType string, params map[string]interface{}) (map[string]interface{}, error)
 

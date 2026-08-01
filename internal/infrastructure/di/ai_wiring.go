@@ -652,6 +652,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			agentDeps.CancelActionFn = c.AIOrchestrator.CancelAction
 			agentDeps.PrepareVoiceActionFn = c.AIOrchestrator.PrepareVoiceAction
 			agentDeps.QuickReplyFn = c.AIOrchestrator.QuickReply
+			agentDeps.GetConversationStartersFn = c.AIOrchestrator.PredictiveConversationStarters
 		}
 
 		// Wire gameplay provider so Miriam can reference streaks, challenges,
