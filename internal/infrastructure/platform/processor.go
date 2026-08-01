@@ -80,10 +80,11 @@ type ActionPostback struct {
 // PlatformReply is a structured response Miriam wants delivered over a platform.
 // The processor turns it into the appropriate Spectrum content type(s).
 type PlatformReply struct {
-	Text    string          // markdown body
-	Effect  string          // optional iMessage effect id (e.g. "celebration")
-	Confirm *ConfirmRequest // if set, render a Confirm/Cancel poll
-	OpenApp *OpenAppRequest // if set, action must be authorized in-app (fund moves)
+	Text    string                 // markdown body
+	Effect  string                 // optional iMessage effect id (e.g. "celebration")
+	Confirm *ConfirmRequest        // if set, render a Confirm/Cancel poll
+	OpenApp *OpenAppRequest        // if set, action must be authorized in-app (fund moves)
+	Cards   []entities.InsightCard // structured insight cards to render after the text
 }
 
 // ConfirmRequest describes a Confirm/Cancel prompt rendered as a poll.
@@ -400,6 +401,14 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		out = p.responseBuilder.ReplyResponse(identity, reply.Text, threadID, replyTo)
 	default:
 		out = p.responseBuilder.MarkdownResponse(identity, reply.Text, threadID)
+	}
+
+	// Structured cards ride along in the same atomic outbound message: the bridge
+	// sends the text, then renders each card per-platform. Cards are best-effort
+	// enhancement — if the reply also asks for a poll/app hand-off we keep those
+	// (they short-circuit above) and only attach cards to plain replies.
+	if len(reply.Cards) > 0 && reply.Confirm == nil && reply.OpenApp == nil {
+		out = p.responseBuilder.CardsResponse(identity, reply.Text, threadID, reply.Cards)
 	}
 	return p.send(ctx, out)
 }

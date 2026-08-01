@@ -248,6 +248,11 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 	}
 
 	reply := &platform.PlatformReply{Text: resp.Content}
+	if len(resp.Cards) > 0 {
+		// The engine's tool pipeline produces structured InsightCards for the in-app
+		// canvas; carry them through so messaging can render them as cards too.
+		reply.Cards = resp.Cards
+	}
 	if resp.PendingAction == nil {
 		return reply, nil
 	}
