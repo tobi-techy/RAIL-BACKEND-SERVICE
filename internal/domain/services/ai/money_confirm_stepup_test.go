@@ -149,10 +149,11 @@ func TestRegisterFundMovingAction(t *testing.T) {
 	RegisterFundMovingAction("custom_new_fund_tool")
 	assert.True(t, IsFundMovingAction("custom_new_fund_tool"))
 
-	// Clean up — don't pollute other tests
-	fundMovingActionsMu.Lock()
-	delete(fundMovingActions, "custom_new_fund_tool")
-	fundMovingActionsMu.Unlock()
+	t.Cleanup(func() {
+		fundMovingActionsMu.Lock()
+		defer fundMovingActionsMu.Unlock()
+		delete(fundMovingActions, "custom_new_fund_tool")
+	})
 }
 
 // --- Step-up context helper tests ---

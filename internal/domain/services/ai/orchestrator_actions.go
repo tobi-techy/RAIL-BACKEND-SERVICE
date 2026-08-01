@@ -1054,79 +1054,6 @@ func (o *AgentAdapter) executeActionToolDirect(ctx context.Context, userID uuid.
 		return data, nil
 	}
 	switch tc.Name {
-	case ToolTransferFunds:
-		if o.fundsTransferer == nil {
-			o.logger.Error("fundsTransferer is nil")
-			return map[string]interface{}{"error": "Transfer service unavailable"}, nil
-		}
-		if blocked, err := o.checkUserCanTransact(ctx, userID); blocked != nil || err != nil {
-			if err != nil {
-				return map[string]interface{}{"error": "Unable to verify account status"}, nil
-			}
-			return blocked, nil
-		}
-		from, _ := tc.Arguments["from"].(string)
-		to, _ := tc.Arguments["to"].(string)
-		amountF, _ := tc.Arguments["amount"].(float64)
-		if from == "" || to == "" || amountF <= 0 {
-			return map[string]interface{}{"error": "Invalid transfer parameters"}, nil
-		}
-		if amountF > 500 {
-			return map[string]interface{}{"error": "Single transfers are capped at $500 for safety. Ask me to transfer $500 or less."}, nil
-		}
-		amount := decimal.NewFromFloat(amountF)
-		key := uuid.New().String()
-		var err error
-		if from == "spend" && to == "stash" {
-			err = o.fundsTransferer.TransferSpendToStash(ctx, userID, amount, key)
-		} else if from == "stash" && to == "spend" {
-			err = o.fundsTransferer.TransferStashToSpend(ctx, userID, amount, key)
-		} else {
-			return map[string]interface{}{"error": "Invalid from/to combination"}, nil
-		}
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-		}
-		// Persist to the audit log so the action shows up in the user's
-		// transaction feed alongside the confirm-flow transfers.
-		o.auditVoiceTransfer(userID, ToolTransferFunds, from, to, amount, err == nil, errMsg)
-		if o.moneyMoveNotifier != nil {
-			// Voice-direct transfers don't go through the stash-lock window
-			// (the emergency path is confirm-only), so emergency is always false here.
-			go func(succeeded bool, em string) {
-				nctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := o.moneyMoveNotifier.NotifyMiriamMovedFunds(nctx, userID, ToolTransferFunds, from, to, amount, false, succeeded, em); err != nil {
-					o.logger.Warn("voice direct transfer notification failed",
-						zap.String("user_id", userID.String()),
-						zap.String("from", from),
-						zap.String("to", to),
-						zap.String("amount", amount.String()),
-						zap.Error(err))
-				}
-			}(err == nil, errMsg)
-		}
-		if err != nil {
-			o.logger.Error("voice direct transfer failed", zap.Error(err), zap.String("user_id", userID.String()))
-			return map[string]interface{}{"error": "Transfer failed. Please try again or use the app."}, nil
-		}
-		spend, _ := o.fundsTransferer.GetSpendBalance(ctx, userID)
-		stash, _ := o.fundsTransferer.GetStashBalance(ctx, userID)
-		return map[string]interface{}{
-			"success":     true,
-			"transferred": amount.StringFixed(2),
-			"from":        from,
-			"to":          to,
-			"new_spend":   spend.StringFixed(2),
-			"new_stash":   stash.StringFixed(2),
-		}, nil
-
-	case ToolInitiateWithdrawal:
-		return map[string]interface{}{
-			"error": "Withdrawals from voice need app confirmation with a verified bank destination. Open Withdraw to continue.",
-		}, nil
-
 	case ToolSetSavingsGoal:
 		name, _ := tc.Arguments["name"].(string)
 		targetF, _ := tc.Arguments["target"].(float64)
@@ -1151,16 +1078,6 @@ func (o *AgentAdapter) executeActionToolDirect(ctx context.Context, userID uuid.
 			"success": true,
 			"message": fmt.Sprintf("Savings goal '%s' set for $%.0f", name, targetF),
 		}, nil
-
-	case ToolCreateAutomation:
-		if o.automationProvider == nil {
-			return map[string]interface{}{"error": "Automation service unavailable"}, nil
-		}
-		result, err := o.executeCreateAutomation(ctx, userID, tc.Arguments)
-		if err != nil {
-			return map[string]interface{}{"error": err.Error()}, nil
-		}
-		return result, nil
 
 	case ToolCreateObligationReminder:
 		if o.obligationCreator == nil {
@@ -1233,9 +1150,6 @@ func (o *AgentAdapter) executeActionToolDirect(ctx context.Context, userID uuid.
 
 	case ToolSendReport:
 		return map[string]interface{}{"message": "Report will be sent to your email."}, nil
-
-	case ToolSplitReceipt:
-		return map[string]interface{}{"message": "Receipt splitting needs to be done in the app with the receipt image."}, nil
 
 	case ToolIgnoreSubscription:
 		return map[string]interface{}{"success": true, "message": "Subscription ignored"}, nil

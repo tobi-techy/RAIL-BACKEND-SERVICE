@@ -76,6 +76,7 @@ type AgentAdapter struct {
 	anomalyStore        AnomalyStore
 	spendingEnricher    SpendingEnricher
 	merchantEnricher    MerchantEnricher
+	gameplayProvider    GameplayProvider
 	enrichmentSummaryFn func(ctx context.Context, userID uuid.UUID) (string, error)
 	redis               cache.RedisClient
 	workingMemory       *memory.WorkingMemoryStore
@@ -261,7 +262,7 @@ func (a *AgentAdapter) SetEventStore(es *memory.EventStore) {
 
 // SetStepUpVerifier wires the step-up verifier (passcode service) that
 // ConfirmAction uses to gate fund-moving actions. When nil, ConfirmAction
-// refused all fund moves (fail-closed).
+// refuses all fund moves (fail-closed).
 func (a *AgentAdapter) SetStepUpVerifier(v StepUpVerifier) {
 	a.stepUpVerifier = v
 }

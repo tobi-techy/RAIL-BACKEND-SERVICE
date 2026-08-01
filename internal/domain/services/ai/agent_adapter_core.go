@@ -611,6 +611,15 @@ func (o *AgentAdapter) executeToolInner(ctx context.Context, userID uuid.UUID, t
 		}
 		return o.executeWebSearch(ctx, userID, tc.Arguments)
 
+	case ToolGetSavingsStreaks:
+		return o.executeGetSavingsStreaks(ctx, userID)
+
+	case ToolGetChallenges:
+		return o.executeGetChallenges(ctx, userID)
+
+	case ToolGetAchievements:
+		return o.executeGetAchievements(ctx, userID)
+
 	default:
 		// Action tools (transfer_funds, initiate_withdrawal, etc.) — execute directly in voice mode.
 		// In chat mode these are intercepted earlier with pending/confirm flow.

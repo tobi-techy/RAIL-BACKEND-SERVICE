@@ -651,6 +651,21 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			agentDeps.ConfirmActionFn = c.AIOrchestrator.ConfirmAction
 			agentDeps.CancelActionFn = c.AIOrchestrator.CancelAction
 			agentDeps.PrepareVoiceActionFn = c.AIOrchestrator.PrepareVoiceAction
+			agentDeps.QuickReplyFn = c.AIOrchestrator.QuickReply
+		}
+
+		// Wire gameplay provider so Miriam can reference streaks, challenges,
+		// and achievements conversationally.
+		if c.GameplayStreakService != nil && c.GameplayChallengeService != nil && c.GameplayAchievementService != nil {
+			gpAdapter := &gameplayProviderAdapter{
+				streaks:      c.GameplayStreakService,
+				challenges:   c.GameplayChallengeService,
+				achievements: c.GameplayAchievementService,
+			}
+			agentDeps.Gameplay = gpAdapter
+			if c.AIOrchestrator != nil {
+				c.AIOrchestrator.SetGameplayProvider(gpAdapter)
+			}
 		}
 
 		agent := aicore.NewAgent(agentDeps, agentConfig, c.ZapLog)

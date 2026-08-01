@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
 	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
@@ -32,6 +33,27 @@ type passcodeStepUpAdapter struct {
 
 func (a *passcodeStepUpAdapter) VerifyStepUp(ctx context.Context, userID uuid.UUID, token string) (bool, error) {
 	return a.svc.ValidateSession(ctx, userID, token)
+}
+
+// gameplayProviderAdapter wraps the gameplay streak/challenge/achievement
+// services to satisfy aiservice.GameplayProvider so Miriam can reference
+// gameplay data conversationally.
+type gameplayProviderAdapter struct {
+	streaks      *gameplay.StreakService
+	challenges   *gameplay.ChallengeService
+	achievements *gameplay.AchievementService
+}
+
+func (a *gameplayProviderAdapter) GetUserStreaks(ctx context.Context, userID uuid.UUID) ([]*entities.UserStreak, error) {
+	return a.streaks.GetUserStreaks(ctx, userID)
+}
+
+func (a *gameplayProviderAdapter) GetActiveChallenges(ctx context.Context, userID uuid.UUID) ([]*entities.UserChallenge, error) {
+	return a.challenges.GetActiveChallenges(ctx, userID)
+}
+
+func (a *gameplayProviderAdapter) GetUserAchievements(ctx context.Context, userID uuid.UUID) ([]*entities.Achievement, []*entities.UserAchievement, error) {
+	return a.achievements.GetUserAchievements(ctx, userID)
 }
 
 type growthBatchEmailAdapter struct {

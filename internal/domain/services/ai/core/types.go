@@ -421,6 +421,9 @@ type Dependencies struct {
 	// MemoryStore provides persistence for long-term memory (tone profiles).
 	MemoryStore MemoryStore
 
+	// Gameplay reads streaks, challenges, and achievements.
+	Gameplay GameplayProvider
+
 	// Redis is the cache client for voice dynamic vars caching.
 	Redis cache.RedisClient
 
@@ -466,6 +469,12 @@ type Dependencies struct {
 
 	// PrepareVoiceActionFn delegates voice action preparation.
 	PrepareVoiceActionFn func(ctx context.Context, userID, convID uuid.UUID, action string, params map[string]interface{}) (*entities.PendingAction, error)
+
+	// QuickReplyFn is the fast-path callback for common financial queries
+	// (balance, spending summary, budget) that can be answered directly from
+	// tool data without an LLM call. Returns (content, cards, true) if handled,
+	// or ("", nil, false) if the message should go through the normal pipeline.
+	QuickReplyFn func(ctx context.Context, userID uuid.UUID, message string) (string, []map[string]interface{}, bool)
 }
 
 // WorkingMemoryStore provides read/write to Redis for conversation working memory.
@@ -876,6 +885,14 @@ type VoiceDailyLimiterer interface {
 // MemoryStore provides persistence for long-term memory (tone profiles, facts).
 type MemoryStore interface {
 	GetToneProfile(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error)
+}
+
+// GameplayProvider reads streaks, challenges, and achievements from the
+// gameplay system so Miriam can reference them conversationally.
+type GameplayProvider interface {
+	GetUserStreaks(ctx context.Context, userID uuid.UUID) ([]*entities.UserStreak, error)
+	GetActiveChallenges(ctx context.Context, userID uuid.UUID) ([]*entities.UserChallenge, error)
+	GetUserAchievements(ctx context.Context, userID uuid.UUID) ([]*entities.Achievement, []*entities.UserAchievement, error)
 }
 
 // ContributionSummary represents contribution totals.

@@ -71,6 +71,13 @@ func (a *Agent) Chat(ctx context.Context, userID, convID uuid.UUID, message stri
 		return &ChatResponse{Content: trivial}, nil
 	}
 
+	// 2b. Fast path: common financial queries answered directly from tools
+	if a.deps.QuickReplyFn != nil {
+		if content, cards, ok := a.deps.QuickReplyFn(ctx, userID, message); ok {
+			return &ChatResponse{Content: content, Cards: cards, Provider: "quick-reply"}, nil
+		}
+	}
+
 	// 3. Load user state
 	state, err := a.deps.State.GetState(ctx, userID)
 	if err != nil {
