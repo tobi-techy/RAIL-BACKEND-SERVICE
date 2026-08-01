@@ -130,6 +130,7 @@ func (a *AgentAdapter) ChatInContextWithOptions(ctx context.Context, userID, con
 	if rl := a.liveNairaRateLine(ctx); rl != "" {
 		systemContext = append(systemContext, rl)
 	}
+	systemContext = append(systemContext, opts.SystemContext...)
 	coreOpts.SystemContext = systemContext
 	if a.memory != nil {
 		if lvl, lerr := a.memory.GetControlLevel(ctx, userID); lerr == nil {

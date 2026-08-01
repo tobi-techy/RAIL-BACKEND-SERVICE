@@ -125,6 +125,10 @@ type UsageTracker interface {
 // as system context instead of mixed into user text.
 type ChatOptions struct {
 	ToneMode string
+	// SystemContext holds extra system prompts from the caller (for example a
+	// cross-channel continuity note). Appended to the consolidated personality
+	// block in the non-streaming path so every chat carries them.
+	SystemContext []string
 }
 
 // MoneyMoveNotifier sends a push notification when Miriam moves money on a

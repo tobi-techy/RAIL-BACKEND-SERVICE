@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -215,6 +216,50 @@ type orchestratorAdapter struct {
 
 const defaultAppDeepLinkBase = "rail://"
 
+// crossChannelContinuityContext builds a short system note for the first message
+// on a new platform thread. It digests the conversations the user has already
+// been having on other platforms so Miriam continues the thread that moved
+// channels instead of starting cold.
+func (a *orchestratorAdapter) crossChannelContinuityContext(ctx context.Context, userID uuid.UUID, platform, threadID string) string {
+	threads, err := a.convRepo.ListRecentThreadSummaries(ctx, userID, platform, threadID, 3)
+	if err != nil || len(threads) == 0 {
+		return ""
+	}
+	return buildCrossChannelContinuityNote(threads)
+}
+
+func buildCrossChannelContinuityNote(threads []repositories.ThreadSummary) string {
+	var parts []string
+	for _, t := range threads {
+		topic := t.Summary
+		if topic == "" {
+			topic = t.Title
+		}
+		if topic == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("- %s (%s): %s", friendlyPlatform(t.Platform), t.UpdatedAt.Format("Jan 2"), topic))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[CROSS-CHANNEL CONTINUITY — the user just started chatting here on a new platform. You already spoke on other platforms; greet warmly and pick up where the most recent thread left off, referencing it naturally only if relevant. Never list these back.]\n" +
+		strings.Join(parts, "\n")
+}
+
+var platformDisplayNames = map[string]string{
+	string(entities.PlatformIMessage): "iMessage",
+	string(entities.PlatformTelegram): "Telegram",
+	string(entities.PlatformWhatsApp): "WhatsApp",
+}
+
+func friendlyPlatform(p string) string {
+	if name, ok := platformDisplayNames[p]; ok {
+		return name
+	}
+	return p
+}
+
 func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
@@ -230,7 +275,7 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 	}
 
 	pid, _ := uuid.Parse(platformIdentityID)
-	convID, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
+	convID, created, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
 	if err != nil {
 		return nil, fmt.Errorf("resolve platform conversation: %w", err)
 	}
@@ -242,7 +287,17 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 		return nil, fmt.Errorf("load platform conversation: %w", err)
 	}
 
-	resp, err := a.orchestrator.ChatWithConversation(ctx, uid, conv, message)
+	var opts aiservice.ChatOptions
+	if created {
+		// First contact on this platform: bridge the threads the user has already
+		// been having on other platforms so Miriam continues mid-conversation
+		// instead of treating the channel switch as a fresh start.
+		if cc := a.crossChannelContinuityContext(ctx, uid, plat.String(), threadID); cc != "" {
+			opts.SystemContext = []string{cc}
+		}
+	}
+
+	resp, err := a.orchestrator.ChatWithConversationWithOptions(ctx, uid, conv, message, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +343,8 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 // resolveConvID maps a messaging thread to its stable conversation id.
 func (a *orchestratorAdapter) resolveConvID(ctx context.Context, uid uuid.UUID, platformIdentityID, threadID string, plat entities.Platform) (uuid.UUID, error) {
 	pid, _ := uuid.Parse(platformIdentityID)
-	return a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
+	id, _, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
+	return id, err
 }
 
 func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
