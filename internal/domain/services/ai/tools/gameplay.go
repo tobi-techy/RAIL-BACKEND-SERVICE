@@ -59,6 +59,9 @@ func RegisterGameplayTools(r *Registry) {
 			}
 			challengeList := make([]map[string]interface{}, 0, len(challenges))
 			for _, c := range challenges {
+				if c.Challenge == nil {
+					continue
+				}
 				entry := map[string]interface{}{
 					"title":       c.Challenge.Title,
 					"description": c.Challenge.Description,

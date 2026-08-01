@@ -138,9 +138,10 @@ func (o *AgentAdapter) quickBudgetReply(ctx context.Context, userID uuid.UUID) (
 		return "You haven't set a budget yet. Want me to set one?", nil, true
 	}
 
+	now := time.Now().UTC()
+
 	monthlySpend := decimal.Zero
 	if o.spending != nil {
-		now := time.Now().UTC()
 		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		summary, sErr := o.spending.GetSummary(ctx, userID, monthStart, now)
 		if sErr == nil {
@@ -161,8 +162,8 @@ func (o *AgentAdapter) quickBudgetReply(ctx context.Context, userID uuid.UUID) (
 	}
 
 	// Days remaining in the month
-	now := time.Now().UTC()
-	nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	nextMonth := now.AddDate(0, 1, 0)
+	nextMonth = time.Date(nextMonth.Year(), nextMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
 	daysLeft := int(nextMonth.Sub(now).Hours() / 24)
 	if daysLeft > 0 && remaining.IsPositive() {
 		dailyBudget := remaining.Div(decimal.NewFromInt(int64(daysLeft)))

@@ -127,6 +127,37 @@ func TestExecuteGetChallenges_NoChallenges(t *testing.T) {
 	assert.Contains(t, msg, "No active challenges")
 }
 
+func TestExecuteGetChallenges_SkipsNilChallenge(t *testing.T) {
+	o := newTestAdapter(t)
+	o.gameplayProvider = &mockGameplayProvider{
+		challenges: []*entities.UserChallenge{
+			{
+				ID:     uuid.New(),
+				Status: entities.ChallengeStatusActive,
+			},
+			{
+				ID:       uuid.New(),
+				Status:   entities.ChallengeStatusActive,
+				Progress: decimal.NewFromFloat(10),
+				Challenge: &entities.Challenge{
+					Title:       "Save $50",
+					Description: "Reach $50 in stash",
+					TargetValue: decimal.NewFromFloat(50),
+					XPReward:    25,
+				},
+			},
+		},
+	}
+
+	result, err := o.executeGetChallenges(context.Background(), uuid.New())
+	require.NoError(t, err)
+	challenges, ok := result["challenges"].([]map[string]interface{})
+	require.True(t, ok)
+	require.Len(t, challenges, 1)
+	assert.Equal(t, "Save $50", challenges[0]["title"])
+	assert.Equal(t, "40.00", challenges[0]["remaining"])
+}
+
 func TestExecuteGetAchievements_ReturnsEarnedAndUnearned(t *testing.T) {
 	o := newTestAdapter(t)
 	ach1 := &entities.Achievement{ID: uuid.New(), Name: "First Deposit", Description: "Made your first deposit", Rarity: entities.RarityCommon}
