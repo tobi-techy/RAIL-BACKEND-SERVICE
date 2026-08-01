@@ -13,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
+	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -21,6 +22,17 @@ import (
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/shopspring/decimal"
 )
+
+// passcodeStepUpAdapter wraps *passcode.Service to satisfy
+// aiservice.StepUpVerifier without coupling the AI service package to the
+// passcode package.
+type passcodeStepUpAdapter struct {
+	svc *passcode.Service
+}
+
+func (a *passcodeStepUpAdapter) VerifyStepUp(ctx context.Context, userID uuid.UUID, token string) (bool, error) {
+	return a.svc.ValidateSession(ctx, userID, token)
+}
 
 type growthBatchEmailAdapter struct {
 	email *adapters.EmailService

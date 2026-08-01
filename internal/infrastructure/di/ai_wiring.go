@@ -667,6 +667,14 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			if adapter, ok := agentDeps.Receipt.(*receiptP2PSplitAdapter); ok {
 				c.AIOrchestrator.SetReceiptSplitter(adapter)
 			}
+			// Wire the passcode service as the StepUpVerifier so
+			// ConfirmAction enforces passcode/Face ID for fund-moving
+			// actions in the core, not in the HTTP handler.
+			if passcodeSvc := c.GetPasscodeService(); passcodeSvc != nil {
+				c.AIOrchestrator.SetStepUpVerifier(&passcodeStepUpAdapter{svc: passcodeSvc})
+			} else {
+				c.ZapLog.Warn("passcode service not available — AI fund-moving actions will be refused (fail-closed)")
+			}
 		}
 	}
 

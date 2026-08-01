@@ -22,11 +22,11 @@ import (
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
+	documentsvc "github.com/rail-service/rail_service/internal/domain/services/document"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	ledger_service "github.com/rail-service/rail_service/internal/domain/services/ledger"
+	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
-	documentsvc "github.com/rail-service/rail_service/internal/domain/services/document"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
@@ -45,20 +45,20 @@ import (
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	autopilot_worker "github.com/rail-service/rail_service/internal/workers/autopilot_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
-	document_processor "github.com/rail-service/rail_service/internal/workers/document_processor"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	copy_trading_worker "github.com/rail-service/rail_service/internal/workers/copy_trading_worker"
 	daily_pulse "github.com/rail-service/rail_service/internal/workers/daily_pulse"
 	deposit_allocation_recovery "github.com/rail-service/rail_service/internal/workers/deposit_allocation_recovery"
 	deposit_autosweep "github.com/rail-service/rail_service/internal/workers/deposit_autosweep"
+	document_processor "github.com/rail-service/rail_service/internal/workers/document_processor"
+	engagement_worker "github.com/rail-service/rail_service/internal/workers/engagement_worker"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	graph_ngn_recovery "github.com/rail-service/rail_service/internal/workers/graph_ngn_recovery"
-	engagement_worker "github.com/rail-service/rail_service/internal/workers/engagement_worker"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
+	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	ledger_maintenance "github.com/rail-service/rail_service/internal/workers/ledger_maintenance"
 	ledger_outbox_publisher "github.com/rail-service/rail_service/internal/workers/ledger_outbox_publisher"
-	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
 	miriam_worker "github.com/rail-service/rail_service/internal/workers/miriam_worker"
 	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
@@ -1001,12 +1001,14 @@ func (app *Application) initializeFundingWebhooks() error {
 // initialization error rather than a half-running process with subtle
 // fail-closed behaviour.
 func (app *Application) validateSecurityConfig() error {
-	// AI fund-action passcode gate: if it's on, the passcode service must be
-	// wired. With the gate on but no validator, every Miriam money-move
-	// confirmation would return 403 — looking like a per-request bug rather
-	// than a deployment misconfiguration.
-	if app.cfg.Security.AIFundActionsRequirePasscode && app.container.GetPasscodeService() == nil {
-		return fmt.Errorf("AIFundActionsRequirePasscode is enabled but passcode service is not available")
+	// AI fund-action step-up is always enforced in the orchestrator core
+	// (AgentAdapter.ConfirmAction). When the passcode service is absent, the
+	// core fails closed — fund-moving actions are refused, not allowed. We
+	// warn here so deployments without a passcode service know why AI transfers
+	// silently fail, but we don't fatally exit because read-only AI features
+	// still work.
+	if app.container.GetPasscodeService() == nil {
+		app.log.Warn("passcode service is not available — AI fund-moving actions will be refused (fail-closed)")
 	}
 	return nil
 }

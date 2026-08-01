@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -26,6 +27,63 @@ const (
 )
 
 const pendingActionTTL = 5 * time.Minute
+
+// ErrStepUpRequired is returned by ConfirmAction when a fund-moving action
+// is staged but no valid step-up token (passcode/Face ID session) was provided.
+// Callers should translate this into a 403 or equivalent challenge.
+var ErrStepUpRequired = errors.New("step-up verification required")
+
+// StepUpVerifier validates a short-lived step-up token (passcode session,
+// Face ID authorization) before fund-moving pending actions execute. When nil,
+// ConfirmAction refuses all fund-moving actions (fail-closed).
+type StepUpVerifier interface {
+	VerifyStepUp(ctx context.Context, userID uuid.UUID, token string) (bool, error)
+}
+
+type stepUpTokenKey struct{}
+
+// WithStepUpToken injects a step-up token (e.g. an X-Passcode-Session header
+// value) into the context so ConfirmAction can pass it to the StepUpVerifier.
+func WithStepUpToken(ctx context.Context, token string) context.Context {
+	return context.WithValue(ctx, stepUpTokenKey{}, token)
+}
+
+// StepUpTokenFromContext extracts the step-up token, if any.
+func StepUpTokenFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(stepUpTokenKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// fundMovingActions is the registry of action types that move real money and
+// therefore require step-up verification before execution in ConfirmAction.
+// Use RegisterFundMovingAction to add new tools so the step-up gate stays
+// in sync as tools evolve.
+var (
+	fundMovingActionsMu sync.RWMutex
+	fundMovingActions   = map[string]bool{}
+)
+
+func init() {
+	for _, name := range []string{
+		ToolTransferFunds, ToolInitiateWithdrawal,
+		ToolExecuteInvestment, ToolOptimizeYield, ToolCopyTrader,
+		ToolSetupBillAutopay, ToolPayBill, ToolAutomateBill,
+		"send_money", ToolSplitReceipt, ToolCreateAutomation,
+	} {
+		fundMovingActions[name] = true
+	}
+}
+
+// RegisterFundMovingAction marks an action type as fund-moving so
+// IsFundMovingAction returns true for it and the step-up gate in
+// ConfirmAction protects it.
+func RegisterFundMovingAction(name string) {
+	fundMovingActionsMu.Lock()
+	defer fundMovingActionsMu.Unlock()
+	fundMovingActions[name] = true
+}
 
 // FundsTransferer moves money between spend and stash.
 //
@@ -614,27 +672,17 @@ func participantsFromParams(raw interface{}) []string {
 
 // IsFundMovingAction reports whether a staged action type moves money and
 // therefore warrants the same passcode step-up that the direct withdrawal and
-// stash-transfer routes enforce.
+// stash-transfer routes enforce. Backed by an extensible registry — use
+// RegisterFundMovingAction to register new tools.
 func IsFundMovingAction(action string) bool {
-	switch action {
-	case ToolTransferFunds, ToolInitiateWithdrawal,
-		// Execution Engine tools that move real money get the same step-up.
-		// setup_bill_autopay creates a standing stash→spend transfer, which the
-		// app's own automation endpoints also gate behind passcode consent.
-		ToolExecuteInvestment, ToolOptimizeYield, ToolCopyTrader, ToolSetupBillAutopay,
-		// Airbills bill payments debit the user's Spend balance in USDC.
-		ToolPayBill, ToolAutomateBill,
-		// P2P send / receipt splits debit or reserve Spend (claim links for non-users).
-		"send_money", ToolSplitReceipt,
-		// Automations can schedule recurring transfers — require Face ID step-up.
-		ToolCreateAutomation:
-		return true
-	default:
-		return false
-	}
+	fundMovingActionsMu.RLock()
+	defer fundMovingActionsMu.RUnlock()
+	return fundMovingActions[action]
 }
 
 // ConfirmAction executes a pending action after user confirmation.
+// Fund-moving actions require step-up verification (passcode/Face ID) enforced
+// here in the core, not in the HTTP handler — so every caller is protected.
 func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UUID) (*entities.PendingAction, error) {
 	action := o.pending.Get(ctx, convID)
 	if action == nil {
@@ -643,6 +691,32 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 	}
 	if action.UserID != userID {
 		return nil, fmt.Errorf("action does not belong to user")
+	}
+
+	// Step-up gate: fund-moving actions require a verified step-up token.
+	// Enforced in the core so no caller can bypass it.
+	if IsFundMovingAction(action.Action) {
+		if o.stepUpVerifier == nil {
+			o.logger.Warn("fund-moving action refused: no step-up verifier configured (fail-closed)",
+				zap.String("user_id", userID.String()),
+				zap.String("action", action.Action))
+			return nil, ErrStepUpRequired
+		}
+		token := StepUpTokenFromContext(ctx)
+		if token == "" {
+			return nil, ErrStepUpRequired
+		}
+		ok, vErr := o.stepUpVerifier.VerifyStepUp(ctx, userID, token)
+		if vErr != nil {
+			o.logger.Warn("step-up verification error",
+				zap.Error(vErr),
+				zap.String("user_id", userID.String()),
+				zap.String("action", action.Action))
+			return nil, ErrStepUpRequired
+		}
+		if !ok {
+			return nil, ErrStepUpRequired
+		}
 	}
 
 	var execErr error
@@ -941,12 +1015,27 @@ func (o *AgentAdapter) auditAction(ctx context.Context, userID, convID uuid.UUID
 
 // executeActionToolDirect executes action tools immediately without the pending/confirm flow.
 // Used in voice mode where AssemblyAI handles confirmation conversationally.
+// Fund-moving actions are blocked here — they must go through the pending/confirm
+// flow (executeActionTool → ConfirmAction) which enforces step-up in the core.
+// The voice path should use PrepareVoiceAction to stage a pending action for
+// in-app Face ID authorization.
 func (o *AgentAdapter) executeActionToolDirect(ctx context.Context, userID uuid.UUID, tc ai.ToolCall) (map[string]interface{}, error) {
 	if tc.Arguments == nil {
 		tc.Arguments = make(map[string]interface{})
 	}
 	if blocked := o.checkControlLevelGate(ctx, userID); blocked != nil {
 		return blocked, nil
+	}
+	// Fund-moving actions must never execute directly without step-up verification.
+	// This blocks the voice-direct path that previously executed ToolTransferFunds
+	// (and execution-engine money tools) immediately with no Face ID gate.
+	if IsFundMovingAction(tc.Name) {
+		o.logger.Warn("fund-moving action blocked in voice direct path (no step-up)",
+			zap.String("user_id", userID.String()),
+			zap.String("tool", tc.Name))
+		return map[string]interface{}{
+			"error": "For your security, moving money needs Face ID confirmation. Open the RAIL app to authorize this.",
+		}, nil
 	}
 	o.logger.Info("executeActionToolDirect called",
 		zap.String("user_id", userID.String()),
