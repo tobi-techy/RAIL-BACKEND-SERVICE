@@ -3,11 +3,13 @@ package billpay
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/airbills"
 	"go.uber.org/zap"
 )
@@ -52,6 +54,11 @@ func (s *Service) HandleCallback(ctx context.Context, body []byte, signature str
 		s.logger.Warn("airbills callback: failed to record status", zap.Error(err), zap.String("airbills_id", event.ID))
 	}
 
+	order, err := s.lookupOrderByAirbillsID(ctx, event.ID)
+	if err != nil && err != sql.ErrNoRows {
+		s.logger.Warn("airbills callback: failed to lookup order", zap.Error(err), zap.String("airbills_id", event.ID))
+	}
+
 	switch {
 	case callbackSucceeded(event.Status):
 		if _, err := s.db.ExecContext(ctx, `
@@ -60,11 +67,89 @@ func (s *Service) HandleCallback(ctx context.Context, body []byte, signature str
 			return fmt.Errorf("airbills callback complete: %w", err)
 		}
 		s.logger.Info("airbills bill fulfilled via callback", zap.String("airbills_id", event.ID))
+		if order != nil {
+			s.notifyBillStatus(ctx, order, "completed")
+		}
 	case callbackFailed(event.Status):
 		s.markFailed(ctx, event.ID, "callback_failed")
 		s.logger.Warn("airbills callback reported failure — flagged for reconciliation", zap.String("airbills_id", event.ID))
+		if order != nil {
+			s.notifyBillStatus(ctx, order, "failed")
+		}
 	}
 	return nil
+}
+
+// callbackOrder holds the fields needed for a user-facing callback notification.
+type callbackOrder struct {
+	userID        uuid.UUID
+	category      string
+	recipient     string
+	amountNGN     float64
+	amountUSDC    string
+	beneficiaryID *uuid.UUID
+}
+
+func (s *Service) lookupOrderByAirbillsID(ctx context.Context, airbillsID string) (*callbackOrder, error) {
+	var o callbackOrder
+	var usdc sql.NullString
+	var beneficiaryID sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT user_id, product_category, recipient, amount_ngn, amount_in_token, beneficiary_id
+		FROM airbills_orders WHERE airbills_id=$1`, airbillsID).Scan(
+		&o.userID, &o.category, &o.recipient, &o.amountNGN, &usdc, &beneficiaryID)
+	if err != nil {
+		return nil, err
+	}
+	o.amountUSDC = usdc.String
+	if beneficiaryID.Valid {
+		if id, err := uuid.Parse(beneficiaryID.String); err == nil {
+			o.beneficiaryID = &id
+		}
+	}
+	return &o, nil
+}
+
+func (s *Service) notifyBillStatus(ctx context.Context, order *callbackOrder, status string) {
+	if s.notifier == nil {
+		return
+	}
+	var title, body string
+	data := map[string]interface{}{
+		"type":       "airbills_bill_status",
+		"category":   order.category,
+		"recipient":  order.recipient,
+		"amount_ngn": order.amountNGN,
+		"status":     status,
+	}
+	if order.beneficiaryID != nil {
+		data["beneficiary_id"] = order.beneficiaryID.String()
+	}
+	cat := strings.ToLower(order.category)
+	switch status {
+	case "completed":
+		title = fmt.Sprintf("%s paid", titleCase(cat))
+		body = fmt.Sprintf("₦%.0f %s for %s is complete.", order.amountNGN, cat, order.recipient)
+		if order.amountUSDC != "" {
+			body = fmt.Sprintf("₦%.0f %s for %s is complete (%s USDC).", order.amountNGN, cat, order.recipient, order.amountUSDC)
+		}
+	case "failed":
+		title = fmt.Sprintf("%s payment failed", titleCase(cat))
+		body = fmt.Sprintf("₦%.0f %s for %s failed. We'll help you retry.", order.amountNGN, cat, order.recipient)
+	default:
+		return
+	}
+	if err := s.notifier.SendPush(ctx, order.userID, title, body, data); err != nil {
+		s.logger.Warn("airbills callback: failed to send push notification", zap.Error(err), zap.String("recipient", order.recipient))
+	}
+}
+
+// titleCase capitalises the first letter of a string (replaces deprecated strings.Title).
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func callbackSucceeded(status string) bool {

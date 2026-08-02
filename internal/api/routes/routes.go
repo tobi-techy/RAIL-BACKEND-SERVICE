@@ -759,9 +759,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			authenticatedOnboarding := onboarding.Group("/")
 			authenticatedOnboarding.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
 			{
-			authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
-			authenticatedOnboarding.POST("/source-of-funds", authHandlers.SaveSourceOfFunds)
-			authenticatedOnboarding.GET("/kyc/missing-fields", authHandlers.GetMissingKycFields)
+				authenticatedOnboarding.POST("/basic-complete", authHandlers.BasicCompleteOnboarding)
+				authenticatedOnboarding.POST("/source-of-funds", authHandlers.SaveSourceOfFunds)
+				authenticatedOnboarding.GET("/kyc/missing-fields", authHandlers.GetMissingKycFields)
 				// Fraud detection: correlate device fingerprint across accounts at onboarding completion.
 				// Catches fraud rings using purchased KYC identities from the same device.
 				if fraudSvc := container.GetOnboardingFraudService(); fraudSvc != nil {
@@ -859,22 +859,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
-		// KYC status utilities (auth required but no KYC gate)
-		kycProtected := protected.Group("/kyc")
-		{
-			kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
-			kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
-			kycProtected.POST("/didit/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateDiditSession)
-			kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
-			kycProtected.GET("/status", kycHTTPHandlers.GetKYCStatus)
-			// Bridge KYC - optimized for sub-2-minute verification
-			kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
-			kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
+			// KYC status utilities (auth required but no KYC gate)
+			kycProtected := protected.Group("/kyc")
+			{
+				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
+				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
+				kycProtected.POST("/didit/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateDiditSession)
+				kycProtected.POST("/submit", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.SubmitKYC)
+				kycProtected.GET("/status", kycHTTPHandlers.GetKYCStatus)
+				// Bridge KYC - optimized for sub-2-minute verification
+				kycProtected.GET("/bridge/link", bridgeKYCHandlers.GetBridgeKYCLink)
+				kycProtected.GET("/bridge/status", bridgeKYCHandlers.GetBridgeKYCStatus)
 
-			// Tier upgrade endpoints
-			kycProtected.POST("/sprout/upgrade", middleware.AuthRateLimit(3), kycHTTPHandlers.SproutUpgrade)
-			kycProtected.POST("/bloom/upgrade", middleware.AuthRateLimit(3), kycHTTPHandlers.BloomUpgrade)
-		}
+				// Tier upgrade endpoints
+				kycProtected.POST("/sprout/upgrade", middleware.AuthRateLimit(3), kycHTTPHandlers.SproutUpgrade)
+				kycProtected.POST("/bloom/upgrade", middleware.AuthRateLimit(3), kycHTTPHandlers.BloomUpgrade)
+			}
 
 			// Security routes for passcode management
 			security := protected.Group("/security")
@@ -980,28 +980,28 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					paj.GET("/orders/:id/status", container.PajHandlers.GetOrderStatus)
 				}
 
-			// RampHub: read-only best-rate lookups (no KYC required)
-			if container.RampHandlers != nil {
-				rampRO := funding.Group("/ramp")
-				rampRO.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
-				rampRO.GET("/quote", container.RampHandlers.GetQuote)
-				rampRO.GET("/banks", container.RampHandlers.GetBanks)
-				rampRO.GET("/orders", container.RampHandlers.GetOrders)
-				rampRO.GET("/orders/:id/status", container.RampHandlers.GetOrderStatus)
-			}
+				// RampHub: read-only best-rate lookups (no KYC required)
+				if container.RampHandlers != nil {
+					rampRO := funding.Group("/ramp")
+					rampRO.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+					rampRO.GET("/quote", container.RampHandlers.GetQuote)
+					rampRO.GET("/banks", container.RampHandlers.GetBanks)
+					rampRO.GET("/orders", container.RampHandlers.GetOrders)
+					rampRO.GET("/orders/:id/status", container.RampHandlers.GetOrderStatus)
+				}
 
-			// Graph NGN named virtual account (no Bridge KYC — uses own Graph verification)
-			if container.NGNHandlers != nil {
-				funding.GET("/ngn/virtual-account", container.NGNHandlers.GetNGNAccount)
-				funding.POST("/ngn/virtual-account",
-					middleware.AuthRateLimit(5),
-					container.NGNHandlers.ProvisionNGNAccount)
-				funding.POST("/ngn/auto-provision",
-					middleware.AuthRateLimit(10),
-					container.NGNHandlers.AutoProvisionNGN)
-			}
+				// Graph NGN named virtual account (no Bridge KYC — uses own Graph verification)
+				if container.NGNHandlers != nil {
+					funding.GET("/ngn/virtual-account", container.NGNHandlers.GetNGNAccount)
+					funding.POST("/ngn/virtual-account",
+						middleware.AuthRateLimit(5),
+						container.NGNHandlers.ProvisionNGNAccount)
+					funding.POST("/ngn/auto-provision",
+						middleware.AuthRateLimit(10),
+						container.NGNHandlers.AutoProvisionNGN)
+				}
 
-			// KYC-gated funding operations
+				// KYC-gated funding operations
 				// Deposit address — available to all users with Circle wallets (no KYC required)
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 
@@ -1059,6 +1059,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						middleware.AuthRateLimit(10),
 						middleware.RequirePasscodeSession(container.GetPasscodeService(), true, container.ZapLog),
 						container.RampHandlers.CreateOfframp)
+				}
+			}
+
+			// Airbills bill-pay management endpoints (read-only + mandate/beneficiary management)
+			if container.BillPayHandlers != nil {
+				billpay := protected.Group("/billpay")
+				billpay.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+				{
+					billpay.GET("/orders/:id", container.BillPayHandlers.GetOrder)
+					billpay.GET("/beneficiaries", container.BillPayHandlers.ListBeneficiaries)
+					billpay.POST("/beneficiaries", container.BillPayHandlers.SaveBeneficiary)
+					billpay.GET("/mandates/:category", container.BillPayHandlers.GetMandate)
+					billpay.PUT("/mandates/:category", container.BillPayHandlers.SetMandate)
 				}
 			}
 
@@ -1607,19 +1620,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
 						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
 						// ElevenLabs server tool webhook (public, authenticated by webhook secret)
-					v1.POST("/ai/voice/server-tool/:tool_name", voiceHandler.HandleServerTool)
-				}
+						v1.POST("/ai/voice/server-tool/:tool_name", voiceHandler.HandleServerTool)
+					}
 
-				// Support agent (ElevenLabs)
-				if container.Config.AI.ElevenLabs.SupportAgentID != "" {
-					supportHandler := handlers.NewSupportHandler(
-						container.Config.AI.ElevenLabs.APIKey,
-						container.Config.AI.ElevenLabs.SupportAgentID,
-						container.ZapLog,
-					)
-					aiGroup.POST("/support/signed-url", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), supportHandler.IssueSignedURL)
+					// Support agent (ElevenLabs)
+					if container.Config.AI.ElevenLabs.SupportAgentID != "" {
+						supportHandler := handlers.NewSupportHandler(
+							container.Config.AI.ElevenLabs.APIKey,
+							container.Config.AI.ElevenLabs.SupportAgentID,
+							container.ZapLog,
+						)
+						aiGroup.POST("/support/signed-url", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), supportHandler.IssueSignedURL)
+					}
 				}
-			}
 
 				// Conversation endpoints. The "gate-on + nil-passcode" invariant
 				// is validated at application startup (Application.validateSecurityConfig),
@@ -1889,6 +1902,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				ramphubWebhooks := webhooks.Group(ramphubPath)
 				ramphubWebhooks.Use(middleware.RateLimit(100))
 				ramphubWebhooks.POST("", container.RampHandlers.HandleWebhook)
+			}
+
+			// Airbills webhooks (HMAC-SHA256 signed; verified in the handler)
+			if container.BillPayHandlers != nil {
+				airbillsPath := container.Config.Airbills.WebhookPath
+				if airbillsPath == "" {
+					airbillsPath = "/airbills"
+				}
+				airbillsWebhooks := webhooks.Group(airbillsPath)
+				airbillsWebhooks.Use(middleware.RateLimit(100))
+				airbillsWebhooks.POST("", container.BillPayHandlers.HandleWebhook)
 			}
 
 			// Circle Programmable Wallets webhooks for inbound deposits
