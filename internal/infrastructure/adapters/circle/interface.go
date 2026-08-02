@@ -21,6 +21,7 @@ type Client interface {
 	GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]TokenBalance, error)
 	GetUSDCTokenIDOnchain(ctx context.Context, walletID string) (string, error)
 	GetNativeTokenBalance(ctx context.Context, walletID string) (string, error)
+	GetNFTBalance(ctx context.Context, walletID string) ([]Nft, error)
 
 	// Transfers
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error)

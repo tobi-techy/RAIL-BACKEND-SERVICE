@@ -439,6 +439,17 @@ func (c *HTTPClient) GetNativeTokenBalance(ctx context.Context, walletID string)
 	return "0", nil
 }
 
+// GetNFTBalance returns the NFT balances for a wallet. NFTs are served by a
+// separate endpoint from fungible token balances (GetTokenBalance) and are
+// never included in the /balances response.
+func (c *HTTPClient) GetNFTBalance(ctx context.Context, walletID string) ([]Nft, error) {
+	var resp apiResponse[NftsData]
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/w3s/wallets/"+walletID+"/nfts?pageSize=100", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data.Nfts, nil
+}
+
 func (c *HTTPClient) CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error) {
 	c.logger.Info("Circle CreateTransfer request",
 		zap.String("walletId", req.WalletID),

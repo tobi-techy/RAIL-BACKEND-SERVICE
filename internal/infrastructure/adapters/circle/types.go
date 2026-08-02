@@ -136,6 +136,22 @@ type TokenBalancesData struct {
 	TokenBalances []TokenBalance `json:"tokenBalances"`
 }
 
+// --- NFT Balances ---
+
+// Nft is an NFT held in a Circle wallet. NFTs are returned by a separate
+// endpoint (/nfts) from fungible token balances and use NftTokenId (the token
+// id within the contract) for transfers instead of TokenInfo.ID (the token UUID).
+type Nft struct {
+	Token      TokenInfo `json:"token"`
+	NftTokenID string    `json:"nftTokenId"`
+	Amount     string    `json:"amount"`
+	Metadata   string    `json:"metadata,omitempty"`
+}
+
+type NftsData struct {
+	Nfts []Nft `json:"nfts"`
+}
+
 // --- Transfers ---
 
 type FeeConfig struct {
@@ -153,6 +169,9 @@ type CreateTransferRequest struct {
 	// REST API fields (walletId + tokenId)
 	WalletID string `json:"walletId,omitempty"`
 	TokenID  string `json:"tokenId,omitempty"`
+	// NFT transfers use NftTokenIds (token ids within the contract) instead of
+	// TokenID. Length must match Amounts (ERC-1155 batches allowed).
+	NftTokenIds []string `json:"nftTokenIds,omitempty"`
 	// SDK-style fields (blockchain + walletAddress + tokenAddress)
 	Blockchain         string     `json:"blockchain,omitempty"`
 	WalletAddress      string     `json:"walletAddress,omitempty"`
