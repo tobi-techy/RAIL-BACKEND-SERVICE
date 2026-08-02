@@ -208,14 +208,9 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		return p.handleNormalMessage(ctx, msg, resolved)
 	}
 
-	// Unlinked sender. Chat-first onboarding takes over unless the message is a
-	// handshake token for an app-first link with no onboarding already underway.
-	if p.onboarder != nil {
-		if p.onboarder.HasSession(ctx, msg.Platform, msg.UserID) || !handshakeTokenPattern.MatchString(msg.Text) {
-			return p.handleOnboarding(ctx, msg)
-		}
-	}
-
+	// Unlinked sender. A handshake token always takes precedence — even if the
+	// sender is in the middle of an onboarding conversation. This prevents the
+	// token from being swallowed as a name/country/email reply.
 	if handshakeTokenPattern.MatchString(msg.Text) {
 		if hErr := p.tryCompleteHandshake(ctx, msg); hErr != nil {
 			log.Printf("handshake completion failed for %s: %v", msg.UserID, hErr)
@@ -225,6 +220,11 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			return p.sendErrorMessage(ctx, msg, "That link code wasn't valid or has expired. Please try linking again from the RAIL app.")
 		}
 		return nil
+	}
+
+	// No handshake token: chat-first onboarding takes over if enabled.
+	if p.onboarder != nil {
+		return p.handleOnboarding(ctx, msg)
 	}
 
 	linkHint := "Link iMessage"
@@ -301,6 +301,11 @@ func (p *Processor) tryCompleteHandshake(ctx context.Context, msg InboundMessage
 	identity, err := p.linking.ConfirmHandshake(ctx, msg.Text, msg.Platform, msg.UserID)
 	if err != nil {
 		return err
+	}
+	// If the sender was in the middle of chat onboarding, drop it so they don't
+	// get stuck in a half-finished onboarding conversation after linking.
+	if p.onboarder != nil {
+		_ = p.onboarder.ClearSession(ctx, msg.Platform, msg.UserID)
 	}
 	out := p.responseBuilder.EffectResponse(identity,
 		"Your iMessage is now linked to RAIL! Ask me about your balances, spending, savings — anything.",

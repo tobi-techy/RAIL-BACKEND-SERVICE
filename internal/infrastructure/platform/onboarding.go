@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"net/mail"
 	"regexp"
 	"strings"
 	"time"
@@ -17,8 +18,11 @@ import (
 // Redis before the user has to start over.
 const onboardingSessionTTL = 30 * time.Minute
 
-// maxOnboardingOTPAttempts caps wrong OTP entries before the session is reset.
+// maxOnboardingOTPAttempts caps wrong SMS OTP entries before the session is reset.
 const maxOnboardingOTPAttempts = 5
+
+// maxEmailOTPAttempts caps wrong email OTP entries before the session is reset.
+const maxEmailOTPAttempts = 5
 
 // OnboardingStateStore is the subset of the Redis client the onboarder needs.
 type OnboardingStateStore interface {
@@ -35,17 +39,22 @@ type OnboardingOTPVerifier interface {
 	VerifyCode(ctx context.Context, identifierType, identifier, code string) (bool, error)
 }
 
-// OnboardingUserStore creates and looks up users by phone. Satisfied by the
-// user repository.
+// OnboardingUserStore creates and looks up users by phone or email. Satisfied
+// by the user repository.
 type OnboardingUserStore interface {
 	GetByPhone(ctx context.Context, phone string) (*entities.UserProfile, error)
+	GetByEmail(ctx context.Context, email string) (*entities.UserProfile, error)
 	CreateUserWithHash(ctx context.Context, email string, phone *string, passwordHash string) (*entities.User, error)
 }
 
 // OnboardingProvisioner completes Tier 1 setup once the phone is verified.
+// For existing users it is a no-op / safe update, so chat onboarding can link
+// an already-created account without downgrading KYC or re-creating wallets.
+// The verified phone is passed so an existing email-only account can have its
+// phone field populated.
 // Satisfied by the onboarding service.
 type OnboardingProvisioner interface {
-	ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID, firstName, country string) error
+	ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID, firstName, country, phone string) error
 }
 
 // OnboardingLinker binds the verified messaging identity to the user without a
@@ -57,22 +66,27 @@ type OnboardingLinker interface {
 type onboardingStep string
 
 const (
-	stepName    onboardingStep = "awaiting_name"
-	stepCountry onboardingStep = "awaiting_country"
-	stepPhone   onboardingStep = "awaiting_phone"
-	stepOTP     onboardingStep = "awaiting_otp"
-	stepConsent onboardingStep = "awaiting_consent"
+	stepName     onboardingStep = "awaiting_name"
+	stepCountry  onboardingStep = "awaiting_country"
+	stepEmail    onboardingStep = "awaiting_email"
+	stepEmailOTP onboardingStep = "awaiting_email_otp"
+	stepPhone    onboardingStep = "awaiting_phone"
+	stepOTP      onboardingStep = "awaiting_otp"
+	stepConsent  onboardingStep = "awaiting_consent"
 )
 
 // onboardingState is the per-sender progress persisted in Redis.
 type onboardingState struct {
-	Step            onboardingStep `json:"step"`
-	FirstName       string         `json:"first_name,omitempty"`
-	Country         string         `json:"country,omitempty"`
-	CountryAttempts int            `json:"country_attempts,omitempty"`
-	Phone           string         `json:"phone,omitempty"`
-	OTPAttempts     int            `json:"otp_attempts,omitempty"`
-	UserID          string         `json:"user_id,omitempty"`
+	Step             onboardingStep `json:"step"`
+	FirstName        string         `json:"first_name,omitempty"`
+	Country          string         `json:"country,omitempty"`
+	CountryAttempts  int            `json:"country_attempts,omitempty"`
+	Email            string         `json:"email,omitempty"`
+	EmailOTPAttempts int            `json:"email_otp_attempts,omitempty"`
+	EmailVerified    bool           `json:"email_verified,omitempty"`
+	Phone            string         `json:"phone,omitempty"`
+	OTPAttempts      int            `json:"otp_attempts,omitempty"`
+	UserID           string         `json:"user_id,omitempty"`
 }
 
 // OnboardInput is a normalized inbound message from an unlinked sender.
@@ -133,6 +147,16 @@ func (c *ChatOnboarder) HasSession(ctx context.Context, platform entities.Platfo
 	return ok
 }
 
+// ClearSession removes an onboarding conversation for a sender. Used by the
+// processor when a handshake token completes a link mid-onboarding.
+func (c *ChatOnboarder) ClearSession(ctx context.Context, platform entities.Platform, senderID string) error {
+	if err := c.store.Del(ctx, onboardingKey(platform, senderID)); err != nil {
+		c.logger.Warn("onboarding session clear failed", zap.Error(err))
+		return Retryable(fmt.Errorf("clear onboarding session: %w", err))
+	}
+	return nil
+}
+
 // Handle advances the onboarding conversation by one step and returns the reply
 // to send back. A nil reply means nothing should be sent.
 func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformReply, error) {
@@ -154,6 +178,10 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 		return c.handleName(ctx, key, &st, text)
 	case stepCountry:
 		return c.handleCountry(ctx, key, &st, text)
+	case stepEmail:
+		return c.handleEmail(ctx, key, &st, text)
+	case stepEmailOTP:
+		return c.handleEmailOTP(ctx, key, &st, text)
 	case stepPhone:
 		return c.handlePhone(ctx, key, &st, text)
 	case stepOTP:
@@ -195,11 +223,88 @@ func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboa
 		}
 	}
 	st.Country = country
+	st.Step = stepEmail
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	return textReply(c.emailPrompt()), nil
+}
+
+func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+	email := normalizeEmail(text)
+	if email == "" && strings.ToLower(strings.TrimSpace(text)) == "skip" {
+		st.Email = ""
+		st.Step = stepPhone
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply("Got it. What's your phone number? Include your country code, like +2348012345678 — I'll text you a code to confirm it."), nil
+	}
+	if email == "" {
+		return textReply(c.emailPrompt()), nil
+	}
+	st.Email = email
+
+	if existing, err := c.users.GetByEmail(ctx, email); err == nil && existing != nil {
+		if !existing.IsActive {
+			_ = c.store.Del(ctx, key)
+			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+		}
+		// Found an existing account. Prove ownership by sending an OTP to the
+		// registered email before we link this chat to it.
+		if _, err := c.verifier.GenerateAndSendCode(ctx, "email", email); err != nil {
+			c.logger.Warn("onboarding email OTP send failed", zap.Error(err))
+			return textReply(otpSendErrorMessage(err)), nil
+		}
+		st.Step = stepEmailOTP
+		st.EmailOTPAttempts = 0
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", email)), nil
+	}
+
 	st.Step = stepPhone
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
 	return textReply("Got it. What's your phone number? Include your country code, like +2348012345678 — I'll text you a code to confirm it."), nil
+}
+
+func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+	code := digitsOnly(text)
+	if len(code) != 6 {
+		return textReply("That doesn't look like the 6-digit code. Reply with the code I emailed you."), nil
+	}
+	ok, err := c.verifier.VerifyCode(ctx, "email", st.Email, code)
+	if err != nil || !ok {
+		st.EmailOTPAttempts++
+		if st.EmailOTPAttempts >= maxEmailOTPAttempts {
+			_ = c.store.Del(ctx, key)
+			return textReply("That code didn't match too many times. For security, please link this chat from the RAIL app instead."), nil
+		}
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply("That code didn't match. Double-check and try again."), nil
+	}
+	st.EmailVerified = true
+	existing, err := c.users.GetByEmail(ctx, st.Email)
+	if err != nil || existing == nil {
+		c.logger.Error("verified email account disappeared during onboarding", zap.String("email", st.Email), zap.Error(err))
+		_ = c.store.Del(ctx, key)
+		return textReply("Something went wrong on my end. Please try again in a moment."), nil
+	}
+	if !existing.IsActive {
+		_ = c.store.Del(ctx, key)
+		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+	}
+	st.UserID = existing.ID.String()
+	st.Step = stepPhone
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	return textReply("Verified. What's your phone number? Include your country code, like +2348012345678 — I'll text a code to confirm it."), nil
 }
 
 func (c *ChatOnboarder) handlePhone(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
@@ -240,6 +345,10 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardin
 
 	if err := c.ensureUser(ctx, st); err != nil {
 		c.logger.Error("onboarding user creation failed", zap.Error(err))
+		if strings.Contains(err.Error(), "inactive") {
+			_ = c.store.Del(ctx, key)
+			return textReply("That phone number belongs to an inactive account. Please reach out to support@userail.money for help."), nil
+		}
 		return textReply("Something went wrong setting up your account. Mind trying that code again in a moment?"), nil
 	}
 	st.Step = stepConsent
@@ -258,7 +367,7 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 		c.logger.Error("onboarding consent with unparseable user id", zap.String("user_id", st.UserID), zap.Error(err))
 		return textReply("Something went wrong on my end. Text me again and we'll pick this back up."), nil
 	}
-	if err := c.provisioner.ProvisionPhoneFirstUser(ctx, uid, st.FirstName, st.Country); err != nil {
+	if err := c.provisioner.ProvisionPhoneFirstUser(ctx, uid, st.FirstName, st.Country, st.Phone); err != nil {
 		c.logger.Error("phone-first provisioning failed", zap.Error(err), zap.String("user_id", st.UserID))
 		return textReply("I couldn't finish setting up your account just now. Reply YES to try again."), nil
 	}
@@ -270,21 +379,45 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 	return textReply(c.completionMessage(st.FirstName, st.Country)), nil
 }
 
-// ensureUser finds an existing user by the verified phone or creates a new
-// passwordless one. Idempotent across retries via the stored user id.
+// ensureUser finds an existing user by the verified email (already proven) or
+// verified phone, or creates a new passwordless one. Idempotent across retries
+// via the stored user id.
 func (c *ChatOnboarder) ensureUser(ctx context.Context, st *onboardingState) error {
 	if st.UserID != "" {
 		return nil
 	}
+
+	// Email was already verified by OTP for an existing account.
+	if st.EmailVerified && st.Email != "" {
+		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil && existing.IsActive {
+			st.UserID = existing.ID.String()
+			return nil
+		}
+	}
+
+	// Phone was just verified by SMS OTP; it may match an existing phone-first
+	// account (e.g. user signed up with phone elsewhere).
 	if existing, err := c.users.GetByPhone(ctx, st.Phone); err == nil && existing != nil {
+		if !existing.IsActive {
+			return fmt.Errorf("phone belongs to an inactive account")
+		}
 		st.UserID = existing.ID.String()
 		return nil
 	}
+
+	// New account. Use the collected email so we don't create a second
+	// phone-first user with a blank email (which violates the unique email
+	// constraint once two such users exist).
+	email := st.Email
 	phone := st.Phone
-	user, err := c.users.CreateUserWithHash(ctx, "", &phone, "")
+	user, err := c.users.CreateUserWithHash(ctx, email, &phone, "")
 	if err != nil {
 		// Lost a race or a stale duplicate — try to recover the existing row.
-		if existing, gerr := c.users.GetByPhone(ctx, st.Phone); gerr == nil && existing != nil {
+		if existing, gerr := c.users.GetByEmail(ctx, email); gerr == nil && existing != nil && existing.IsActive {
+			st.UserID = existing.ID.String()
+			return nil
+		}
+		if existing, gerr := c.users.GetByPhone(ctx, st.Phone); gerr == nil && existing != nil && existing.IsActive {
 			st.UserID = existing.ID.String()
 			return nil
 		}
@@ -307,6 +440,10 @@ func (c *ChatOnboarder) appLink() string {
 		return "the RAIL app"
 	}
 	return c.appURL
+}
+
+func (c *ChatOnboarder) emailPrompt() string {
+	return "What's your email address? If you already have a RAIL account, use the same email — I'll check and link this chat. Reply 'skip' if you'd rather not say."
 }
 
 func (c *ChatOnboarder) introMessage() string {
@@ -346,6 +483,18 @@ var (
 	nameCleanRe   = regexp.MustCompile(`[^\p{L}'-]`)
 	lettersOnlyRe = regexp.MustCompile(`[^\p{L}]`)
 )
+
+func normalizeEmail(input string) string {
+	s := strings.ToLower(strings.TrimSpace(input))
+	s = strings.TrimPrefix(s, "mailto:")
+	if s == "" || s == "skip" {
+		return ""
+	}
+	if _, err := mail.ParseAddress(s); err != nil {
+		return ""
+	}
+	return s
+}
 
 // countryDialCodes maps a stored ISO alpha-2 country to its E.164 dial prefix,
 // used to complete locally-formatted numbers.

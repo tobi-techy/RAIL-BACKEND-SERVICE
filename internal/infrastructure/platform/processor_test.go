@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,28 +162,29 @@ func linkedIdentity(f *fakeRepo, platformUserID string) *entities.PlatformIdenti
 	return pi
 }
 
-func newTestProcessor(repo *fakeRepo, orch Orchestrator) (*Processor, *[]*OutboundMessage) {
+func newTestProcessor(repo *fakeRepo, orch Orchestrator) (*Processor, *[]*OutboundMessage, *LinkingService) {
 	var sent []*OutboundMessage
 	sendFunc := func(_ context.Context, m *OutboundMessage) error {
 		sent = append(sent, m)
 		return nil
 	}
+	ls := NewLinkingService(repo, 900)
 	p := NewProcessor(
 		NewUserResolver(repo),
 		orch,
 		NewResponseBuilder(),
-		NewLinkingService(repo, 900),
+		ls,
 		nil, // voice transcoder not needed for these tests
 		sendFunc,
 	)
-	return p, &sent
+	return p, &sent, ls
 }
 
 func TestProcessAction_ConfirmVoteExecutes(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, sent := newTestProcessor(repo, orch)
+	p, sent, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{
 		Action:   "confirm",
@@ -210,7 +212,7 @@ func TestProcessAction_CancelVote(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, _ := newTestProcessor(repo, orch)
+	p, _, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{Action: "cancel", UserID: "+15551234", SpaceID: "space-1", Platform: "imessage"}
 	raw, _ := json.Marshal(pb)
@@ -227,7 +229,7 @@ func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, sent := newTestProcessor(repo, orch)
+	p, sent, _ := newTestProcessor(repo, orch)
 	p.voice = &fakeVoice{transcript: "what's my balance"}
 
 	msg := InboundMessage{
@@ -258,11 +260,59 @@ func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 	}
 }
 
+func TestProcessor_HandshakeTokenDuringOnboardingCompletesLink(t *testing.T) {
+	repo := newFakeRepo()
+	proc, sent, ls := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	proc.SetOnboarder(ob)
+
+	// First message starts onboarding.
+	raw, _ := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15556666",
+		Text:     "hi",
+	})
+	if err := proc.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !ob.HasSession(context.Background(), entities.PlatformIMessage, "+15556666") {
+		t.Fatal("onboarding session should exist")
+	}
+
+	// Initiate a handshake from a different (existing) user.
+	existingUserID := uuid.New()
+	res, err := ls.InitiateHandshake(context.Background(), existingUserID, entities.PlatformIMessage)
+	if err != nil {
+		t.Fatalf("initiate handshake: %v", err)
+	}
+
+	// The same unlinked sender now texts the handshake token. It should
+	// complete the link rather than be treated as an onboarding reply.
+	raw, _ = json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15556666",
+		Text:     res.Token,
+	})
+	if err := proc.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, "+15556666") {
+		t.Fatal("onboarding session should be cleared after handshake")
+	}
+	if len(*sent) == 0 {
+		t.Fatal("expected handshake confirmation reply")
+	}
+	last := (*sent)[len(*sent)-1]
+	if !strings.Contains(last.Text, "linked") {
+		t.Fatalf("expected link confirmation, got: %q", last.Text)
+	}
+}
+
 func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, sent := newTestProcessor(repo, orch) // voice == nil
+	p, sent, _ := newTestProcessor(repo, orch) // voice == nil
 
 	msg := InboundMessage{
 		Platform: entities.PlatformIMessage,
@@ -287,7 +337,7 @@ func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 func TestProcessAction_UnlinkedSenderIgnored(t *testing.T) {
 	repo := newFakeRepo()
 	orch := &fakeOrchestrator{}
-	p, _ := newTestProcessor(repo, orch)
+	p, _, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{Action: "confirm", UserID: "+19999999", SpaceID: "space-1", Platform: "imessage"}
 	raw, _ := json.Marshal(pb)
@@ -314,7 +364,7 @@ func TestProcess_OrchestratorCardsRenderedInOutbound(t *testing.T) {
 			},
 		},
 	}
-	p, sent := newTestProcessor(repo, orch)
+	p, sent, _ := newTestProcessor(repo, orch)
 
 	msg := InboundMessage{
 		Platform: entities.PlatformIMessage,

@@ -18,6 +18,7 @@ type basicCompleteUserRepo struct {
 	updateProfileCalls   int
 	updateStatusCalls    int
 	updateKYCStatusCalls int
+	updateSOFCalls       int
 	passwordHash         string
 }
 
@@ -70,6 +71,11 @@ func (r *basicCompleteUserRepo) UpdatePassword(ctx context.Context, userID uuid.
 	return nil
 }
 
+func (r *basicCompleteUserRepo) UpdateSourceOfFunds(ctx context.Context, userID uuid.UUID, employmentStatus, sourceOfFunds, accountPurpose *string) error {
+	r.updateSOFCalls++
+	return nil
+}
+
 type basicCompleteAuditService struct {
 	calls int
 }
@@ -113,15 +119,12 @@ func TestBasicCompleteOnboardingCompletesStartedUser(t *testing.T) {
 		UserID:    userID,
 		FirstName: "Test",
 		LastName:  "User",
-		Password:  "Test1234",
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, string(entities.OnboardingStatusBasicComplete), resp.OnboardingStatus)
 	require.Equal(t, entities.OnboardingStatusBasicComplete, user.OnboardingStatus)
 	require.Equal(t, string(entities.KYCStatusNonKYC), user.KYCStatus)
-	require.Equal(t, 1, userRepo.updatePasswordCalls)
-	require.NotEmpty(t, userRepo.passwordHash)
 	require.Equal(t, 1, userRepo.updateProfileCalls)
 	require.Equal(t, 1, userRepo.updateStatusCalls)
 	require.Equal(t, 1, userRepo.updateKYCStatusCalls)
@@ -149,7 +152,6 @@ func TestBasicCompleteOnboardingIsIdempotentAfterCompletion(t *testing.T) {
 		UserID:    userID,
 		FirstName: "Test",
 		LastName:  "User",
-		Password:  "Test1234",
 	})
 
 	require.NoError(t, err)
@@ -161,12 +163,12 @@ func TestBasicCompleteOnboardingIsIdempotentAfterCompletion(t *testing.T) {
 	require.Equal(t, 0, audit.calls)
 }
 
-func TestBasicCompleteOnboardingRejectsWeakPassword(t *testing.T) {
+func TestBasicCompleteOnboardingRejectsUnverifiedEmail(t *testing.T) {
 	userID := uuid.New()
 	user := &entities.UserProfile{
 		ID:               userID,
 		Email:            "tester@example.com",
-		EmailVerified:    true,
+		EmailVerified:    false,
 		OnboardingStatus: entities.OnboardingStatusStarted,
 		KYCStatus:        string(entities.KYCStatusPending),
 		IsActive:         true,
@@ -178,11 +180,10 @@ func TestBasicCompleteOnboardingRejectsWeakPassword(t *testing.T) {
 		UserID:    userID,
 		FirstName: "Test",
 		LastName:  "User",
-		Password:  "password",
 	})
 
 	require.Error(t, err)
-	require.ErrorContains(t, err, "invalid password")
+	require.ErrorContains(t, err, "email must be verified")
 	require.Equal(t, 0, userRepo.updatePasswordCalls)
 	require.Equal(t, 0, userRepo.updateProfileCalls)
 	require.Equal(t, 0, userRepo.updateStatusCalls)
