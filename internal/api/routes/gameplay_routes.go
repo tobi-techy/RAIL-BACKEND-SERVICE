@@ -74,24 +74,16 @@ func SetupGameplayRoutes(rg *gin.RouterGroup, container *di.Container) {
 		gp.POST("/test-push", func(c *gin.Context) {
 			userIDVal, _ := c.Get("user_id")
 			userID, _ := userIDVal.(uuid.UUID)
-			// Clear stale endpoint ARNs so SNS creates fresh ones on the current platform
-			if container.DeviceTokenRepo != nil {
-				tokens, _ := container.DeviceTokenRepo.GetUserTokens(c.Request.Context(), userID)
-				for _, t := range tokens {
-					if t.EndpointARN != nil && *t.EndpointARN != "" {
-						container.DeviceTokenRepo.UpdateEndpointARN(c.Request.Context(), t.ID, "")
-					}
-				}
-			}
-			// Try SNS first, fall back to Expo
+			// Prefer the live push provider (OneSignal when configured, else Expo)
 			var err error
-			if container.SNSPushService != nil {
-				err = container.SNSPushService.SendToUser(c.Request.Context(), userID,
+			switch {
+			case container.OneSignalPushService != nil:
+				err = container.OneSignalPushService.SendToUser(c.Request.Context(), userID,
 					"Rail Pro", "Push notifications are working!", map[string]interface{}{"type": "test"})
-			} else if container.ExpoPushService != nil {
+			case container.ExpoPushService != nil:
 				err = container.ExpoPushService.SendToUser(c.Request.Context(), userID,
 					"Rail Pro", "Push notifications are working!", map[string]interface{}{"type": "test"})
-			} else {
+			default:
 				c.JSON(500, gin.H{"error": "no push service configured"})
 				return
 			}

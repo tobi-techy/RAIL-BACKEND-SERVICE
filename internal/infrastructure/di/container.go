@@ -374,10 +374,11 @@ type Container struct {
 	P2PHandlers           *p2phandlers.Handlers
 
 	// Notification Services
-	DeviceTokenRepo  *repositories.DeviceTokenRepository
-	NotificationRepo *repositories.NotificationRepository
-	ExpoPushService  *adapters.ExpoPushService
-	SNSPushService   *adapters.SNSPushService
+	DeviceTokenRepo      *repositories.DeviceTokenRepository
+	NotificationRepo     *repositories.NotificationRepository
+	ExpoPushService      *adapters.ExpoPushService
+	OneSignalPushService *adapters.OneSignalPushService
+	SNSPushService       *adapters.SNSPushService
 
 	// Unified Webhook Handler
 	UnifiedFundingWebhookHandler *webhooks.UnifiedFundingWebhookHandler
