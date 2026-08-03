@@ -596,3 +596,114 @@ func TestAdapterUnsupportedChain(t *testing.T) {
 	_, err := adapter.CreateWalletForUser(context.Background(), uuid.New(), "ws-1", entities.WalletChainCelo)
 	assert.ErrorContains(t, err, "unsupported chain")
 }
+
+func TestGetNFTBalance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/w3s/wallets/w-123/nfts", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("pageSize"))
+		assert.Equal(t, "GET", r.Method)
+
+		json.NewEncoder(w).Encode(apiResponse[NftsData]{
+			Data: NftsData{Nfts: []Nft{
+				{Token: TokenInfo{ID: "nft-token-uuid", Symbol: "PUNKS", Standard: "ERC721"}, NftTokenID: "42", Amount: "1"},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+	}, zap.NewNop())
+	require.NoError(t, err)
+
+	nfts, err := client.GetNFTBalance(context.Background(), "w-123")
+	require.NoError(t, err)
+	require.Len(t, nfts, 1)
+	assert.Equal(t, "nft-token-uuid", nfts[0].Token.ID)
+	assert.Equal(t, "42", nfts[0].NftTokenID)
+	assert.Equal(t, "PUNKS", nfts[0].Token.Symbol)
+}
+
+func TestAdapterGetNFTTokenID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(apiResponse[NftsData]{
+			Data: NftsData{Nfts: []Nft{
+				{Token: TokenInfo{ID: "token-a", Symbol: "PUNKS"}, NftTokenID: "1", Amount: "1"},
+				{Token: TokenInfo{ID: "token-b", Symbol: "PUNKS"}, NftTokenID: "2", Amount: "1"},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	httpClient, err := NewHTTPClient(Config{APIKey: "test-key", BaseURL: server.URL}, zap.NewNop())
+	require.NoError(t, err)
+
+	adapter := NewAdapter(httpClient, zap.NewNop())
+
+	// Matches an NFT in the wallet → returns the token id within the contract.
+	tokenID, err := adapter.GetNFTTokenID(context.Background(), "w-1", "token-b")
+	require.NoError(t, err)
+	assert.Equal(t, "2", tokenID)
+
+	// Not an NFT → ("", nil), not an error.
+	tokenID, err = adapter.GetNFTTokenID(context.Background(), "w-1", "token-missing")
+	require.NoError(t, err)
+	assert.Equal(t, "", tokenID)
+}
+
+func TestAdapterReturnUnsupportedNFT(t *testing.T) {
+	var received CreateTransferRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/w3s/developer/transactions/transfer", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(apiResponse[TransactionData]{
+			Data: TransactionData{Transaction: Transaction{ID: "tx-1", State: TransactionStateSent}},
+		})
+	}))
+	defer server.Close()
+
+	httpClient, err := NewHTTPClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      server.URL,
+		EntitySecret: generateTestEntitySecret(),
+		PublicKeyPEM: func() string {
+			_, pem := generateTestKeyPair(t)
+			return pem
+		}(),
+	}, zap.NewNop())
+	require.NoError(t, err)
+
+	adapter := NewAdapter(httpClient, zap.NewNop())
+	err = adapter.ReturnUnsupportedNFT(context.Background(), "w-1", "nft-token-uuid", "0xsender", []string{"1"}, "42", "idem-key")
+	require.NoError(t, err)
+
+	assert.Equal(t, "w-1", received.WalletID)
+	assert.Equal(t, "0xsender", received.DestinationAddress)
+	assert.Equal(t, []string{"42"}, received.NftTokenIds)
+	assert.Equal(t, []string{"1"}, received.Amounts)
+	assert.Equal(t, "idem-key", received.IdempotencyKey)
+	assert.Empty(t, received.TokenID)
+}
+
+func TestAdapterReturnUnsupportedNFT_RequiresNftTokenID(t *testing.T) {
+	adapter := NewAdapter(nil, zap.NewNop())
+	err := adapter.ReturnUnsupportedNFT(context.Background(), "w-1", "nft-token-uuid", "0xsender", []string{"1"}, "", "idem-key")
+	assert.ErrorContains(t, err, "nftTokenId is required")
+}
+
+func TestAdapterGetNFTTokenID_APIFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrorResponse{StatusCode: 500, Message: "boom"})
+	}))
+	defer server.Close()
+
+	httpClient, err := NewHTTPClient(Config{APIKey: "test-key", BaseURL: server.URL}, zap.NewNop())
+	require.NoError(t, err)
+
+	adapter := NewAdapter(httpClient, zap.NewNop())
+	_, err = adapter.GetNFTTokenID(context.Background(), "w-1", "token-a")
+	assert.ErrorContains(t, err, "circle get nft balances")
+}

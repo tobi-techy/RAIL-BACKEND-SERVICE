@@ -5,6 +5,14 @@ import { RetryableOutboundError } from "./rabbitmq";
 
 const log = childLogger({ module: "handler" });
 
+export interface InsightCard {
+  type: string;
+  title: string;
+  subtitle?: string;
+  sentiment?: string;
+  data?: unknown;
+}
+
 export interface OutboundMessage {
   platform: string;
   user_id: string;
@@ -20,6 +28,7 @@ export interface OutboundMessage {
     | "richlink"
     | "poll"
     | "voice"
+    | "cards"
     | "text";
 
   // reply
@@ -39,6 +48,9 @@ export interface OutboundMessage {
   audio_b64?: string;
   audio_mime?: string;
   duration_sec?: number;
+
+  // structured insight cards (rendered as per-platform card text)
+  cards?: InsightCard[];
 }
 
 const EFFECTS: Record<string, IMessageMessageEffect> = {
@@ -189,6 +201,16 @@ export class MessageHandler {
         return;
       }
 
+      case "cards": {
+        // Narrative text first (paced), then each insight card as its own bubble.
+        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
+        for (const card of msg.cards ?? []) {
+          const bubble = renderInsightCard(card);
+          if (bubble) await this.sendWithPacing(space, bubble, "markdown");
+        }
+        return;
+      }
+
       case "markdown":
         await this.sendWithPacing(space, msg.text, "markdown");
         return;
@@ -238,4 +260,101 @@ export class MessageHandler {
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+interface CardRow {
+  label: string;
+  value: string;
+}
+
+// renderInsightCard turns an engine InsightCard into a compact, portable
+// markdown bubble that reads well on iMessage, WhatsApp, and Telegram. It is
+// deliberately tolerant of the card shapes the tool pipeline emits: arrays of
+// stat/breakdown items, structured data objects, chart points, and tips.
+export function renderInsightCard(card: InsightCard): string {
+  const lines: string[] = [];
+  if (card.title) lines.push(`**${card.title}**`);
+  if (card.subtitle) lines.push(card.subtitle);
+
+  const rows = extractCardRows(card.data);
+  for (const row of rows) {
+    if (row.label) {
+      lines.push(`• ${row.label}: **${row.value}**`);
+    } else if (row.value) {
+      lines.push(row.value);
+    }
+  }
+
+  return lines.join("\n").trim();
+}
+
+export function extractCardRows(data: unknown): CardRow[] {
+  if (Array.isArray(data)) {
+    return data.flatMap(extractItemRows);
+  }
+  if (!data || typeof data !== "object") return [];
+
+  const obj = data as Record<string, unknown>;
+
+  if (Array.isArray(obj.items)) {
+    return (obj.items as unknown[]).flatMap(extractItemRows);
+  }
+
+  // tip / empty_state: free-form message
+  if (typeof obj.message === "string" && obj.message.length > 0) {
+    return [{ label: "", value: obj.message }];
+  }
+
+  // chart: y_label + the most recent points
+  if (Array.isArray(obj.points)) {
+    const rows = (obj.points as Array<Record<string, unknown>>)
+      .slice(-5)
+      .map((p) => ({ label: str(p?.label), value: fmtValue(p?.value) }))
+      .filter((r) => r.label || r.value);
+    if (rows.length === 0) return [];
+    if (typeof obj.y_label === "string" && obj.y_label) {
+      return [{ label: obj.y_label, value: rows[rows.length - 1].value }, ...rows];
+    }
+    return rows;
+  }
+
+  // structured data (runway, yield_summary, comparison, subscription_audit, …):
+  // scalar string/number fields render as rows; anything nested is skipped.
+  return Object.entries(obj)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number")
+    .map(([k, v]) => ({ label: prettyKey(k), value: fmtValue(v) }));
+}
+
+function extractItemRows(item: unknown): CardRow[] {
+  if (!item || typeof item !== "object") return [];
+  const o = item as Record<string, unknown>;
+
+  // StatItem: { label, value }  |  BreakdownItem: { label, amount }
+  const label = str(o.label);
+  const value = o.value !== undefined ? fmtValue(o.value) : o.amount !== undefined ? fmtValue(o.amount) : "";
+  if (!label && !value) return [];
+
+  const rows: CardRow[] = [{ label, value }];
+  if (typeof o.change === "string" && o.change) {
+    rows.push({ label: label ? `${label} (change)` : "change", value: o.change });
+  }
+  return rows;
+}
+
+function prettyKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function fmtValue(v: unknown): string {
+  if (typeof v === "number") {
+    return Number.isFinite(v) ? String(v) : "";
+  }
+  if (typeof v === "string") return v;
+  return "";
+}
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
 }

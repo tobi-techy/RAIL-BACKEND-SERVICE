@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,10 +108,14 @@ type fakeOrchestrator struct {
 	cancelCalls  int
 	lastConvID   string
 	lastMessage  string
+	reply        *PlatformReply // when set, HandlePlatformMessage returns it
 }
 
 func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform) (*PlatformReply, error) {
 	o.lastMessage = message
+	if o.reply != nil {
+		return o.reply, nil
+	}
 	return &PlatformReply{Text: "your balance is $10"}, nil
 }
 
@@ -157,28 +162,29 @@ func linkedIdentity(f *fakeRepo, platformUserID string) *entities.PlatformIdenti
 	return pi
 }
 
-func newTestProcessor(repo *fakeRepo, orch Orchestrator) (*Processor, *[]*OutboundMessage) {
+func newTestProcessor(repo *fakeRepo, orch Orchestrator) (*Processor, *[]*OutboundMessage, *LinkingService) {
 	var sent []*OutboundMessage
 	sendFunc := func(_ context.Context, m *OutboundMessage) error {
 		sent = append(sent, m)
 		return nil
 	}
+	ls := NewLinkingService(repo, 900)
 	p := NewProcessor(
 		NewUserResolver(repo),
 		orch,
 		NewResponseBuilder(),
-		NewLinkingService(repo, 900),
+		ls,
 		nil, // voice transcoder not needed for these tests
 		sendFunc,
 	)
-	return p, &sent
+	return p, &sent, ls
 }
 
 func TestProcessAction_ConfirmVoteExecutes(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, sent := newTestProcessor(repo, orch)
+	p, sent, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{
 		Action:   "confirm",
@@ -186,7 +192,10 @@ func TestProcessAction_ConfirmVoteExecutes(t *testing.T) {
 		SpaceID:  "space-1",
 		Platform: "imessage",
 	}
-	raw, _ := json.Marshal(pb)
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatalf("marshal confirm postback: %v", err)
+	}
 
 	if err := p.ProcessAction(context.Background(), raw); err != nil {
 		t.Fatalf("ProcessAction: %v", err)
@@ -206,10 +215,13 @@ func TestProcessAction_CancelVote(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, _ := newTestProcessor(repo, orch)
+	p, _, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{Action: "cancel", UserID: "+15551234", SpaceID: "space-1", Platform: "imessage"}
-	raw, _ := json.Marshal(pb)
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatalf("marshal cancel postback: %v", err)
+	}
 
 	if err := p.ProcessAction(context.Background(), raw); err != nil {
 		t.Fatalf("ProcessAction: %v", err)
@@ -223,7 +235,7 @@ func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, sent := newTestProcessor(repo, orch)
+	p, sent, _ := newTestProcessor(repo, orch)
 	p.voice = &fakeVoice{transcript: "what's my balance"}
 
 	msg := InboundMessage{
@@ -236,7 +248,10 @@ func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 		AudioB64:  base64.StdEncoding.EncodeToString([]byte("audio-bytes")),
 		AudioMime: "audio/mp4",
 	}
-	raw, _ := json.Marshal(msg)
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal voice message: %v", err)
+	}
 
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -254,11 +269,65 @@ func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 	}
 }
 
+func TestProcessor_HandshakeTokenDuringOnboardingCompletesLink(t *testing.T) {
+	repo := newFakeRepo()
+	proc, sent, ls := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	proc.SetOnboarder(ob)
+
+	// First message starts onboarding.
+	raw, err := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15556666",
+		Text:     "hi",
+	})
+	if err != nil {
+		t.Fatalf("marshal first message: %v", err)
+	}
+	if err := proc.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !ob.HasSession(context.Background(), entities.PlatformIMessage, "+15556666") {
+		t.Fatal("onboarding session should exist")
+	}
+
+	// Initiate a handshake from a different (existing) user.
+	existingUserID := uuid.New()
+	res, err := ls.InitiateHandshake(context.Background(), existingUserID, entities.PlatformIMessage)
+	if err != nil {
+		t.Fatalf("initiate handshake: %v", err)
+	}
+
+	// The same unlinked sender now texts the handshake token. It should
+	// complete the link rather than be treated as an onboarding reply.
+	raw, err = json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15556666",
+		Text:     res.Token,
+	})
+	if err != nil {
+		t.Fatalf("marshal handshake message: %v", err)
+	}
+	if err := proc.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, "+15556666") {
+		t.Fatal("onboarding session should be cleared after handshake")
+	}
+	if len(*sent) == 0 {
+		t.Fatal("expected handshake confirmation reply")
+	}
+	last := (*sent)[len(*sent)-1]
+	if !strings.Contains(last.Text, "linked") {
+		t.Fatalf("expected link confirmation, got: %q", last.Text)
+	}
+}
+
 func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	orch := &fakeOrchestrator{}
-	p, sent := newTestProcessor(repo, orch) // voice == nil
+	p, sent, _ := newTestProcessor(repo, orch) // voice == nil
 
 	msg := InboundMessage{
 		Platform: entities.PlatformIMessage,
@@ -267,7 +336,10 @@ func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 		IsVoice:  true,
 		AudioB64: base64.StdEncoding.EncodeToString([]byte("audio")),
 	}
-	raw, _ := json.Marshal(msg)
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal voice fallback message: %v", err)
+	}
 
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -283,15 +355,81 @@ func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 func TestProcessAction_UnlinkedSenderIgnored(t *testing.T) {
 	repo := newFakeRepo()
 	orch := &fakeOrchestrator{}
-	p, _ := newTestProcessor(repo, orch)
+	p, _, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{Action: "confirm", UserID: "+19999999", SpaceID: "space-1", Platform: "imessage"}
-	raw, _ := json.Marshal(pb)
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatalf("marshal unlinked postback: %v", err)
+	}
 
 	if err := p.ProcessAction(context.Background(), raw); err != nil {
 		t.Fatalf("ProcessAction: %v", err)
 	}
 	if orch.confirmCalls != 0 {
 		t.Fatal("unlinked sender must not execute")
+	}
+}
+
+func TestProcess_OrchestratorCardsRenderedInOutbound(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{
+		reply: &PlatformReply{
+			Text: "You've spent $123 this month.",
+			Cards: []entities.InsightCard{
+				{Type: "stat_grid", Title: "Spending Summary", Data: []entities.StatItem{
+					{Label: "Total Spent", Value: "$123.45"},
+					{Label: "Transactions", Value: "12"},
+				}},
+			},
+		},
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	msg := InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		SpaceID:  "space-1",
+		MsgID:    "m1",
+		Text:     "what did i spend this month",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal cards message: %v", err)
+	}
+
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if len(*sent) == 0 {
+		t.Fatal("nothing sent")
+	}
+	out := (*sent)[len(*sent)-1]
+	if out.ContentType != ContentTypeCards {
+		t.Fatalf("expected cards content type, got %q", out.ContentType)
+	}
+	if out.Text != "You've spent $123 this month." {
+		t.Fatalf("cards reply lost its text: %q", out.Text)
+	}
+	if len(out.Cards) != 1 || out.Cards[0].Title != "Spending Summary" {
+		t.Fatalf("cards not carried on outbound message: %+v", out.Cards)
+	}
+	// Wire contract: cards must survive JSON round-trip.
+	rawOut, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal outbound: %v", err)
+	}
+	var decoded struct {
+		ContentType string                 `json:"content_type"`
+		Cards       []entities.InsightCard `json:"cards"`
+	}
+	if err := json.Unmarshal(rawOut, &decoded); err != nil {
+		t.Fatalf("unmarshal outbound: %v", err)
+	}
+	if decoded.ContentType != string(ContentTypeCards) || len(decoded.Cards) != 1 {
+		t.Fatalf("wire contract broken: %+v", decoded)
 	}
 }

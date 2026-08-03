@@ -70,10 +70,21 @@ func (v *fakeVerifier) VerifyCode(_ context.Context, _, _, code string) (bool, e
 // fakeUsers backs the OnboardingUserStore.
 type fakeUsers struct {
 	byPhone map[string]*entities.UserProfile
+	byEmail map[string]*entities.UserProfile
 	created []*entities.User
+	// vanishAfterEmailLookups simulates an account being deleted mid-flow:
+	// once more than this many GetByEmail calls have happened, lookups return
+	// not-found. 0 disables the behaviour.
+	vanishAfterEmailLookups int
+	emailLookups            int
 }
 
-func newFakeUsers() *fakeUsers { return &fakeUsers{byPhone: map[string]*entities.UserProfile{}} }
+func newFakeUsers() *fakeUsers {
+	return &fakeUsers{
+		byPhone: map[string]*entities.UserProfile{},
+		byEmail: map[string]*entities.UserProfile{},
+	}
+}
 
 func (u *fakeUsers) GetByPhone(_ context.Context, phone string) (*entities.UserProfile, error) {
 	if p, ok := u.byPhone[phone]; ok {
@@ -82,8 +93,19 @@ func (u *fakeUsers) GetByPhone(_ context.Context, phone string) (*entities.UserP
 	return nil, fmt.Errorf("not found")
 }
 
-func (u *fakeUsers) CreateUserWithHash(_ context.Context, _ string, phone *string, _ string) (*entities.User, error) {
-	usr := &entities.User{ID: uuid.New()}
+func (u *fakeUsers) GetByEmail(_ context.Context, email string) (*entities.UserProfile, error) {
+	u.emailLookups++
+	if u.vanishAfterEmailLookups > 0 && u.emailLookups > u.vanishAfterEmailLookups {
+		return nil, fmt.Errorf("not found")
+	}
+	if p, ok := u.byEmail[email]; ok {
+		return p, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (u *fakeUsers) CreateUserWithHash(_ context.Context, email string, phone *string, _ string) (*entities.User, error) {
+	usr := &entities.User{ID: uuid.New(), Email: email}
 	if phone != nil {
 		usr.Phone = phone
 	}
@@ -95,13 +117,15 @@ type fakeProvisioner struct {
 	calls     int
 	lastName  string
 	lastCC    string
+	lastPhone string
 	returnErr error
 }
 
-func (p *fakeProvisioner) ProvisionPhoneFirstUser(_ context.Context, _ uuid.UUID, firstName, country string) error {
+func (p *fakeProvisioner) ProvisionPhoneFirstUser(_ context.Context, _ uuid.UUID, firstName, country, phone string) error {
 	p.calls++
 	p.lastName = firstName
 	p.lastCC = country
+	p.lastPhone = phone
 	return p.returnErr
 }
 
@@ -161,6 +185,10 @@ func TestOnboarding_HappyPath(t *testing.T) {
 
 	step(t, ob, sender, "Ada")
 	step(t, ob, sender, "Nigeria")
+	askPhone := step(t, ob, sender, "ada@example.com")
+	if !strings.Contains(askPhone, "phone number") {
+		t.Fatalf("expected phone prompt after email, got: %q", askPhone)
+	}
 	askOTP := step(t, ob, sender, "+2348012345678")
 	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
 		t.Fatalf("expected OTP sent to normalized phone, got: %v", ver.sentTo)
@@ -173,13 +201,13 @@ func TestOnboarding_HappyPath(t *testing.T) {
 	if !strings.Contains(strings.ToUpper(consent), "YES") {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
-	if len(users.created) != 1 {
-		t.Fatalf("expected user created after OTP, got %d", len(users.created))
+	if len(users.created) != 1 || users.created[0].Email != "ada@example.com" {
+		t.Fatalf("expected user created with email after OTP, got %d", len(users.created))
 	}
 
 	done := step(t, ob, sender, "YES")
-	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" {
-		t.Fatalf("expected provisioning with Ada/NG, got calls=%d name=%q cc=%q", prov.calls, prov.lastName, prov.lastCC)
+	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
+		t.Fatalf("expected provisioning with Ada/NG/+2348012345678, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
 	}
 	if linker.calls != 1 || linker.lastSend != sender {
 		t.Fatalf("expected auto-link to sender, got calls=%d send=%q", linker.calls, linker.lastSend)
@@ -196,11 +224,12 @@ func TestOnboarding_ExistingPhoneAutoLinks(t *testing.T) {
 	ob, _, _, users, prov, linker := newTestOnboarder()
 	sender := "+15550002"
 	existingID := uuid.New()
-	users.byPhone["+2348012345678"] = &entities.UserProfile{ID: existingID}
+	users.byPhone["+2348012345678"] = &entities.UserProfile{ID: existingID, IsActive: true}
 
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Bola")
 	step(t, ob, sender, "NG")
+	step(t, ob, sender, "bola@example.com")
 	step(t, ob, sender, "+2348012345678")
 	step(t, ob, sender, "123456")
 	step(t, ob, sender, "yes")
@@ -220,6 +249,7 @@ func TestOnboarding_OTPRetryCapResetsSession(t *testing.T) {
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Chidi")
 	step(t, ob, sender, "NG")
+	step(t, ob, sender, "chidi@example.com")
 	step(t, ob, sender, "+2348012345678")
 
 	var last string
@@ -241,6 +271,7 @@ func TestOnboarding_ConsentRequiredBeforeProvision(t *testing.T) {
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Dele")
 	step(t, ob, sender, "NG")
+	step(t, ob, sender, "dele@example.com")
 	step(t, ob, sender, "+2348012345678")
 	step(t, ob, sender, "123456")
 
@@ -264,6 +295,7 @@ func TestOnboarding_ProvisionFailureKeepsSession(t *testing.T) {
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Efe")
 	step(t, ob, sender, "NG")
+	step(t, ob, sender, "efe@example.com")
 	step(t, ob, sender, "+2348012345678")
 	step(t, ob, sender, "123456")
 	reply := step(t, ob, sender, "yes")
@@ -334,15 +366,18 @@ func TestIsAffirmative(t *testing.T) {
 
 func TestProcessor_RoutesUnlinkedSenderToOnboarding(t *testing.T) {
 	repo := newFakeRepo()
-	proc, sent := newTestProcessor(repo, &fakeOrchestrator{})
+	proc, sent, _ := newTestProcessor(repo, &fakeOrchestrator{})
 	ob, _, _, _, _, _ := newTestOnboarder()
 	proc.SetOnboarder(ob)
 
-	raw, _ := json.Marshal(InboundMessage{
+	raw, err := json.Marshal(InboundMessage{
 		Platform: entities.PlatformIMessage,
 		UserID:   "+15559999",
 		Text:     "hey",
 	})
+	if err != nil {
+		t.Fatalf("marshal onboarding message: %v", err)
+	}
 	if err := proc.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -356,18 +391,21 @@ func TestProcessor_RoutesUnlinkedSenderToOnboarding(t *testing.T) {
 
 func TestProcessor_HandshakeTokenSkipsOnboarding(t *testing.T) {
 	repo := newFakeRepo()
-	proc, sent := newTestProcessor(repo, &fakeOrchestrator{})
+	proc, sent, _ := newTestProcessor(repo, &fakeOrchestrator{})
 	ob, _, _, _, _, _ := newTestOnboarder()
 	proc.SetOnboarder(ob)
 
 	// A 64-hex token with no active onboarding session must not create a session;
 	// it falls through to the (failing) handshake path instead.
 	token := strings.Repeat("a", 64)
-	raw, _ := json.Marshal(InboundMessage{
+	raw, err := json.Marshal(InboundMessage{
 		Platform: entities.PlatformIMessage,
 		UserID:   "+15558888",
 		Text:     token,
 	})
+	if err != nil {
+		t.Fatalf("marshal token message: %v", err)
+	}
 	if err := proc.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -376,5 +414,249 @@ func TestProcessor_HandshakeTokenSkipsOnboarding(t *testing.T) {
 	}
 	if len(*sent) != 1 || !strings.Contains(strings.ToLower((*sent)[0].Text), "link code") {
 		t.Fatalf("expected handshake failure reply, got: %+v", *sent)
+	}
+}
+
+func TestCompletionMessage_PersonalizedFirstInsight(t *testing.T) {
+	ob, _, _, _, _, _ := newTestOnboarder()
+
+	msg := ob.completionMessage("Ada", "NG")
+	if !strings.Contains(msg, "You're all set, Ada!") {
+		t.Fatalf("expected personalized greeting, got: %q", msg)
+	}
+	if !strings.Contains(msg, "stable dollars and convert to naira") {
+		t.Fatalf("expected country-aware naira line, got: %q", msg)
+	}
+	if !strings.Contains(msg, "what are you saving for?") {
+		t.Fatalf("expected first-savings prompt, got: %q", msg)
+	}
+	if !strings.Contains(msg, "https://app.example/join") {
+		t.Fatalf("completion should re-share app link, got: %q", msg)
+	}
+}
+
+func TestCompletionMessage_CountryVariants(t *testing.T) {
+	ob, _, _, _, _, _ := newTestOnboarder()
+
+	if msg := ob.completionMessage("Kofi", "GH"); !strings.Contains(msg, "convert to cedis") {
+		t.Fatalf("expected cedi line for GH, got: %q", msg)
+	}
+	if msg := ob.completionMessage("John", "US"); strings.Contains(msg, "convert to") {
+		t.Fatalf("expected generic line for US, got: %q", msg)
+	}
+	if msg := ob.completionMessage("", ""); !strings.Contains(msg, "You're all set!") {
+		t.Fatalf("expected fallback greeting for empty name, got: %q", msg)
+	}
+}
+
+func TestCompletionMessage_EndToEndPrompt(t *testing.T) {
+	ob, _, _, _, prov, linker := newTestOnboarder()
+	sender := "+15557777"
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ada")
+	step(t, ob, sender, "NG")
+	step(t, ob, sender, "ada2@example.com")
+	step(t, ob, sender, "+2348012345678")
+	done := step(t, ob, sender, "123456")
+	if !strings.Contains(strings.ToUpper(done), "YES") {
+		t.Fatalf("expected consent prompt, got: %q", done)
+	}
+	done = step(t, ob, sender, "YES")
+	if !strings.Contains(done, "what are you saving for?") {
+		t.Fatalf("expected first-savings prompt at completion, got: %q", done)
+	}
+	if prov.lastCC != "NG" || linker.calls != 1 {
+		t.Fatalf("expected provision/link on completion, got prov=%d link=%d", prov.calls, linker.calls)
+	}
+}
+
+func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
+	ob, _, ver, users, prov, linker := newTestOnboarder()
+	sender := "+15550008"
+	existingID := uuid.New()
+	users.byEmail["existing@example.com"] = &entities.UserProfile{ID: existingID, Email: "existing@example.com", IsActive: true}
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Zara")
+	step(t, ob, sender, "NG")
+	askEmailOTP := step(t, ob, sender, "existing@example.com")
+	if !strings.Contains(askEmailOTP, "emailed") {
+		t.Fatalf("expected email OTP prompt, got: %q", askEmailOTP)
+	}
+
+	askPhone := step(t, ob, sender, "123456")
+	if !strings.Contains(askPhone, "phone number") {
+		t.Fatalf("expected phone prompt after email OTP, got: %q", askPhone)
+	}
+
+	step(t, ob, sender, "+2348099999999")
+	consent := step(t, ob, sender, "123456")
+	if !strings.Contains(strings.ToUpper(consent), "YES") {
+		t.Fatalf("expected consent prompt, got: %q", consent)
+	}
+
+	if len(users.created) != 0 {
+		t.Fatalf("should not create a new user when email already exists, created %d", len(users.created))
+	}
+
+	step(t, ob, sender, "yes")
+	if prov.calls != 1 || linker.calls != 1 {
+		t.Fatalf("expected provision+link for existing user, got prov=%d link=%d", prov.calls, linker.calls)
+	}
+	// Verify it was sent to both email and phone
+	if len(ver.sentTo) < 2 {
+		t.Fatalf("expected OTPs to both email and phone, got: %v", ver.sentTo)
+	}
+}
+
+func TestOnboarding_EmailOTPRetryCapResetsSession(t *testing.T) {
+	ob, _, _, users, _, _ := newTestOnboarder()
+	sender := "+15550009"
+	existingID := uuid.New()
+	users.byEmail["locked@example.com"] = &entities.UserProfile{ID: existingID, Email: "locked@example.com", IsActive: true}
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Tomi")
+	step(t, ob, sender, "NG")
+	step(t, ob, sender, "locked@example.com")
+
+	var last string
+	for i := 0; i < maxEmailOTPAttempts; i++ {
+		last = step(t, ob, sender, "000000")
+	}
+	if !strings.Contains(strings.ToLower(last), "link this chat from the rail app") {
+		t.Fatalf("expected reset message after max email OTP attempts, got: %q", last)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
+		t.Fatal("session should be cleared after too many wrong email codes")
+	}
+}
+
+func TestOnboarding_InactiveEmailAccountRejected(t *testing.T) {
+	ob, _, _, users, _, _ := newTestOnboarder()
+	sender := "+15550010"
+	existingID := uuid.New()
+	users.byEmail["inactive@example.com"] = &entities.UserProfile{ID: existingID, Email: "inactive@example.com", IsActive: false}
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ada")
+	step(t, ob, sender, "NG")
+	reply := step(t, ob, sender, "inactive@example.com")
+	if !strings.Contains(reply, "isn't active") {
+		t.Fatalf("expected inactive account message, got: %q", reply)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
+		t.Fatal("session should be cleared after inactive account")
+	}
+}
+
+func TestOnboarding_EmailAccountVanishesAfterOTPSend(t *testing.T) {
+	ob, _, ver, users, _, _ := newTestOnboarder()
+	sender := "+15550013"
+	users.byEmail["fading@example.com"] = &entities.UserProfile{ID: uuid.New(), Email: "fading@example.com", IsActive: true}
+	// First lookup finds the account and triggers the OTP; the second lookup
+	// (re-verify right after sending) sees it disappear.
+	users.vanishAfterEmailLookups = 1
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ngozi")
+	step(t, ob, sender, "NG")
+	reply := step(t, ob, sender, "fading@example.com")
+
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "fading@example.com" {
+		t.Fatalf("expected email OTP sent before re-check, got: %v", ver.sentTo)
+	}
+	if !strings.Contains(reply, "isn't active") {
+		t.Fatalf("expected inactive/deleted account message after re-check, got: %q", reply)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
+		t.Fatal("session should be cleared when the account vanishes after the OTP send")
+	}
+}
+
+func TestOnboarding_EmailAccountDeactivatedAfterEmailOTP(t *testing.T) {
+	ob, _, _, users, _, _ := newTestOnboarder()
+	sender := "+15550014"
+	existingID := uuid.New()
+	users.byEmail["frozen@example.com"] = &entities.UserProfile{ID: existingID, Email: "frozen@example.com", IsActive: true}
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ada")
+	step(t, ob, sender, "NG")
+	step(t, ob, sender, "frozen@example.com")
+
+	// The account is deactivated between the OTP send and the OTP verification.
+	users.byEmail["frozen@example.com"].IsActive = false
+	reply := step(t, ob, sender, "123456")
+
+	if !strings.Contains(reply, "isn't active") {
+		t.Fatalf("expected inactive account message after email OTP, got: %q", reply)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
+		t.Fatal("session should be cleared when the account is inactive after email OTP")
+	}
+}
+
+func TestOnboarding_SkipEmailUsesNoEmail(t *testing.T) {
+	ob, _, _, users, _, _ := newTestOnboarder()
+	sender := "+15550011"
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Kemi")
+	step(t, ob, sender, "NG")
+	askPhone := step(t, ob, sender, "skip")
+	if !strings.Contains(askPhone, "phone number") {
+		t.Fatalf("expected phone prompt after skipping email, got: %q", askPhone)
+	}
+	step(t, ob, sender, "+2348099999999")
+	step(t, ob, sender, "123456")
+	step(t, ob, sender, "yes")
+	if len(users.created) != 1 {
+		t.Fatalf("expected one user created when email skipped, got %d", len(users.created))
+	}
+	got := users.created[0].Email
+	if !strings.HasPrefix(got, "phone+") || !strings.HasSuffix(got, "@placeholder.invalid") {
+		t.Fatalf("expected opaque placeholder email, got %q", got)
+	}
+	// The placeholder must not carry the phone number (no PII duplication).
+	if strings.Contains(got, "2348099999999") {
+		t.Fatalf("placeholder email leaks the phone number: %q", got)
+	}
+}
+
+func TestOnboarding_NewUserCreatedWithEmail(t *testing.T) {
+	ob, _, _, users, _, _ := newTestOnboarder()
+	sender := "+15550012"
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Lola")
+	step(t, ob, sender, "NG")
+	step(t, ob, sender, "lola@example.com")
+	step(t, ob, sender, "+2348099999999")
+	step(t, ob, sender, "123456")
+	step(t, ob, sender, "yes")
+	if len(users.created) != 1 || users.created[0].Email != "lola@example.com" {
+		t.Fatalf("expected new user with email, got %d", len(users.created))
+	}
+}
+
+func TestNormalizeEmail(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"lola@example.com", "lola@example.com"},
+		{"  Lola@Example.COM  ", "lola@example.com"},
+		{"mailto:lola@example.com", "lola@example.com"},
+		{"Lola Ogunsola <lola@example.com>", "lola@example.com"},
+		{"skip", ""},
+		{"not an email", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeEmail(c.in); got != c.want {
+			t.Errorf("normalizeEmail(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

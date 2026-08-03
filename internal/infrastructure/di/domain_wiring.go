@@ -1950,16 +1950,40 @@ func (c *Container) initializeDomainServices() error {
 		c.MiriamSelfReviewEngine.SetNotifier(deferredMiriamNotifier)
 	}
 
-	// Wire push notification service. Expo is the only delivery path — AWS/SNS
-	// was decommissioned, so stale SNS env config must never win the routing
-	// (it silently swallowed every push after the AWS account went away).
+	// Wire push notification service. OneSignal is the preferred delivery path
+	// when configured (PUSH_PROVIDER=onesignal + ONESIGNAL_* credentials);
+	// otherwise Expo remains the default. AWS/SNS was decommissioned, so stale
+	// SNS env config must never win the routing (it silently swallowed every
+	// push after the AWS account went away).
 	if c.Config.SNSPush.IOSPlatformARN != "" || c.Config.SNSPush.AndroidPlatformARN != "" {
-		c.ZapLog.Warn("SNS push config is set but ignored — AWS is decommissioned; using Expo push. Remove SNS_PUSH_* env vars.")
+		c.ZapLog.Warn("SNS push config is set but ignored — AWS is decommissioned; using OneSignal/Expo push. Remove SNS_PUSH_* env vars.")
 	}
-	expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
-	c.ExpoPushService = expoPushService
-	c.NotificationService.SetPushSender(expoPushService)
-	c.ZapLog.Info("Expo push service initialized as the push delivery path")
+	var livePush interface {
+		SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
+	}
+	switch c.Config.Push.Provider {
+	case "onesignal":
+		if c.Config.Push.OneSignalAppID == "" || c.Config.Push.OneSignalAPIKey == "" {
+			c.ZapLog.Error("PUSH_PROVIDER=onesignal but ONESIGNAL_APP_ID/ONESIGNAL_API_KEY missing — falling back to Expo push")
+		} else {
+			oneSignalPushService := adapters.NewOneSignalPushService(
+				c.Config.Push.OneSignalAppID,
+				c.Config.Push.OneSignalAPIKey,
+				c.ZapLog,
+			)
+			oneSignalPushService.SetAndroidChannelID(c.Config.Push.OneSignalChannel)
+			c.OneSignalPushService = oneSignalPushService
+			livePush = oneSignalPushService
+			c.ZapLog.Info("OneSignal push service initialized as the push delivery path")
+		}
+	}
+	if livePush == nil {
+		expoPushService := adapters.NewExpoPushService(c.DeviceTokenRepo, c.ZapLog)
+		c.ExpoPushService = expoPushService
+		livePush = expoPushService
+		c.ZapLog.Info("Expo push service initialized as the push delivery path")
+	}
+	c.NotificationService.SetPushSender(livePush)
 	// Wire email notifications for important events
 	if c.EmailService != nil {
 		c.NotificationService.SetEmailSender(adapters.NewEmailSenderAdapter(c.EmailService))
@@ -1967,17 +1991,7 @@ func (c *Container) initializeDomainServices() error {
 	c.NotificationService.SetUserEmailLookup(adapters.NewUserEmailLookup(c.UserRepo))
 
 	if c.GrowthEngineRepo != nil {
-		var growthPush growthengine.PushSender
-		// Expo is the only live delivery path — prefer it so stale SNS state can
-		// never win the routing (AWS is decommissioned).
-		if c.ExpoPushService != nil {
-			growthPush = c.ExpoPushService
-		} else if c.SNSPushService != nil {
-			growthPush = c.SNSPushService
-		}
-		if growthPush == nil {
-			c.ZapLog.Warn("growth engine initialized without push sender; push campaigns will fail gracefully")
-		}
+		var growthPush growthengine.PushSender = livePush
 		c.GrowthEngineService = growthengine.NewService(
 			c.GrowthEngineRepo,
 			c.EmailService,
@@ -1991,13 +2005,7 @@ func (c *Container) initializeDomainServices() error {
 	}
 
 	// Wire push notifier into gameplay services (now that push provider is resolved).
-	// Expo is the only live delivery path; SNS remains only as a dead fallback.
-	var pushNotifier gameplay.PushNotifier
-	if c.ExpoPushService != nil {
-		pushNotifier = c.ExpoPushService
-	} else if c.SNSPushService != nil {
-		pushNotifier = c.SNSPushService
-	}
+	var pushNotifier gameplay.PushNotifier = livePush
 	if pushNotifier != nil {
 		c.GameplayXPService.SetNotifier(pushNotifier)
 		c.GameplayChallengeService.SetNotifier(pushNotifier)

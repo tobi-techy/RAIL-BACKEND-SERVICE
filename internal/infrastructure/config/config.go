@@ -12,57 +12,58 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Environment    string               `mapstructure:"environment"`
-	LogLevel       string               `mapstructure:"log_level"`
-	Server         ServerConfig         `mapstructure:"server"`
-	Cache          CacheConfig          `mapstructure:"cache"`
-	RateLimit      RateLimitConfig      `mapstructure:"rate_limit"`
-	Database       DatabaseConfig       `mapstructure:"database"`
-	Redis          RedisConfig          `mapstructure:"redis"`
-	JWT            JWTConfig            `mapstructure:"jwt"`
-	Blockchain     BlockchainConfig     `mapstructure:"blockchain"`
-	Payment        PaymentConfig        `mapstructure:"payment"`
-	Security       SecurityConfig       `mapstructure:"security"`
-	Circle         CircleConfig         `mapstructure:"circle"`
-	KYC            KYCConfig            `mapstructure:"kyc"`
-	Cloudflare     CloudflareConfig     `mapstructure:"cloudflare"`
-	Email          EmailConfig          `mapstructure:"email"`
-	SMS            SMSConfig            `mapstructure:"sms"`
-	Notification   NotificationConfig   `mapstructure:"notification"`
-	Verification   VerificationConfig   `mapstructure:"verification"`
-	Alpaca         AlpacaConfig         `mapstructure:"alpaca"`
-	Bridge         BridgeConfig         `mapstructure:"bridge"`
-	Blend          BlendConfig          `mapstructure:"blend"`
-	Grid           GridConfig           `mapstructure:"grid"`
-	CCTP           CCTPConfig           `mapstructure:"cctp"`
-	ChainRails     ChainRailsConfig     `mapstructure:"chainrails"`
-	Paj            PajConfig            `mapstructure:"paj"`
-	RampHub        RampHubConfig        `mapstructure:"ramphub"`
-	Graph          GraphConfig          `mapstructure:"graph"`
-	Airbills       AirbillsConfig       `mapstructure:"airbills"`
-	Brij           BrijConfig           `mapstructure:"brij"`
-	Workers        WorkerConfig         `mapstructure:"workers"`
-	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
-	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
-	Platform       PlatformConfig       `mapstructure:"platform"`
-	Eval           EvalConfig           `mapstructure:"eval"`
-	WebAuthn       WebAuthnConfig       `mapstructure:"webauthn"`
-	AI             AIConfig             `mapstructure:"ai"`
-	SNSPush        SNSPushConfig        `mapstructure:"sns_push"`
-	TelegramAlerts TelegramConfig       `mapstructure:"telegram_alerts"`
-	Umbra          UmbraConfig          `mapstructure:"umbra"`
-	Enrichment     EnrichmentConfig     `mapstructure:"enrichment"`
-	Statement      StatementConfig      `mapstructure:"statement"`
-	Document       DocumentConfig       `mapstructure:"document"`
-	AdminAlertEmail string             `mapstructure:"admin_alert_email"`
+	Environment     string               `mapstructure:"environment"`
+	LogLevel        string               `mapstructure:"log_level"`
+	Server          ServerConfig         `mapstructure:"server"`
+	Cache           CacheConfig          `mapstructure:"cache"`
+	RateLimit       RateLimitConfig      `mapstructure:"rate_limit"`
+	Database        DatabaseConfig       `mapstructure:"database"`
+	Redis           RedisConfig          `mapstructure:"redis"`
+	JWT             JWTConfig            `mapstructure:"jwt"`
+	Blockchain      BlockchainConfig     `mapstructure:"blockchain"`
+	Payment         PaymentConfig        `mapstructure:"payment"`
+	Security        SecurityConfig       `mapstructure:"security"`
+	Circle          CircleConfig         `mapstructure:"circle"`
+	KYC             KYCConfig            `mapstructure:"kyc"`
+	Cloudflare      CloudflareConfig     `mapstructure:"cloudflare"`
+	Email           EmailConfig          `mapstructure:"email"`
+	SMS             SMSConfig            `mapstructure:"sms"`
+	Notification    NotificationConfig   `mapstructure:"notification"`
+	Verification    VerificationConfig   `mapstructure:"verification"`
+	Alpaca          AlpacaConfig         `mapstructure:"alpaca"`
+	Bridge          BridgeConfig         `mapstructure:"bridge"`
+	Blend           BlendConfig          `mapstructure:"blend"`
+	Grid            GridConfig           `mapstructure:"grid"`
+	CCTP            CCTPConfig           `mapstructure:"cctp"`
+	ChainRails      ChainRailsConfig     `mapstructure:"chainrails"`
+	Paj             PajConfig            `mapstructure:"paj"`
+	RampHub         RampHubConfig        `mapstructure:"ramphub"`
+	Graph           GraphConfig          `mapstructure:"graph"`
+	Airbills        AirbillsConfig       `mapstructure:"airbills"`
+	Brij            BrijConfig           `mapstructure:"brij"`
+	Workers         WorkerConfig         `mapstructure:"workers"`
+	Reconciliation  ReconciliationConfig `mapstructure:"reconciliation"`
+	SocialAuth      SocialAuthConfig     `mapstructure:"social_auth"`
+	Platform        PlatformConfig       `mapstructure:"platform"`
+	Eval            EvalConfig           `mapstructure:"eval"`
+	WebAuthn        WebAuthnConfig       `mapstructure:"webauthn"`
+	AI              AIConfig             `mapstructure:"ai"`
+	SNSPush         SNSPushConfig        `mapstructure:"sns_push"`
+	Push            PushConfig           `mapstructure:"push"`
+	TelegramAlerts  TelegramConfig       `mapstructure:"telegram_alerts"`
+	Umbra           UmbraConfig          `mapstructure:"umbra"`
+	Enrichment      EnrichmentConfig     `mapstructure:"enrichment"`
+	Statement       StatementConfig      `mapstructure:"statement"`
+	Document        DocumentConfig       `mapstructure:"document"`
+	AdminAlertEmail string               `mapstructure:"admin_alert_email"`
 }
 
 // DocumentConfig configures the document-intelligence pipeline (PaddleOCR sidecar + R2).
 type DocumentConfig struct {
-	OCRServiceURL    string  `mapstructure:"ocr_service_url"`   // e.g. http://ocr:8091 (empty = pipeline disabled)
-	EnablePythonOCR  bool    `mapstructure:"enable_python_ocr"` // gate the new pipeline
+	OCRServiceURL    string  `mapstructure:"ocr_service_url"`    // e.g. http://ocr:8091 (empty = pipeline disabled)
+	EnablePythonOCR  bool    `mapstructure:"enable_python_ocr"`  // gate the new pipeline
 	MinOCRConfidence float64 `mapstructure:"min_ocr_confidence"` // 0-1 floor for trusting OCR output
-	MaxFileSizeMB    int     `mapstructure:"max_file_size_mb"`  // upload ceiling (default 20)
+	MaxFileSizeMB    int     `mapstructure:"max_file_size_mb"`   // upload ceiling (default 20)
 }
 
 // StatementConfig holds configuration for the bank statement processing pipeline.
@@ -101,6 +102,14 @@ type SNSPushConfig struct {
 	Region             string `mapstructure:"region"`               // AWS region (defaults to app region)
 	IOSPlatformARN     string `mapstructure:"ios_platform_arn"`     // SNS Platform Application ARN for APNs
 	AndroidPlatformARN string `mapstructure:"android_platform_arn"` // SNS Platform Application ARN for FCM
+}
+
+// PushConfig selects the push delivery provider.
+type PushConfig struct {
+	Provider         string `mapstructure:"provider"`             // "expo" (default) or "onesignal"
+	OneSignalAppID   string `mapstructure:"onesignal_app_id"`     // OneSignal app ID (required for onesignal)
+	OneSignalAPIKey  string `mapstructure:"onesignal_api_key"`    // OneSignal REST API key (required for onesignal)
+	OneSignalChannel string `mapstructure:"onesignal_channel_id"` // OneSignal Android channel ID (optional)
 }
 
 // GridConfig contains Grid API configuration
@@ -183,7 +192,7 @@ type ElevenLabsConfig struct {
 // prompt injection protection, and end-user billing via an OpenAI-compatible API.
 type CencoriConfig struct {
 	APIKey           string  `mapstructure:"api_key"`
-	Model            string  `mapstructure:"model"`             // Model ID to route through Cencori
+	Model            string  `mapstructure:"model"` // Model ID to route through Cencori
 	MaxTokens        int     `mapstructure:"max_tokens"`
 	MaxContextTokens int     `mapstructure:"max_context_tokens"`
 	Temperature      float64 `mapstructure:"temperature"`
@@ -1167,6 +1176,20 @@ func overrideFromEnv() {
 	}
 	if v := os.Getenv("SNS_PUSH_ANDROID_PLATFORM_ARN"); v != "" {
 		viper.Set("sns_push.android_platform_arn", v)
+	}
+
+	// Push Notifications (provider selection)
+	if v := os.Getenv("PUSH_PROVIDER"); v != "" {
+		viper.Set("push.provider", v)
+	}
+	if v := os.Getenv("ONESIGNAL_APP_ID"); v != "" {
+		viper.Set("push.onesignal_app_id", v)
+	}
+	if v := os.Getenv("ONESIGNAL_API_KEY"); v != "" {
+		viper.Set("push.onesignal_api_key", v)
+	}
+	if v := os.Getenv("ONESIGNAL_CHANNEL_ID"); v != "" {
+		viper.Set("push.onesignal_channel_id", v)
 	}
 
 	// Database

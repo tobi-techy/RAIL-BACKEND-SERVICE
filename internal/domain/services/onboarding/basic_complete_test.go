@@ -18,6 +18,7 @@ type basicCompleteUserRepo struct {
 	updateProfileCalls   int
 	updateStatusCalls    int
 	updateKYCStatusCalls int
+	updateSOFCalls       int
 	passwordHash         string
 }
 
@@ -44,6 +45,8 @@ func (r *basicCompleteUserRepo) Update(ctx context.Context, user *entities.UserP
 	r.updateProfileCalls++
 	r.user.FirstName = user.FirstName
 	r.user.LastName = user.LastName
+	r.user.Phone = user.Phone
+	r.user.PhoneVerified = user.PhoneVerified
 	r.user.UpdatedAt = user.UpdatedAt
 	return nil
 }
@@ -67,6 +70,11 @@ func (r *basicCompleteUserRepo) UpdateBridgeKYCStatus(ctx context.Context, userI
 func (r *basicCompleteUserRepo) UpdatePassword(ctx context.Context, userID uuid.UUID, hash string) error {
 	r.updatePasswordCalls++
 	r.passwordHash = hash
+	return nil
+}
+
+func (r *basicCompleteUserRepo) UpdateSourceOfFunds(ctx context.Context, userID uuid.UUID, employmentStatus, sourceOfFunds, accountPurpose *string) error {
+	r.updateSOFCalls++
 	return nil
 }
 
@@ -113,19 +121,55 @@ func TestBasicCompleteOnboardingCompletesStartedUser(t *testing.T) {
 		UserID:    userID,
 		FirstName: "Test",
 		LastName:  "User",
-		Password:  "Test1234",
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, string(entities.OnboardingStatusBasicComplete), resp.OnboardingStatus)
 	require.Equal(t, entities.OnboardingStatusBasicComplete, user.OnboardingStatus)
 	require.Equal(t, string(entities.KYCStatusNonKYC), user.KYCStatus)
-	require.Equal(t, 1, userRepo.updatePasswordCalls)
-	require.NotEmpty(t, userRepo.passwordHash)
 	require.Equal(t, 1, userRepo.updateProfileCalls)
 	require.Equal(t, 1, userRepo.updateStatusCalls)
 	require.Equal(t, 1, userRepo.updateKYCStatusCalls)
 	require.Equal(t, 1, audit.calls)
+}
+
+func TestProvisionPhoneFirstUser_VerifiesOnlyMatchedPhone(t *testing.T) {
+	// No phone on file: the just-verified number is stored and marked verified.
+	userID := uuid.New()
+	user := &entities.UserProfile{
+		ID:               userID,
+		Email:            "tester@example.com",
+		EmailVerified:    true,
+		OnboardingStatus: entities.OnboardingStatusBasicComplete,
+		IsActive:         true,
+	}
+	service, userRepo := newBasicCompleteService(user, &basicCompleteAuditService{})
+	require.NoError(t, service.ProvisionPhoneFirstUser(context.Background(), userID, "Ada", "NG", "+2348012345678"))
+	require.NotNil(t, userRepo.user.Phone)
+	require.Equal(t, "+2348012345678", *userRepo.user.Phone)
+	require.True(t, userRepo.user.PhoneVerified)
+
+	// A different number already stored: keep the stored number and do NOT mark
+	// it verified — the user proved ownership of a different number.
+	user2ID := uuid.New()
+	existingPhone := "+15551111111"
+	user2 := &entities.UserProfile{
+		ID:               user2ID,
+		Email:            "existing@example.com",
+		EmailVerified:    true,
+		Phone:            &existingPhone,
+		OnboardingStatus: entities.OnboardingStatusBasicComplete,
+		IsActive:         true,
+	}
+	service2, userRepo2 := newBasicCompleteService(user2, &basicCompleteAuditService{})
+	require.NoError(t, service2.ProvisionPhoneFirstUser(context.Background(), user2ID, "Ben", "US", "+2348012345678"))
+	require.Equal(t, existingPhone, *userRepo2.user.Phone)
+	require.False(t, userRepo2.user.PhoneVerified)
+
+	// Same number already stored: the verified number matches, so it's verified.
+	service3, userRepo3 := newBasicCompleteService(user2, &basicCompleteAuditService{})
+	require.NoError(t, service3.ProvisionPhoneFirstUser(context.Background(), user2ID, "Ben", "US", "+15551111111"))
+	require.True(t, userRepo3.user.PhoneVerified)
 }
 
 func TestBasicCompleteOnboardingIsIdempotentAfterCompletion(t *testing.T) {
@@ -149,7 +193,6 @@ func TestBasicCompleteOnboardingIsIdempotentAfterCompletion(t *testing.T) {
 		UserID:    userID,
 		FirstName: "Test",
 		LastName:  "User",
-		Password:  "Test1234",
 	})
 
 	require.NoError(t, err)
@@ -161,12 +204,12 @@ func TestBasicCompleteOnboardingIsIdempotentAfterCompletion(t *testing.T) {
 	require.Equal(t, 0, audit.calls)
 }
 
-func TestBasicCompleteOnboardingRejectsWeakPassword(t *testing.T) {
+func TestBasicCompleteOnboardingRejectsUnverifiedEmail(t *testing.T) {
 	userID := uuid.New()
 	user := &entities.UserProfile{
 		ID:               userID,
 		Email:            "tester@example.com",
-		EmailVerified:    true,
+		EmailVerified:    false,
 		OnboardingStatus: entities.OnboardingStatusStarted,
 		KYCStatus:        string(entities.KYCStatusPending),
 		IsActive:         true,
@@ -178,11 +221,10 @@ func TestBasicCompleteOnboardingRejectsWeakPassword(t *testing.T) {
 		UserID:    userID,
 		FirstName: "Test",
 		LastName:  "User",
-		Password:  "password",
 	})
 
 	require.Error(t, err)
-	require.ErrorContains(t, err, "invalid password")
+	require.ErrorContains(t, err, "email must be verified")
 	require.Equal(t, 0, userRepo.updatePasswordCalls)
 	require.Equal(t, 0, userRepo.updateProfileCalls)
 	require.Equal(t, 0, userRepo.updateStatusCalls)
