@@ -381,6 +381,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		aitools.RegisterAllRemainingTools(toolRegistry)
 		aitools.RegisterExecutionTools(toolRegistry)
 		aitools.RegisterBillTools(toolRegistry)
+		aitools.RegisterTravelTools(toolRegistry)
 
 		c.NewToolRegistry = toolRegistry
 
@@ -656,6 +657,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		agent := aicore.NewAgent(agentDeps, agentConfig, c.ZapLog)
 		c.NewAgent = agent
 		c.AgentDeps = agentDeps
+		// Travel is wired here (not in funding_wiring) because AgentDeps is
+		// constructed during initializeAIServices, after the travel service.
+		c.AgentDeps.Travel = buildTravelProvider(c)
 
 		// Construct CoreChatEngineAdapter — a drop-in ChatEngine backed by core.Agent.
 		// This is the new agent path that replaces the old AgentAdapter orchestrator.

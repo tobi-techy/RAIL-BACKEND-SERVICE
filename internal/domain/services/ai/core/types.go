@@ -334,7 +334,7 @@ type Dependencies struct {
 	YieldOpt          YieldOptimizationProvider
 	MerchantBlock     MerchantBlockProvider
 	TradeCopy         TradeCopyProvider
-	Travel            TravelProvider
+	Travel            TravelProvider // BRIJ flight booking (travel.brij.fi)
 
 	// AnomalyContextFn returns a system-prompt string of recent anomaly
 	// detections for context assembly. Returns empty string if none.

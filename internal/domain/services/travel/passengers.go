@@ -3,11 +3,12 @@ package travel
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/travu"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
 )
 
 // TravelPassenger is a saved traveler profile reused across bookings.
@@ -72,51 +73,55 @@ func (p TravelPassenger) HasFlightDetails() (bool, []string) {
 	return len(missing) == 0, missing
 }
 
-// ToBusPassenger maps a saved profile to a Travu bus passenger.
-func (p TravelPassenger) ToBusPassenger(isPrimary bool, age string) travu.Passenger {
-	return travu.Passenger{
-		Title:          p.Title,
-		Name:           p.FullName(),
-		Age:            age,
-		Sex:            p.Sex,
-		Phone:          p.Phone,
-		Email:          p.Email,
-		Blood:          p.Blood,
-		NextOfKin:      p.NextOfKin,
-		NextOfKinPhone: p.NextOfKinPhone,
-		IsPrimary:      isPrimary,
+// ToFlightPassenger maps a saved profile to a BRIJ flight passenger.
+func (p TravelPassenger) ToFlightPassenger() brij.PassengerInput {
+	return brij.PassengerInput{
+		GivenName:   strings.TrimSpace(p.FirstName),
+		FamilyName:  strings.TrimSpace(p.LastName),
+		BornOn:      dateOnly(p.DOB),
+		Title:       strings.ToLower(strings.TrimSpace(p.Title)),
+		Gender:      strings.ToLower(strings.TrimSpace(p.Sex)),
+		Email:       strings.TrimSpace(p.Email),
+		PhoneNumber: strings.TrimSpace(p.Phone),
 	}
 }
 
-// ToFlightPassenger maps a saved profile to a Travu flight passenger.
-func (p TravelPassenger) ToFlightPassenger() travu.FlightPassenger {
-	passengerType := p.PassengerType
-	if passengerType == "" {
-		passengerType = "Adult"
+// passengerFullName returns the first passenger's full name from a stored
+// travel_orders.passengers snapshot (JSON array of brij.PassengerInput).
+func passengerFullName(passengers []byte) string {
+	list := decodePassengers(passengers)
+	if len(list) == 0 {
+		return ""
 	}
-	country := p.PassportCountry
-	if country == "" {
-		country = p.Nationality
+	parts := []string{list[0].GivenName, list[0].FamilyName}
+	out := make([]string, 0, 2)
+	for _, s := range parts {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
 	}
-	return travu.FlightPassenger{
-		PassengerType:   passengerType,
-		FirstName:       p.FirstName,
-		MiddleName:      p.MiddleName,
-		LastName:        p.LastName,
-		DOB:             p.DOB,
-		Phone:           p.Phone,
-		PassportNumber:  p.PassportNumber,
-		ExpiryDate:      p.PassportExpiry,
-		PassportCountry: country,
-		Gender:          p.Sex,
-		Title:           p.Title,
-		Email:           p.Email,
-		Address:         p.Address,
-		Country:         p.Country,
-		CountryCode:     p.CountryCode,
-		City:            p.City,
-		PostalCode:      p.PostalCode,
+	return strings.Join(out, " ")
+}
+
+// passengerFamilyName returns the first passenger's family name from a stored
+// passengers snapshot. Required by the refund endpoint as a header value.
+func passengerFamilyName(passengers []byte) string {
+	list := decodePassengers(passengers)
+	if len(list) == 0 {
+		return ""
 	}
+	return strings.TrimSpace(list[0].FamilyName)
+}
+
+func decodePassengers(passengers []byte) []brij.PassengerInput {
+	var list []brij.PassengerInput
+	if len(passengers) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(passengers, &list); err != nil {
+		return nil
+	}
+	return list
 }
 
 // ListPassengers returns a user's saved traveler profiles, primary first.

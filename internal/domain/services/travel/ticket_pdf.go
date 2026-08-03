@@ -6,12 +6,54 @@ import (
 	"strings"
 
 	"github.com/go-pdf/fpdf"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/travu"
 )
 
-// RenderTicketPDF builds a printable PDF ticket from a confirmed Travu booking
+// TicketReceipt is the structured booking receipt persisted to
+// travel_orders.receipt for audit and re-render. It is provider-agnostic and
+// deliberately omits PII beyond the passenger name.
+type TicketReceipt struct {
+	Provider      string `json:"provider"`
+	Route         string `json:"route"`
+	TripDate      string `json:"trip_date"`
+	OrderRef      string `json:"order_ref"`
+	BookingRef    string `json:"booking_ref"`
+	IntentID      string `json:"intent_id"`
+	AmountUSD     string `json:"amount_usd"`
+	Status        string `json:"status"`
+	PassengerName string `json:"passenger_name"`
+}
+
+// buildTicketMessage renders the booking confirmation sent to the user's
+// messaging thread.
+func buildTicketMessage(order *orderRow, pnr string) string {
+	route := strings.TrimSpace(order.Route)
+	if route == "" {
+		route = "your flight"
+	}
+	ref := strings.TrimSpace(order.OrderRef)
+	var b strings.Builder
+	b.WriteString("Your flight is confirmed: ")
+	b.WriteString(route)
+	if strings.TrimSpace(order.TripDate) != "" {
+		b.WriteString(" on ")
+		b.WriteString(dateOnly(order.TripDate))
+	}
+	b.WriteString(".")
+	if pnr != "" {
+		b.WriteString("\nPNR: ")
+		b.WriteString(pnr)
+	}
+	if ref != "" {
+		b.WriteString("\nRef: ")
+		b.WriteString(ref)
+	}
+	b.WriteString("\nFor changes or cancellations, message Miriam in the RAIL app.")
+	return b.String()
+}
+
+// RenderTicketPDF builds a printable PDF ticket from a confirmed booking
 // receipt. mode is "bus" or "flight".
-func RenderTicketPDF(mode string, r *travu.OrderReceipt) ([]byte, error) {
+func RenderTicketPDF(mode string, r *TicketReceipt) ([]byte, error) {
 	if r == nil {
 		return nil, fmt.Errorf("nil receipt")
 	}
@@ -40,9 +82,9 @@ func RenderTicketPDF(mode string, r *travu.OrderReceipt) ([]byte, error) {
 
 	// Route headline.
 	pdf.SetFont("Helvetica", "B", 16)
-	route := strings.TrimSpace(r.Narration)
+	route := strings.TrimSpace(r.Route)
 	if route == "" {
-		route = fmt.Sprintf("%s to %s", r.DepartureTerminal, r.DestinationTerminal)
+		route = "Your booking"
 	}
 	pdf.MultiCell(0, 8, route, "", "L", false)
 	pdf.Ln(2)
@@ -50,7 +92,7 @@ func RenderTicketPDF(mode string, r *travu.OrderReceipt) ([]byte, error) {
 	// Status pill.
 	pdf.SetFont("Helvetica", "B", 10)
 	pdf.SetTextColor(5, 150, 105)
-	pdf.CellFormat(0, 6, "STATUS: "+strings.ToUpper(r.OrderStatus), "", 1, "L", false, 0, "")
+	pdf.CellFormat(0, 6, "STATUS: "+strings.ToUpper(r.Status), "", 1, "L", false, 0, "")
 	pdf.SetTextColor(17, 24, 39)
 	pdf.Ln(2)
 
@@ -65,41 +107,22 @@ func RenderTicketPDF(mode string, r *travu.OrderReceipt) ([]byte, error) {
 		pdf.MultiCell(0, 7, v, "", "L", false)
 	}
 
-	row("Booking Ref", r.OrderNumber.String())
-	row("Order ID", r.OrderID.String())
-	if mode == ModeFlight {
-		row("PNR", r.PNRNumber.String())
-		row("Booking ID", r.BookingID.String())
-	}
+	row("Booking Ref", r.BookingRef)
+	row("Order Ref", r.OrderRef)
+	row("Intent ID", r.IntentID)
 	row("Operator", r.Provider)
-	row("Travel Date", r.OrderTicketDate)
-	row("Departure", r.DepartureTerminal)
-	row("Destination", r.DestinationTerminal)
-	if mode == ModeBus {
-		row("Vehicle", r.VehicleNo)
-		row("Seats", r.OrderSeats.String())
-	}
-	row("Total Fare", "NGN "+r.OrderAmount.String())
+	row("Travel Date", dateOnly(r.TripDate))
+	row("Route", route)
+	row("Total Fare", "USDC "+r.AmountUSD)
 
 	pdf.Ln(4)
 
-	// Passenger table.
-	if len(r.SeatDetails) > 0 {
+	// Passenger.
+	if strings.TrimSpace(r.PassengerName) != "" {
 		pdf.SetFont("Helvetica", "B", 12)
-		pdf.CellFormat(0, 8, "Passengers", "", 1, "L", false, 0, "")
-		pdf.SetFont("Helvetica", "B", 9)
-		pdf.SetFillColor(243, 244, 246)
-		pdf.CellFormat(70, 7, "Name", "1", 0, "L", true, 0, "")
-		pdf.CellFormat(25, 7, "Seat", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(20, 7, "Sex", "1", 0, "C", true, 0, "")
-		pdf.CellFormat(75, 7, "Fare (NGN)", "1", 1, "R", true, 0, "")
-		pdf.SetFont("Helvetica", "", 9)
-		for _, sd := range r.SeatDetails {
-			pdf.CellFormat(70, 7, truncateCell(sd.Name, 40), "1", 0, "L", false, 0, "")
-			pdf.CellFormat(25, 7, sd.SeatNumber.String(), "1", 0, "C", false, 0, "")
-			pdf.CellFormat(20, 7, sd.Sex, "1", 0, "C", false, 0, "")
-			pdf.CellFormat(75, 7, sd.Fare.String(), "1", 1, "R", false, 0, "")
-		}
+		pdf.CellFormat(0, 8, "Passenger", "", 1, "L", false, 0, "")
+		pdf.SetFont("Helvetica", "", 10)
+		pdf.CellFormat(0, 7, truncateCell(r.PassengerName, 60), "", 1, "L", false, 0, "")
 	}
 
 	// Footer note.
@@ -113,26 +136,6 @@ func RenderTicketPDF(mode string, r *travu.OrderReceipt) ([]byte, error) {
 		return nil, fmt.Errorf("render pdf: %w", err)
 	}
 	return buf.Bytes(), nil
-}
-
-// ticketCaption builds the short message that accompanies the PDF attachment.
-func ticketCaption(mode string, r *travu.OrderReceipt) string {
-	kind := "bus"
-	if mode == ModeFlight {
-		kind = "flight"
-	}
-	route := strings.TrimSpace(r.Narration)
-	if route == "" {
-		route = fmt.Sprintf("%s to %s", r.DepartureTerminal, r.DestinationTerminal)
-	}
-	extra := ""
-	if mode == ModeFlight && r.PNRNumber.String() != "" {
-		extra = fmt.Sprintf(" PNR %s.", r.PNRNumber.String())
-	} else if mode == ModeBus && r.OrderSeats.String() != "" {
-		extra = fmt.Sprintf(" Seat %s.", r.OrderSeats.String())
-	}
-	return fmt.Sprintf("Your %s ticket is confirmed: %s on %s. Ref %s.%s Here's your ticket.",
-		kind, route, r.OrderTicketDate, r.OrderNumber.String(), extra)
 }
 
 func truncateCell(s string, n int) string {

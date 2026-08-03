@@ -39,6 +39,12 @@ const (
 	ToolPayBill             = "pay_bill"
 	ToolAutomateBill        = "automate_bill"
 	ToolSaveBillBeneficiary = "save_bill_beneficiary"
+
+	// BRIJ flight bookings.
+	ToolCreateFlightIntent = "create_flight_intent"
+	ToolBookFlight         = "book_flight"
+	ToolSaveTravelPassenger = "save_travel_passenger"
+	ToolRequestFlightRefund = "request_flight_refund"
 )
 
 // isExecutionActionTool reports whether the tool is a mutating Execution
@@ -50,6 +56,9 @@ func isExecutionActionTool(name string) bool {
 		ToolCopyTrader, ToolPauseTradeCopying, ToolResumeTradeCopying,
 		ToolStopTradeCopying,
 		ToolPayBill, ToolAutomateBill, ToolSaveBillBeneficiary,
+		// BRIJ flight bookings (staged for confirmation; book_flight is
+		// fund-moving and requires Face ID step-up).
+		ToolCreateFlightIntent, ToolBookFlight, ToolSaveTravelPassenger, ToolRequestFlightRefund,
 		// Mandate acceptance re-runs the core registry tool with confirm=true.
 		"accept_mandate_suggestion", "create_miriam_mandate",
 		// P2P + receipt split + automation create — execute via registry on confirm.
@@ -132,6 +141,14 @@ func executionActionDescription(name string, args map[string]interface{}) string
 		return fmt.Sprintf("Automate %s payment of ₦%s to %s (%s)", arg("category"), arg("amount_ngn"), arg("recipient"), arg("schedule"))
 	case ToolSaveBillBeneficiary:
 		return fmt.Sprintf("Save bill beneficiary %q (%s)", arg("label"), arg("category"))
+	case ToolCreateFlightIntent:
+		return fmt.Sprintf("Lock this flight (intent %s) and prepare it for booking", arg("offer_id"))
+	case ToolBookFlight:
+		return fmt.Sprintf("Book flight for %s", arg("passenger"))
+	case ToolSaveTravelPassenger:
+		return fmt.Sprintf("Save traveler profile %q", arg("label"))
+	case ToolRequestFlightRefund:
+		return fmt.Sprintf("Request refund for flight %s: %s", arg("intent_id"), arg("reason"))
 	default:
 		return "Execute " + name
 	}

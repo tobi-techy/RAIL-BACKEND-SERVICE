@@ -627,7 +627,9 @@ func IsFundMovingAction(action string) bool {
 		// P2P send / receipt splits debit or reserve Spend (claim links for non-users).
 		"send_money", ToolSplitReceipt,
 		// Automations can schedule recurring transfers — require Face ID step-up.
-		ToolCreateAutomation:
+		ToolCreateAutomation,
+		// BRIJ flight bookings hold the user's Spend balance for escrow + fee.
+		ToolBookFlight:
 		return true
 	default:
 		return false

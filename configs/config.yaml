@@ -26,14 +26,15 @@ graph:
   webhook_path: "/graph"
   developer_fee_percent: 0.5
 
-# Travu bus & flight booking aggregator. Secrets come from env
-# (TRAVU_SECRET_KEY etc.); these are non-secret defaults.
-travu:
-  base_url: "https://api.travu.africa/api/v1"
-  sandbox: false
-  flight_search_enabled: false
+# BRIJ Travel flight booking (travel.brij.fi). Secrets come from env
+# (BRIJ_FUNDING_PRIVATE_KEY etc.); these are non-secret defaults.
+brij:
+  base_url: "https://travel.brij.fi"
+  solana_rpc: ""
+  http_timeout: 30
+  max_retries: 2
   developer_fee_percent: 2.0
-  max_amount_ngn: 2000000
+  max_escrow_usd: 5000
 
 
 server:

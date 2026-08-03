@@ -40,7 +40,7 @@ type Config struct {
 	RampHub        RampHubConfig        `mapstructure:"ramphub"`
 	Graph          GraphConfig          `mapstructure:"graph"`
 	Airbills       AirbillsConfig       `mapstructure:"airbills"`
-	Travu          TravuConfig          `mapstructure:"travu"`
+	Brij           BrijConfig           `mapstructure:"brij"`
 	Workers        WorkerConfig         `mapstructure:"workers"`
 	Reconciliation ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth     SocialAuthConfig     `mapstructure:"social_auth"`
@@ -592,17 +592,17 @@ type AirbillsConfig struct {
 	MaxAmountNGN        float64 `mapstructure:"max_amount_ngn"`        // hard per-payment ceiling in NGN (safety cap)
 }
 
-// TravuConfig configures the Travu bus + flight booking aggregator. Bookings
-// debit Rail's prefunded NGN float on the Travu dashboard; Rail charges the
-// user in USDC via a ledger hold at the live FX rate.
-type TravuConfig struct {
-	SecretKey           string  `mapstructure:"secret_key"`            // Bearer token sent in the Authorization header
-	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.travu.africa/api/v1
-	Sandbox             bool    `mapstructure:"sandbox"`               // when true, use the /test base URL
-	AgentEmail          string  `mapstructure:"agent_email"`           // Rail's Travu account email, sent on bus bookings
-	FlightSearchEnabled bool    `mapstructure:"flight_search_enabled"` // gate flight search until Travu enables the endpoint
+// BrijConfig configures BRIJ Travel (travel.brij.fi), Rail's flight provider.
+// Flights are settled per call with x402 micropayments in USDC on Solana
+// mainnet from Rail's funding wallet; Rail charges the user via a ledger hold.
+type BrijConfig struct {
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://travel.brij.fi
+	SolanaRPC           string  `mapstructure:"solana_rpc"`            // Solana mainnet RPC (default: public mainnet-beta)
+	FundingPrivateKey   string  `mapstructure:"funding_private_key"`   // Rail's Solana wallet used to pay x402 charges
+	HTTPTimeout         int     `mapstructure:"http_timeout"`          // per-request timeout in seconds (default 30)
+	MaxRetries          int     `mapstructure:"max_retries"`           // retries for non-payment failures (default 2)
 	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's service fee % added to each booking
-	MaxAmountNGN        float64 `mapstructure:"max_amount_ngn"`        // hard per-booking ceiling in NGN (safety cap)
+	MaxEscrowUSD        float64 `mapstructure:"max_escrow_usd"`        // hard per-booking escrow ceiling in USDC (safety cap)
 }
 
 // WorkerConfig contains background worker configuration
@@ -1569,13 +1569,13 @@ func overrideFromEnv() {
 		{"airbills.developer_fee_percent", "AIRBILLS_DEVELOPER_FEE_PERCENT"},
 		{"airbills.default_token", "AIRBILLS_DEFAULT_TOKEN"},
 		{"airbills.max_amount_ngn", "AIRBILLS_MAX_AMOUNT_NGN"},
-		{"travu.secret_key", "TRAVU_SECRET_KEY"},
-		{"travu.base_url", "TRAVU_BASE_URL"},
-		{"travu.sandbox", "TRAVU_SANDBOX"},
-		{"travu.agent_email", "TRAVU_AGENT_EMAIL"},
-		{"travu.flight_search_enabled", "TRAVU_FLIGHT_SEARCH_ENABLED"},
-		{"travu.developer_fee_percent", "TRAVU_DEVELOPER_FEE_PERCENT"},
-		{"travu.max_amount_ngn", "TRAVU_MAX_AMOUNT_NGN"},
+		{"brij.base_url", "BRIJ_BASE_URL"},
+		{"brij.solana_rpc", "BRIJ_SOLANA_RPC"},
+		{"brij.funding_private_key", "BRIJ_FUNDING_PRIVATE_KEY"},
+		{"brij.http_timeout", "BRIJ_HTTP_TIMEOUT"},
+		{"brij.max_retries", "BRIJ_MAX_RETRIES"},
+		{"brij.developer_fee_percent", "BRIJ_DEVELOPER_FEE_PERCENT"},
+		{"brij.max_escrow_usd", "BRIJ_MAX_ESCROW_USD"},
 	} {
 		viper.BindEnv(kv[0], kv[1])
 		if v := os.Getenv(kv[1]); v != "" {
@@ -1717,9 +1717,12 @@ func validate(config *Config) error {
 		}
 	}
 
-	if config.Travu.SecretKey != "" {
-		if config.Travu.DeveloperFeePercent < 0 || config.Travu.DeveloperFeePercent > 100 {
-			return fmt.Errorf("travu.developer_fee_percent must be between 0 and 100, got %.4f", config.Travu.DeveloperFeePercent)
+	if config.Brij.FundingPrivateKey != "" {
+		if config.Brij.DeveloperFeePercent < 0 || config.Brij.DeveloperFeePercent > 100 {
+			return fmt.Errorf("brij.developer_fee_percent must be between 0 and 100, got %.4f", config.Brij.DeveloperFeePercent)
+		}
+		if config.Brij.MaxEscrowUSD < 0 {
+			return fmt.Errorf("brij.max_escrow_usd must be non-negative, got %.4f", config.Brij.MaxEscrowUSD)
 		}
 	}
 

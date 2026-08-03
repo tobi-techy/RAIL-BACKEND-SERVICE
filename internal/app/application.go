@@ -42,6 +42,7 @@ import (
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	airbills_recovery "github.com/rail-service/rail_service/internal/workers/airbills_recovery"
+	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	autopilot_worker "github.com/rail-service/rail_service/internal/workers/autopilot_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
@@ -103,6 +104,7 @@ type Application struct {
 	ramphubOnrampRecoveryWorker  *ramphub_onramp_recovery.Worker
 	graphNGNRecoveryWorker       *graph_ngn_recovery.Worker
 	airbillsRecoveryWorker       *airbills_recovery.Worker
+	travelRecoveryWorker         *travel_recovery.Worker
 	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
 	rebalancingWorker            *rebalancing_worker.Worker
@@ -383,6 +385,14 @@ func (app *Application) initializeWorkers() error {
 		app.airbillsRecoveryWorker = airbills_recovery.NewWorker(app.container.BillPayService, app.log.Zap())
 		go app.airbillsRecoveryWorker.Start(context.Background())
 		app.log.Info("Airbills recovery worker started")
+	}
+
+	// Travel recovery worker — reverses abandoned flight holds, finalizes
+	// ticketed bookings, and re-delivers tickets that failed to send.
+	if app.container.TravelService != nil {
+		app.travelRecoveryWorker = travel_recovery.NewWorker(app.container.TravelService, app.log.Zap())
+		go app.travelRecoveryWorker.Start(context.Background())
+		app.log.Info("Travel recovery worker started")
 	}
 
 	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals and
@@ -1321,6 +1331,9 @@ func (app *Application) stopWorkers() {
 	}
 	if app.airbillsRecoveryWorker != nil {
 		app.airbillsRecoveryWorker.Stop()
+	}
+	if app.travelRecoveryWorker != nil {
+		app.travelRecoveryWorker.Stop()
 	}
 
 	// Stop KYC auto-invest worker

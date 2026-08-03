@@ -1,15 +1,19 @@
-// Package travel orchestrates bus and flight bookings through the Travu
-// aggregator (interstate/intra-city bus + domestic/international flights).
+// Package travel orchestrates flight bookings through BRIJ Travel
+// (travel.brij.fi), Rail's flight provider.
 //
-// Payment model differs from Airbills: Travu debits Rail's prefunded NGN float
-// on the Travu dashboard, so there is no per-booking crypto transfer. Instead,
-// Rail charges the user in USDC via a double-entry ledger hold at the live FX
-// rate, calls Travu to make the booking (which draws down the NGN float), and
-// reconciles Rail's USDC revenue against the Travu wallet balance out of band.
+// Payment model: BRIJ is settled per call with x402 micropayments in USDC on
+// Solana mainnet from Rail's funding wallet (search/intents/book/refunds). Rail
+// charges the user in USDC via a double-entry ledger hold on their spend
+// balance, so the user is never exposed to the wallet. BRIJ records a
+// customer_support_code at intent creation that is returned exactly once —
+// the service persists it immediately because it is required to read the
+// airline order and to file refunds.
 //
-// On a confirmed booking Rail renders a PDF ticket and delivers it to the user
-// over their messaging thread (iMessage) via the bridge dispatcher. A recovery
-// worker reverses abandoned holds and retries undelivered tickets.
+// Booking is escrow-backed and asynchronous: select a flight (creates a paid
+// intent and holds the user's funds at book time), book it (pays the intent's
+// escrow + one passenger), then poll GET /air/intents/{id} until the intent is
+// booked or refunded. A recovery worker (RunRecovery) polls stuck bookings,
+// reverses abandoned holds, and re-delivers tickets.
 package travel
 
 import (
@@ -23,7 +27,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/travu"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -34,6 +38,16 @@ const (
 	ModeFlight = "flight"
 )
 
+// Order lifecycle states in travel_orders.
+const (
+	StatusHeld      = "held"
+	StatusBooked    = "booked"
+	StatusCompleted = "completed"
+	StatusFailed    = "failed"
+	StatusRefunded  = "refunded"
+	StatusReversed  = "reversed"
+)
+
 // LedgerService for balance checks, holds, and reversals on the spend balance.
 type LedgerService interface {
 	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
@@ -41,119 +55,141 @@ type LedgerService interface {
 	ReverseTransaction(ctx context.Context, userID uuid.UUID, accountType entities.AccountType, originalTxID string, amount decimal.Decimal, metadata map[string]interface{}) error
 }
 
-// CurrencyRateProvider returns the live USD/NGN rate for pricing and pre-checks.
-type CurrencyRateProvider interface {
-	GetLatestRate(ctx context.Context, from, to string) (decimal.Decimal, error)
+// TicketMessenger sends a booking confirmation to the user's messaging thread.
+// Implemented in the DI layer over the platform bridge dispatcher.
+type TicketMessenger interface {
+	SendMessage(ctx context.Context, userID uuid.UUID, text string) error
 }
 
-// TicketDeliverer delivers a rendered PDF ticket to the user's messaging thread.
-// Implemented by the platform bridge dispatcher in the DI layer.
-type TicketDeliverer interface {
-	DeliverTicket(ctx context.Context, userID uuid.UUID, caption, fileName string, pdf []byte) error
-}
-
-// Config carries the tunables sourced from TravuConfig.
+// Config carries the tunables sourced from the BRIJ config block.
 type Config struct {
 	DeveloperFeePercent float64
-	MaxAmountNGN        float64
-	FlightSearchEnabled bool
+	MaxEscrowUSD        float64
 }
 
 // Service is the travel-booking orchestrator.
 type Service struct {
-	db            *sqlx.DB
-	client        *travu.Client
-	ledger        LedgerService
-	currencyRates CurrencyRateProvider
-	deliverer     TicketDeliverer
-	cfg           Config
-	logger        *zap.Logger
+	db        *sqlx.DB
+	client    *brij.Client
+	ledger    LedgerService
+	deliverer TicketMessenger
+	cfg       Config
+	logger    *zap.Logger
 }
 
 // NewService builds the travel-booking service. client is required.
-func NewService(db *sqlx.DB, client *travu.Client, cfg Config, logger *zap.Logger) *Service {
+func NewService(db *sqlx.DB, client *brij.Client, cfg Config, logger *zap.Logger) *Service {
 	return &Service{db: db, client: client, cfg: cfg, logger: logger}
 }
 
-func (s *Service) SetLedger(l LedgerService)               { s.ledger = l }
-func (s *Service) SetCurrencyRates(c CurrencyRateProvider) { s.currencyRates = c }
-func (s *Service) SetTicketDeliverer(d TicketDeliverer)    { s.deliverer = d }
+func (s *Service) SetLedger(l LedgerService)            { s.ledger = l }
+func (s *Service) SetTicketMessenger(d TicketMessenger) { s.deliverer = d }
 
-// --- Search ---
-
-// SearchBusTrips returns available bus trips for a route and date.
-func (s *Service) SearchBusTrips(ctx context.Context, departureState, destinationState, tripDate string) ([]travu.Trip, error) {
-	return s.client.CheckTrip(ctx, travu.CheckTripRequest{
-		DepartureState:   strings.ToUpper(strings.TrimSpace(departureState)),
-		DestinationState: strings.ToUpper(strings.TrimSpace(destinationState)),
-		TripDate:         strings.TrimSpace(tripDate),
-		Sort:             "date",
+// SearchFlights returns live flight offers for a one-way route.
+func (s *Service) SearchFlights(ctx context.Context, origin, destination, departDate string, adults int) ([]brij.OfferSummary, error) {
+	if s.client == nil {
+		return nil, fmt.Errorf("flight booking is not configured")
+	}
+	if adults <= 0 {
+		adults = 1
+	}
+	result, err := s.client.Search(ctx, brij.SearchRequest{
+		OriginIATA:      strings.ToUpper(strings.TrimSpace(origin)),
+		DestinationIATA: strings.ToUpper(strings.TrimSpace(destination)),
+		DepartDate:      strings.TrimSpace(departDate),
+		Adults:          adults,
 	})
-}
-
-// SearchFlights returns available flight options for an itinerary. Gated behind
-// the flight-search feature flag until Travu enables the endpoint.
-func (s *Service) SearchFlights(ctx context.Context, req travu.SearchFlightRequest) ([]travu.Trip, error) {
-	if !s.cfg.FlightSearchEnabled {
-		return nil, fmt.Errorf("flight search is coming soon — bus booking is available now")
-	}
-	return s.client.SearchFlight(ctx, req)
-}
-
-// ListStates returns the supported bus states.
-func (s *Service) ListStates(ctx context.Context) ([]travu.State, error) {
-	return s.client.GetStates(ctx)
-}
-
-// ListAirports returns the supported flight airports.
-func (s *Service) ListAirports(ctx context.Context) ([]travu.Airport, error) {
-	return s.client.GetAirports(ctx)
-}
-
-// --- Booking result ---
-
-// BookingResult summarizes a completed booking for receipts.
-type BookingResult struct {
-	OrderID       uuid.UUID `json:"order_id"`
-	Mode          string    `json:"mode"`
-	Provider      string    `json:"provider"`
-	TravuOrderID  string    `json:"travu_order_id"`
-	OrderNumber   string    `json:"order_number"`
-	PNR           string    `json:"pnr,omitempty"`
-	Route         string    `json:"route"`
-	TripDate      string    `json:"trip_date"`
-	Seats         string    `json:"seats,omitempty"`
-	AmountNGN     float64   `json:"amount_ngn"`
-	AmountUSDC    string    `json:"amount_usdc"`
-	Status        string    `json:"status"`
-	TicketSent    bool      `json:"ticket_sent"`
-}
-
-// --- helpers shared by bus + flight booking ---
-
-// quote converts an NGN fare into a USDC hold at the live FX rate, applying the
-// Rail service fee. Returns (amountUSDC, railFee, totalHold, rate).
-func (s *Service) quote(ctx context.Context, amountNGN float64) (amountUSDC, railFee, totalHold, rate decimal.Decimal, err error) {
-	if s.currencyRates == nil {
-		return z, z, z, z, fmt.Errorf("currency rates unavailable")
-	}
-	rate, err = s.currencyRates.GetLatestRate(ctx, "USD", "NGN")
 	if err != nil {
-		return z, z, z, z, fmt.Errorf("could not get exchange rate: %w", err)
+		return nil, err
 	}
-	if !rate.IsPositive() {
-		return z, z, z, z, fmt.Errorf("invalid exchange rate")
-	}
-	amountUSDC = decimal.NewFromFloat(amountNGN).Div(rate).Round(6)
-	railFee = amountUSDC.Mul(decimal.NewFromFloat(s.cfg.DeveloperFeePercent / 100)).Round(6)
-	totalHold = amountUSDC.Add(railFee)
-	return amountUSDC, railFee, totalHold, rate, nil
+	return result.Offers, nil
 }
 
-var z = decimal.Zero
+// CreateIntentRequest resolves a chosen offer into a lock request.
+type CreateIntentRequest struct {
+	OfferID     string
+	Airline     string
+	Origin      string
+	Destination string
+	DepartingAt string
+	ArrivingAt  string
+	AmountUSD   string
+}
 
-// holdFunds validates the balance and places the USDC hold on the spend balance.
-func (s *Service) holdFunds(ctx context.Context, userID uuid.UUID, mode string, amountNGN float64, totalHold, railFee decimal.Decimal) error {
+// BookingIntentResult summarizes a freshly created intent.
+type BookingIntentResult struct {
+	IntentID    string `json:"intent_id"`
+	OfferID     string `json:"offer_id"`
+	Airline     string `json:"airline"`
+	Origin      string `json:"origin"`
+	Destination string `json:"destination"`
+	DepartingAt string `json:"departing_at"`
+	AmountUSD   string `json:"amount_usd"`
+	ExpiresAt   string `json:"expires_at"`
+	Status      string `json:"status"`
+}
+
+// CreateIntent locks an offer with BRIJ (x402-paid) and persists the intent.
+// The customer support code is returned only once, so the order row is written
+// immediately. No user funds are held yet — the hold happens at BookFlight.
+func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req CreateIntentRequest) (*BookingIntentResult, error) {
+	if s.client == nil {
+		return nil, fmt.Errorf("flight booking is not configured")
+	}
+	offerID := strings.TrimSpace(req.OfferID)
+	if offerID == "" {
+		return nil, fmt.Errorf("offer id is required — search for a flight first")
+	}
+	intent, err := s.client.CreateIntent(ctx, brij.CreateIntentRequest{OfferID: offerID})
+	if err != nil {
+		return nil, fmt.Errorf("could not lock this flight: %w", err)
+	}
+	if strings.TrimSpace(intent.ID) == "" || strings.TrimSpace(intent.CustomerSupportCode) == "" {
+		return nil, fmt.Errorf("BRIJ returned an incomplete intent")
+	}
+	if _, err := s.persistIntent(ctx, userID, req, intent); err != nil {
+		s.logger.Error("failed to persist BRIJ intent", zap.Error(err), zap.String("intent_id", intent.ID))
+		return nil, fmt.Errorf("failed to record this flight — please try again")
+	}
+	s.logger.Info("BRIJ intent created",
+		zap.String("intent_id", intent.ID),
+		zap.String("offer_id", offerID),
+		zap.String("user_id", userID.String()))
+	return &BookingIntentResult{
+		IntentID:    intent.ID,
+		OfferID:     offerID,
+		Airline:     req.Airline,
+		Origin:      req.Origin,
+		Destination: req.Destination,
+		DepartingAt: req.DepartingAt,
+		AmountUSD:   intent.EscrowAmountDecimal(),
+		ExpiresAt:   intent.ExpiresAt,
+		Status:      StatusHeld,
+	}, nil
+}
+
+// persistIntent writes the intent row. hold_amount starts at zero; BookFlight
+// populates it when the user's funds are reserved.
+func (s *Service) persistIntent(ctx context.Context, userID uuid.UUID, req CreateIntentRequest, intent *brij.BookingIntent) (uuid.UUID, error) {
+	orderID := uuid.New()
+	escrow := intentEscrowDecimal(intent)
+	route := fmt.Sprintf("%s to %s", strings.TrimSpace(req.Origin), strings.TrimSpace(req.Destination))
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO travel_orders (id, user_id, mode, provider, status, route, departure_terminal, destination_terminal, trip_date,
+			intent_id, offer_id, customer_support_code, expected_escrow_amount, escrow_mint, escrow_address, amount_ngn, amount_usdc, hold_amount)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,0,$16,0)`,
+		orderID, userID, ModeFlight, nullStr(req.Airline), StatusHeld, nullStr(route), nullStr(req.Origin), nullStr(req.Destination),
+		nullStr(dateOnly(req.DepartingAt)), intent.ID, intent.OfferID, intent.CustomerSupportCode,
+		escrow, nullStr(intent.ExpectedEscrowMint), nullStr(intent.EscrowAddress), escrow); err != nil {
+		return uuid.Nil, err
+	}
+	return orderID, nil
+}
+
+// holdFunds validates the balance and debits the spend balance by totalHold
+// (escrow + Rail service fee). On completion the debit stands; on failure or
+// refund the recovery path reverses it.
+func (s *Service) holdFunds(ctx context.Context, userID uuid.UUID, totalHold decimal.Decimal) error {
 	if s.ledger == nil {
 		return fmt.Errorf("payment infrastructure not available")
 	}
@@ -162,106 +198,34 @@ func (s *Service) holdFunds(ctx context.Context, userID uuid.UUID, mode string, 
 		return fmt.Errorf("failed to check balance: %w", err)
 	}
 	if balance.LessThan(totalHold) {
-		return fmt.Errorf("insufficient balance: have %s USDC, need ~%s USDC for ₦%.0f",
-			balance.StringFixed(2), totalHold.StringFixed(2), amountNGN)
+		return fmt.Errorf("insufficient balance: have %s USDC, need ~%s USDC",
+			balance.StringFixed(2), totalHold.StringFixed(2))
 	}
 	if err := s.ledger.CreateTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		entities.TransactionTypeWithdrawal, totalHold, map[string]interface{}{
-			"provider": "travu", "type": "travel_hold", "mode": mode,
-			"amount_ngn": amountNGN, "rail_fee": railFee.String(),
+			"provider": "brij", "type": "travel_hold", "mode": ModeFlight,
+			"hold_amount": totalHold.String(),
 		}); err != nil {
 		return fmt.Errorf("failed to reserve funds: %w", err)
 	}
 	return nil
 }
 
-// validateAmount enforces the per-booking NGN ceiling.
-func (s *Service) validateAmount(amountNGN float64) error {
-	if amountNGN <= 0 {
+// validateAmount enforces the per-booking USDC ceiling.
+func (s *Service) validateAmount(amountUSD decimal.Decimal) error {
+	if !amountUSD.IsPositive() {
 		return fmt.Errorf("fare must be positive")
 	}
-	if s.cfg.MaxAmountNGN > 0 && amountNGN > s.cfg.MaxAmountNGN {
-		return fmt.Errorf("fare exceeds the per-booking limit of ₦%.0f", s.cfg.MaxAmountNGN)
+	if s.cfg.MaxEscrowUSD > 0 && amountUSD.GreaterThan(decimal.NewFromFloat(s.cfg.MaxEscrowUSD)) {
+		return fmt.Errorf("this fare exceeds the per-booking limit of $%.2f", s.cfg.MaxEscrowUSD)
 	}
 	return nil
 }
 
-// persistOrder inserts a held travel order and returns its id.
-func (s *Service) persistOrder(ctx context.Context, o *orderRow) (uuid.UUID, error) {
-	orderID := uuid.New()
-	passengersJSON, _ := json.Marshal(o.Passengers)
-	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO travel_orders (id, user_id, mode, provider, status, route, departure_terminal, destination_terminal, trip_date, seats, passengers, amount_ngn, amount_usdc, rail_fee_usdc, hold_amount, rate)
-		VALUES ($1,$2,$3,$4,'held',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-		orderID, o.UserID, o.Mode, nullStr(o.Provider), nullStr(o.Route), nullStr(o.DepartureTerminal),
-		nullStr(o.DestinationTerminal), nullStr(o.TripDate), nullStr(o.Seats), passengersJSON,
-		o.AmountNGN, o.AmountUSDC, o.RailFee, o.HoldAmount, o.Rate); err != nil {
-		return uuid.Nil, err
-	}
-	return orderID, nil
-}
-
-// finalizeBooking records the confirmed receipt, renders + delivers the ticket,
-// and marks the order completed. Funds have already been booked with Travu, so
-// this never reverses the hold — delivery failures are left for recovery.
-func (s *Service) finalizeBooking(ctx context.Context, userID, orderID uuid.UUID, mode string, receipt *travu.OrderReceipt) BookingResult {
-	receiptJSON, _ := json.Marshal(receipt)
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE travel_orders SET status='completed', travu_order_id=$2, travu_order_number=$3, booking_id=$4, pnr=$5, receipt=$6, updated_at=NOW()
-		WHERE id=$1 AND status IN ('held','booked')`,
-		orderID, nullStr(receipt.OrderID.String()), nullStr(receipt.OrderNumber.String()),
-		nullStr(receipt.BookingID.String()), nullStr(receipt.PNRNumber.String()), receiptJSON); err != nil {
-		s.logger.Error("failed to mark travel order completed", zap.Error(err), zap.String("order_id", orderID.String()))
-	}
-
-	res := BookingResult{
-		OrderID:      orderID,
-		Mode:         mode,
-		Provider:     receipt.Provider,
-		TravuOrderID: receipt.OrderID.String(),
-		OrderNumber:  receipt.OrderNumber.String(),
-		PNR:          receipt.PNRNumber.String(),
-		Route:        receipt.Narration,
-		TripDate:     receipt.OrderTicketDate,
-		Seats:        receipt.OrderSeats.String(),
-		AmountNGN:    receipt.AmountNGN(),
-		Status:       "completed",
-	}
-
-	s.deliverTicket(ctx, userID, orderID, mode, receipt, &res)
-	return res
-}
-
-// deliverTicket renders the PDF and sends it to the user's thread, marking the
-// order as delivered on success.
-func (s *Service) deliverTicket(ctx context.Context, userID, orderID uuid.UUID, mode string, receipt *travu.OrderReceipt, res *BookingResult) {
-	if s.deliverer == nil {
-		s.logger.Warn("no ticket deliverer configured; ticket not sent", zap.String("order_id", orderID.String()))
-		return
-	}
-	pdf, err := RenderTicketPDF(mode, receipt)
-	if err != nil {
-		s.logger.Error("failed to render travel ticket PDF", zap.Error(err), zap.String("order_id", orderID.String()))
-		return
-	}
-	caption := ticketCaption(mode, receipt)
-	fileName := fmt.Sprintf("rail-ticket-%s.pdf", strings.TrimSpace(receipt.OrderNumber.String()))
-	if err := s.deliverer.DeliverTicket(ctx, userID, caption, fileName, pdf); err != nil {
-		s.logger.Warn("failed to deliver travel ticket; recovery will retry", zap.Error(err), zap.String("order_id", orderID.String()))
-		return
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE travel_orders SET ticket_delivered=TRUE, updated_at=NOW() WHERE id=$1`, orderID); err != nil {
-		s.logger.Warn("failed to mark ticket delivered", zap.Error(err), zap.String("order_id", orderID.String()))
-	}
-	if res != nil {
-		res.TicketSent = true
-	}
-}
-
 // reverseHold reverses the full ledger hold for a booking that never completed
-// and marks the order reversed. deposit_id is claimed to prevent double
+// and marks the order terminal. deposit_id is claimed to prevent double
 // reversal by the recovery worker.
-func (s *Service) reverseHold(ctx context.Context, userID, orderID uuid.UUID, amount, railFee decimal.Decimal, reason string) error {
+func (s *Service) reverseHold(ctx context.Context, userID, orderID uuid.UUID, amount decimal.Decimal, reason string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE travel_orders SET status='reversed', deposit_id=gen_random_uuid(), failure_reason=$2, updated_at=NOW()
 		WHERE id=$1 AND status IN ('held','booked')`, orderID, reason)
@@ -277,8 +241,7 @@ func (s *Service) reverseHold(ctx context.Context, userID, orderID uuid.UUID, am
 	}
 	if err := s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
 		uuid.New().String(), amount, map[string]interface{}{
-			"provider": "travu", "type": "travel_" + reason + "_reversal", "order_id": orderID.String(),
-			"rail_fee": railFee.String(),
+			"provider": "brij", "type": "travel_" + reason + "_reversal", "order_id": orderID.String(),
 		}); err != nil {
 		s.logger.Error("CRITICAL: failed to reverse travel hold", zap.Error(err), zap.String("order_id", orderID.String()))
 		if _, unclaimErr := s.db.ExecContext(ctx,
@@ -290,13 +253,24 @@ func (s *Service) reverseHold(ctx context.Context, userID, orderID uuid.UUID, am
 	return nil
 }
 
-// GetBookingHistory returns a user's recent travel bookings.
+// markFailed terminalizes an order without touching the ledger (used for
+// expired intents where no funds were ever held).
+func (s *Service) markFailed(ctx context.Context, orderID uuid.UUID, reason string) {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE travel_orders SET status='failed', failure_reason=$2, updated_at=NOW() WHERE id=$1 AND status='held'`,
+		orderID, reason); err != nil {
+		s.logger.Warn("failed to mark travel order failed", zap.Error(err), zap.String("order_id", orderID.String()))
+	}
+}
+
+// GetBookingHistory returns a user's recent flight bookings.
 func (s *Service) GetBookingHistory(ctx context.Context, userID uuid.UUID, limit int) ([]BookingHistoryItem, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), COALESCE(seats,''), COALESCE(pnr,''), amount_ngn, COALESCE(amount_usdc,0), status, ticket_delivered, created_at
+		SELECT id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), COALESCE(booking_reference,''),
+		       COALESCE(amount_usdc,0), status, ticket_delivered, COALESCE(intent_id,''), created_at
 		FROM travel_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
@@ -305,11 +279,11 @@ func (s *Service) GetBookingHistory(ctx context.Context, userID uuid.UUID, limit
 	var out []BookingHistoryItem
 	for rows.Next() {
 		var it BookingHistoryItem
-		var usdc sql.NullString
-		if err := rows.Scan(&it.ID, &it.Mode, &it.Provider, &it.Route, &it.TripDate, &it.Seats, &it.PNR, &it.AmountNGN, &usdc, &it.Status, &it.TicketDelivered, &it.CreatedAt); err != nil {
+		var usdc sql.NullFloat64
+		if err := rows.Scan(&it.ID, &it.Mode, &it.Provider, &it.Route, &it.TripDate, &it.PNR, &usdc, &it.Status, &it.TicketDelivered, &it.IntentID, &it.CreatedAt); err != nil {
 			return nil, err
 		}
-		it.AmountUSDC = usdc.String
+		it.AmountUSDC = usdc.Float64
 		out = append(out, it)
 	}
 	return out, rows.Err()
@@ -322,31 +296,119 @@ type BookingHistoryItem struct {
 	Provider        string    `json:"provider"`
 	Route           string    `json:"route"`
 	TripDate        string    `json:"trip_date"`
-	Seats           string    `json:"seats"`
 	PNR             string    `json:"pnr"`
-	AmountNGN       float64   `json:"amount_ngn"`
-	AmountUSDC      string    `json:"amount_usdc"`
+	AmountUSDC      float64   `json:"amount_usdc"`
 	Status          string    `json:"status"`
 	TicketDelivered bool      `json:"ticket_delivered"`
+	IntentID        string    `json:"intent_id,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// orderRow carries the fields persisted for a new held order.
+// orderRow is the stored state for a BRIJ travel order.
 type orderRow struct {
-	UserID              uuid.UUID
-	Mode                string
-	Provider            string
-	Route               string
-	DepartureTerminal   string
-	DestinationTerminal string
-	TripDate            string
-	Seats               string
-	Passengers          interface{}
-	AmountNGN           float64
-	AmountUSDC          decimal.Decimal
-	RailFee             decimal.Decimal
-	HoldAmount          decimal.Decimal
-	Rate                decimal.Decimal
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Mode           string
+	Provider       string
+	Route          string
+	TripDate       string
+	Status         string
+	IntentID       string
+	OfferID        string
+	SupportCode    string
+	ExpectedEscrow decimal.Decimal
+	EscrowAmount   decimal.Decimal
+	AirlineOrderID string
+	OrderRef       string
+	BookingRef     string
+	HoldAmount     decimal.Decimal
+	Passengers     []byte
+	Receipt        []byte
+	TicketSent     bool
+	CreatedAt      time.Time
+}
+
+// loadOrderByIntent loads an order owned by the user by its BRIJ intent id.
+func (s *Service) loadOrderByIntent(ctx context.Context, userID uuid.UUID, intentID string) (*orderRow, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), status,
+		       COALESCE(intent_id,''), COALESCE(offer_id,''), COALESCE(customer_support_code,''),
+		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0),
+		       COALESCE(airline_order_id,''), COALESCE(order_ref,''), COALESCE(booking_reference,''),
+		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered, created_at
+		FROM travel_orders WHERE intent_id=$1 AND user_id=$2`, intentID, userID)
+	var o orderRow
+	err := row.Scan(&o.ID, &o.UserID, &o.Mode, &o.Provider, &o.Route, &o.TripDate, &o.Status,
+		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount,
+		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent, &o.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no flight intent %q found for this user", intentID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load flight intent: %w", err)
+	}
+	return &o, nil
+}
+
+// loadOrderByID loads an order by id (recovery path — no user scoping).
+func (s *Service) loadOrderByID(ctx context.Context, id uuid.UUID) (*orderRow, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), status,
+		       COALESCE(intent_id,''), COALESCE(offer_id,''), COALESCE(customer_support_code,''),
+		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0),
+		       COALESCE(airline_order_id,''), COALESCE(order_ref,''), COALESCE(booking_reference,''),
+		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered, created_at
+		FROM travel_orders WHERE id=$1`, id)
+	var o orderRow
+	err := row.Scan(&o.ID, &o.UserID, &o.Mode, &o.Provider, &o.Route, &o.TripDate, &o.Status,
+		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount,
+		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent, &o.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("travel order %s not found", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load travel order: %w", err)
+	}
+	return &o, nil
+}
+
+// intentEscrowDecimal converts an intent's atomic escrow amount to USDC.
+func intentEscrowDecimal(i *brij.BookingIntent) decimal.Decimal {
+	if i == nil {
+		return decimal.Zero
+	}
+	return decimal.NewFromInt(i.ExpectedEscrowAmount).Div(decimal.NewFromInt(1_000_000)).Round(6)
+}
+
+// dateOnly strips the time portion from an ISO-8601 timestamp.
+func dateOnly(iso string) string {
+	iso = strings.TrimSpace(iso)
+	if len(iso) >= 10 {
+		return iso[:10]
+	}
+	return iso
+}
+
+// railFee computes Rail's service fee on an escrow amount.
+func (s *Service) railFee(escrow decimal.Decimal) decimal.Decimal {
+	return escrow.Mul(decimal.NewFromFloat(s.cfg.DeveloperFeePercent / 100)).Round(6)
+}
+
+// ticketReceiptJSON persists a structured receipt for audit / re-render.
+func ticketReceiptJSON(order *orderRow, intent *brij.BookingIntent, pnr string) []byte {
+	r := TicketReceipt{
+		Provider:      order.Provider,
+		Route:         order.Route,
+		TripDate:      order.TripDate,
+		OrderRef:      order.OrderRef,
+		BookingRef:    pnr,
+		IntentID:      order.IntentID,
+		AmountUSD:     order.ExpectedEscrow.StringFixed(2),
+		Status:        StatusCompleted,
+		PassengerName: passengerFullName(order.Passengers),
+	}
+	raw, _ := json.Marshal(r)
+	return raw
 }
 
 func nullStr(s string) interface{} {

@@ -82,20 +82,19 @@ type TradeCopyProvider interface {
 	StopCopying(ctx context.Context, userID uuid.UUID, draftID string) (map[string]interface{}, error)
 }
 
-// TravelProvider powers bus + flight booking through Travu. Read methods surface
-// search results, reference data, saved travelers, and history; the mutating
-// BookBus/BookFlight/SavePassenger methods are dispatched via action tools so
-// they inherit Monitor-mode blocking and the pending-action confirmation flow
-// (with Face ID step-up for the fund-moving BookBus/BookFlight).
+// TravelProvider powers flight booking through BRIJ Travel. Read methods surface
+// live flight offers, saved travelers, and history; the mutating
+// CreateIntent/BookFlight/SavePassenger methods are dispatched via action tools
+// so they inherit Monitor-mode blocking and the pending-action confirmation flow
+// (with Face ID step-up for the fund-moving BookFlight).
 type TravelProvider interface {
-	SearchBusTrips(ctx context.Context, departureState, destinationState, tripDate string) ([]map[string]interface{}, error)
-	SearchFlights(ctx context.Context, args map[string]interface{}) ([]map[string]interface{}, error)
-	ListStates(ctx context.Context) ([]map[string]interface{}, error)
-	ListAirports(ctx context.Context) ([]map[string]interface{}, error)
+	SearchFlights(ctx context.Context, origin, destination, departDate string, adults int) ([]map[string]interface{}, error)
+	CreateIntent(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
+	BookFlight(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
+	GetIntentStatus(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error)
+	GetOrderStatus(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error)
+	RequestRefund(ctx context.Context, userID uuid.UUID, intentID, reason, contact string) (map[string]interface{}, error)
 	ListPassengers(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
 	GetBookingHistory(ctx context.Context, userID uuid.UUID, limit int) ([]map[string]interface{}, error)
-	SelectFlight(ctx context.Context, itineraryID, currency string) (map[string]interface{}, error)
-	BookBus(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
-	BookFlight(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
 	SavePassenger(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
 }
