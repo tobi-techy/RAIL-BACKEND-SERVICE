@@ -293,6 +293,45 @@ func (a *Adapter) ReturnUnsupportedToken(ctx context.Context, walletID, tokenID,
 	return nil
 }
 
+// GetNFTTokenID resolves an inbound token (identified by its Circle token UUID)
+// against the wallet's NFT balances. It returns the token id within the contract
+// (nftTokenId), or ("", nil) when the token is not an NFT held in the wallet.
+func (a *Adapter) GetNFTTokenID(ctx context.Context, walletID, tokenID string) (string, error) {
+	nfts, err := a.client.GetNFTBalance(ctx, walletID)
+	if err != nil {
+		return "", fmt.Errorf("circle get nft balances: %w", err)
+	}
+	for _, n := range nfts {
+		if strings.EqualFold(n.Token.ID, tokenID) {
+			return n.NftTokenID, nil
+		}
+	}
+	return "", nil
+}
+
+// ReturnUnsupportedNFT sends an inbound unsupported NFT back to its source address.
+// NFT transfers require nftTokenIds (not tokenId), so they use a dedicated path.
+func (a *Adapter) ReturnUnsupportedNFT(ctx context.Context, walletID, tokenID, destinationAddress string, amounts []string, nftTokenID, idempotencyKey string) error {
+	if nftTokenID == "" {
+		return fmt.Errorf("nftTokenId is required")
+	}
+	if len(amounts) == 0 {
+		return fmt.Errorf("amounts are required")
+	}
+	_, err := a.client.CreateTransfer(ctx, &CreateTransferRequest{
+		IdempotencyKey:     idempotencyKey,
+		WalletID:           walletID,
+		NftTokenIds:        []string{nftTokenID},
+		DestinationAddress: destinationAddress,
+		Amounts:            amounts,
+		FeeLevel:           "MEDIUM",
+	})
+	if err != nil {
+		return fmt.Errorf("circle return unsupported NFT: %w", err)
+	}
+	return nil
+}
+
 // GetUSDCTokenID returns Circle's token ID for USDC in the given wallet.
 func (a *Adapter) GetUSDCTokenID(ctx context.Context, walletID string) (string, error) {
 	return a.client.GetUSDCTokenID(ctx, walletID)
