@@ -39,7 +39,7 @@ func (h *BillPayHandlers) GetOrder(c *gin.Context) {
 	}
 	order, err := h.service.GetOrder(c.Request.Context(), userID, orderID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) || err.Error() == "order not found" {
+		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"code": "ORDER_NOT_FOUND", "message": "Order not found"})
 			return
 		}
@@ -135,7 +135,7 @@ func (h *BillPayHandlers) SetMandate(c *gin.Context) {
 	category := c.Param("category")
 	var req struct {
 		PerPaymentCapNGN float64 `json:"per_payment_cap_ngn" binding:"required,gt=0"`
-		DailyCapNGN      float64 `json:"daily_cap_ngn"`
+		DailyCapNGN      float64 `json:"daily_cap_ngn" binding:"gte=0"`
 		AllowAuto        bool    `json:"allow_auto"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {

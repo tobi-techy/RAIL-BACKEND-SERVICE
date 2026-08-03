@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ const billpayTestDSN = "postgres://test:test@localhost:5432/stack_test?sslmode=d
 // --- helpers ---------------------------------------------------------------
 
 type mockNotifier struct {
+	mu     sync.Mutex
 	pushes []mockPush
 }
 
@@ -45,6 +47,8 @@ type mockPush struct {
 }
 
 func (m *mockNotifier) SendPush(ctx context.Context, userID uuid.UUID, title, message string, data map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.pushes = append(m.pushes, mockPush{userID: userID, title: title, message: message, data: data})
 	return nil
 }
@@ -302,4 +306,37 @@ func TestBillPay_WebhookCallback_NotifiesUser(t *testing.T) {
 	assert.Equal(t, userID, notifier.pushes[0].userID)
 	assert.Contains(t, notifier.pushes[0].title, "Airtime paid")
 	assert.Contains(t, notifier.pushes[0].message, "08012345678")
+}
+
+func TestBillPay_WebhookCallback_RejectsInvalidSignature(t *testing.T) {
+	db, svc := newBillPayService(t)
+	ctx := context.Background()
+	userID := uniqueUserID()
+	insertTestUser(ctx, t, db, userID)
+	t.Cleanup(func() { cleanupBillPayData(ctx, t, db, userID) })
+
+	notifier := &mockNotifier{}
+	svc.SetNotifier(notifier)
+
+	orderID := uuid.New()
+	airbillsID := "ab-invalid-sig"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO airbills_orders (id, user_id, airbills_id, product_code, product_category, status, recipient, amount_ngn, token, amount_in_token, rail_fee_usdc, hold_amount, rate)
+		VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, 'USDC', 2, 0.02, 2.02, 1500)`,
+		orderID, userID, airbillsID, airbills.ProductAirtime, billpay.CategoryAirtime, "08012345678", float64(3000))
+	require.NoError(t, err)
+
+	body := []byte(fmt.Sprintf(`{"id":"%s","productCode":"100","status":"success"}`, airbillsID))
+	invalidSig := "invalid_signature_that_does_not_match"
+	err = svc.HandleCallback(ctx, body, invalidSig)
+	assert.Error(t, err)
+
+	// Verify the order was NOT marked completed.
+	var status string
+	err = db.QueryRowContext(ctx, `SELECT status FROM airbills_orders WHERE id=$1`, orderID).Scan(&status)
+	require.NoError(t, err)
+	assert.Equal(t, "sent", status)
+
+	// No notification should be sent for rejected callbacks.
+	assert.Empty(t, notifier.pushes)
 }

@@ -250,6 +250,9 @@ func (s *Service) PayBill(ctx context.Context, userID uuid.UUID, req PayBillRequ
 		return nil, fmt.Errorf("failed to record payment")
 	}
 	if req.BeneficiaryID != nil {
+		// Updating last_used_at is best-effort: it affects only UX sorting/recommendations
+		// and must never fail a payment that has already been recorded. A warning log
+		// provides the hook for monitoring; the order record itself is the audit source.
 		if _, err := s.db.ExecContext(ctx, `UPDATE bill_beneficiaries SET last_used_at=NOW() WHERE id=$1 AND user_id=$2`, req.BeneficiaryID, userID); err != nil {
 			s.logger.Warn("failed to update beneficiary last_used_at", zap.Error(err), zap.String("beneficiary_id", req.BeneficiaryID.String()))
 		}
@@ -363,7 +366,7 @@ type OrderDetail struct {
 // GetOrder returns a single Airbills order if it belongs to the user.
 func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*OrderDetail, error) {
 	var o OrderDetail
-	var usdc, fee, rate sql.NullString
+	var usdc, fee, rate, failureReason sql.NullString
 	var bridgeID, beneficiaryID, automationID sql.NullString
 	var recipientName, networkID, prodID, electID sql.NullString
 	err := s.db.QueryRowContext(ctx, `
@@ -372,10 +375,10 @@ func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*Ord
 		       bridge_transfer_id, beneficiary_id, automation_id, created_at, updated_at
 		FROM airbills_orders WHERE id=$1 AND user_id=$2`, orderID, userID).Scan(
 		&o.ID, &o.AirbillsID, &o.Category, &o.Recipient, &recipientName, &networkID, &prodID, &electID,
-		&o.AmountNGN, &usdc, &fee, &rate, &o.Token, &o.Status, &o.FailureReason,
+		&o.AmountNGN, &usdc, &fee, &rate, &o.Token, &o.Status, &failureReason,
 		&bridgeID, &beneficiaryID, &automationID, &o.CreatedAt, &o.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("order not found")
+		return nil, sql.ErrNoRows
 	}
 	if err != nil {
 		return nil, err
@@ -387,6 +390,7 @@ func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*Ord
 			o.Rate = r
 		}
 	}
+	o.FailureReason = failureReason.String
 	o.RecipientName = recipientName.String
 	o.NetworkID = networkID.String
 	o.ProdID = prodID.String
