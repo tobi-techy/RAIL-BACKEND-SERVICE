@@ -128,6 +128,34 @@ func (s *Service) SetMandate(ctx context.Context, userID uuid.UUID, m Mandate) (
 	return &m, nil
 }
 
+// GetMandate returns the active mandate for a category, falling back to the
+// blanket 'all' mandate if no category-specific one exists.
+func (s *Service) GetMandate(ctx context.Context, userID uuid.UUID, category string) (*Mandate, error) {
+	category = strings.ToLower(strings.TrimSpace(category))
+	if category != MandateAll && !IsCategorySupported(category) {
+		return nil, fmt.Errorf("unsupported mandate category: %q", category)
+	}
+	var m Mandate
+	var daily sql.NullFloat64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, product_category, per_payment_cap_ngn, daily_cap_ngn, allow_auto, status, consent_stamped_at
+		FROM bill_pay_mandates
+		WHERE user_id=$1 AND status='active' AND product_category IN ($2, $3)
+		ORDER BY (product_category = $2) DESC LIMIT 1`,
+		userID, category, MandateAll).Scan(
+		&m.ID, &m.Category, &m.PerPaymentCapNGN, &daily, &m.AllowAuto, &m.Status, &m.ConsentStampedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if daily.Valid {
+		m.DailyCapNGN = daily.Float64
+	}
+	return &m, nil
+}
+
 // MandateReauthorizationWindow bounds how long a mandate's consent stays valid
 // without a fresh in-app Face ID step-up.
 const MandateReauthorizationWindow = 90 * 24 * time.Hour
@@ -146,17 +174,18 @@ type MandateDecision struct {
 func (s *Service) EvaluateMandate(ctx context.Context, userID uuid.UUID, category string, amountNGN float64) (MandateDecision, error) {
 	category = strings.ToLower(strings.TrimSpace(category))
 	var (
-		cap       float64
-		daily     sql.NullFloat64
-		allowAuto bool
-		stampedAt time.Time
+		cap             float64
+		daily           sql.NullFloat64
+		allowAuto       bool
+		stampedAt       time.Time
+		mandateCategory string
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT per_payment_cap_ngn, daily_cap_ngn, allow_auto, consent_stamped_at
+		SELECT per_payment_cap_ngn, daily_cap_ngn, allow_auto, consent_stamped_at, product_category
 		FROM bill_pay_mandates
 		WHERE user_id=$1 AND status='active' AND product_category IN ($2, $3)
 		ORDER BY (product_category = $2) DESC LIMIT 1`,
-		userID, category, MandateAll).Scan(&cap, &daily, &allowAuto, &stampedAt)
+		userID, category, MandateAll).Scan(&cap, &daily, &allowAuto, &stampedAt, &mandateCategory)
 	if err == sql.ErrNoRows {
 		return MandateDecision{RequiresAuth: true, Reason: "no active mandate for this bill type"}, nil
 	}
@@ -170,7 +199,9 @@ func (s *Service) EvaluateMandate(ctx context.Context, userID uuid.UUID, categor
 		return MandateDecision{RequiresAuth: true, Reason: fmt.Sprintf("amount ₦%.0f exceeds your ₦%.0f limit", amountNGN, cap)}, nil
 	}
 	if daily.Valid && daily.Float64 > 0 {
-		spentToday, derr := s.spentToday(ctx, userID, category)
+		// A blanket 'all' mandate counts daily spend across every bill category.
+		scopeAll := mandateCategory == MandateAll
+		spentToday, derr := s.spentToday(ctx, userID, category, scopeAll)
 		if derr == nil && spentToday+amountNGN > daily.Float64 {
 			return MandateDecision{RequiresAuth: true, Reason: "daily bill-pay limit reached"}, nil
 		}
@@ -178,12 +209,22 @@ func (s *Service) EvaluateMandate(ctx context.Context, userID uuid.UUID, categor
 	return MandateDecision{Allowed: true, AllowAuto: allowAuto}, nil
 }
 
-func (s *Service) spentToday(ctx context.Context, userID uuid.UUID, category string) (float64, error) {
+func (s *Service) spentToday(ctx context.Context, userID uuid.UUID, category string, allCategories bool) (float64, error) {
 	var total sql.NullFloat64
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(amount_ngn),0) FROM airbills_orders
-		WHERE user_id=$1 AND product_category=$2 AND status NOT IN ('reversed','failed')
-		AND created_at > NOW() - interval '24 hours'`, userID, category).Scan(&total)
+	var query string
+	var args []interface{}
+	if allCategories {
+		query = `SELECT COALESCE(SUM(amount_ngn),0) FROM airbills_orders
+			WHERE user_id=$1 AND status NOT IN ('reversed','failed')
+			AND created_at > NOW() - interval '24 hours'`
+		args = []interface{}{userID}
+	} else {
+		query = `SELECT COALESCE(SUM(amount_ngn),0) FROM airbills_orders
+			WHERE user_id=$1 AND product_category=$2 AND status NOT IN ('reversed','failed')
+			AND created_at > NOW() - interval '24 hours'`
+		args = []interface{}{userID, category}
+	}
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&total)
 	if err != nil {
 		return 0, err
 	}

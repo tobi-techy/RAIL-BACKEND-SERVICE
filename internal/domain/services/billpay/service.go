@@ -12,7 +12,9 @@ package billpay
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +76,10 @@ type Config struct {
 	DefaultToken        string
 	MaxAmountNGN        float64
 }
+
+// ErrOrderNotFound is returned when a requested Airbills order does not exist
+// or does not belong to the authenticated user.
+var ErrOrderNotFound = errors.New("order not found")
 
 // Service is the bill-payment orchestrator.
 type Service struct {
@@ -175,8 +181,10 @@ func (s *Service) PayBill(ctx context.Context, userID uuid.UUID, req PayBillRequ
 
 	// Cheap pre-check: refuse clearly-insufficient balances before creating an
 	// Airbills transaction. The authoritative hold happens on amountInToken.
+	var rate decimal.Decimal
 	if s.ledger != nil && s.currencyRates != nil {
-		if rate, rerr := s.currencyRates.GetLatestRate(ctx, "USD", "NGN"); rerr == nil && rate.IsPositive() {
+		if r, rerr := s.currencyRates.GetLatestRate(ctx, "USD", "NGN"); rerr == nil && r.IsPositive() {
+			rate = r
 			est := decimal.NewFromFloat(req.AmountNGN).Div(rate).Mul(decimal.NewFromFloat(1.05))
 			if bal, berr := s.ledger.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance); berr == nil && bal.LessThan(est) {
 				return nil, fmt.Errorf("insufficient balance for this payment")
@@ -232,15 +240,27 @@ func (s *Service) PayBill(ctx context.Context, userID uuid.UUID, req PayBillRequ
 	}
 
 	orderID := uuid.New()
+	rateValue := interface{}(nil)
+	if rate.IsPositive() {
+		rateValue = rate
+	}
 	if _, dbErr := s.db.ExecContext(ctx, `
-		INSERT INTO airbills_orders (id, user_id, airbills_id, request_reference, product_code, product_category, status, beneficiary_id, recipient, network_id, prod_id, recipient_name, amount_ngn, token, amount_in_token, rail_fee_usdc, hold_amount, deposit_address, automation_id)
-		VALUES ($1,$2,$3,$4,$5,$6,'held',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		INSERT INTO airbills_orders (id, user_id, airbills_id, request_reference, product_code, product_category, status, beneficiary_id, recipient, network_id, prod_id, recipient_name, amount_ngn, token, amount_in_token, rail_fee_usdc, hold_amount, rate, deposit_address, automation_id)
+		VALUES ($1,$2,$3,$4,$5,$6,'held',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		orderID, userID, tx.ID, nullStr(req.IdempotencyRef), productCode, category,
 		req.BeneficiaryID, req.Recipient, nullStr(networkID), nullStr(req.ProdID), nullStr(req.RecipientName),
-		req.AmountNGN, token, amountInToken, railFee, totalHold, tx.Wallet, req.AutomationID); dbErr != nil {
+		req.AmountNGN, token, amountInToken, railFee, totalHold, rateValue, tx.Wallet, req.AutomationID); dbErr != nil {
 		s.logger.Error("CRITICAL: failed to persist airbills order — reversing hold", zap.Error(dbErr), zap.String("airbills_id", tx.ID))
 		s.reverseHold(ctx, userID, tx.ID, totalHold, railFee, "db_fail")
 		return nil, fmt.Errorf("failed to record payment")
+	}
+	if req.BeneficiaryID != nil {
+		// Updating last_used_at is best-effort: it affects only UX sorting/recommendations
+		// and must never fail a payment that has already been recorded. A warning log
+		// provides the hook for monitoring; the order record itself is the audit source.
+		if _, err := s.db.ExecContext(ctx, `UPDATE bill_beneficiaries SET last_used_at=NOW() WHERE id=$1 AND user_id=$2`, req.BeneficiaryID, userID); err != nil {
+			s.logger.Warn("failed to update beneficiary last_used_at", zap.Error(err), zap.String("beneficiary_id", req.BeneficiaryID.String()))
+		}
 	}
 
 	if s.circleTransfer == nil {
@@ -322,6 +342,76 @@ type BillPayment struct {
 	AmountUSDC string    `json:"amount_usdc"`
 	Status     string    `json:"status"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// OrderDetail is the full view of a single Airbills order.
+type OrderDetail struct {
+	ID               uuid.UUID  `json:"id"`
+	AirbillsID       string     `json:"airbills_id"`
+	Category         string     `json:"category"`
+	Recipient        string     `json:"recipient"`
+	RecipientName    string     `json:"recipient_name,omitempty"`
+	NetworkID        string     `json:"network_id,omitempty"`
+	ProdID           string     `json:"prod_id,omitempty"`
+	ElectID          string     `json:"elect_id,omitempty"`
+	AmountNGN        float64    `json:"amount_ngn"`
+	AmountUSDC       string     `json:"amount_usdc"`
+	RailFeeUSDC      string     `json:"rail_fee_usdc"`
+	Rate             float64    `json:"rate,omitempty"`
+	Token            string     `json:"token"`
+	Status           string     `json:"status"`
+	FailureReason    string     `json:"failure_reason,omitempty"`
+	BridgeTransferID string     `json:"bridge_transfer_id,omitempty"`
+	BeneficiaryID    *uuid.UUID `json:"beneficiary_id,omitempty"`
+	AutomationID     *uuid.UUID `json:"automation_id,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+// GetOrder returns a single Airbills order if it belongs to the user.
+func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*OrderDetail, error) {
+	var o OrderDetail
+	var usdc, fee, rate, failureReason sql.NullString
+	var bridgeID, beneficiaryID, automationID sql.NullString
+	var recipientName, networkID, prodID, electID sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, airbills_id, product_category, recipient, recipient_name, network_id, prod_id, elect_id,
+		       amount_ngn, amount_in_token, rail_fee_usdc, rate, token, status, failure_reason,
+		       bridge_transfer_id, beneficiary_id, automation_id, created_at, updated_at
+		FROM airbills_orders WHERE id=$1 AND user_id=$2`, orderID, userID).Scan(
+		&o.ID, &o.AirbillsID, &o.Category, &o.Recipient, &recipientName, &networkID, &prodID, &electID,
+		&o.AmountNGN, &usdc, &fee, &rate, &o.Token, &o.Status, &failureReason,
+		&bridgeID, &beneficiaryID, &automationID, &o.CreatedAt, &o.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrOrderNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	o.AmountUSDC = usdc.String
+	o.RailFeeUSDC = fee.String
+	if rate.Valid {
+		if r, err := strconv.ParseFloat(rate.String, 64); err == nil {
+			o.Rate = r
+		}
+	}
+	o.FailureReason = failureReason.String
+	o.RecipientName = recipientName.String
+	o.NetworkID = networkID.String
+	o.ProdID = prodID.String
+	o.ElectID = electID.String
+	o.BridgeTransferID = bridgeID.String
+	if beneficiaryID.Valid {
+		if id, err := uuid.Parse(beneficiaryID.String); err == nil {
+			o.BeneficiaryID = &id
+		}
+	}
+	if automationID.Valid {
+		if id, err := uuid.Parse(automationID.String); err == nil {
+			o.AutomationID = &id
+		}
+	}
+	return &o, nil
 }
 
 // --- Lookups (pass-through to Airbills for the AI tools) ---

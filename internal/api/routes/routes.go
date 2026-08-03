@@ -1062,6 +1062,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
+			// Airbills bill-pay management endpoints (read-only + mandate/beneficiary management)
+			if container.BillPayHandlers != nil {
+				billpay := protected.Group("/billpay")
+				billpay.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
+				{
+					billpay.GET("/orders/:id", container.BillPayHandlers.GetOrder)
+					billpay.GET("/beneficiaries", container.BillPayHandlers.ListBeneficiaries)
+					billpay.POST("/beneficiaries", container.BillPayHandlers.SaveBeneficiary)
+					billpay.GET("/mandates/:category", container.BillPayHandlers.GetMandate)
+					billpay.PUT("/mandates/:category", container.BillPayHandlers.SetMandate)
+				}
+			}
+
 			// Unified Balance route
 			protected.GET("/balances", middleware.TimeoutMiddleware(10*time.Second), walletFundingHandlers.GetUnifiedBalances)
 
@@ -1621,7 +1634,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 				}
 
-				// Conversation endpoints. Step-up enforcement for fund-moving
+				// Conversation endpoints. The "gate-on + nil-passcode" invariant
+				// is validated at application startup (Application.validateSecurityConfig),
+				// so the gate is guaranteed wired by the time we reach this route
+				// setup — no mid-route Fatal here. Step-up enforcement for fund-moving
 				// actions lives in the orchestrator core (AgentAdapter.ConfirmAction),
 				// not in the handler — so every caller is protected regardless of
 				// the HTTP entry point.
@@ -1887,6 +1903,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				ramphubWebhooks := webhooks.Group(ramphubPath)
 				ramphubWebhooks.Use(middleware.RateLimit(100))
 				ramphubWebhooks.POST("", container.RampHandlers.HandleWebhook)
+			}
+
+			// Airbills webhooks (HMAC-SHA256 signed; verified in the handler)
+			if container.BillPayHandlers != nil {
+				airbillsPath := container.Config.Airbills.WebhookPath
+				if airbillsPath == "" {
+					airbillsPath = "/airbills"
+				}
+				airbillsWebhooks := webhooks.Group(airbillsPath)
+				airbillsWebhooks.Use(middleware.RateLimit(100))
+				airbillsWebhooks.POST("", container.BillPayHandlers.HandleWebhook)
 			}
 
 			// Circle Programmable Wallets webhooks for inbound deposits
