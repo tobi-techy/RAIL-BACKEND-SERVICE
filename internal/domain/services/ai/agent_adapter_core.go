@@ -125,10 +125,18 @@ type UsageTracker interface {
 // as system context instead of mixed into user text.
 type ChatOptions struct {
 	ToneMode string
-	// SystemContext holds extra system prompts from the caller (for example a
-	// cross-channel continuity note). Appended to the consolidated personality
-	// block in the non-streaming path so every chat carries them.
+	// SystemContext holds extra system prompts from the caller. These are
+	// trusted, product-authored instructions (for example the cross-channel
+	// continuity framing) and are appended to the consolidated personality block
+	// in the non-streaming path so every chat carries them. Never put
+	// user-shaped content here — use CrossChannelHistory for that.
 	SystemContext []string
+	// CrossChannelHistory carries a digest of the user's conversations on other
+	// platforms when they first message on a new channel. It is built from
+	// persisted titles/summaries and is untrusted data: it must never be rendered
+	// as a system prompt. The core renders it as a data-only message so any
+	// instructions embedded in it are inert.
+	CrossChannelHistory string
 }
 
 // MoneyMoveNotifier sends a push notification when Miriam moves money on a

@@ -160,6 +160,8 @@ func (o *AgentAdapter) PredictiveConversationStarters(ctx context.Context, userI
 // daysUntilDue reports how many days remain until an obligation is due based on
 // its due-day-of-month or explicit due date. Returns false when undetermined.
 func daysUntilDue(dueDay *int, dueDate *time.Time, now time.Time) (int, bool) {
+	startOfToday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
 	var due time.Time
 	switch {
 	case dueDate != nil:
@@ -172,21 +174,37 @@ func daysUntilDue(dueDay *int, dueDate *time.Time, now time.Time) (int, bool) {
 		if day > 31 {
 			day = 31
 		}
+		// Clamp to the month's real end BEFORE building the date, so a day of 31
+		// in a 30-day month lands on the 30th instead of normalizing into the
+		// next month.
+		if day > lastDayOfMonth(now.Year(), now.Month()) {
+			day = lastDayOfMonth(now.Year(), now.Month())
+		}
+		// Compare against the start of today, so an obligation due today reads
+		// as 0 days out instead of "already passed".
 		due = time.Date(now.Year(), now.Month(), day, 0, 0, 0, 0, time.UTC)
-		if due.Before(now) {
-			due = time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-			last := due.AddDate(0, 0, -1).Day()
-			if day > last {
-				day = last
+		if due.Before(startOfToday) {
+			// Already passed this month — roll into next month, clamping again to
+			// its real last day (Feb 29/30/31, Apr 30, etc.).
+			next := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+			if day > lastDayOfMonth(next.Year(), next.Month()) {
+				day = lastDayOfMonth(next.Year(), next.Month())
 			}
-			due = time.Date(now.Year(), now.Month()+1, day, 0, 0, 0, 0, time.UTC)
+			due = time.Date(next.Year(), next.Month(), day, 0, 0, 0, 0, time.UTC)
 		}
 	default:
 		return 0, false
 	}
-	days := int(due.Sub(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)).Hours() / 24)
+
+	startOfDue := time.Date(due.Year(), due.Month(), due.Day(), 0, 0, 0, 0, time.UTC)
+	days := int(startOfDue.Sub(startOfToday).Hours() / 24)
 	if days < 0 {
 		return 0, false
 	}
 	return days, true
+}
+
+// lastDayOfMonth returns the day-of-month count (28..31) for the given month.
+func lastDayOfMonth(year int, month time.Month) int {
+	return time.Date(year, month+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }

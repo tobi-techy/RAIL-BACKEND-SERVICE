@@ -157,6 +157,14 @@ func (c *ChatOnboarder) ClearSession(ctx context.Context, platform entities.Plat
 	return nil
 }
 
+// clear removes the onboarding session for a sender, logging (never failing on)
+// store errors so an abandoned session is a recoverable annoyance, not a flow break.
+func (c *ChatOnboarder) clear(ctx context.Context, key string) {
+	if err := c.store.Del(ctx, key); err != nil {
+		c.logger.Warn("onboarding session clear failed", zap.Error(err))
+	}
+}
+
 // Handle advances the onboarding conversation by one step and returns the reply
 // to send back. A nil reply means nothing should be sent.
 func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformReply, error) {
@@ -190,7 +198,7 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 		return c.handleConsent(ctx, key, &st, in, text)
 	default:
 		// Unknown state — reset and greet fresh.
-		_ = c.store.Del(ctx, key)
+		c.clear(ctx, key)
 		return textReply(c.introMessage()), nil
 	}
 }
@@ -247,7 +255,7 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 
 	if existing, err := c.users.GetByEmail(ctx, email); err == nil && existing != nil {
 		if !existing.IsActive {
-			_ = c.store.Del(ctx, key)
+			c.clear(ctx, key)
 			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 		}
 		// Found an existing account. Prove ownership by sending an OTP to the
@@ -259,8 +267,13 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 		// Re-verify the account still exists and is active now that the OTP is
 		// in flight, so a deleted or deactivated account can never receive a
 		// code that links a chat to a stale row.
-		if recheck, err := c.users.GetByEmail(ctx, email); err != nil || recheck == nil || !recheck.IsActive {
-			_ = c.store.Del(ctx, key)
+		recheck, rerr := c.users.GetByEmail(ctx, email)
+		if rerr != nil || recheck == nil {
+			c.clear(ctx, key)
+			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+		}
+		if !recheck.IsActive {
+			c.clear(ctx, key)
 			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 		}
 		st.Step = stepEmailOTP
@@ -287,7 +300,7 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onbo
 	if err != nil || !ok {
 		st.EmailOTPAttempts++
 		if st.EmailOTPAttempts >= maxEmailOTPAttempts {
-			_ = c.store.Del(ctx, key)
+			c.clear(ctx, key)
 			return textReply("That code didn't match too many times. For security, please link this chat from the RAIL app instead."), nil
 		}
 		if err := c.save(ctx, key, *st); err != nil {
@@ -298,12 +311,12 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onbo
 	st.EmailVerified = true
 	existing, err := c.users.GetByEmail(ctx, st.Email)
 	if err != nil || existing == nil {
-		c.logger.Error("verified email account disappeared during onboarding", zap.String("email", st.Email), zap.Error(err))
-		_ = c.store.Del(ctx, key)
+		c.logger.Error("verified email account disappeared during onboarding", zap.Error(err))
+		c.clear(ctx, key)
 		return textReply("Something went wrong on my end. Please try again in a moment."), nil
 	}
 	if !existing.IsActive {
-		_ = c.store.Del(ctx, key)
+		c.clear(ctx, key)
 		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 	}
 	st.UserID = existing.ID.String()
@@ -341,7 +354,7 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardin
 	if err != nil || !ok {
 		st.OTPAttempts++
 		if st.OTPAttempts >= maxOnboardingOTPAttempts {
-			_ = c.store.Del(ctx, key)
+			c.clear(ctx, key)
 			return textReply("That code didn't match too many times. Text me again when you're ready and we'll start over."), nil
 		}
 		if err := c.save(ctx, key, *st); err != nil {
@@ -353,7 +366,7 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardin
 	if err := c.ensureUser(ctx, st); err != nil {
 		c.logger.Error("onboarding user creation failed", zap.Error(err))
 		if strings.Contains(err.Error(), "inactive") {
-			_ = c.store.Del(ctx, key)
+			c.clear(ctx, key)
 			return textReply("That phone number belongs to an inactive account. Please reach out to support@userail.money for help."), nil
 		}
 		return textReply("Something went wrong setting up your account. Mind trying that code again in a moment?"), nil
@@ -382,7 +395,7 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 		c.logger.Error("phone-first auto-link failed", zap.Error(err), zap.String("user_id", st.UserID))
 		return textReply("I couldn't finish linking this chat to your account just now. Reply YES to try again."), nil
 	}
-	_ = c.store.Del(ctx, key)
+	c.clear(ctx, key)
 	return textReply(c.completionMessage(st.FirstName, st.Country)), nil
 }
 
@@ -416,6 +429,9 @@ func (c *ChatOnboarder) ensureUser(ctx context.Context, st *onboardingState) err
 	// phone-first user with a blank email (which violates the unique email
 	// constraint once two such users exist).
 	email := st.Email
+	if email == "" {
+		email = placeholderEmailFromPhone(st.Phone)
+	}
 	phone := st.Phone
 	user, err := c.users.CreateUserWithHash(ctx, email, &phone, "")
 	if err != nil {
@@ -497,10 +513,23 @@ func normalizeEmail(input string) string {
 	if s == "" || s == "skip" {
 		return ""
 	}
-	if _, err := mail.ParseAddress(s); err != nil {
+	addr, err := mail.ParseAddress(s)
+	if err != nil {
 		return ""
 	}
-	return s
+	return addr.Address
+}
+
+// placeholderEmailFromPhone derives a stable, unique email for a phone-first
+// user who skipped the email step. users.email is NOT NULL UNIQUE, so a blank
+// value would collide across phone-first users; deriving it from the verified
+// phone keeps each account distinct and deterministic for retry recovery.
+func placeholderEmailFromPhone(phone string) string {
+	digits := nonDigits.ReplaceAllString(phone, "")
+	if digits == "" {
+		digits = uuid.NewString()
+	}
+	return "phone+" + digits + "@userail.money"
 }
 
 // countryDialCodes maps a stored ISO alpha-2 country to its E.164 dial prefix,

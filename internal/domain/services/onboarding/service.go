@@ -513,7 +513,12 @@ func (s *Service) ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID,
 	if phone != "" && (user.Phone == nil || strings.TrimSpace(*user.Phone) == "") {
 		user.Phone = &phone
 	}
-	user.PhoneVerified = true
+	// Only claim the stored phone is verified when it matches the number the
+	// user just proved ownership of; a different number already on file stays
+	// unverified rather than silently inheriting verification.
+	if phone != "" && user.Phone != nil && strings.TrimSpace(*user.Phone) == phone {
+		user.PhoneVerified = true
+	}
 	user.UpdatedAt = time.Now()
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user profile: %w", err)

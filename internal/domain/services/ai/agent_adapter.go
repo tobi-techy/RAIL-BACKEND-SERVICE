@@ -132,6 +132,7 @@ func (a *AgentAdapter) ChatInContextWithOptions(ctx context.Context, userID, con
 	}
 	systemContext = append(systemContext, opts.SystemContext...)
 	coreOpts.SystemContext = systemContext
+	coreOpts.CrossChannelHistory = opts.CrossChannelHistory
 	if a.memory != nil {
 		if lvl, lerr := a.memory.GetControlLevel(ctx, userID); lerr == nil {
 			coreOpts.ControlLevel = lvl

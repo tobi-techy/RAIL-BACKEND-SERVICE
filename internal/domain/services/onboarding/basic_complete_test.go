@@ -45,6 +45,8 @@ func (r *basicCompleteUserRepo) Update(ctx context.Context, user *entities.UserP
 	r.updateProfileCalls++
 	r.user.FirstName = user.FirstName
 	r.user.LastName = user.LastName
+	r.user.Phone = user.Phone
+	r.user.PhoneVerified = user.PhoneVerified
 	r.user.UpdatedAt = user.UpdatedAt
 	return nil
 }
@@ -129,6 +131,45 @@ func TestBasicCompleteOnboardingCompletesStartedUser(t *testing.T) {
 	require.Equal(t, 1, userRepo.updateStatusCalls)
 	require.Equal(t, 1, userRepo.updateKYCStatusCalls)
 	require.Equal(t, 1, audit.calls)
+}
+
+func TestProvisionPhoneFirstUser_VerifiesOnlyMatchedPhone(t *testing.T) {
+	// No phone on file: the just-verified number is stored and marked verified.
+	userID := uuid.New()
+	user := &entities.UserProfile{
+		ID:               userID,
+		Email:            "tester@example.com",
+		EmailVerified:    true,
+		OnboardingStatus: entities.OnboardingStatusBasicComplete,
+		IsActive:         true,
+	}
+	service, userRepo := newBasicCompleteService(user, &basicCompleteAuditService{})
+	require.NoError(t, service.ProvisionPhoneFirstUser(context.Background(), userID, "Ada", "NG", "+2348012345678"))
+	require.NotNil(t, userRepo.user.Phone)
+	require.Equal(t, "+2348012345678", *userRepo.user.Phone)
+	require.True(t, userRepo.user.PhoneVerified)
+
+	// A different number already stored: keep the stored number and do NOT mark
+	// it verified — the user proved ownership of a different number.
+	user2ID := uuid.New()
+	existingPhone := "+15551111111"
+	user2 := &entities.UserProfile{
+		ID:               user2ID,
+		Email:            "existing@example.com",
+		EmailVerified:    true,
+		Phone:            &existingPhone,
+		OnboardingStatus: entities.OnboardingStatusBasicComplete,
+		IsActive:         true,
+	}
+	service2, userRepo2 := newBasicCompleteService(user2, &basicCompleteAuditService{})
+	require.NoError(t, service2.ProvisionPhoneFirstUser(context.Background(), user2ID, "Ben", "US", "+2348012345678"))
+	require.Equal(t, existingPhone, *userRepo2.user.Phone)
+	require.False(t, userRepo2.user.PhoneVerified)
+
+	// Same number already stored: the verified number matches, so it's verified.
+	service3, userRepo3 := newBasicCompleteService(user2, &basicCompleteAuditService{})
+	require.NoError(t, service3.ProvisionPhoneFirstUser(context.Background(), user2ID, "Ben", "US", "+15551111111"))
+	require.True(t, userRepo3.user.PhoneVerified)
 }
 
 func TestBasicCompleteOnboardingIsIdempotentAfterCompletion(t *testing.T) {

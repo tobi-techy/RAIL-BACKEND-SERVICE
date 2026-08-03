@@ -305,7 +305,9 @@ func (p *Processor) tryCompleteHandshake(ctx context.Context, msg InboundMessage
 	// If the sender was in the middle of chat onboarding, drop it so they don't
 	// get stuck in a half-finished onboarding conversation after linking.
 	if p.onboarder != nil {
-		_ = p.onboarder.ClearSession(ctx, msg.Platform, msg.UserID)
+		if err := p.onboarder.ClearSession(ctx, msg.Platform, msg.UserID); err != nil {
+			log.Printf("failed to clear onboarding session for %s: %v", msg.UserID, err)
+		}
 	}
 	out := p.responseBuilder.EffectResponse(identity,
 		"Your iMessage is now linked to RAIL! Ask me about your balances, spending, savings — anything.",

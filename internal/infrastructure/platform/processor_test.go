@@ -192,7 +192,10 @@ func TestProcessAction_ConfirmVoteExecutes(t *testing.T) {
 		SpaceID:  "space-1",
 		Platform: "imessage",
 	}
-	raw, _ := json.Marshal(pb)
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatalf("marshal confirm postback: %v", err)
+	}
 
 	if err := p.ProcessAction(context.Background(), raw); err != nil {
 		t.Fatalf("ProcessAction: %v", err)
@@ -215,7 +218,10 @@ func TestProcessAction_CancelVote(t *testing.T) {
 	p, _, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{Action: "cancel", UserID: "+15551234", SpaceID: "space-1", Platform: "imessage"}
-	raw, _ := json.Marshal(pb)
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatalf("marshal cancel postback: %v", err)
+	}
 
 	if err := p.ProcessAction(context.Background(), raw); err != nil {
 		t.Fatalf("ProcessAction: %v", err)
@@ -242,7 +248,10 @@ func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 		AudioB64:  base64.StdEncoding.EncodeToString([]byte("audio-bytes")),
 		AudioMime: "audio/mp4",
 	}
-	raw, _ := json.Marshal(msg)
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal voice message: %v", err)
+	}
 
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -267,11 +276,14 @@ func TestProcessor_HandshakeTokenDuringOnboardingCompletesLink(t *testing.T) {
 	proc.SetOnboarder(ob)
 
 	// First message starts onboarding.
-	raw, _ := json.Marshal(InboundMessage{
+	raw, err := json.Marshal(InboundMessage{
 		Platform: entities.PlatformIMessage,
 		UserID:   "+15556666",
 		Text:     "hi",
 	})
+	if err != nil {
+		t.Fatalf("marshal first message: %v", err)
+	}
 	if err := proc.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -288,11 +300,14 @@ func TestProcessor_HandshakeTokenDuringOnboardingCompletesLink(t *testing.T) {
 
 	// The same unlinked sender now texts the handshake token. It should
 	// complete the link rather than be treated as an onboarding reply.
-	raw, _ = json.Marshal(InboundMessage{
+	raw, err = json.Marshal(InboundMessage{
 		Platform: entities.PlatformIMessage,
 		UserID:   "+15556666",
 		Text:     res.Token,
 	})
+	if err != nil {
+		t.Fatalf("marshal handshake message: %v", err)
+	}
 	if err := proc.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -321,7 +336,10 @@ func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 		IsVoice:  true,
 		AudioB64: base64.StdEncoding.EncodeToString([]byte("audio")),
 	}
-	raw, _ := json.Marshal(msg)
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal voice fallback message: %v", err)
+	}
 
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -340,7 +358,10 @@ func TestProcessAction_UnlinkedSenderIgnored(t *testing.T) {
 	p, _, _ := newTestProcessor(repo, orch)
 
 	pb := ActionPostback{Action: "confirm", UserID: "+19999999", SpaceID: "space-1", Platform: "imessage"}
-	raw, _ := json.Marshal(pb)
+	raw, err := json.Marshal(pb)
+	if err != nil {
+		t.Fatalf("marshal unlinked postback: %v", err)
+	}
 
 	if err := p.ProcessAction(context.Background(), raw); err != nil {
 		t.Fatalf("ProcessAction: %v", err)
@@ -374,7 +395,10 @@ func TestProcess_OrchestratorCardsRenderedInOutbound(t *testing.T) {
 		MsgID:    "m1",
 		Text:     "what did i spend this month",
 	}
-	raw, _ := json.Marshal(msg)
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal cards message: %v", err)
+	}
 
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)

@@ -78,10 +78,12 @@ func TestPredictiveConversationStarters_IdleCashSuggestion(t *testing.T) {
 
 func TestPredictiveConversationStarters_BillDueSoon(t *testing.T) {
 	o := newTestAdapter(t)
-	day := time.Now().UTC().Day() + 3
+	// Use an explicit due date so the test is stable on month boundaries (a
+	// computed "today+3" day would break on the 31st).
+	due := time.Now().UTC().AddDate(0, 0, 3)
 	o.obligations = &mockFinancialObligationProvider{
 		obligations: []entities.FinancialObligation{
-			{Name: "Electricity", Amount: decimal.NewFromFloat(45), DueDay: &day},
+			{Name: "Electricity", Amount: decimal.NewFromFloat(45), DueDate: &due},
 		},
 	}
 	o.aggregateStats = &mockAggregateStats{spendBalance: decimal.NewFromFloat(300), stashBalance: decimal.NewFromFloat(100)}
@@ -151,11 +153,23 @@ func TestDaysUntilDue(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 3, days)
 
+	// Explicit due date later today -> 0 days, still due.
+	todayLate := time.Date(2026, 8, 15, 23, 30, 0, 0, time.UTC)
+	days, ok = daysUntilDue(nil, &todayLate, now)
+	require.True(t, ok)
+	assert.Equal(t, 0, days)
+
 	// Due day this month.
 	day := 18
 	days, ok = daysUntilDue(&day, nil, now)
 	require.True(t, ok)
 	assert.Equal(t, 3, days)
+
+	// Due day matches today -> 0 days, not rolled into next month.
+	today := now.Day()
+	days, ok = daysUntilDue(&today, nil, now)
+	require.True(t, ok)
+	assert.Equal(t, 0, days)
 
 	// Due day already passed this month -> rolls into next month.
 	past := 5
@@ -166,4 +180,39 @@ func TestDaysUntilDue(t *testing.T) {
 	// Neither set -> undetermined.
 	_, ok = daysUntilDue(nil, nil, now)
 	assert.False(t, ok)
+}
+
+func TestDaysUntilDue_ClampsToNextMonthEnd(t *testing.T) {
+	// Aug 15, dueDay 31 -> next occurrence is Aug 31 (this month still).
+	now := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
+	day := 31
+	days, ok := daysUntilDue(&day, nil, now)
+	require.True(t, ok)
+	assert.Equal(t, 16, days)
+
+	// Sep 15, dueDay 31 -> September has no 31st, so it clamps to Sep 30.
+	now = time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	days, ok = daysUntilDue(&day, nil, now)
+	require.True(t, ok)
+	assert.Equal(t, 15, days)
+
+	// Feb 15, dueDay 31 -> Feb has no 31st, clamps to Feb 28 (2026, non-leap).
+	now = time.Date(2026, 2, 15, 10, 0, 0, 0, time.UTC)
+	days, ok = daysUntilDue(&day, nil, now)
+	require.True(t, ok)
+	assert.Equal(t, 13, days)
+
+	// Leap year: Feb 15 2028, dueDay 31 -> clamps to Feb 29.
+	now = time.Date(2028, 2, 15, 10, 0, 0, 0, time.UTC)
+	days, ok = daysUntilDue(&day, nil, now)
+	require.True(t, ok)
+	assert.Equal(t, 14, days)
+
+	// December year boundary: dueDay 15 already passed on Dec 20 -> rolls to
+	// Jan 15 next year without producing an invalid month.
+	now = time.Date(2026, 12, 20, 10, 0, 0, 0, time.UTC)
+	passedDec := 15
+	days, ok = daysUntilDue(&passedDec, nil, now)
+	require.True(t, ok)
+	assert.Equal(t, 26, days)
 }

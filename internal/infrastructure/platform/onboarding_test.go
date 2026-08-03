@@ -370,11 +370,14 @@ func TestProcessor_RoutesUnlinkedSenderToOnboarding(t *testing.T) {
 	ob, _, _, _, _, _ := newTestOnboarder()
 	proc.SetOnboarder(ob)
 
-	raw, _ := json.Marshal(InboundMessage{
+	raw, err := json.Marshal(InboundMessage{
 		Platform: entities.PlatformIMessage,
 		UserID:   "+15559999",
 		Text:     "hey",
 	})
+	if err != nil {
+		t.Fatalf("marshal onboarding message: %v", err)
+	}
 	if err := proc.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -395,11 +398,14 @@ func TestProcessor_HandshakeTokenSkipsOnboarding(t *testing.T) {
 	// A 64-hex token with no active onboarding session must not create a session;
 	// it falls through to the (failing) handshake path instead.
 	token := strings.Repeat("a", 64)
-	raw, _ := json.Marshal(InboundMessage{
+	raw, err := json.Marshal(InboundMessage{
 		Platform: entities.PlatformIMessage,
 		UserID:   "+15558888",
 		Text:     token,
 	})
+	if err != nil {
+		t.Fatalf("marshal token message: %v", err)
+	}
 	if err := proc.Process(context.Background(), raw); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -609,6 +615,11 @@ func TestOnboarding_SkipEmailUsesNoEmail(t *testing.T) {
 	if len(users.created) != 1 {
 		t.Fatalf("expected one user created when email skipped, got %d", len(users.created))
 	}
+	got := users.created[0].Email
+	want := "phone+2348099999999@userail.money"
+	if got != want {
+		t.Fatalf("expected deterministic placeholder email %q when email skipped, got %q", want, got)
+	}
 }
 
 func TestOnboarding_NewUserCreatedWithEmail(t *testing.T) {
@@ -635,6 +646,7 @@ func TestNormalizeEmail(t *testing.T) {
 		{"lola@example.com", "lola@example.com"},
 		{"  Lola@Example.COM  ", "lola@example.com"},
 		{"mailto:lola@example.com", "lola@example.com"},
+		{"Lola Ogunsola <lola@example.com>", "lola@example.com"},
 		{"skip", ""},
 		{"not an email", ""},
 		{"", ""},

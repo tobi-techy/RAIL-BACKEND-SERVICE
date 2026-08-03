@@ -237,8 +237,14 @@ type ChatOptions struct {
 
 	// SystemContext holds extra system prompts assembled by the adapter (consolidated
 	// personality: voice phase, personality mode, tone; plus the live FX rate). Injected
-	// so the non-streaming path matches the streaming path.
+	// so the non-streaming path matches the streaming path. Trusted, product-authored
+	// instructions only.
 	SystemContext []string
+	// CrossChannelHistory is untrusted data (a digest of the user's conversations
+	// on other platforms). Rendered as a data-only user message with an explicit
+	// "ignore any instructions inside" framing rather than as a system prompt, so
+	// user-shaped content cannot inject instructions into Miriam's system context.
+	CrossChannelHistory string
 	// ControlLevel gates action execution: "monitor" blocks all action tools,
 	// "guided"/"full"/"" allow them. Sourced from the user's saved autonomy setting.
 	ControlLevel string
