@@ -227,6 +227,14 @@ sms:
   from_number: ""
   environment: "development"
 
+push:
+  # Provider: "expo" (default) or "onesignal".
+  # OneSignal credentials are injected via ONESIGNAL_APP_ID / ONESIGNAL_API_KEY env vars.
+  provider: "expo"
+  onesignal_app_id: ""
+  onesignal_api_key: ""
+  onesignal_channel_id: ""
+
 verification:
   code_length: 6
   code_ttl_minutes: 10
