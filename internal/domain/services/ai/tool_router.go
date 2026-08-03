@@ -110,6 +110,8 @@ var overviewPatterns = []string{
 	"how am i doing", "what changed", "what matters", "overview",
 	"what's up", "update me", "brief", "status", "check in",
 	"balance", "how much do i have", "what do i have",
+	"streak", "challenges", "challenge", "achievements", "achievement",
+	"badges", "milestones", "what have i achieved",
 }
 
 // toolCategoryMap defines which tools belong to which category.
@@ -120,6 +122,9 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolGetUpcomingBills:  true,
 		ToolGetMiriamBrief:    true,
 		ToolGetStreak:         true,
+		ToolGetSavingsStreaks: true,
+		ToolGetChallenges:     true,
+		ToolGetAchievements:   true,
 		ToolGetBudget:         true,
 		ToolSearchKnowledge:   true,
 		ToolGetMoneyFlow:      true,

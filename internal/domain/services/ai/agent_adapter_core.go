@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	core "github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -125,7 +126,24 @@ type UsageTracker interface {
 // as system context instead of mixed into user text.
 type ChatOptions struct {
 	ToneMode string
+	// SystemContext holds extra system prompts from the caller. These are
+	// trusted, product-authored instructions (for example the cross-channel
+	// continuity framing) and are appended to the consolidated personality block
+	// in the non-streaming path so every chat carries them. Never put
+	// user-shaped content here — use CrossChannelHistory for that.
+	SystemContext []string
+	// CrossChannelHistory carries structured facts about the user's conversations
+	// on other platforms when they first message on a new channel. It is built
+	// from persisted, potentially user-shaped titles/summaries and is untrusted:
+	// it must never be rendered as a system prompt. The core sanitizes, bounds,
+	// and renders it as a data-only message so any instructions embedded in it
+	// are inert.
+	CrossChannelHistory []CrossChannelHistoryFact
 }
+
+// CrossChannelHistoryFact mirrors core.CrossChannelHistoryFact at the adapter
+// boundary so callers build the same structured facts the core renders.
+type CrossChannelHistoryFact = core.CrossChannelHistoryFact
 
 // MoneyMoveNotifier sends a push notification when Miriam moves money on a
 // user's behalf. It is intentionally a single-method interface so the
@@ -610,6 +628,15 @@ func (o *AgentAdapter) executeToolInner(ctx context.Context, userID uuid.UUID, t
 			return map[string]interface{}{"error": "web search is unavailable"}, nil
 		}
 		return o.executeWebSearch(ctx, userID, tc.Arguments)
+
+	case ToolGetSavingsStreaks:
+		return o.executeGetSavingsStreaks(ctx, userID)
+
+	case ToolGetChallenges:
+		return o.executeGetChallenges(ctx, userID)
+
+	case ToolGetAchievements:
+		return o.executeGetAchievements(ctx, userID)
 
 	default:
 		// Action tools (transfer_funds, initiate_withdrawal, etc.) — execute directly in voice mode.

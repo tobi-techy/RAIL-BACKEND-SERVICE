@@ -21,6 +21,7 @@ const (
 	ContentTypeRichLink ContentType = "richlink" // richlink() Open Graph preview
 	ContentTypePoll     ContentType = "poll"     // poll() — Confirm/Cancel prompt
 	ContentTypeVoice    ContentType = "voice"    // voice() — spoken note (TTS)
+	ContentTypeCards    ContentType = "cards"    // structured InsightCards (rendered per platform)
 )
 
 // iMessage message-effect ids supported by spectrum-ts (imessage.effect.message.*).
@@ -65,6 +66,10 @@ type OutboundMessage struct {
 	AudioB64    string `json:"audio_b64,omitempty"`
 	AudioMime   string `json:"audio_mime,omitempty"`
 	DurationSec int    `json:"duration_sec,omitempty"`
+
+	// structured insight cards (the engine's tool pipeline produces these for the
+	// in-app canvas; messaging renders them as portable per-platform card text)
+	Cards []entities.InsightCard `json:"cards,omitempty"`
 }
 
 type ResponseBuilder struct{}
@@ -155,6 +160,17 @@ func (b *ResponseBuilder) PollResponse(identity *entities.PlatformIdentity, titl
 	m.ContentType = ContentTypePoll
 	m.PollTitle = title
 	m.PollOptions = options
+	return m
+}
+
+// CardsResponse carries the reply text plus structured InsightCards in one
+// atomic outbound message. The bridge sends the text first, then renders each
+// card as a per-platform card bubble.
+func (b *ResponseBuilder) CardsResponse(identity *entities.PlatformIdentity, text, threadID string, cards []entities.InsightCard) *OutboundMessage {
+	m := b.base(identity, threadID)
+	m.Text = text
+	m.ContentType = ContentTypeCards
+	m.Cards = cards
 	return m
 }
 

@@ -1,7 +1,6 @@
 package investing
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -17,57 +16,20 @@ import (
 	"go.uber.org/zap"
 )
 
-// passcodeSessionValidator validates a short-lived passcode session. Declared
-// locally to avoid coupling the handler package to the middleware package;
-// *passcode.Service satisfies it.
-type passcodeSessionValidator interface {
-	ValidateSession(ctx context.Context, userID uuid.UUID, token string) (bool, error)
-}
-
 // ConversationHandlers handles AI conversation endpoints.
 type ConversationHandlers struct {
-	orchestrator                  aiservice.ChatEngine
-	convService                   *conversationsvc.Service
-	logger                        *zap.Logger
-	passcodeValidator             passcodeSessionValidator
-	requirePasscodeForFundActions bool
+	orchestrator aiservice.ChatEngine
+	convService  *conversationsvc.Service
+	logger       *zap.Logger
 }
 
 // NewConversationHandlers creates new conversation handlers.
-//
-// passcodeValidator and requirePasscodeForFundActions wire the step-up gate for
-// AI-confirmed money movements (TM-004, TM-006): when enabled, confirming a
-// fund-moving pending action requires a verified passcode session, matching the
-// direct withdrawal/transfer routes. passcodeValidator may be nil only when the
-// gate is disabled.
-func NewConversationHandlers(orchestrator aiservice.ChatEngine, convService *conversationsvc.Service, logger *zap.Logger, passcodeValidator passcodeSessionValidator, requirePasscodeForFundActions bool) *ConversationHandlers {
+func NewConversationHandlers(orchestrator aiservice.ChatEngine, convService *conversationsvc.Service, logger *zap.Logger) *ConversationHandlers {
 	return &ConversationHandlers{
-		orchestrator:                  orchestrator,
-		convService:                   convService,
-		logger:                        logger,
-		passcodeValidator:             passcodeValidator,
-		requirePasscodeForFundActions: requirePasscodeForFundActions,
+		orchestrator: orchestrator,
+		convService:  convService,
+		logger:       logger,
 	}
-}
-
-// verifyPasscodeSession returns true only if the request carries a valid
-// X-Passcode-Session for userID. It fails closed when the gate is enabled but
-// no validator is wired.
-func (h *ConversationHandlers) verifyPasscodeSession(c *gin.Context, userID uuid.UUID) bool {
-	if h.passcodeValidator == nil {
-		return false
-	}
-	token := strings.TrimSpace(c.GetHeader("X-Passcode-Session"))
-	if token == "" {
-		return false
-	}
-	valid, err := h.passcodeValidator.ValidateSession(c.Request.Context(), userID, token)
-	if err != nil {
-		h.logger.Warn("passcode session validation failed for AI fund action",
-			zap.Error(err), zap.String("user_id", userID.String()))
-		return false
-	}
-	return valid
 }
 
 // CreateConversation handles POST /api/v1/ai/conversations
@@ -258,6 +220,8 @@ func (h *ConversationHandlers) ChatInConversation(c *gin.Context) {
 }
 
 // ConfirmAction handles POST /api/v1/ai/conversations/:id/confirm
+// Step-up enforcement is in the orchestrator core (AgentAdapter.ConfirmAction),
+// not here — the handler just forwards the X-Passcode-Session token via context.
 func (h *ConversationHandlers) ConfirmAction(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
@@ -270,22 +234,19 @@ func (h *ConversationHandlers) ConfirmAction(c *gin.Context) {
 		return
 	}
 
-	// Step-up: money-moving confirmations require a verified passcode session,
-	// mirroring the direct withdrawal/transfer routes (TM-004, TM-006).
-	if h.requirePasscodeForFundActions {
-		if pending, ok := h.orchestrator.PeekPendingAction(c.Request.Context(), userID, conv.ID); ok && aiservice.IsFundMovingAction(pending.Action) {
-			if !h.verifyPasscodeSession(c, userID) {
-				c.JSON(http.StatusForbidden, gin.H{
-					"error":   "PASSCODE_SESSION_REQUIRED",
-					"message": "Passcode verification is required to confirm a money movement.",
-				})
-				return
-			}
-		}
-	}
+	// Inject passcode session token into context for core-level step-up.
+	token := strings.TrimSpace(c.GetHeader("X-Passcode-Session"))
+	ctx := aiservice.WithStepUpToken(c.Request.Context(), token)
 
-	action, err := h.orchestrator.ConfirmAction(c.Request.Context(), userID, conv.ID)
+	action, err := h.orchestrator.ConfirmAction(ctx, userID, conv.ID)
 	if err != nil {
+		if errors.Is(err, aiservice.ErrStepUpRequired) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":   "PASSCODE_SESSION_REQUIRED",
+				"message": "Passcode verification is required to confirm a money movement.",
+			})
+			return
+		}
 		h.logger.Error("confirm action failed", zap.Error(err), zap.String("user_id", userID.String()))
 		errMsg := err.Error()
 		switch {

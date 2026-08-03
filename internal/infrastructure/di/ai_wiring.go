@@ -651,6 +651,22 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			agentDeps.ConfirmActionFn = c.AIOrchestrator.ConfirmAction
 			agentDeps.CancelActionFn = c.AIOrchestrator.CancelAction
 			agentDeps.PrepareVoiceActionFn = c.AIOrchestrator.PrepareVoiceAction
+			agentDeps.QuickReplyFn = c.AIOrchestrator.QuickReply
+			agentDeps.GetConversationStartersFn = c.AIOrchestrator.PredictiveConversationStarters
+		}
+
+		// Wire gameplay provider so Miriam can reference streaks, challenges,
+		// and achievements conversationally.
+		if c.GameplayStreakService != nil && c.GameplayChallengeService != nil && c.GameplayAchievementService != nil {
+			gpAdapter := &gameplayProviderAdapter{
+				streaks:      c.GameplayStreakService,
+				challenges:   c.GameplayChallengeService,
+				achievements: c.GameplayAchievementService,
+			}
+			agentDeps.Gameplay = gpAdapter
+			if c.AIOrchestrator != nil {
+				c.AIOrchestrator.SetGameplayProvider(gpAdapter)
+			}
 		}
 
 		agent := aicore.NewAgent(agentDeps, agentConfig, c.ZapLog)
@@ -666,6 +682,14 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			// Wire receipt splitter so stream confirm path can run equal P2P splits.
 			if adapter, ok := agentDeps.Receipt.(*receiptP2PSplitAdapter); ok {
 				c.AIOrchestrator.SetReceiptSplitter(adapter)
+			}
+			// Wire the passcode service as the StepUpVerifier so
+			// ConfirmAction enforces passcode/Face ID for fund-moving
+			// actions in the core, not in the HTTP handler.
+			if passcodeSvc := c.GetPasscodeService(); passcodeSvc != nil {
+				c.AIOrchestrator.SetStepUpVerifier(&passcodeStepUpAdapter{svc: passcodeSvc})
+			} else {
+				c.ZapLog.Warn("passcode service not available — AI fund-moving actions will be refused (fail-closed)")
 			}
 		}
 	}

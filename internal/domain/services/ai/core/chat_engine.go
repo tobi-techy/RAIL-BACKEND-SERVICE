@@ -199,6 +199,12 @@ func (a *Agent) GetProactiveOpenerForChatEngine(ctx context.Context, userID uuid
 }
 
 func (a *Agent) GetConversationStartersForChatEngine(ctx context.Context, userID uuid.UUID) []ConversationStarter {
+	if a.deps.GetConversationStartersFn != nil {
+		if starters := a.deps.GetConversationStartersFn(ctx, userID); len(starters) > 0 {
+			return starters
+		}
+	}
+
 	starters := []ConversationStarter{
 		{Text: "Where did my money go this month?", Category: "spending"},
 		{Text: "What's my financial health score?", Category: "insight"},

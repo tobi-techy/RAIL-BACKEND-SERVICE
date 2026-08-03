@@ -1,6 +1,7 @@
 import { Spectrum, type Space, type Message } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { telegram } from "spectrum-ts/providers/telegram";
+import { whatsappBusiness } from "spectrum-ts/providers/whatsapp-business";
 import express from "express";
 import crypto from "node:crypto";
 import { loadConfig } from "./config";
@@ -50,6 +51,24 @@ function verifyHMAC(payload: string, signature: string): boolean {
     return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
   } catch {
     return false;
+  }
+}
+
+// The backend stores platforms by its own lowercase enums (imessage, whatsapp,
+// telegram), but the SDK names them differently per provider ("iMessage",
+// "WhatsApp Business"). Normalize inbound platform labels so linking, identity
+// resolution, and routing keys all agree.
+function normalizePlatform(platform: string): string {
+  switch (platform.toLowerCase()) {
+    case "imessage":
+      return "imessage";
+    case "telegram":
+      return "telegram";
+    case "whatsapp":
+    case "whatsapp business":
+      return "whatsapp";
+    default:
+      return platform;
   }
 }
 
@@ -110,6 +129,7 @@ rabbit.consumeOutbound(async (raw: string) => {
 
 async function handleInbound(space: Space, message: Message): Promise<void> {
   const threadID = space.id;
+  const platform = normalizePlatform(message.platform);
   spaces.set(threadID, space);
   spaceStore.register(threadID, space.id);
   handler.registerInboundMessage(message);
@@ -135,7 +155,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       poll_title: content.poll.title,
       user_id: senderId,
       space_id: space.id,
-      platform: message.platform,
+      platform,
     };
     await rabbit.publishAction(event);
     log.info({ action: event.action }, "published poll vote");
@@ -153,7 +173,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       return;
     }
     const inbound: InboundMessage = {
-      platform: message.platform,
+      platform,
       user_id: senderId,
       thread_id: space.id,
       text: "",
@@ -183,7 +203,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       return;
     }
     const inbound: InboundMessage = {
-      platform: message.platform,
+      platform,
       user_id: senderId,
       thread_id: space.id,
       text: "",
@@ -202,7 +222,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     const text = content.text?.trim();
     if (!text) return;
     const inbound: InboundMessage = {
-      platform: message.platform,
+      platform,
       user_id: senderId,
       thread_id: space.id,
       text,
@@ -224,10 +244,10 @@ async function start() {
     "starting spectrum bridge",
   );
 
-  // Providers are enabled by env. iMessage is always on; Telegram joins when a
-  // bot token is configured. Each bridge process binds its own outbound queue
-  // (AMQP_OUTBOUND_ROUTING_KEY=message.outbound.<platform>) so replies never
-  // cross platforms.
+  // Providers are enabled by env. iMessage is always on; Telegram and WhatsApp
+  // join when their credentials are configured. Each bridge process binds its
+  // own outbound queue (AMQP_OUTBOUND_ROUTING_KEY=message.outbound.<platform>)
+  // so replies never cross platforms.
   const providers = [imessage.config()];
   if (config.TELEGRAM_BOT_TOKEN) {
     providers.push(
@@ -239,6 +259,17 @@ async function start() {
       }) as never,
     );
     log.info("Telegram provider enabled");
+  }
+
+  if (config.WHATSAPP_ACCESS_TOKEN && config.WHATSAPP_PHONE_NUMBER_ID) {
+    providers.push(
+      whatsappBusiness.config({
+        accessToken: config.WHATSAPP_ACCESS_TOKEN,
+        phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
+        ...(config.WHATSAPP_APP_SECRET ? { appSecret: config.WHATSAPP_APP_SECRET } : {}),
+      }) as never,
+    );
+    log.info("WhatsApp Business provider enabled");
   }
 
   const agent = await Spectrum({
@@ -276,7 +307,7 @@ async function start() {
     log.info({ port: config.BRIDGE_PORT }, "bridge HTTP server listening");
   });
 
-  log.info("waiting for iMessage...");
+  log.info("waiting for provider messages...");
 
   for await (const [space, message] of agent.messages) {
     handleInbound(space, message).catch((err) => log.error({ err }, "inbound handling error"));

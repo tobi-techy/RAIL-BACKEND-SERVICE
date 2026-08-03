@@ -492,60 +492,82 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 // off async wallet provisioning — the same wallet path BasicCompleteOnboarding
 // uses. No password is set; these users authenticate with phone OTP. Tier 2/3
 // KYC is handled later in the app, so onboarding status stays "started".
-func (s *Service) ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID, firstName, country string) error {
+//
+// It is safe to call for an already-created user (e.g. an email account whose
+// phone is being added via chat): it never downgrades KYC status and only fills
+// in missing profile data.
+func (s *Service) ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID, firstName, country, phone string) error {
 	user, err := s.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("failed to get user: %w", err)
 	}
 
 	firstName = strings.TrimSpace(firstName)
-	if firstName != "" {
+	if firstName != "" && (user.FirstName == nil || strings.TrimSpace(*user.FirstName) == "") {
 		user.FirstName = &firstName
 	}
-	if c := strings.ToUpper(strings.TrimSpace(country)); c != "" {
+	if c := strings.ToUpper(strings.TrimSpace(country)); c != "" && (user.Country == nil || strings.TrimSpace(*user.Country) == "") {
 		user.Country = &c
 	}
-	user.PhoneVerified = true
+	phone = strings.TrimSpace(phone)
+	if phone != "" && (user.Phone == nil || strings.TrimSpace(*user.Phone) == "") {
+		user.Phone = &phone
+	}
+	// Only claim the stored phone is verified when it matches the number the
+	// user just proved ownership of; a different number already on file stays
+	// unverified rather than silently inheriting verification.
+	if phone != "" && user.Phone != nil && strings.TrimSpace(*user.Phone) == phone {
+		user.PhoneVerified = true
+	}
 	user.UpdatedAt = time.Now()
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to update user profile: %w", err)
 	}
 
-	// Tier 1: non_kyc unlocks limited crypto + NGN ramp without full KYC.
-	if err := s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusNonKYC, nil, nil); err != nil {
-		s.logger.Warn("Failed to set non_kyc status for phone-first user",
-			zap.Error(err), zap.String("user_id", userID.String()))
-	}
+	// Only bootstrap Tier 1 for users who haven't progressed beyond "started".
+	// Existing users who are already basic_complete, kyc_approved, or completed
+	// should not have KYC downgraded or wallets re-created.
+	needsBootstrap := user.OnboardingStatus == entities.OnboardingStatusStarted ||
+		user.OnboardingStatus == entities.OnboardingStatusKYCPending ||
+		user.OnboardingStatus == entities.OnboardingStatusKYCRejected
 
-	analytics.TrackEvent(ctx, userID.String(), analytics.EventSignupStarted, map[string]any{
-		"signup_method": "imessage",
-	})
+	if needsBootstrap {
+		// Tier 1: non_kyc unlocks limited crypto + NGN ramp without full KYC.
+		if err := s.userRepo.UpdateKYCStatus(ctx, userID, entities.KYCStatusNonKYC, nil, nil); err != nil {
+			s.logger.Warn("Failed to set non_kyc status for phone-first user",
+				zap.Error(err), zap.String("user_id", userID.String()))
+		}
 
-	if s.walletService != nil {
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			var walletErr error
-			for attempt := 0; attempt < 3; attempt++ {
-				if walletErr = s.walletService.CreateWalletsForUser(bgCtx, userID, nil); walletErr == nil {
-					break
+		analytics.TrackEvent(ctx, userID.String(), analytics.EventSignupStarted, map[string]any{
+			"signup_method": "imessage",
+		})
+
+		if s.walletService != nil {
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				var walletErr error
+				for attempt := 0; attempt < 3; attempt++ {
+					if walletErr = s.walletService.CreateWalletsForUser(bgCtx, userID, nil); walletErr == nil {
+						break
+					}
+					s.logger.Warn("Wallet creation attempt failed, retrying",
+						zap.Error(walletErr), zap.Int("attempt", attempt+1), zap.String("user_id", userID.String()))
+					time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 				}
-				s.logger.Warn("Wallet creation attempt failed, retrying",
-					zap.Error(walletErr), zap.Int("attempt", attempt+1), zap.String("user_id", userID.String()))
-				time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
-			}
-			if walletErr != nil {
-				s.logger.Error("Failed to create wallets during phone-first onboarding after retries",
-					zap.Error(walletErr), zap.String("user_id", userID.String()))
-				return
-			}
-			if s.allocationService != nil {
-				if allocErr := s.allocationService.EnableMode(bgCtx, userID, entities.AllocationRatios{SpendingRatio: entities.DefaultSpendingRatio, StashRatio: entities.DefaultStashRatio}); allocErr != nil {
-					s.logger.Warn("Failed to set allocation mode during phone-first onboarding",
-						zap.Error(allocErr), zap.String("user_id", userID.String()))
+				if walletErr != nil {
+					s.logger.Error("Failed to create wallets during phone-first onboarding after retries",
+						zap.Error(walletErr), zap.String("user_id", userID.String()))
+					return
 				}
-			}
-		}()
+				if s.allocationService != nil {
+					if allocErr := s.allocationService.EnableMode(bgCtx, userID, entities.AllocationRatios{SpendingRatio: entities.DefaultSpendingRatio, StashRatio: entities.DefaultStashRatio}); allocErr != nil {
+						s.logger.Warn("Failed to set allocation mode during phone-first onboarding",
+							zap.Error(allocErr), zap.String("user_id", userID.String()))
+					}
+				}
+			}()
+		}
 	}
 
 	if err := s.auditService.LogOnboardingEvent(ctx, userID, "imessage_onboarding_completed", "user", nil, map[string]any{
@@ -588,10 +610,10 @@ func basicCompleteResponse(userID uuid.UUID, status entities.OnboardingStatus) *
 
 // SourceOfFundsRequest is the request payload for saving source of funds data.
 type SourceOfFundsRequest struct {
-	UserID            uuid.UUID `json:"-"`
-	EmploymentStatus  string    `json:"employment_status" validate:"required"`
-	SourceOfFunds     string    `json:"source_of_funds" validate:"required"`
-	AccountPurpose    string    `json:"account_purpose" validate:"required"`
+	UserID           uuid.UUID `json:"-"`
+	EmploymentStatus string    `json:"employment_status" validate:"required"`
+	SourceOfFunds    string    `json:"source_of_funds" validate:"required"`
+	AccountPurpose   string    `json:"account_purpose" validate:"required"`
 }
 
 // SourceOfFundsResponse is returned after saving source of funds data.

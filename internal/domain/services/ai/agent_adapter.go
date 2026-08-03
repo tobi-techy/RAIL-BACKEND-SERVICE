@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/domain/services/ai/memory"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/memory"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"go.uber.org/zap"
@@ -76,10 +76,12 @@ type AgentAdapter struct {
 	anomalyStore        AnomalyStore
 	spendingEnricher    SpendingEnricher
 	merchantEnricher    MerchantEnricher
+	gameplayProvider    GameplayProvider
 	enrichmentSummaryFn func(ctx context.Context, userID uuid.UUID) (string, error)
 	redis               cache.RedisClient
 	workingMemory       *memory.WorkingMemoryStore
 	eventStore          *memory.EventStore
+	stepUpVerifier      StepUpVerifier
 	logger              *zap.Logger
 }
 
@@ -128,7 +130,9 @@ func (a *AgentAdapter) ChatInContextWithOptions(ctx context.Context, userID, con
 	if rl := a.liveNairaRateLine(ctx); rl != "" {
 		systemContext = append(systemContext, rl)
 	}
+	systemContext = append(systemContext, opts.SystemContext...)
 	coreOpts.SystemContext = systemContext
+	coreOpts.CrossChannelHistory = opts.CrossChannelHistory
 	if a.memory != nil {
 		if lvl, lerr := a.memory.GetControlLevel(ctx, userID); lerr == nil {
 			coreOpts.ControlLevel = lvl
@@ -256,6 +260,13 @@ func (a *AgentAdapter) SetWorkingMemory(wm *memory.WorkingMemoryStore) {
 // SetEventStore wires the financial event store for context assembly.
 func (a *AgentAdapter) SetEventStore(es *memory.EventStore) {
 	a.eventStore = es
+}
+
+// SetStepUpVerifier wires the step-up verifier (passcode service) that
+// ConfirmAction uses to gate fund-moving actions. When nil, ConfirmAction
+// refuses all fund moves (fail-closed).
+func (a *AgentAdapter) SetStepUpVerifier(v StepUpVerifier) {
+	a.stepUpVerifier = v
 }
 
 // SetEnrichmentSummaryFn wires the enrichment summary function for context assembly.
