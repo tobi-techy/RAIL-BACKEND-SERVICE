@@ -61,6 +61,14 @@ type CircleDepositNotifier interface {
 type CircleUnsupportedAssetService interface {
 	GetTokenSymbol(ctx context.Context, walletID, tokenID string) (string, error)
 	ReturnUnsupportedToken(ctx context.Context, walletID, tokenID, destinationAddress string, amounts []string, idempotencyKey string) error
+	// GetNFTTokenID resolves an inbound token against the wallet's NFT balances.
+	// Returns the NFT token id within the contract, or ("", nil) when the token
+	// is not an NFT held in the wallet. NFTs are not fungible and are not listed
+	// by GetTokenSymbol, so deposits that fail fungible resolution may be NFTs.
+	GetNFTTokenID(ctx context.Context, walletID, tokenID string) (string, error)
+	// ReturnUnsupportedNFT sends an inbound unsupported NFT back to its source
+	// address. NFT transfers require nftTokenIds rather than tokenId.
+	ReturnUnsupportedNFT(ctx context.Context, walletID, tokenID, destinationAddress string, amounts []string, nftTokenID string, idempotencyKey string) error
 }
 
 // CircleWithdrawalCompleter marks outbound Circle withdrawals as completed or failed.
@@ -277,7 +285,25 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 
 	tokenSymbol, err := h.circleTokenSymbol(ctx, tx.WalletID, tx.TokenID)
 	if err != nil {
-		return fmt.Errorf("circle token validation failed for wallet %s token %s: %w", tx.WalletID, tx.TokenID, err)
+		// The token is not resolvable as a fungible token — most commonly an NFT
+		// deposit, since NFTs are served by Circle's /nfts endpoint and never
+		// appear in the fungible /balances lookup used by circleTokenSymbol.
+		// Resolve it as an NFT so it can be returned instead of erroring into an
+		// endless 500 retry loop.
+		nftTokenID, nftErr := h.nftTokenID(ctx, tx.WalletID, tx.TokenID)
+		if nftErr != nil {
+			return fmt.Errorf("circle token validation failed for wallet %s token %s: %w", tx.WalletID, tx.TokenID, err)
+		}
+		if nftTokenID == "" {
+			h.logger.Warn("Unresolvable Circle inbound token — acknowledging without credit",
+				zap.String("walletId", tx.WalletID),
+				zap.String("tokenId", tx.TokenID),
+				zap.Strings("amounts", tx.Amounts),
+				zap.String("txHash", tx.TxHash),
+				zap.Error(err))
+			return nil
+		}
+		return h.handleUnsupportedInboundNFT(ctx, &event.Notification, userID, nftTokenID)
 	}
 
 	// SOL deposits are native gas tokens — they stay in the wallet for gas fees
@@ -294,6 +320,13 @@ func (h *CircleWebhookHandler) processInboundDeposit(ctx context.Context, event 
 
 	token := entities.Stablecoin(tokenSymbol)
 	if !token.IsValid() {
+		// Safety net: if the fungible lookup surfaced an NFT, return it through
+		// the NFT path (Circle rejects tokenId+amounts transfers for NFTs).
+		if h.assetService != nil {
+			if nftTokenID, nftErr := h.assetService.GetNFTTokenID(ctx, tx.WalletID, tx.TokenID); nftErr == nil && nftTokenID != "" {
+				return h.handleUnsupportedInboundNFT(ctx, &event.Notification, userID, nftTokenID)
+			}
+		}
 		return h.handleUnsupportedInboundAsset(ctx, &event.Notification, userID, tokenSymbol)
 	}
 
@@ -346,6 +379,15 @@ func (h *CircleWebhookHandler) circleTokenSymbol(ctx context.Context, walletID, 
 	return symbol, nil
 }
 
+// nftTokenID resolves the NFT token id (within the contract) for a Circle token
+// UUID, returning ("", nil) when the token is not an NFT in the wallet.
+func (h *CircleWebhookHandler) nftTokenID(ctx context.Context, walletID, tokenID string) (string, error) {
+	if h.assetService == nil {
+		return "", fmt.Errorf("unsupported asset service not configured")
+	}
+	return h.assetService.GetNFTTokenID(ctx, walletID, tokenID)
+}
+
 func (h *CircleWebhookHandler) handleUnsupportedInboundAsset(ctx context.Context, tx *CircleTransactionEvent, userID uuid.UUID, tokenSymbol string) error {
 	h.logger.Warn("Unsupported Circle inbound asset detected; skipping ledger credit",
 		zap.String("userID", userID.String()),
@@ -366,17 +408,12 @@ func (h *CircleWebhookHandler) handleUnsupportedInboundAsset(ctx context.Context
 			zap.String("txHash", tx.TxHash))
 		return nil
 	}
-	if strings.TrimSpace(tx.SourceAddress) == "" {
-		h.logger.Error("Cannot auto-return unsupported Circle asset without sourceAddress",
+	if isUnreturnableSource(tx.SourceAddress, tx.DestinationAddress) {
+		h.logger.Error("Refusing unsupported Circle asset return to a burn/unreturnable address",
 			zap.String("walletId", tx.WalletID),
 			zap.String("tokenId", tx.TokenID),
-			zap.String("txHash", tx.TxHash))
-		return nil
-	}
-	if strings.EqualFold(strings.TrimSpace(tx.SourceAddress), strings.TrimSpace(tx.DestinationAddress)) {
-		h.logger.Error("Refusing unsupported Circle asset return to the same wallet address",
-			zap.String("walletId", tx.WalletID),
-			zap.String("tokenId", tx.TokenID),
+			zap.String("sourceAddress", tx.SourceAddress),
+			zap.String("destinationAddress", tx.DestinationAddress),
 			zap.String("txHash", tx.TxHash))
 		return nil
 	}
@@ -406,6 +443,50 @@ func circleUnsupportedRefundIdempotencyKey(txID, txHash, tokenID string) string 
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("circle:unsupported-refund:"+txHash+":"+tokenID)).String()
 }
 
+// handleUnsupportedInboundNFT logs an unsupported NFT inbound and attempts to
+// return it to its source address using Circle's NFT transfer path (nftTokenIds).
+// Missing return prerequisites are logged and acknowledged (nil) so Circle does
+// not retry forever; only an actual return-transfer failure surfaces an error.
+func (h *CircleWebhookHandler) handleUnsupportedInboundNFT(ctx context.Context, tx *CircleTransactionEvent, userID uuid.UUID, nftTokenID string) error {
+	h.logger.Warn("Unsupported Circle inbound NFT detected; skipping ledger credit",
+		zap.String("userID", userID.String()),
+		zap.String("walletId", tx.WalletID),
+		zap.String("tokenId", tx.TokenID),
+		zap.String("nftTokenId", nftTokenID),
+		zap.String("sourceAddress", tx.SourceAddress),
+		zap.String("destinationAddress", tx.DestinationAddress),
+		zap.String("txHash", tx.TxHash),
+		zap.Strings("amounts", tx.Amounts))
+
+	if h.assetService == nil {
+		return fmt.Errorf("unsupported asset service not configured")
+	}
+	if isUnreturnableSource(tx.SourceAddress, tx.DestinationAddress) {
+		h.logger.Error("Refusing unsupported Circle NFT return to a burn/unreturnable address",
+			zap.String("walletId", tx.WalletID),
+			zap.String("tokenId", tx.TokenID),
+			zap.String("sourceAddress", tx.SourceAddress),
+			zap.String("destinationAddress", tx.DestinationAddress),
+			zap.String("txHash", tx.TxHash))
+		return nil
+	}
+
+	idempotencyKey := circleUnsupportedRefundIdempotencyKey(tx.ID, tx.TxHash, tx.TokenID)
+	if err := h.assetService.ReturnUnsupportedNFT(ctx, tx.WalletID, tx.TokenID, tx.SourceAddress, tx.Amounts, nftTokenID, idempotencyKey); err != nil {
+		return fmt.Errorf("return unsupported Circle NFT: %w", err)
+	}
+
+	h.logger.Info("Unsupported Circle inbound NFT return submitted",
+		zap.String("userID", userID.String()),
+		zap.String("walletId", tx.WalletID),
+		zap.String("tokenId", tx.TokenID),
+		zap.String("nftTokenId", nftTokenID),
+		zap.String("destinationAddress", tx.SourceAddress),
+		zap.String("idempotencyKey", idempotencyKey),
+		zap.String("txHash", tx.TxHash))
+	return nil
+}
+
 func circleBlockchainToDomainChain(blockchain string) string {
 	bc := strings.ToUpper(blockchain)
 	switch {
@@ -433,6 +514,29 @@ func circleBlockchainToDomainChain(blockchain string) string {
 // not be treated as unsupported assets or credited to the user's ledger.
 func isNativeGasToken(symbol string) bool {
 	return strings.EqualFold(strings.TrimSpace(symbol), "SOL")
+}
+
+// isUnreturnableSource reports whether a deposit's source address cannot receive
+// a refund: empty, the zero/burn address (Circle reports mints with a zero-address
+// source — refunding there would fail or burn the asset), or the destination
+// wallet itself. Attempting such a return would 500-loop, so it must be skipped.
+func isUnreturnableSource(source, destination string) bool {
+	src := strings.TrimSpace(source)
+	if src == "" {
+		return true
+	}
+	if strings.EqualFold(src, strings.TrimSpace(destination)) {
+		return true
+	}
+	lower := strings.ToLower(src)
+	lower = strings.TrimPrefix(lower, "0x")
+	// EVM zero/burn address (all-zero hex) or Solana System Program.
+	// Solana base58 addresses never contain "0", so the Trim check cannot
+	// false-positive on them.
+	if strings.Trim(lower, "0") == "" || lower == "11111111111111111111111111111111" {
+		return true
+	}
+	return false
 }
 
 // processOutboundTransaction handles completed/failed outbound Circle transfers (withdrawals).

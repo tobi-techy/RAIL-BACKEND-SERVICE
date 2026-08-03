@@ -157,6 +157,17 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 		return nil
 	}
 
+	// Quick reply fast path — balance/spending/budget queries answered directly
+	// from tool data without an LLM call (sub-500ms latency for common queries)
+	if content, cards, ok := o.QuickReply(ctx, userID, message); ok {
+		emitWithBubbleBreaks(content, emit)
+		if len(cards) > 0 {
+			emit(StreamEvent{Type: "cards", Data: cards})
+		}
+		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": 0, "provider": "quick-reply", "model": "quick-reply"}})
+		return nil
+	}
+
 	// Root trace span for this turn — groups generations into a Langfuse
 	// session (per conversation) and attributes them to the user. The marker is
 	// a start-time attribute so llmAwareSampler force-samples it (and, via the

@@ -201,11 +201,16 @@ func (s *Service) markSent(ctx context.Context, airbillsID, ref string) {
 }
 
 // markFailed marks an order failed without reversing (funds already sent).
-func (s *Service) markFailed(ctx context.Context, airbillsID, reason string) {
-	if _, err := s.db.ExecContext(ctx,
-		`UPDATE airbills_orders SET status='failed', failure_reason=$1, updated_at=NOW() WHERE airbills_id=$2`, reason, airbillsID); err != nil {
+// Returns the number of rows affected so callers can avoid duplicate side effects.
+func (s *Service) markFailed(ctx context.Context, airbillsID, reason string) int64 {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE airbills_orders SET status='failed', failure_reason=$1, updated_at=NOW() WHERE airbills_id=$2 AND status NOT IN ('failed','reversed')`, reason, airbillsID)
+	if err != nil {
 		s.logger.Warn("failed to mark airbills order failed", zap.Error(err), zap.String("airbills_id", airbillsID))
+		return 0
 	}
+	rows, _ := res.RowsAffected()
+	return rows
 }
 
 // reverseHold reverses the full ledger hold for a payment that never sent funds

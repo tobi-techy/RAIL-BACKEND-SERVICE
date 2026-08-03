@@ -55,17 +55,19 @@ func scanMessage(row interface{ Scan(...interface{}) error }, m *entities.AIMess
 // messaging-platform thread (iMessage/WhatsApp/Telegram), creating one on first
 // contact. The id keys the orchestrator's pending-action store, so tap-to-confirm
 // postbacks resolve to the same conversation that staged the action.
-func (r *ConversationRepository) GetOrCreatePlatformConversation(ctx context.Context, userID uuid.UUID, platform, threadID string, platformIdentityID uuid.UUID) (uuid.UUID, error) {
+// The second return value reports whether the conversation was just created —
+// first contact on this platform — so callers can inject cross-channel continuity.
+func (r *ConversationRepository) GetOrCreatePlatformConversation(ctx context.Context, userID uuid.UUID, platform, threadID string, platformIdentityID uuid.UUID) (uuid.UUID, bool, error) {
 	var id uuid.UUID
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id FROM ai_conversations WHERE platform = $1 AND platform_thread_id = $2 AND user_id = $3 LIMIT 1`,
 		platform, threadID, userID,
 	).Scan(&id)
 	if err == nil {
-		return id, nil
+		return id, false, nil
 	}
 	if err != sql.ErrNoRows {
-		return uuid.Nil, fmt.Errorf("lookup platform conversation: %w", err)
+		return uuid.Nil, false, fmt.Errorf("lookup platform conversation: %w", err)
 	}
 
 	id = uuid.New()
@@ -77,9 +79,50 @@ func (r *ConversationRepository) GetOrCreatePlatformConversation(ctx context.Con
 		 VALUES ($1, $2, $3, '', 0, 0, 0, $4, $4, $5, $6, $7)`,
 		id, userID, "Miriam on "+platform, now, platform, threadID, platformIdentityID,
 	); err != nil {
-		return uuid.Nil, fmt.Errorf("create platform conversation: %w", err)
+		return uuid.Nil, false, fmt.Errorf("create platform conversation: %w", err)
 	}
-	return id, nil
+	return id, true, nil
+}
+
+// ThreadSummary is a lightweight digest of a conversation on another messaging
+// platform, used to bridge context when a user switches channels.
+type ThreadSummary struct {
+	Platform  string
+	Title     string
+	Summary   string
+	UpdatedAt time.Time
+}
+
+// ListRecentThreadSummaries returns the most recent conversations the user has
+// had on messaging platforms other than excludePlatform (and excluding the
+// current thread), so Miriam can continue a thread that moved channels instead
+// of starting cold. Empty Summary falls back to the caller using Title.
+func (r *ConversationRepository) ListRecentThreadSummaries(ctx context.Context, userID uuid.UUID, excludePlatform, excludeThread string, limit int) ([]ThreadSummary, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT platform, title, summary_context, updated_at
+		 FROM ai_conversations
+		 WHERE user_id = $1
+		   AND platform IS NOT NULL AND platform != ''
+		   AND platform != $2
+		   AND platform_thread_id != $3
+		 ORDER BY updated_at DESC
+		 LIMIT $4`,
+		userID, excludePlatform, excludeThread, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recent thread summaries: %w", err)
+	}
+	defer rows.Close()
+
+	var threads []ThreadSummary
+	for rows.Next() {
+		var t ThreadSummary
+		if err := rows.Scan(&t.Platform, &t.Title, &t.Summary, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan thread summary: %w", err)
+		}
+		threads = append(threads, t)
+	}
+	return threads, rows.Err()
 }
 
 // GetLastPlatformThread returns the most recent platform_thread_id for a user

@@ -1637,14 +1637,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// Conversation endpoints. The "gate-on + nil-passcode" invariant
 				// is validated at application startup (Application.validateSecurityConfig),
 				// so the gate is guaranteed wired by the time we reach this route
-				// setup — no mid-route Fatal here.
+				// setup — no mid-route Fatal here. Step-up enforcement for fund-moving
+				// actions lives in the orchestrator core (AgentAdapter.ConfirmAction),
+				// not in the handler — so every caller is protected regardless of
+				// the HTTP entry point.
 				if container.GetConversationService() != nil {
 					convHandlers := handlers.NewConversationHandlers(
 						container.GetAIOrchestrator(),
 						container.GetConversationService(),
 						container.ZapLog,
-						container.GetPasscodeService(),
-						container.Config.Security.AIFundActionsRequirePasscode,
 					)
 					convGroup := protected.Group("/ai/conversations")
 					{

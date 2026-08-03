@@ -61,20 +61,30 @@ func (s *Service) HandleCallback(ctx context.Context, body []byte, signature str
 
 	switch {
 	case callbackSucceeded(event.Status):
-		if _, err := s.db.ExecContext(ctx, `
+		res, err := s.db.ExecContext(ctx, `
 			UPDATE airbills_orders SET status='completed', updated_at=NOW()
-			WHERE airbills_id=$1 AND status IN ('sent','processing','held')`, event.ID); err != nil {
+			WHERE airbills_id=$1 AND status IN ('sent','processing','held')`, event.ID)
+		if err != nil {
 			return fmt.Errorf("airbills callback complete: %w", err)
 		}
-		s.logger.Info("airbills bill fulfilled via callback", zap.String("airbills_id", event.ID))
-		if order != nil {
-			s.notifyBillStatus(ctx, order, "completed")
+		rows, _ := res.RowsAffected()
+		if rows > 0 {
+			s.logger.Info("airbills bill fulfilled via callback", zap.String("airbills_id", event.ID))
+			if order != nil {
+				s.notifyBillStatus(ctx, order, "completed")
+			}
+		} else {
+			s.logger.Debug("airbills callback completion ignored: already terminal", zap.String("airbills_id", event.ID))
 		}
 	case callbackFailed(event.Status):
-		s.markFailed(ctx, event.ID, "callback_failed")
-		s.logger.Warn("airbills callback reported failure — flagged for reconciliation", zap.String("airbills_id", event.ID))
-		if order != nil {
-			s.notifyBillStatus(ctx, order, "failed")
+		rows := s.markFailed(ctx, event.ID, "callback_failed")
+		if rows > 0 {
+			s.logger.Warn("airbills callback reported failure — flagged for reconciliation", zap.String("airbills_id", event.ID))
+			if order != nil {
+				s.notifyBillStatus(ctx, order, "failed")
+			}
+		} else {
+			s.logger.Debug("airbills callback failure ignored: already terminal", zap.String("airbills_id", event.ID))
 		}
 	}
 	return nil

@@ -24,6 +24,13 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
 
+  // WhatsApp Business (optional). When WHATSAPP_ACCESS_TOKEN and
+  // WHATSAPP_PHONE_NUMBER_ID are set the bridge starts a WhatsApp Business
+  // provider alongside iMessage (and Telegram, if configured).
+  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  WHATSAPP_APP_SECRET: z.string().optional(),
+
   NODE_ENV: z.enum(["development", "production"]).default("development"),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("info"),
 });

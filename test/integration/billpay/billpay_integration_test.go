@@ -340,3 +340,31 @@ func TestBillPay_WebhookCallback_RejectsInvalidSignature(t *testing.T) {
 	// No notification should be sent for rejected callbacks.
 	assert.Empty(t, notifier.pushes)
 }
+
+func TestBillPay_WebhookCallback_NoDuplicateNotificationForAlreadyTerminalOrder(t *testing.T) {
+	db, svc := newBillPayService(t)
+	ctx := context.Background()
+	userID := uniqueUserID()
+	insertTestUser(ctx, t, db, userID)
+	t.Cleanup(func() { cleanupBillPayData(ctx, t, db, userID) })
+
+	notifier := &mockNotifier{}
+	svc.SetNotifier(notifier)
+
+	orderID := uuid.New()
+	airbillsID := "ab-dup-callback"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO airbills_orders (id, user_id, airbills_id, product_code, product_category, status, recipient, amount_ngn, token, amount_in_token, rail_fee_usdc, hold_amount, rate)
+		VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, 'USDC', 2, 0.02, 2.02, 1500)`,
+		orderID, userID, airbillsID, airbills.ProductAirtime, billpay.CategoryAirtime, "08012345678", float64(3000))
+	require.NoError(t, err)
+
+	// A later callback with a different success status bypasses delivery dedup,
+	// but the order is already terminal so no notification should fire.
+	body := []byte(fmt.Sprintf(`{"id":"%s","productCode":"100","status":"paid"}`, airbillsID))
+	sig := signWebhook(body, "test-webhook-secret")
+	err = svc.HandleCallback(ctx, body, sig)
+	require.NoError(t, err)
+
+	assert.Empty(t, notifier.pushes)
+}

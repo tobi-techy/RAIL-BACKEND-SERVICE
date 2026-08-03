@@ -1010,4 +1010,5 @@ func RegisterAllRemainingTools(r *Registry) {
 	RegisterPersonalityModeTool(r)
 	RegisterControlLevelTool(r)
 	RegisterAccountSummaryTool(r)
+	RegisterGameplayTools(r)
 }
