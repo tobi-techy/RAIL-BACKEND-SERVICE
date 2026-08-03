@@ -14,8 +14,10 @@ import (
 )
 
 const (
-	oneSignalPushURL = "https://onesignal.com/api/v1/notifications"
-	oneSignalTTL     = 86400
+	oneSignalPushURL        = "https://onesignal.com/api/v1/notifications"
+	oneSignalTTL            = 86400
+	oneSignalMaxRetries     = 3
+	oneSignalRetryBaseDelay = 500 * time.Millisecond
 )
 
 // oneSignalNotificationRequest is the payload for OneSignal's create-notification API.
@@ -106,9 +108,9 @@ func (s *OneSignalPushService) SendToUser(ctx context.Context, userID uuid.UUID,
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= oneSignalMaxRetries; attempt++ {
 		if attempt > 0 {
-			delay := retryBaseDelay * time.Duration(attempt)
+			delay := oneSignalRetryBaseDelay * time.Duration(attempt)
 			if retryErr, ok := lastErr.(*retryableOneSignalError); ok && retryErr.delay > delay {
 				delay = retryErr.delay
 			}
@@ -136,7 +138,7 @@ func (s *OneSignalPushService) SendToUser(ctx context.Context, userID uuid.UUID,
 			zap.Int("recipients", recipients))
 		return nil
 	}
-	return fmt.Errorf("onesignal push failed after %d attempts: %w", maxRetries+1, lastErr)
+	return fmt.Errorf("onesignal push failed after %d attempts: %w", oneSignalMaxRetries+1, lastErr)
 }
 
 // sendChunk performs a single create-notification call. A non-nil retryErr means
@@ -198,5 +200,5 @@ func retryAfterDuration(header string) time.Duration {
 			}
 		}
 	}
-	return retryBaseDelay
+	return oneSignalRetryBaseDelay
 }

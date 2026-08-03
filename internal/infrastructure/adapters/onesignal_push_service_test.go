@@ -151,8 +151,8 @@ func TestOneSignalPushService_SendToUser_RetryExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after retries exhausted")
 	}
-	if attempts != maxRetries+1 {
-		t.Errorf("attempts = %d, want %d", attempts, maxRetries+1)
+	if attempts != oneSignalMaxRetries+1 {
+		t.Errorf("attempts = %d, want %d", attempts, oneSignalMaxRetries+1)
 	}
 }
 
@@ -163,10 +163,10 @@ func TestRetryAfterDuration(t *testing.T) {
 		want   time.Duration
 	}{
 		{name: "seconds", header: "5", want: 5 * time.Second},
-		{name: "empty", header: "", want: retryBaseDelay},
-		{name: "garbage", header: "abc", want: retryBaseDelay},
+		{name: "empty", header: "", want: oneSignalRetryBaseDelay},
+		{name: "garbage", header: "abc", want: oneSignalRetryBaseDelay},
 		{name: "http-date", header: time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat), want: 2 * time.Second},
-		{name: "past-date", header: time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), want: retryBaseDelay},
+		{name: "past-date", header: time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), want: oneSignalRetryBaseDelay},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
