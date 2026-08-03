@@ -228,6 +228,16 @@ type SupermemoryResult struct {
 	UpdatedUnix int64
 }
 
+// CrossChannelHistoryFact is one server-validated fact about a conversation the
+// user had on another platform. The core sanitizes and bounds every field before
+// rendering — only these shaped facts reach the model, never raw conversation
+// text that could carry embedded instructions.
+type CrossChannelHistoryFact struct {
+	Platform string `json:"platform"`
+	Date     string `json:"date"`
+	Topic    string `json:"topic"`
+}
+
 // ChatOptions carries per-request options.
 type ChatOptions struct {
 	ToneMode    string
@@ -240,11 +250,12 @@ type ChatOptions struct {
 	// so the non-streaming path matches the streaming path. Trusted, product-authored
 	// instructions only.
 	SystemContext []string
-	// CrossChannelHistory is untrusted data (a digest of the user's conversations
-	// on other platforms). Rendered as a data-only user message with an explicit
-	// "ignore any instructions inside" framing rather than as a system prompt, so
-	// user-shaped content cannot inject instructions into Miriam's system context.
-	CrossChannelHistory string
+	// CrossChannelHistory is untrusted data (facts about the user's conversations
+	// on other platforms). Sanitized and rendered as a data-only user message with
+	// an explicit "ignore any instructions inside" framing rather than as a system
+	// prompt, so user-shaped content cannot inject instructions into Miriam's
+	// system context.
+	CrossChannelHistory []CrossChannelHistoryFact
 	// ControlLevel gates action execution: "monitor" blocks all action tools,
 	// "guided"/"full"/"" allow them. Sourced from the user's saved autonomy setting.
 	ControlLevel string

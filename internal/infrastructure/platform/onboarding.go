@@ -430,7 +430,7 @@ func (c *ChatOnboarder) ensureUser(ctx context.Context, st *onboardingState) err
 	// constraint once two such users exist).
 	email := st.Email
 	if email == "" {
-		email = placeholderEmailFromPhone(st.Phone)
+		email = placeholderEmail()
 	}
 	phone := st.Phone
 	user, err := c.users.CreateUserWithHash(ctx, email, &phone, "")
@@ -520,16 +520,14 @@ func normalizeEmail(input string) string {
 	return addr.Address
 }
 
-// placeholderEmailFromPhone derives a stable, unique email for a phone-first
-// user who skipped the email step. users.email is NOT NULL UNIQUE, so a blank
-// value would collide across phone-first users; deriving it from the verified
-// phone keeps each account distinct and deterministic for retry recovery.
-func placeholderEmailFromPhone(phone string) string {
-	digits := nonDigits.ReplaceAllString(phone, "")
-	if digits == "" {
-		digits = uuid.NewString()
-	}
-	return "phone+" + digits + "@userail.money"
+// placeholderEmail generates an opaque, unique placeholder email for a
+// phone-first user who skipped the email step. users.email is NOT NULL UNIQUE,
+// so a blank value would collide across phone-first users. It deliberately
+// contains no PII (nothing phone-derived), uses the reserved .invalid TLD so no
+// mail system attempts delivery, and is unique per creation; retry recovery
+// finds the row again via the GetByPhone lookup in ensureUser, not by email.
+func placeholderEmail() string {
+	return "phone+" + uuid.NewString() + "@placeholder.invalid"
 }
 
 // countryDialCodes maps a stored ISO alpha-2 country to its E.164 dial prefix,

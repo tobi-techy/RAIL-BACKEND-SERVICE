@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	core "github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -131,13 +132,18 @@ type ChatOptions struct {
 	// in the non-streaming path so every chat carries them. Never put
 	// user-shaped content here — use CrossChannelHistory for that.
 	SystemContext []string
-	// CrossChannelHistory carries a digest of the user's conversations on other
-	// platforms when they first message on a new channel. It is built from
-	// persisted titles/summaries and is untrusted data: it must never be rendered
-	// as a system prompt. The core renders it as a data-only message so any
-	// instructions embedded in it are inert.
-	CrossChannelHistory string
+	// CrossChannelHistory carries structured facts about the user's conversations
+	// on other platforms when they first message on a new channel. It is built
+	// from persisted, potentially user-shaped titles/summaries and is untrusted:
+	// it must never be rendered as a system prompt. The core sanitizes, bounds,
+	// and renders it as a data-only message so any instructions embedded in it
+	// are inert.
+	CrossChannelHistory []CrossChannelHistoryFact
 }
+
+// CrossChannelHistoryFact mirrors core.CrossChannelHistoryFact at the adapter
+// boundary so callers build the same structured facts the core renders.
+type CrossChannelHistoryFact = core.CrossChannelHistoryFact
 
 // MoneyMoveNotifier sends a push notification when Miriam moves money on a
 // user's behalf. It is intentionally a single-method interface so the

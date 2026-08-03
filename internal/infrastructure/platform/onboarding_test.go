@@ -616,9 +616,12 @@ func TestOnboarding_SkipEmailUsesNoEmail(t *testing.T) {
 		t.Fatalf("expected one user created when email skipped, got %d", len(users.created))
 	}
 	got := users.created[0].Email
-	want := "phone+2348099999999@userail.money"
-	if got != want {
-		t.Fatalf("expected deterministic placeholder email %q when email skipped, got %q", want, got)
+	if !strings.HasPrefix(got, "phone+") || !strings.HasSuffix(got, "@placeholder.invalid") {
+		t.Fatalf("expected opaque placeholder email, got %q", got)
+	}
+	// The placeholder must not carry the phone number (no PII duplication).
+	if strings.Contains(got, "2348099999999") {
+		t.Fatalf("placeholder email leaks the phone number: %q", got)
 	}
 }
 

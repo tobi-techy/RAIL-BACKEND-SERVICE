@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -224,18 +223,18 @@ const crossChannelContinuityInstruction = "The user just started chatting here o
 // crossChannelHistory digests the conversations the user has already been having
 // on other platforms so Miriam continues the thread that moved channels instead
 // of starting cold. The digest is built from persisted, potentially user-shaped
-// titles/summaries and is therefore untrusted data — it must never be rendered
-// as a system prompt.
-func (a *orchestratorAdapter) crossChannelHistory(ctx context.Context, userID uuid.UUID, platform, threadID string) string {
+// titles/summaries and is therefore untrusted — each entry is a structured fact
+// that must never be rendered as a system prompt.
+func (a *orchestratorAdapter) crossChannelHistory(ctx context.Context, userID uuid.UUID, platform, threadID string) []aiservice.CrossChannelHistoryFact {
 	threads, err := a.convRepo.ListRecentThreadSummaries(ctx, userID, platform, threadID, 3)
 	if err != nil || len(threads) == 0 {
-		return ""
+		return nil
 	}
 	return buildCrossChannelHistory(threads)
 }
 
-func buildCrossChannelHistory(threads []repositories.ThreadSummary) string {
-	var parts []string
+func buildCrossChannelHistory(threads []repositories.ThreadSummary) []aiservice.CrossChannelHistoryFact {
+	var facts []aiservice.CrossChannelHistoryFact
 	for _, t := range threads {
 		topic := t.Summary
 		if topic == "" {
@@ -244,9 +243,13 @@ func buildCrossChannelHistory(threads []repositories.ThreadSummary) string {
 		if topic == "" {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("- %s (%s): %s", friendlyPlatform(t.Platform), t.UpdatedAt.Format("Jan 2"), topic))
+		facts = append(facts, aiservice.CrossChannelHistoryFact{
+			Platform: friendlyPlatform(t.Platform),
+			Date:     t.UpdatedAt.Format("Jan 2"),
+			Topic:    topic,
+		})
 	}
-	return strings.Join(parts, "\n")
+	return facts
 }
 
 var platformDisplayNames = map[string]string{
@@ -296,7 +299,7 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 		// instead of treating the channel switch as a fresh start. The digest is
 		// untrusted data and rides outside SystemContext; only a fixed instruction
 		// references it.
-		if cc := a.crossChannelHistory(ctx, uid, plat.String(), threadID); cc != "" {
+		if cc := a.crossChannelHistory(ctx, uid, plat.String(), threadID); len(cc) > 0 {
 			opts.SystemContext = []string{crossChannelContinuityInstruction}
 			opts.CrossChannelHistory = cc
 		}
