@@ -12,6 +12,7 @@ package billpay
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -75,6 +76,10 @@ type Config struct {
 	DefaultToken        string
 	MaxAmountNGN        float64
 }
+
+// ErrOrderNotFound is returned when a requested Airbills order does not exist
+// or does not belong to the authenticated user.
+var ErrOrderNotFound = errors.New("order not found")
 
 // Service is the bill-payment orchestrator.
 type Service struct {
@@ -378,7 +383,7 @@ func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*Ord
 		&o.AmountNGN, &usdc, &fee, &rate, &o.Token, &o.Status, &failureReason,
 		&bridgeID, &beneficiaryID, &automationID, &o.CreatedAt, &o.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, sql.ErrNoRows
+		return nil, ErrOrderNotFound
 	}
 	if err != nil {
 		return nil, err

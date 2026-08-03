@@ -1,7 +1,6 @@
 package funding
 
 import (
-	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -39,7 +38,7 @@ func (h *BillPayHandlers) GetOrder(c *gin.Context) {
 	}
 	order, err := h.service.GetOrder(c.Request.Context(), userID, orderID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, billpay.ErrOrderNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"code": "ORDER_NOT_FOUND", "message": "Order not found"})
 			return
 		}
