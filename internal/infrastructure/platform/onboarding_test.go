@@ -72,6 +72,11 @@ type fakeUsers struct {
 	byPhone map[string]*entities.UserProfile
 	byEmail map[string]*entities.UserProfile
 	created []*entities.User
+	// vanishAfterEmailLookups simulates an account being deleted mid-flow:
+	// once more than this many GetByEmail calls have happened, lookups return
+	// not-found. 0 disables the behaviour.
+	vanishAfterEmailLookups int
+	emailLookups            int
 }
 
 func newFakeUsers() *fakeUsers {
@@ -89,6 +94,10 @@ func (u *fakeUsers) GetByPhone(_ context.Context, phone string) (*entities.UserP
 }
 
 func (u *fakeUsers) GetByEmail(_ context.Context, email string) (*entities.UserProfile, error) {
+	u.emailLookups++
+	if u.vanishAfterEmailLookups > 0 && u.emailLookups > u.vanishAfterEmailLookups {
+		return nil, fmt.Errorf("not found")
+	}
 	if p, ok := u.byEmail[email]; ok {
 		return p, nil
 	}
@@ -533,6 +542,53 @@ func TestOnboarding_InactiveEmailAccountRejected(t *testing.T) {
 	}
 	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
 		t.Fatal("session should be cleared after inactive account")
+	}
+}
+
+func TestOnboarding_EmailAccountVanishesAfterOTPSend(t *testing.T) {
+	ob, _, ver, users, _, _ := newTestOnboarder()
+	sender := "+15550013"
+	users.byEmail["fading@example.com"] = &entities.UserProfile{ID: uuid.New(), Email: "fading@example.com", IsActive: true}
+	// First lookup finds the account and triggers the OTP; the second lookup
+	// (re-verify right after sending) sees it disappear.
+	users.vanishAfterEmailLookups = 1
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ngozi")
+	step(t, ob, sender, "NG")
+	reply := step(t, ob, sender, "fading@example.com")
+
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "fading@example.com" {
+		t.Fatalf("expected email OTP sent before re-check, got: %v", ver.sentTo)
+	}
+	if !strings.Contains(reply, "isn't active") {
+		t.Fatalf("expected inactive/deleted account message after re-check, got: %q", reply)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
+		t.Fatal("session should be cleared when the account vanishes after the OTP send")
+	}
+}
+
+func TestOnboarding_EmailAccountDeactivatedAfterEmailOTP(t *testing.T) {
+	ob, _, _, users, _, _ := newTestOnboarder()
+	sender := "+15550014"
+	existingID := uuid.New()
+	users.byEmail["frozen@example.com"] = &entities.UserProfile{ID: existingID, Email: "frozen@example.com", IsActive: true}
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Ada")
+	step(t, ob, sender, "NG")
+	step(t, ob, sender, "frozen@example.com")
+
+	// The account is deactivated between the OTP send and the OTP verification.
+	users.byEmail["frozen@example.com"].IsActive = false
+	reply := step(t, ob, sender, "123456")
+
+	if !strings.Contains(reply, "isn't active") {
+		t.Fatalf("expected inactive account message after email OTP, got: %q", reply)
+	}
+	if ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
+		t.Fatal("session should be cleared when the account is inactive after email OTP")
 	}
 }
 

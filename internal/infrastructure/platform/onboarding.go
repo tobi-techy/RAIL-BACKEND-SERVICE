@@ -256,6 +256,13 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 			c.logger.Warn("onboarding email OTP send failed", zap.Error(err))
 			return textReply(otpSendErrorMessage(err)), nil
 		}
+		// Re-verify the account still exists and is active now that the OTP is
+		// in flight, so a deleted or deactivated account can never receive a
+		// code that links a chat to a stale row.
+		if recheck, err := c.users.GetByEmail(ctx, email); err != nil || recheck == nil || !recheck.IsActive {
+			_ = c.store.Del(ctx, key)
+			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+		}
 		st.Step = stepEmailOTP
 		st.EmailOTPAttempts = 0
 		if err := c.save(ctx, key, *st); err != nil {
