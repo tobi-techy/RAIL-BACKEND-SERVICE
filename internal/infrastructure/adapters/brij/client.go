@@ -22,13 +22,13 @@ import (
 
 // Defaults for the HTTP + x402 payment client.
 const (
-	defaultBaseURL  = "https://travel.brij.fi"
-	defaultRPC      = rpc.MainNetBeta_RPC
-	defaultTimeout  = 30 * time.Second
-	defaultRetries  = 2
-	maxPayAttempts  = 3 // times we rebuild a signature against a fresh 402
-	computeUnitCap  = 400_000
-	priorityFee     = 0 // no priority fee; keeps us under any sponsor cap
+	defaultBaseURL = "https://travel.brij.fi"
+	defaultRPC     = rpc.MainNetBeta_RPC
+	defaultTimeout = 30 * time.Second
+	defaultRetries = 2
+	maxPayAttempts = 3 // times we rebuild a signature against a fresh 402
+	computeUnitCap = 400_000
+	priorityFee    = 0 // no priority fee; keeps us under any sponsor cap
 )
 
 // Config configures the BRIJ client. FundingPrivateKey is the base58-encoded
@@ -336,8 +336,12 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response)
 
 	instructions := make([]solana.Instruction, 0, 4)
 	for _, build := range []func() (solana.Instruction, error){
-		func() (solana.Instruction, error) { return computebudget.NewSetComputeUnitLimitInstructionBuilder().SetUnits(computeUnitCap).ValidateAndBuild() },
-		func() (solana.Instruction, error) { return computebudget.NewSetComputeUnitPriceInstructionBuilder().SetMicroLamports(priorityFee).ValidateAndBuild() },
+		func() (solana.Instruction, error) {
+			return computebudget.NewSetComputeUnitLimitInstructionBuilder().SetUnits(computeUnitCap).ValidateAndBuild()
+		},
+		func() (solana.Instruction, error) {
+			return computebudget.NewSetComputeUnitPriceInstructionBuilder().SetMicroLamports(priorityFee).ValidateAndBuild()
+		},
 		func() (solana.Instruction, error) {
 			return token.NewTransferCheckedInstruction(
 				uint64(ac.Amount),
@@ -375,8 +379,8 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response)
 
 // sponsorFeePayer extracts the sponsor fee payer from the challenge extra.
 func sponsorFeePayer(extra map[string]any) (solana.PublicKey, error) {
-	fp, _ := extra["feePayer"].(string)
-	if fp == "" {
+	fp, ok := extra["feePayer"].(string)
+	if !ok || fp == "" {
 		return solana.PublicKey{}, &PaymentVerificationError{Code: "no_fee_payer", Message: "challenge carries no feePayer sponsor"}
 	}
 	pk, err := solana.PublicKeyFromBase58(fp)

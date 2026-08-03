@@ -216,12 +216,14 @@ type RefundResponse struct {
 }
 
 // formatAtomicAmount renders an integer atomic amount (6 decimals) as a
-// decimal string, e.g. 67600000 -> "67.600000".
+// decimal string, e.g. 67600000 -> "67.600000" and -1500000 -> "-1.500000".
 func formatAtomicAmount(atomic int64) string {
+	sign := ""
+	if atomic < 0 {
+		sign = "-"
+		atomic = -atomic
+	}
 	whole := atomic / 1_000_000
 	frac := atomic % 1_000_000
-	if frac < 0 {
-		frac = -frac
-	}
-	return fmt.Sprintf("%d.%06d", whole, frac)
+	return fmt.Sprintf("%s%d.%06d", sign, whole, frac)
 }

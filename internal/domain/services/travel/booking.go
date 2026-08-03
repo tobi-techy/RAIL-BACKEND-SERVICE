@@ -69,7 +69,11 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 	railFee := s.railFee(escrow)
 	totalHold := escrow.Add(railFee)
 
-	passengersJSON, _ := json.Marshal([]brij.PassengerInput{req.Passenger})
+	passengersJSON, err := json.Marshal([]brij.PassengerInput{req.Passenger})
+	if err != nil {
+		s.logger.Error("failed to marshal passenger data", zap.Error(err), zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("failed to prepare the booking")
+	}
 	if err := s.holdFunds(ctx, userID, totalHold); err != nil {
 		return nil, err
 	}
@@ -219,6 +223,7 @@ func (s *Service) finalizeBooking(ctx context.Context, userID uuid.UUID, order *
 		}
 	}
 	receipt := ticketReceiptJSON(order, intent, pnr)
+	finalized := true
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE travel_orders SET status='completed', escrow_amount_usdc=$2, airline_order_id=$3, order_ref=$4,
 		       booking_reference=$5, pnr=$5, ticketed_at=NOW(), receipt=$6, updated_at=NOW()
@@ -226,6 +231,7 @@ func (s *Service) finalizeBooking(ctx context.Context, userID uuid.UUID, order *
 		order.ID, order.ExpectedEscrow, nullStr(intent.AirlineOrderID), nullStr(order.OrderRef),
 		nullStr(pnr), receipt); err != nil {
 		s.logger.Error("failed to mark travel order completed", zap.Error(err), zap.String("order_id", order.ID.String()))
+		finalized = false
 	}
 
 	res := BookingResult{
@@ -238,6 +244,11 @@ func (s *Service) finalizeBooking(ctx context.Context, userID uuid.UUID, order *
 		PNR:       pnr,
 		AmountUSD: order.ExpectedEscrow.StringFixed(2),
 		Status:    StatusCompleted,
+	}
+	if !finalized {
+		// The intent is booked but the order row is not 'completed', so report
+		// 'booked' and let RunRecovery finalize + deliver it later.
+		res.Status = StatusBooked
 	}
 	s.deliverTicket(ctx, order, pnr, &res)
 	return res

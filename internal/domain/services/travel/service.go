@@ -148,8 +148,15 @@ func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req Create
 		return nil, fmt.Errorf("BRIJ returned an incomplete intent")
 	}
 	if _, err := s.persistIntent(ctx, userID, req, intent); err != nil {
-		s.logger.Error("failed to persist BRIJ intent", zap.Error(err), zap.String("intent_id", intent.ID))
-		return nil, fmt.Errorf("failed to record this flight — please try again")
+		// The BRIJ intent is already created and x402-paid at this point, but it
+		// is not tracked in travel_orders, so recovery cannot reach it. Surface
+		// the intent id so support can cancel it if needed.
+		s.logger.Error("BRIJ intent created but not persisted",
+			zap.Error(err),
+			zap.String("intent_id", intent.ID),
+			zap.String("offer_id", offerID),
+			zap.String("user_id", userID.String()))
+		return nil, fmt.Errorf("failed to record this flight — please try again (intent %s was created but not stored)", intent.ID)
 	}
 	s.logger.Info("BRIJ intent created",
 		zap.String("intent_id", intent.ID),
@@ -173,6 +180,9 @@ func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req Create
 func (s *Service) persistIntent(ctx context.Context, userID uuid.UUID, req CreateIntentRequest, intent *brij.BookingIntent) (uuid.UUID, error) {
 	orderID := uuid.New()
 	escrow := intentEscrowDecimal(intent)
+	if !escrow.IsPositive() {
+		return uuid.Nil, fmt.Errorf("BRIJ returned an invalid escrow amount (%s) for offer %q", escrow.String(), intent.OfferID)
+	}
 	route := fmt.Sprintf("%s to %s", strings.TrimSpace(req.Origin), strings.TrimSpace(req.Destination))
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO travel_orders (id, user_id, mode, provider, status, route, departure_terminal, destination_terminal, trip_date,

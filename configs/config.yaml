@@ -30,7 +30,7 @@ graph:
 # (BRIJ_FUNDING_PRIVATE_KEY etc.); these are non-secret defaults.
 brij:
   base_url: "https://travel.brij.fi"
-  solana_rpc: ""
+  solana_rpc: "https://api.mainnet-beta.solana.com"
   http_timeout: 30
   max_retries: 2
   developer_fee_percent: 2.0
