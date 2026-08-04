@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
@@ -35,15 +34,11 @@ type BookingResult struct {
 	TicketSent bool      `json:"ticket_sent"`
 }
 
-// Polling window for async ticket issuance. The booking worker usually finishes
-// within a minute; anything still active after this is left for RunRecovery.
-const (
-	pollTimeout  = 90 * time.Second
-	pollInterval = 10 * time.Second
-)
-
 // BookFlight holds the user's funds, pays the intent's escrow via x402, submits
-// the passenger, and waits for the airline to issue the ticket.
+// the passenger, and returns immediately. Ticket issuance is async: when the
+// /book response already shows a terminal intent the ticket is finalized and
+// delivered in-band; otherwise the recovery worker (RunRecovery) finalizes it
+// and pushes the confirmation to the user's thread.
 func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlightRequest) (*BookingResult, error) {
 	if s.client == nil {
 		return nil, fmt.Errorf("flight booking is not configured")
@@ -107,37 +102,25 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 		s.settleAfterFailedBook(ctx, userID, order, totalHold)
 		return nil, fmt.Errorf("the airline could not confirm this booking: %w", err)
 	}
-	if resp.Booking.OrderID != "" {
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE travel_orders SET status='booked', order_ref=$2, updated_at=NOW() WHERE id=$1 AND status='held'`,
-			order.ID, resp.Booking.OrderID); err != nil {
-			s.logger.Warn("failed to record BRIJ order id", zap.Error(err), zap.String("order_id", order.ID.String()))
-		}
-		order.OrderRef = resp.Booking.OrderID
+	order.OrderRef = resp.Booking.OrderID
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE travel_orders SET status='booked', order_ref=$2, updated_at=NOW()
+		WHERE id=$1 AND status='held'`,
+		order.ID, nullStr(resp.Booking.OrderID)); err != nil {
+		s.logger.Warn("failed to record BRIJ booking state", zap.Error(err), zap.String("order_id", order.ID.String()))
 	}
+	order.Status = StatusBooked
+
+	// The passenger is a real traveler now — save the profile so future
+	// bookings don't re-ask for these fields (best effort).
+	s.autoSavePassenger(ctx, userID, req.Passenger)
 
 	s.logger.Info("BRIJ booking requested",
 		zap.String("intent_id", intentID),
 		zap.String("order_ref", resp.Booking.OrderID),
 		zap.String("user_id", userID.String()))
 
-	// Poll for the terminal state within the window.
-	intent, err := s.pollIntent(ctx, intentID)
-	if err == nil && intent != nil && intent.IsTerminal() {
-		status, res := s.settleIntent(ctx, userID, order, intent)
-		if res == nil {
-			// Non-terminal intent: recovery will finalize + deliver the ticket.
-			return nil, fmt.Errorf("booking is still processing — we will confirm shortly")
-		}
-		if status != StatusBooked {
-			return res, nil
-		}
-		res.Status = StatusBooked
-		return res, nil
-	}
-
-	// Still active: recovery will finalize + deliver the ticket.
-	return &BookingResult{
+	base := &BookingResult{
 		OrderID:   order.ID,
 		IntentID:  intentID,
 		Provider:  order.Provider,
@@ -146,7 +129,28 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 		OrderRef:  order.OrderRef,
 		AmountUSD: escrow.StringFixed(2),
 		Status:    StatusBooked,
-	}, nil
+	}
+
+	// Fast path: the /book response already carries a terminal intent, so the
+	// ticket can be finalized and delivered right here. Otherwise leave it to
+	// RunRecovery, which polls 'booked' orders and delivers the confirmation.
+	switch resp.Intent.Status {
+	case brij.StatusBooked:
+		res := s.finalizeBooking(ctx, userID, order, &resp.Intent)
+		return &res, nil
+	case brij.StatusRefunded:
+		reason := strings.TrimSpace(resp.Intent.RefundReason)
+		if reason == "" {
+			reason = "the airline refunded this booking"
+		}
+		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "refunded")
+		_ = s.markRefunded(ctx, order.ID, reason)
+		s.notifyRefundResolved(ctx, order, reason)
+		base.Status = StatusRefunded
+		return base, nil
+	default:
+		return base, nil
+	}
 }
 
 // settleAfterFailedBook reconciles an order whose /book call errored by reading
@@ -163,64 +167,10 @@ func (s *Service) settleAfterFailedBook(ctx context.Context, userID uuid.UUID, o
 		s.finalizeBooking(ctx, userID, order, intent)
 	case brij.StatusRefunded:
 		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "book_failed_refunded")
+		_ = s.markRefunded(ctx, order.ID, "the airline refunded this booking")
+		s.notifyRefundResolved(ctx, order, "the airline refunded this booking")
 		s.logger.Warn("BRIJ booking failed and was refunded; user hold reversed",
 			zap.String("order_id", order.ID.String()), zap.String("intent_id", order.IntentID))
-	}
-}
-
-// pollIntent waits for the intent to reach a terminal state (booked/refunded).
-func (s *Service) pollIntent(ctx context.Context, intentID string) (*brij.BookingIntent, error) {
-	deadline := time.Now().Add(pollTimeout)
-	var last *brij.BookingIntent
-	var lastErr error
-	for {
-		intent, err := s.client.GetIntent(ctx, intentID)
-		if err == nil {
-			last = intent
-			if intent.IsTerminal() {
-				return intent, nil
-			}
-		} else {
-			lastErr = err
-		}
-		if time.Now().After(deadline) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return last, ctx.Err()
-		case <-time.After(pollInterval):
-		}
-	}
-	if last != nil {
-		return last, lastErr
-	}
-	return nil, lastErr
-}
-
-// settleIntent resolves a terminal intent into order state. It returns the new
-// order status and, when terminal, the BookingResult for the caller.
-func (s *Service) settleIntent(ctx context.Context, userID uuid.UUID, order *orderRow, intent *brij.BookingIntent) (string, *BookingResult) {
-	switch intent.Status {
-	case brij.StatusBooked:
-		res := s.finalizeBooking(ctx, userID, order, intent)
-		return StatusCompleted, &res
-	case brij.StatusRefunded:
-		reason := strings.TrimSpace(intent.RefundReason)
-		if reason == "" {
-			reason = "the airline refunded this booking"
-		}
-		_ = s.reverseHold(ctx, userID, order.ID, order.HoldAmount, "refunded")
-		_ = s.markRefunded(ctx, order.ID, reason)
-		return StatusRefunded, &BookingResult{
-			OrderID:   order.ID,
-			IntentID:  order.IntentID,
-			Route:     order.Route,
-			AmountUSD: order.ExpectedEscrow.StringFixed(2),
-			Status:    StatusRefunded,
-		}
-	default:
-		return StatusBooked, nil
 	}
 }
 
@@ -350,6 +300,15 @@ func (s *Service) RequestRefund(ctx context.Context, userID uuid.UUID, intentID,
 	}, order.SupportCode, familyName)
 	if err != nil {
 		return nil, err
+	}
+	// Track the request so the recovery worker can reconcile the intent until
+	// it settles and then credit the user's hold automatically.
+	if _, perr := s.db.ExecContext(ctx, `
+		UPDATE travel_orders SET refund_requested_at=NOW(), refund_status='requested',
+		       refund_reason=$2, refund_contact=$3, updated_at=NOW()
+		WHERE id=$1`, order.ID, strings.TrimSpace(reason), nullStr(contact)); perr != nil {
+		s.logger.Error("failed to record refund request",
+			zap.Error(perr), zap.String("order_id", order.ID.String()), zap.String("intent_id", intentID))
 	}
 	return resp, nil
 }

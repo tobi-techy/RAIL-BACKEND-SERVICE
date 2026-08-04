@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
+	"go.uber.org/zap"
 )
 
 // TravelPassenger is a saved traveler profile reused across bookings.
@@ -267,4 +268,73 @@ func (s *Service) GetPassengerByID(ctx context.Context, userID, passengerID uuid
 		}
 	}
 	return nil, sql.ErrNoRows
+}
+
+// autoSavePassenger upserts a traveler profile from the passenger used for a
+// booking, so future bookings don't re-ask for these fields. Best effort: it
+// never blocks or fails the booking. Matching is on normalized email; when a
+// profile already exists only its empty fields are filled in so richer saved
+// data is never clobbered.
+func (s *Service) autoSavePassenger(ctx context.Context, userID uuid.UUID, p brij.PassengerInput) {
+	email := strings.ToLower(strings.TrimSpace(p.Email))
+	if email == "" || strings.TrimSpace(p.FamilyName) == "" {
+		return
+	}
+	profile := TravelPassenger{
+		Title:     strings.ToLower(strings.TrimSpace(p.Title)),
+		FirstName: strings.TrimSpace(p.GivenName),
+		LastName:  strings.TrimSpace(p.FamilyName),
+		DOB:       strings.TrimSpace(p.BornOn),
+		Sex:       sexFromGender(p.Gender),
+		Email:     email,
+		Phone:     strings.TrimSpace(p.PhoneNumber),
+	}
+	list, err := s.ListPassengers(ctx, userID)
+	if err != nil {
+		s.logger.Warn("failed to list travelers for auto-save", zap.Error(err), zap.String("user_id", userID.String()))
+		return
+	}
+	for i := range list {
+		if strings.ToLower(strings.TrimSpace(list[i].Email)) != email {
+			continue
+		}
+		merged := list[i]
+		merged.FirstName = firstNonEmpty(merged.FirstName, profile.FirstName)
+		merged.LastName = firstNonEmpty(merged.LastName, profile.LastName)
+		merged.Title = firstNonEmpty(merged.Title, profile.Title)
+		merged.DOB = firstNonEmpty(merged.DOB, profile.DOB)
+		merged.Sex = firstNonEmpty(merged.Sex, profile.Sex)
+		merged.Email = firstNonEmpty(merged.Email, profile.Email)
+		merged.Phone = firstNonEmpty(merged.Phone, profile.Phone)
+		if !merged.IsPrimary && len(list) == 1 {
+			merged.IsPrimary = true
+		}
+		if _, err := s.SavePassenger(ctx, userID, merged); err != nil {
+			s.logger.Warn("failed to update saved traveler", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+		return
+	}
+	profile.IsPrimary = len(list) == 0
+	if _, err := s.SavePassenger(ctx, userID, profile); err != nil {
+		s.logger.Warn("failed to auto-save traveler", zap.Error(err), zap.String("user_id", userID.String()))
+	}
+}
+
+// sexFromGender maps the BRIJ m|f contract back to a stored profile sex value.
+func sexFromGender(g string) string {
+	switch strings.ToLower(strings.TrimSpace(g)) {
+	case "m":
+		return "Male"
+	case "f":
+		return "Female"
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }

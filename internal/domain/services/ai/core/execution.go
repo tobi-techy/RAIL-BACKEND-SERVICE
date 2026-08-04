@@ -91,6 +91,7 @@ type TravelProvider interface {
 	SearchFlights(ctx context.Context, origin, destination, departDate string, adults int) ([]map[string]interface{}, error)
 	CreateIntent(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
 	BookFlight(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
+	QuoteIntent(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error)
 	GetIntentStatus(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error)
 	GetOrderStatus(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error)
 	RequestRefund(ctx context.Context, userID uuid.UUID, intentID, reason, contact string) (map[string]interface{}, error)

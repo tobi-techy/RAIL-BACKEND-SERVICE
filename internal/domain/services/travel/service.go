@@ -280,7 +280,8 @@ func (s *Service) GetBookingHistory(ctx context.Context, userID uuid.UUID, limit
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), COALESCE(booking_reference,''),
-		       COALESCE(amount_usdc,0), status, ticket_delivered, COALESCE(intent_id,''), created_at
+		       COALESCE(amount_usdc,0), status, ticket_delivered, COALESCE(intent_id,''),
+		       COALESCE(refund_status,''), refund_requested_at, created_at
 		FROM travel_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, err
@@ -290,10 +291,16 @@ func (s *Service) GetBookingHistory(ctx context.Context, userID uuid.UUID, limit
 	for rows.Next() {
 		var it BookingHistoryItem
 		var usdc sql.NullFloat64
-		if err := rows.Scan(&it.ID, &it.Mode, &it.Provider, &it.Route, &it.TripDate, &it.PNR, &usdc, &it.Status, &it.TicketDelivered, &it.IntentID, &it.CreatedAt); err != nil {
+		var requestedAt sql.NullTime
+		if err := rows.Scan(&it.ID, &it.Mode, &it.Provider, &it.Route, &it.TripDate, &it.PNR, &usdc, &it.Status,
+			&it.TicketDelivered, &it.IntentID, &it.RefundStatus, &requestedAt, &it.CreatedAt); err != nil {
 			return nil, err
 		}
 		it.AmountUSDC = usdc.Float64
+		if requestedAt.Valid {
+			t := requestedAt.Time
+			it.RefundRequestedAt = &t
+		}
 		out = append(out, it)
 	}
 	return out, rows.Err()
@@ -301,41 +308,47 @@ func (s *Service) GetBookingHistory(ctx context.Context, userID uuid.UUID, limit
 
 // BookingHistoryItem is a single history row.
 type BookingHistoryItem struct {
-	ID              uuid.UUID `json:"id"`
-	Mode            string    `json:"mode"`
-	Provider        string    `json:"provider"`
-	Route           string    `json:"route"`
-	TripDate        string    `json:"trip_date"`
-	PNR             string    `json:"pnr"`
-	AmountUSDC      float64   `json:"amount_usdc"`
-	Status          string    `json:"status"`
-	TicketDelivered bool      `json:"ticket_delivered"`
-	IntentID        string    `json:"intent_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID                uuid.UUID  `json:"id"`
+	Mode              string     `json:"mode"`
+	Provider          string     `json:"provider"`
+	Route             string     `json:"route"`
+	TripDate          string     `json:"trip_date"`
+	PNR               string     `json:"pnr"`
+	AmountUSDC        float64    `json:"amount_usdc"`
+	Status            string     `json:"status"`
+	TicketDelivered   bool       `json:"ticket_delivered"`
+	IntentID          string     `json:"intent_id,omitempty"`
+	RefundStatus      string     `json:"refund_status,omitempty"`
+	RefundRequestedAt *time.Time `json:"refund_requested_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 // orderRow is the stored state for a BRIJ travel order.
 type orderRow struct {
-	ID             uuid.UUID
-	UserID         uuid.UUID
-	Mode           string
-	Provider       string
-	Route          string
-	TripDate       string
-	Status         string
-	IntentID       string
-	OfferID        string
-	SupportCode    string
-	ExpectedEscrow decimal.Decimal
-	EscrowAmount   decimal.Decimal
-	AirlineOrderID string
-	OrderRef       string
-	BookingRef     string
-	HoldAmount     decimal.Decimal
-	Passengers     []byte
-	Receipt        []byte
-	TicketSent     bool
-	CreatedAt      time.Time
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	Mode              string
+	Provider          string
+	Route             string
+	TripDate          string
+	Status            string
+	IntentID          string
+	OfferID           string
+	SupportCode       string
+	ExpectedEscrow    decimal.Decimal
+	EscrowAmount      decimal.Decimal
+	AirlineOrderID    string
+	OrderRef          string
+	BookingRef        string
+	HoldAmount        decimal.Decimal
+	Passengers        []byte
+	Receipt           []byte
+	TicketSent        bool
+	RefundRequestedAt sql.NullTime
+	RefundStatus      string
+	RefundContact     string
+	RefundCreditedAt  sql.NullTime
+	CreatedAt         time.Time
 }
 
 // loadOrderByIntent loads an order owned by the user by its BRIJ intent id.
@@ -345,12 +358,14 @@ func (s *Service) loadOrderByIntent(ctx context.Context, userID uuid.UUID, inten
 		       COALESCE(intent_id,''), COALESCE(offer_id,''), COALESCE(customer_support_code,''),
 		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0),
 		       COALESCE(airline_order_id,''), COALESCE(order_ref,''), COALESCE(booking_reference,''),
-		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered, created_at
+		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered,
+		       refund_requested_at, COALESCE(refund_status,''), COALESCE(refund_contact,''), refund_credited_at, created_at
 		FROM travel_orders WHERE intent_id=$1 AND user_id=$2`, intentID, userID)
 	var o orderRow
 	err := row.Scan(&o.ID, &o.UserID, &o.Mode, &o.Provider, &o.Route, &o.TripDate, &o.Status,
 		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount,
-		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent, &o.CreatedAt)
+		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent,
+		&o.RefundRequestedAt, &o.RefundStatus, &o.RefundContact, &o.RefundCreditedAt, &o.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("no flight intent %q found for this user", intentID)
 	}
@@ -367,12 +382,14 @@ func (s *Service) loadOrderByID(ctx context.Context, id uuid.UUID) (*orderRow, e
 		       COALESCE(intent_id,''), COALESCE(offer_id,''), COALESCE(customer_support_code,''),
 		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0),
 		       COALESCE(airline_order_id,''), COALESCE(order_ref,''), COALESCE(booking_reference,''),
-		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered, created_at
+		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered,
+		       refund_requested_at, COALESCE(refund_status,''), COALESCE(refund_contact,''), refund_credited_at, created_at
 		FROM travel_orders WHERE id=$1`, id)
 	var o orderRow
 	err := row.Scan(&o.ID, &o.UserID, &o.Mode, &o.Provider, &o.Route, &o.TripDate, &o.Status,
 		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount,
-		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent, &o.CreatedAt)
+		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent,
+		&o.RefundRequestedAt, &o.RefundStatus, &o.RefundContact, &o.RefundCreditedAt, &o.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("travel order %s not found", id)
 	}
@@ -402,6 +419,36 @@ func dateOnly(iso string) string {
 // railFee computes Rail's service fee on an escrow amount.
 func (s *Service) railFee(escrow decimal.Decimal) decimal.Decimal {
 	return escrow.Mul(decimal.NewFromFloat(s.cfg.DeveloperFeePercent / 100)).Round(6)
+}
+
+// FlightQuote is the exact charge for a locked flight, resolved from the
+// persisted intent (never from model-supplied numbers). Shown to the user on
+// the book_flight confirmation card before any money moves.
+type FlightQuote struct {
+	IntentID   string `json:"intent_id"`
+	Route      string `json:"route"`
+	TripDate   string `json:"trip_date"`
+	FareUSD    string `json:"fare_usd"`
+	RailFeeUSD string `json:"rail_fee_usd"`
+	TotalUSD   string `json:"total_usd"`
+}
+
+// QuoteIntent returns the fare, Rail fee, and total for a locked flight.
+func (s *Service) QuoteIntent(ctx context.Context, userID uuid.UUID, intentID string) (*FlightQuote, error) {
+	order, err := s.loadOrderByIntent(ctx, userID, intentID)
+	if err != nil {
+		return nil, err
+	}
+	fare := order.ExpectedEscrow
+	fee := s.railFee(fare)
+	return &FlightQuote{
+		IntentID:   order.IntentID,
+		Route:      order.Route,
+		TripDate:   order.TripDate,
+		FareUSD:    fare.StringFixed(2),
+		RailFeeUSD: fee.StringFixed(2),
+		TotalUSD:   fare.Add(fee).StringFixed(2),
+	}, nil
 }
 
 // ticketReceiptJSON persists a structured receipt for audit / re-render.

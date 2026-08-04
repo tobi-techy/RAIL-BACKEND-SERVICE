@@ -72,3 +72,39 @@ func TestToFlightPassenger(t *testing.T) {
 		t.Errorf("ToFlightPassenger() = %+v, want %+v", got, want)
 	}
 }
+
+func TestSexFromGender(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"m", "Male"},
+		{"M", "Male"},
+		{"f", "Female"},
+		{"F", "Female"},
+		{"", ""},
+		{"other", ""},
+	}
+	for _, tc := range cases {
+		if got := sexFromGender(tc.in); got != tc.want {
+			t.Errorf("sexFromGender(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFirstNonEmpty(t *testing.T) {
+	cases := []struct {
+		a, b, want string
+	}{
+		{"saved", "booking", "saved"},
+		{"", "booking", "booking"},
+		{"  ", "booking", "booking"},
+		{"saved", "", "saved"},
+		{"", "", ""},
+	}
+	for _, tc := range cases {
+		if got := firstNonEmpty(tc.a, tc.b); got != tc.want {
+			t.Errorf("firstNonEmpty(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
+		}
+	}
+}

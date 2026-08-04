@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // Execution Engine (spec 5.2) tool names. The tools themselves are implemented
@@ -153,6 +155,13 @@ func executionActionDescription(name string, args map[string]interface{}) string
 		// The charge shown at execution comes from the persisted intent, never
 		// from the model; the confirmation states the Spend impact instead of a
 		// model-supplied amount.
+		if totalUSD, ok := args["total_usd"].(string); ok && totalUSD != "" {
+			line := fmt.Sprintf("Book flight for %s — $%s total (fare + Rail fee) charged from Spend", name, totalUSD)
+			if ngn, ok := args["total_ngn"].(string); ok && ngn != "" {
+				line += fmt.Sprintf(" (≈₦%s)", ngn)
+			}
+			return line
+		}
 		return fmt.Sprintf("Book flight for %s — escrow and the Rail fee are charged from Spend", name)
 	case ToolSaveTravelPassenger:
 		return fmt.Sprintf("Save traveler profile %q", arg("label"))
@@ -189,6 +198,49 @@ func flightPassengerName(args map[string]interface{}) string {
 	return strings.TrimSpace(given + " " + family)
 }
 
+// quoteFlightBooking resolves the exact charge for a staged book_flight from
+// the persisted intent (never model-supplied numbers) and attaches it to the
+// pending-action params so the confirmation card shows the fare + Rail fee
+// breakdown with USD and NGN totals. Best effort: on any failure the params
+// are left unchanged and the card falls back to its generic wording.
+func (o *AgentAdapter) quoteFlightBooking(ctx context.Context, userID uuid.UUID, params map[string]interface{}) {
+	intentID := ""
+	if v, ok := params["intent_id"].(string); ok {
+		intentID = strings.TrimSpace(v)
+	}
+	if intentID == "" || o.travel == nil {
+		return
+	}
+	quote, err := o.travel.QuoteIntent(ctx, userID, intentID)
+	if err != nil {
+		o.logger.Warn("failed to resolve flight quote for confirmation card",
+			zap.Error(err), zap.String("intent_id", intentID), zap.String("user_id", userID.String()))
+		return
+	}
+	totalUSD, _ := quote["total_usd"].(string)
+	if strings.TrimSpace(totalUSD) == "" {
+		return
+	}
+	rate := decimal.NewFromInt(1)
+	if o.currencyRates != nil {
+		if r, rerr := o.currencyRates.GetLatestRate(ctx, "USD", "NGN"); rerr == nil && r.IsPositive() {
+			rate = r
+		}
+	}
+	total, _ := decimal.NewFromString(totalUSD)
+	ngn := total.Mul(rate).Round(0)
+	params["quote"] = map[string]interface{}{
+		"intent_id":    intentID,
+		"fare_usd":     quote["fare_usd"],
+		"rail_fee_usd": quote["rail_fee_usd"],
+		"total_usd":    totalUSD,
+		"ngn_rate":     rate.String(),
+		"total_ngn":    ngn.String(),
+	}
+	params["total_usd"] = totalUSD
+	params["total_ngn"] = ngn.String()
+}
+
 // createExecutionAction stages a mutating Execution Engine tool call as a
 // pending action so the client can render a confirmation card. On confirm,
 // ConfirmAction executes it via the core tool registry.
@@ -210,6 +262,14 @@ func (o *AgentAdapter) createExecutionAction(ctx context.Context, userID, convID
 	}
 	// The confirm flag is granted by the user's confirmation, never by the model.
 	delete(params, "confirm")
+
+	// Resolve the exact charge for book_flight from the persisted intent so the
+	// confirmation card never shows a model-supplied amount. The NGN total uses
+	// the live rate; on any failure it falls back to a $1 base rate rather than
+	// fabricating a number.
+	if tc.Name == ToolBookFlight {
+		o.quoteFlightBooking(ctx, userID, params)
+	}
 
 	action := &entities.PendingAction{
 		ID:             uuid.New().String(),

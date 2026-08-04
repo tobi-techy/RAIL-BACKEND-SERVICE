@@ -677,6 +677,12 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		// constructed during initializeAIServices, after the travel service.
 		c.AgentDeps.Travel = buildTravelProvider(c)
 
+		// Mirror the travel provider into the streaming AgentAdapter so the
+		// staged book_flight confirmation card can resolve the exact charge.
+		if c.AIOrchestrator != nil {
+			c.AIOrchestrator.SetTravel(c.AgentDeps.Travel)
+		}
+
 		// Construct CoreChatEngineAdapter — a drop-in ChatEngine backed by core.Agent.
 		// This is the new agent path that replaces the old AgentAdapter orchestrator.
 		c.NewChatEngine = aiservice.NewCoreChatEngineAdapter(agent)

@@ -1,7 +1,9 @@
 // Package travel_recovery periodically reconciles stuck BRIJ flight bookings:
 // reversing abandoned holds whose escrow never funded, finalizing ticketed
-// bookings, and re-delivering tickets that failed to send. All logic lives in
-// travel.Service.RunRecovery; this worker only schedules it.
+// bookings, re-delivering tickets that failed to send, and settling
+// user-requested refunds (crediting the hold back to Spend when the intent
+// refunds). All logic lives in travel.Service.RunRecovery; this worker only
+// schedules it.
 package travel_recovery
 
 import (

@@ -71,6 +71,14 @@ func (a *travelExecAdapter) BookFlight(ctx context.Context, userID uuid.UUID, ar
 	return structToMap(res), nil
 }
 
+func (a *travelExecAdapter) QuoteIntent(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error) {
+	quote, err := a.svc.QuoteIntent(ctx, userID, intentID)
+	if err != nil {
+		return nil, err
+	}
+	return structToMap(quote), nil
+}
+
 func (a *travelExecAdapter) GetIntentStatus(ctx context.Context, userID uuid.UUID, intentID string) (map[string]interface{}, error) {
 	intent, err := a.svc.GetIntentStatus(ctx, userID, intentID)
 	if err != nil {

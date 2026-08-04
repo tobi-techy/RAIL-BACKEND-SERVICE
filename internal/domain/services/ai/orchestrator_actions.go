@@ -72,7 +72,9 @@ func init() {
 		ToolSetupBillAutopay, ToolPayBill, ToolAutomateBill,
 		"send_money", ToolSplitReceipt, ToolCreateAutomation,
 		// BRIJ flight bookings hold the user's Spend balance for escrow + fee.
-		ToolBookFlight,
+		// request_flight_refund moves money back (or closes the hold), so it
+		// gets the same step-up gate.
+		ToolBookFlight, ToolRequestFlightRefund,
 	} {
 		fundMovingActions[name] = true
 	}
