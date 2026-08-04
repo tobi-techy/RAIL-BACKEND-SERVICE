@@ -73,16 +73,18 @@ type WorkersAIClient struct {
 	logger   *zap.Logger
 }
 
-// NewWorkersAIClient creates a Workers AI client.
-func NewWorkersAIClient(config *WorkersAIConfig, logger *zap.Logger) *WorkersAIClient {
+// NewWorkersAIClient creates a Workers AI client. It returns an error when the
+// required credentials are missing so callers can decide how to handle the
+// misconfiguration instead of crashing the process.
+func NewWorkersAIClient(config *WorkersAIConfig, logger *zap.Logger) (*WorkersAIClient, error) {
 	if config == nil {
-		panic("WorkersAIConfig is required")
+		return nil, fmt.Errorf("WorkersAIConfig is required")
 	}
 	if config.AccountID == "" {
-		panic("WorkersAIConfig.AccountID is required")
+		return nil, fmt.Errorf("WorkersAIConfig.AccountID is required")
 	}
 	if config.APIToken == "" {
-		panic("WorkersAIConfig.APIToken is required")
+		return nil, fmt.Errorf("WorkersAIConfig.APIToken is required")
 	}
 	timeout := config.Timeout
 	if timeout == 0 {
@@ -98,7 +100,7 @@ func NewWorkersAIClient(config *WorkersAIConfig, logger *zap.Logger) *WorkersAIC
 		model:    config.Model,
 		http:     &http.Client{Timeout: timeout},
 		logger:   logger,
-	}
+	}, nil
 }
 
 // runURL returns the run endpoint for a model.

@@ -41,16 +41,18 @@ type VectorizeStore struct {
 	logger   *zap.Logger
 }
 
-// NewVectorizeStore creates a Vectorize vector store client.
-func NewVectorizeStore(config *VectorizeConfig, embedder memory.Embedder, logger *zap.Logger) *VectorizeStore {
+// NewVectorizeStore creates a Vectorize vector store client. It returns an
+// error when the required credentials are missing so callers can decide how to
+// handle the misconfiguration instead of crashing the process.
+func NewVectorizeStore(config *VectorizeConfig, embedder memory.Embedder, logger *zap.Logger) (*VectorizeStore, error) {
 	if config == nil {
-		panic("VectorizeConfig is required")
+		return nil, fmt.Errorf("VectorizeConfig is required")
 	}
 	if config.AccountID == "" {
-		panic("VectorizeConfig.AccountID is required")
+		return nil, fmt.Errorf("VectorizeConfig.AccountID is required")
 	}
 	if config.APIToken == "" {
-		panic("VectorizeConfig.APIToken is required")
+		return nil, fmt.Errorf("VectorizeConfig.APIToken is required")
 	}
 	if config.DefaultDim == 0 {
 		config.DefaultDim = 768
@@ -65,7 +67,7 @@ func NewVectorizeStore(config *VectorizeConfig, embedder memory.Embedder, logger
 		baseURL:  baseURL,
 		http:     &http.Client{Timeout: 10 * time.Second},
 		logger:   logger,
-	}
+	}, nil
 }
 
 // indexName returns the fully-qualified Vectorize index name. Vectorize V2

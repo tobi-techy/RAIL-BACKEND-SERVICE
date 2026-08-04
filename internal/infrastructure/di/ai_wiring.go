@@ -240,29 +240,39 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	if cf.Vectorize.Enabled && strings.TrimSpace(cf.AccountID) != "" && strings.TrimSpace(cf.APIToken) != "" {
 		// Prefer the Workers AI BGE embedder for memory vectors when enabled.
 		if cf.WorkersAI.Enabled && cf.WorkersAI.EmbeddingsEnabled && strings.TrimSpace(cf.WorkersAI.EmbeddingsModel) != "" {
-			c.EmbeddingsClient = embeddings.NewWorkersAIEmbedder(
+			embedder, err := embeddings.NewWorkersAIEmbedder(
 				strings.TrimSpace(cf.AccountID),
 				strings.TrimSpace(cf.APIToken),
 				strings.TrimSpace(cf.WorkersAI.EmbeddingsModel),
 				"",
 				c.ZapLog,
 			)
-			c.ZapLog.Info("Workers AI embedder initialized",
-				zap.String("model", cf.WorkersAI.EmbeddingsModel))
+			if err != nil {
+				c.ZapLog.Warn("Workers AI embedder not initialized", zap.Error(err))
+			} else {
+				c.EmbeddingsClient = embedder
+				c.ZapLog.Info("Workers AI embedder initialized",
+					zap.String("model", cf.WorkersAI.EmbeddingsModel))
+			}
 		}
 		if c.EmbeddingsClient != nil {
 			dim := cf.Vectorize.DefaultDim
 			if dim == 0 {
 				dim = 768
 			}
-			c.VectorizeStore = vector.NewVectorizeStore(&vector.VectorizeConfig{
+			vs, err := vector.NewVectorizeStore(&vector.VectorizeConfig{
 				AccountID:        strings.TrimSpace(cf.AccountID),
 				APIToken:         strings.TrimSpace(cf.APIToken),
 				DefaultDim:       dim,
 				CollectionPrefix: strings.TrimSpace(cf.Vectorize.CollectionPrefix),
 			}, c.EmbeddingsClient, c.ZapLog)
-			// VectorizeStore is used by the memory adapter (agent_wiring.go) for SearchEpisodic/SearchFacts
-			c.ZapLog.Info("Cloudflare Vectorize initialized", zap.Int("default_dim", dim))
+			if err != nil {
+				c.ZapLog.Warn("Cloudflare Vectorize not initialized", zap.Error(err))
+			} else {
+				c.VectorizeStore = vs
+				// VectorizeStore is used by the memory adapter (agent_wiring.go) for SearchEpisodic/SearchFacts
+				c.ZapLog.Info("Cloudflare Vectorize initialized", zap.Int("default_dim", dim))
+			}
 		}
 	}
 
@@ -922,12 +932,17 @@ func (c *Container) intentClassifier() aicore.IntentClassifier {
 	if timeout <= 0 {
 		timeout = 800 * time.Millisecond
 	}
+	client, err := ai.NewWorkersAIClient(&ai.WorkersAIConfig{
+		AccountID: strings.TrimSpace(cf.AccountID),
+		APIToken:  strings.TrimSpace(cf.APIToken),
+		Model:     strings.TrimSpace(workers.Model),
+	}, c.ZapLog)
+	if err != nil {
+		c.ZapLog.Warn("Workers AI intent classifier not initialized", zap.Error(err))
+		return nil
+	}
 	inner := ai.NewWorkersAIIntentClassifier(&ai.IntentClassifierConfig{
-		Client: ai.NewWorkersAIClient(&ai.WorkersAIConfig{
-			AccountID: strings.TrimSpace(cf.AccountID),
-			APIToken:  strings.TrimSpace(cf.APIToken),
-			Model:     strings.TrimSpace(workers.Model),
-		}, c.ZapLog),
+		Client:  client,
 		Model:   strings.TrimSpace(workers.Model),
 		Timeout: timeout,
 	}, c.ZapLog)

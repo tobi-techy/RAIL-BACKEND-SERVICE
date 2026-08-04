@@ -35,12 +35,14 @@ func newTestVectorize(t *testing.T, handler http.HandlerFunc) *VectorizeStore {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewVectorizeStore(&VectorizeConfig{
+	store, err := NewVectorizeStore(&VectorizeConfig{
 		AccountID:  "test-account",
 		APIToken:   "test-token",
 		DefaultDim: 3,
 		BaseURL:    srv.URL,
 	}, fakeEmbedder{}, zap.NewNop())
+	require.NoError(t, err)
+	return store
 }
 
 func TestVectorizeStore_Store_CreatesIndexOnDemand(t *testing.T) {
@@ -187,18 +189,17 @@ func TestVectorizeStore_Store_InvalidIndexName(t *testing.T) {
 }
 
 func TestVectorizeStore_Search_EmbedError(t *testing.T) {
-	store := NewVectorizeStore(&VectorizeConfig{AccountID: "a", APIToken: "t"}, badEmbedder{}, zap.NewNop())
-	_, err := store.Search(context.Background(), "episodic", uuid.New(), "q", 5)
+	store, err := NewVectorizeStore(&VectorizeConfig{AccountID: "a", APIToken: "t"}, badEmbedder{}, zap.NewNop())
+	require.NoError(t, err)
+	_, err = store.Search(context.Background(), "episodic", uuid.New(), "q", 5)
 	require.Error(t, err)
 }
 
 func TestVectorizeStore_Constructor_RequiresCredentials(t *testing.T) {
-	assert.Panics(t, func() {
-		NewVectorizeStore(&VectorizeConfig{APIToken: "t"}, fakeEmbedder{}, zap.NewNop())
-	})
-	assert.Panics(t, func() {
-		NewVectorizeStore(&VectorizeConfig{AccountID: "a"}, fakeEmbedder{}, zap.NewNop())
-	})
+	_, err := NewVectorizeStore(&VectorizeConfig{APIToken: "t"}, fakeEmbedder{}, zap.NewNop())
+	require.Error(t, err)
+	_, err = NewVectorizeStore(&VectorizeConfig{AccountID: "a"}, fakeEmbedder{}, zap.NewNop())
+	require.Error(t, err)
 }
 
 func TestValidIndexName(t *testing.T) {

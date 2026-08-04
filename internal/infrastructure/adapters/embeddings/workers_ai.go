@@ -27,13 +27,15 @@ type WorkersAIEmbedder struct {
 
 // NewWorkersAIEmbedder creates a Workers AI embedder. model defaults to
 // @cf/baai/bge-base-en-v1.5 (768 dimensions). baseURL overrides the API base
-// (used by tests); leave empty in production.
-func NewWorkersAIEmbedder(accountID, apiToken, model, baseURL string, logger *zap.Logger) *WorkersAIEmbedder {
+// (used by tests); leave empty in production. It returns an error when the
+// required credentials are missing so callers can decide how to handle the
+// misconfiguration instead of crashing the process.
+func NewWorkersAIEmbedder(accountID, apiToken, model, baseURL string, logger *zap.Logger) (*WorkersAIEmbedder, error) {
 	if accountID == "" {
-		panic("accountID is required")
+		return nil, fmt.Errorf("accountID is required")
 	}
 	if apiToken == "" {
-		panic("apiToken is required")
+		return nil, fmt.Errorf("apiToken is required")
 	}
 	if model == "" {
 		model = "@cf/baai/bge-base-en-v1.5"
@@ -47,7 +49,7 @@ func NewWorkersAIEmbedder(accountID, apiToken, model, baseURL string, logger *za
 		model:    model,
 		http:     &http.Client{Timeout: 30 * time.Second},
 		logger:   logger,
-	}
+	}, nil
 }
 
 // Embed generates an embedding vector for the given text.

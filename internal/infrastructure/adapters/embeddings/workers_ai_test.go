@@ -15,7 +15,9 @@ func newTestWorkersAIEmbedder(t *testing.T, handler http.HandlerFunc) *WorkersAI
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewWorkersAIEmbedder("test-account", "test-token", "@cf/baai/bge-base-en-v1.5", srv.URL, zap.NewNop())
+	embedder, err := NewWorkersAIEmbedder("test-account", "test-token", "@cf/baai/bge-base-en-v1.5", srv.URL, zap.NewNop())
+	require.NoError(t, err)
+	return embedder
 }
 
 func TestWorkersAIEmbedder_Embed_NativeFormat(t *testing.T) {
@@ -91,10 +93,8 @@ func TestWorkersAIEmbedder_EmbedBatch_EmptyVector(t *testing.T) {
 }
 
 func TestWorkersAIEmbedder_Constructor_RequiresCredentials(t *testing.T) {
-	assert.Panics(t, func() {
-		NewWorkersAIEmbedder("", "tok", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
-	})
-	assert.Panics(t, func() {
-		NewWorkersAIEmbedder("acct", "", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
-	})
+	_, err := NewWorkersAIEmbedder("", "tok", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
+	require.Error(t, err)
+	_, err = NewWorkersAIEmbedder("acct", "", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
+	require.Error(t, err)
 }

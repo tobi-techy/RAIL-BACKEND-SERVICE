@@ -19,12 +19,13 @@ func newTestClassifier(t *testing.T, handler http.HandlerFunc) *WorkersAIIntentC
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	client := NewWorkersAIClient(&WorkersAIConfig{
+	client, err := NewWorkersAIClient(&WorkersAIConfig{
 		AccountID: "test-account",
 		APIToken:  "test-token",
 		Model:     "@cf/meta/llama-3.1-8b-instruct",
 		BaseURL:   srv.URL,
 	}, zap.NewNop())
+	require.NoError(t, err)
 
 	return NewWorkersAIIntentClassifier(&IntentClassifierConfig{
 		Client:  client,
@@ -141,13 +142,10 @@ func TestWorkersAIIntentClassifier_VoiceCategory(t *testing.T) {
 }
 
 func TestWorkersAIClient_Constructor_RequiresCredentials(t *testing.T) {
-	assert.Panics(t, func() {
-		NewWorkersAIClient(&WorkersAIConfig{APIToken: "tok"}, zap.NewNop())
-	})
-	assert.Panics(t, func() {
-		NewWorkersAIClient(&WorkersAIConfig{AccountID: "acct"}, zap.NewNop())
-	})
-	assert.Panics(t, func() {
-		NewWorkersAIClient(nil, zap.NewNop())
-	})
+	_, err := NewWorkersAIClient(&WorkersAIConfig{APIToken: "tok"}, zap.NewNop())
+	require.Error(t, err)
+	_, err = NewWorkersAIClient(&WorkersAIConfig{AccountID: "acct"}, zap.NewNop())
+	require.Error(t, err)
+	_, err = NewWorkersAIClient(nil, zap.NewNop())
+	require.Error(t, err)
 }
