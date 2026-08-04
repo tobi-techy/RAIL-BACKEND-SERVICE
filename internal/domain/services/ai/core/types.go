@@ -318,6 +318,12 @@ type Dependencies struct {
 	// of a weaker heuristic. Nil falls back to a basic length check.
 	QualityGate func(response string) (pass bool, hint string)
 
+	// IntentClassifier is an optional ML classifier (e.g. Cloudflare Workers AI)
+	// that narrows the tool set before the LLM call. It runs in parallel with
+	// context assembly; keyword routing wins if it is nil, errors, times out, or
+	// returns a low-confidence/unmappable category.
+	IntentClassifier ai.IntentClassifier
+
 	// ResponseGuard deterministically repairs a drafted reply before delivery:
 	// strips currency figures not grounded in tool/context data, surfaces a missed
 	// anomaly, and fixes mechanical formatting. Injected by the adapter and only
@@ -941,18 +947,23 @@ type Config struct {
 	// production; the simulation harness turns it on so the weakest model still
 	// lands clean, non-fabricated answers.
 	ResponseGuard bool
+
+	// ClassifierMinConfidence is the minimum confidence required for the ML
+	// intent classifier to override keyword routing. Default 0.5.
+	ClassifierMinConfidence float64
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		MaxToolRounds:      5,
-		ContextTimeout:     1500 * time.Millisecond,
-		StateCacheTTL:      5 * time.Minute,
-		MaxTokens:          2048,
-		DefaultTemperature: 0.6,
-		FastTemperature:    0.3,
-		UserCostCeiling:    decimal.NewFromFloat(2.00),
-		VoiceDailyLimitUSD: decimal.NewFromFloat(500.00),
+		MaxToolRounds:           5,
+		ContextTimeout:          1500 * time.Millisecond,
+		StateCacheTTL:           5 * time.Minute,
+		MaxTokens:               2048,
+		DefaultTemperature:      0.6,
+		FastTemperature:         0.3,
+		UserCostCeiling:         decimal.NewFromFloat(2.00),
+		VoiceDailyLimitUSD:      decimal.NewFromFloat(500.00),
+		ClassifierMinConfidence: 0.5,
 	}
 }
 

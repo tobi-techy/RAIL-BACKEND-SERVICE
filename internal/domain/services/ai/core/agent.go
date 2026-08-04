@@ -122,6 +122,21 @@ func (a *Agent) Chat(ctx context.Context, userID, convID uuid.UUID, message stri
 		}
 	}
 
+	// 2c. Kick off cheap ML intent classification in parallel with context
+	// assembly. Keyword routing stays the default; the ML result only wins when
+	// it lands before assembly finishes AND is confident. A slow or failing
+	// classifier (e.g. Cloudflare Workers AI) silently falls back to keywords.
+	var intentGuessCh chan intentGuess
+	if a.deps.IntentClassifier != nil {
+		intentGuessCh = make(chan intentGuess, 1)
+		go func() {
+			classifyCtx, cancel := context.WithTimeout(ctx, a.classifierTimeout())
+			defer cancel()
+			category, confidence, ok := a.deps.IntentClassifier.Classify(classifyCtx, message)
+			intentGuessCh <- intentGuess{category: category, confidence: confidence, ok: ok}
+		}()
+	}
+
 	// 3. Load user state
 	state, err := a.deps.State.GetState(ctx, userID)
 	if err != nil {
@@ -133,8 +148,21 @@ func (a *Agent) Chat(ctx context.Context, userID, convID uuid.UUID, message stri
 	_, ctxMessages := a.assembleContext(ctxTimeout, userID, message, state, opts)
 	cancel()
 
-	// 5. Classify intent
+	// 5. Classify intent (ML classifier wins when it finished quickly and
+	// confidently; keyword routing decides otherwise)
 	intents := a.classifyIntent(message, state)
+	if intentGuessCh != nil {
+		select {
+		case guess := <-intentGuessCh:
+			if guess.ok && guess.confidence >= a.config.ClassifierMinConfidence {
+				if mapped, known := aiCategoryToCoreCategory[guess.category]; known {
+					intents = []Intent{{Category: mapped, Confidence: guess.confidence, RequiresLLM: true}}
+				}
+			}
+		default:
+			// classifier still running — keyword routing already decided
+		}
+	}
 
 	// 6. Select tools based on intents
 	tools := a.selectTools(intents)
@@ -696,6 +724,39 @@ func (a *Agent) buildMemoryPrompt(memCtx *MemoryContext) string {
 		return ""
 	}
 	return fmt.Sprintf("[What you know about this user, relevant to what they just said — weave in naturally, never say \"I recall\" or \"you mentioned\": %s]", joined)
+}
+
+// intentGuess is a single ML classifier result, delivered over a buffered
+// channel so the agent never blocks on it.
+type intentGuess struct {
+	category   ai.IntentCategory
+	confidence float64
+	ok         bool
+}
+
+// aiCategoryToCoreCategory maps the ai package's intent categories to core's
+// ToolCategory values (identical strings, but kept in one place to avoid an
+// import cycle between the ai and core packages).
+var aiCategoryToCoreCategory = map[ai.IntentCategory]ToolCategory{
+	ai.IntentOverview:   CategoryOverview,
+	ai.IntentSpending:   CategorySpending,
+	ai.IntentAction:     CategoryAction,
+	ai.IntentPlanning:   CategoryPlanning,
+	ai.IntentHistory:    CategoryHistory,
+	ai.IntentAutomation: CategoryAutomation,
+	ai.IntentBudget:     CategoryBudget,
+	ai.IntentMemory:     CategoryMemory,
+	ai.IntentInvestment: CategoryInvestment,
+	ai.IntentKnowledge:  CategoryKnowledge,
+}
+
+// classifierTimeout bounds the cheap ML intent classifier so it can never add
+// more latency than the context-assembly budget it runs alongside.
+func (a *Agent) classifierTimeout() time.Duration {
+	if a.config == nil || a.config.ContextTimeout <= 0 {
+		return 1500 * time.Millisecond
+	}
+	return a.config.ContextTimeout
 }
 
 // classifyIntent determines the user's intent category from their message via

@@ -139,6 +139,58 @@ type AIConfig struct {
 	// formatting). Off by default in production; the simulation harness turns it
 	// on. Env: AI_RESPONSE_GUARD.
 	ResponseGuard bool `mapstructure:"response_guard"`
+
+	// Cloudflare configures optional Cloudflare AI integrations: AI Gateway
+	// (caching/observability in front of Cencori), Workers AI (cheap model for
+	// intent classification and embeddings), and Vectorize (serverless vector
+	// store for episodic/fact memory). Every sub-feature is opt-in; when unset
+	// the existing direct Cencori/Qdrant paths are used unchanged.
+	Cloudflare CloudflareAIConfig `mapstructure:"cloudflare"`
+}
+
+// CloudflareAIConfig groups the optional Cloudflare AI services. AccountID and
+// APIToken are shared by Workers AI and Vectorize.
+// Env: AI_CLOUDFLARE_ACCOUNT_ID, AI_CLOUDFLARE_API_TOKEN.
+type CloudflareAIConfig struct {
+	AccountID string `mapstructure:"account_id"`
+	APIToken  string `mapstructure:"api_token"`
+
+	// Gateway proxies all Cencori chat/embedding traffic through Cloudflare AI
+	// Gateway for response caching, rate limiting, upstream fallback, and cost
+	// analytics without changing the agent's provider code.
+	Gateway CloudflareGatewayConfig `mapstructure:"gateway"`
+
+	// WorkersAI provides cheap/fast models for the agent's housekeeping steps
+	// (intent classification) and embeddings.
+	WorkersAI WorkersAIConfig `mapstructure:"workers_ai"`
+
+	// Vectorize is a serverless vector store that can back episodic/fact memory
+	// in place of (or alongside) Qdrant.
+	Vectorize VectorizeConfig `mapstructure:"vectorize"`
+}
+
+// CloudflareGatewayConfig configures routing AI traffic through Cloudflare AI Gateway.
+type CloudflareGatewayConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	BaseURL string `mapstructure:"base_url"` // full gateway URL, e.g. https://gateway.ai.cloudflare.com/v1/<account>/<gateway>
+	APIKey  string `mapstructure:"api_key"`  // gateway-scoped API key (replaces the origin key)
+}
+
+// WorkersAIConfig configures Cloudflare Workers AI for cheap agent housekeeping.
+type WorkersAIConfig struct {
+	Enabled             bool   `mapstructure:"enabled"`
+	ClassifierEnabled   bool   `mapstructure:"classifier_enabled"`
+	Model               string `mapstructure:"model"` // intent classification model
+	EmbeddingsEnabled   bool   `mapstructure:"embeddings_enabled"`
+	EmbeddingsModel     string `mapstructure:"embeddings_model"`
+	ClassifierTimeoutMS int    `mapstructure:"classifier_timeout_ms"`
+}
+
+// VectorizeConfig configures the Cloudflare Vectorize vector store.
+type VectorizeConfig struct {
+	Enabled          bool   `mapstructure:"enabled"`
+	DefaultDim       int    `mapstructure:"default_dim"`
+	CollectionPrefix string `mapstructure:"collection_prefix"`
 }
 
 // SupermemoryConfig contains Supermemory API configuration.
@@ -1035,6 +1087,18 @@ func setDefaults() {
 	viper.SetDefault("ai.cencori.temperature", 0.7)
 	viper.SetDefault("ai.cencori.top_p", 0.9)
 	viper.SetDefault("ai.cencori.timeout_seconds", 60)
+
+	// Cloudflare AI integrations (all opt-in, off by default)
+	viper.SetDefault("ai.cloudflare.gateway.enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.classifier_enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.model", "@cf/meta/llama-3.1-8b-instruct")
+	viper.SetDefault("ai.cloudflare.workers_ai.embeddings_enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.embeddings_model", "@cf/baai/bge-base-en-v1.5")
+	viper.SetDefault("ai.cloudflare.workers_ai.classifier_timeout_ms", 800)
+	viper.SetDefault("ai.cloudflare.vectorize.enabled", false)
+	viper.SetDefault("ai.cloudflare.vectorize.default_dim", 768)
+	viper.SetDefault("ai.cloudflare.vectorize.collection_prefix", "")
 
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")
