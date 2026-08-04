@@ -202,7 +202,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 	// Initialize knowledge base (RAG)
 	// Embeddings route through Cencori gateway for provider failover + billing,
-	// or through Cloudflare Workers AI (free BGE model) when that is configured.
+	// or through Cloudflare Workers AI (BGE model) when that is configured.
 	if c.Config.AI.Cencori.APIKey != "" {
 		embBaseURL, embAPIKey := c.cloudflareGateway(strings.TrimSpace(c.Config.AI.Cencori.APIKey))
 		c.EmbeddingsClient = embeddings.NewCencoriEmbeddingsClient(embAPIKey, "", embBaseURL, c.ZapLog)
@@ -235,10 +235,10 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 
 	// Cloudflare Vectorize: serverless alternative to Qdrant for episodic + fact
-	// memory. Pairs best with the Workers AI embedder (same account, free tier).
+	// memory. Pairs best with the Workers AI embedder (same account).
 	cf := c.Config.AI.Cloudflare
 	if cf.Vectorize.Enabled && strings.TrimSpace(cf.AccountID) != "" && strings.TrimSpace(cf.APIToken) != "" {
-		// Prefer the free Workers AI BGE embedder for memory vectors when enabled.
+		// Prefer the Workers AI BGE embedder for memory vectors when enabled.
 		if cf.WorkersAI.Enabled && cf.WorkersAI.EmbeddingsEnabled && strings.TrimSpace(cf.WorkersAI.EmbeddingsModel) != "" {
 			c.EmbeddingsClient = embeddings.NewWorkersAIEmbedder(
 				strings.TrimSpace(cf.AccountID),
@@ -911,7 +911,7 @@ func (c *Container) cloudflareGateway(originKey string) (baseURL, apiKey string)
 // intentClassifier builds the cheap Cloudflare Workers AI intent classifier when
 // configured. Returns nil otherwise, in which case the agent keeps its
 // deterministic keyword routing.
-func (c *Container) intentClassifier() ai.IntentClassifier {
+func (c *Container) intentClassifier() aicore.IntentClassifier {
 	cf := c.Config.AI.Cloudflare
 	workers := cf.WorkersAI
 	if !workers.ClassifierEnabled || strings.TrimSpace(cf.AccountID) == "" || strings.TrimSpace(cf.APIToken) == "" {
@@ -922,7 +922,7 @@ func (c *Container) intentClassifier() ai.IntentClassifier {
 	if timeout <= 0 {
 		timeout = 800 * time.Millisecond
 	}
-	return ai.NewWorkersAIIntentClassifier(&ai.IntentClassifierConfig{
+	inner := ai.NewWorkersAIIntentClassifier(&ai.IntentClassifierConfig{
 		Client: ai.NewWorkersAIClient(&ai.WorkersAIConfig{
 			AccountID: strings.TrimSpace(cf.AccountID),
 			APIToken:  strings.TrimSpace(cf.APIToken),
@@ -931,4 +931,42 @@ func (c *Container) intentClassifier() ai.IntentClassifier {
 		Model:   strings.TrimSpace(workers.Model),
 		Timeout: timeout,
 	}, c.ZapLog)
+	return &coreIntentClassifier{inner: inner}
+}
+
+// aiCategoryToCoreCategory maps the ai package's intent categories to core's
+// ToolCategory values (identical strings, kept in one place here so the domain
+// layer never depends on the infrastructure classifier).
+var aiCategoryToCoreCategory = map[ai.IntentCategory]aicore.ToolCategory{
+	ai.IntentOverview:   aicore.CategoryOverview,
+	ai.IntentSpending:   aicore.CategorySpending,
+	ai.IntentAction:     aicore.CategoryAction,
+	ai.IntentPlanning:   aicore.CategoryPlanning,
+	ai.IntentHistory:    aicore.CategoryHistory,
+	ai.IntentAutomation: aicore.CategoryAutomation,
+	ai.IntentBudget:     aicore.CategoryBudget,
+	ai.IntentMemory:     aicore.CategoryMemory,
+	ai.IntentVoice:      aicore.CategoryVoice,
+	ai.IntentInvestment: aicore.CategoryInvestment,
+	ai.IntentKnowledge:  aicore.CategoryKnowledge,
+}
+
+// coreIntentClassifier adapts the infrastructure intent classifier to the
+// domain-owned port, translating provider categories into core ToolCategory
+// values. Unmappable categories are treated as untrustworthy so the agent falls
+// back to deterministic keyword routing.
+type coreIntentClassifier struct {
+	inner ai.IntentClassifier
+}
+
+func (c *coreIntentClassifier) Classify(ctx context.Context, message string) (aicore.ToolCategory, float64, bool) {
+	category, confidence, ok := c.inner.Classify(ctx, message)
+	if !ok {
+		return "", confidence, false
+	}
+	mapped, known := aiCategoryToCoreCategory[category]
+	if !known {
+		return "", confidence, false
+	}
+	return mapped, confidence, true
 }

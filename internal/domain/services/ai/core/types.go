@@ -278,6 +278,18 @@ type StreamEvent struct {
 	Error      string
 }
 
+// IntentClassifier narrows the agent's tool set before the LLM call using a
+// cheap/fast model (e.g. Cloudflare Workers AI). The agent falls back to
+// keyword matching when the classifier is nil, errors, times out, or returns a
+// low-confidence/unmappable category. Implementations live in the
+// infrastructure layer and translate provider-specific categories into domain
+// ToolCategory values.
+type IntentClassifier interface {
+	// Classify returns an intent category and confidence. ok=false means "don't
+	// trust this" — callers should fall back to their deterministic path.
+	Classify(ctx context.Context, message string) (category ToolCategory, confidence float64, ok bool)
+}
+
 // Dependencies holds all external services the agent and tools need.
 type Dependencies struct {
 	AIProvider    ai.AIProvider
@@ -322,7 +334,7 @@ type Dependencies struct {
 	// that narrows the tool set before the LLM call. It runs in parallel with
 	// context assembly; keyword routing wins if it is nil, errors, times out, or
 	// returns a low-confidence/unmappable category.
-	IntentClassifier ai.IntentClassifier
+	IntentClassifier IntentClassifier
 
 	// ResponseGuard deterministically repairs a drafted reply before delivery:
 	// strips currency figures not grounded in tool/context data, surfaces a missed

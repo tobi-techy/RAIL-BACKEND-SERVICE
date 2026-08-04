@@ -29,6 +29,12 @@ type WorkersAIEmbedder struct {
 // @cf/baai/bge-base-en-v1.5 (768 dimensions). baseURL overrides the API base
 // (used by tests); leave empty in production.
 func NewWorkersAIEmbedder(accountID, apiToken, model, baseURL string, logger *zap.Logger) *WorkersAIEmbedder {
+	if accountID == "" {
+		panic("accountID is required")
+	}
+	if apiToken == "" {
+		panic("apiToken is required")
+	}
 	if model == "" {
 		model = "@cf/baai/bge-base-en-v1.5"
 	}
@@ -99,6 +105,14 @@ func (w *WorkersAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][
 	}
 	if len(vectors) == 0 {
 		return nil, fmt.Errorf("workers ai embeddings: empty result")
+	}
+	if len(vectors) != len(texts) {
+		return nil, fmt.Errorf("workers ai embeddings: expected %d vectors, got %d", len(texts), len(vectors))
+	}
+	for i, vector := range vectors {
+		if len(vector) == 0 {
+			return nil, fmt.Errorf("workers ai embeddings: vector %d is empty", i)
+		}
 	}
 
 	w.logger.Debug("workers ai embeddings generated",

@@ -69,3 +69,32 @@ func TestWorkersAIEmbedder_EmbedBatch(t *testing.T) {
 	assert.Equal(t, []float32{0.1, 0.2}, vecs[0])
 	assert.Equal(t, []float32{0.3, 0.4}, vecs[1])
 }
+
+func TestWorkersAIEmbedder_EmbedBatch_WrongVectorCount(t *testing.T) {
+	embedder := newTestWorkersAIEmbedder(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"result":{"data":[[0.1,0.2]]}}`))
+	})
+
+	_, err := embedder.EmbedBatch(context.Background(), []string{"a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected 2 vectors, got 1")
+}
+
+func TestWorkersAIEmbedder_EmbedBatch_EmptyVector(t *testing.T) {
+	embedder := newTestWorkersAIEmbedder(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"result":{"data":[[0.1,0.2],[]]}}`))
+	})
+
+	_, err := embedder.EmbedBatch(context.Background(), []string{"a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vector 1 is empty")
+}
+
+func TestWorkersAIEmbedder_Constructor_RequiresCredentials(t *testing.T) {
+	assert.Panics(t, func() {
+		NewWorkersAIEmbedder("", "tok", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
+	})
+	assert.Panics(t, func() {
+		NewWorkersAIEmbedder("acct", "", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
+	})
+}

@@ -75,6 +75,15 @@ type WorkersAIClient struct {
 
 // NewWorkersAIClient creates a Workers AI client.
 func NewWorkersAIClient(config *WorkersAIConfig, logger *zap.Logger) *WorkersAIClient {
+	if config == nil {
+		panic("WorkersAIConfig is required")
+	}
+	if config.AccountID == "" {
+		panic("WorkersAIConfig.AccountID is required")
+	}
+	if config.APIToken == "" {
+		panic("WorkersAIConfig.APIToken is required")
+	}
 	timeout := config.Timeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -137,7 +146,7 @@ func (c *WorkersAIClient) RunText(ctx context.Context, model string, messages []
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("workers ai status %d: %s", resp.StatusCode, truncateBytes(respBody, 512))
+		return "", fmt.Errorf("workers ai status %d (response %d bytes)", resp.StatusCode, len(respBody))
 	}
 
 	var parsed struct {
@@ -241,7 +250,7 @@ func (c *WorkersAIIntentClassifier) Classify(ctx context.Context, message string
 	}
 	clean := strings.TrimSpace(text)
 	if err := json.Unmarshal([]byte(clean), &parsed); err != nil {
-		c.logger.Debug("workers ai classifier returned non-JSON, falling back to keywords", zap.String("response", truncateBytes([]byte(clean), 128)))
+		c.logger.Debug("workers ai classifier returned non-JSON, falling back to keywords", zap.Int("response_len", len(clean)))
 		return "", 0, false
 	}
 
@@ -262,17 +271,9 @@ func validIntentCategory(cat IntentCategory) bool {
 	switch cat {
 	case IntentOverview, IntentSpending, IntentAction, IntentPlanning,
 		IntentHistory, IntentAutomation, IntentBudget, IntentMemory,
-		IntentInvestment, IntentKnowledge:
+		IntentVoice, IntentInvestment, IntentKnowledge:
 		return true
 	default:
 		return false
 	}
-}
-
-// truncateBytes returns s cut to n bytes for logging. It never fails.
-func truncateBytes(s []byte, n int) string {
-	if len(s) <= n {
-		return string(s)
-	}
-	return string(s[:n]) + "..."
 }

@@ -154,10 +154,8 @@ func (a *Agent) Chat(ctx context.Context, userID, convID uuid.UUID, message stri
 	if intentGuessCh != nil {
 		select {
 		case guess := <-intentGuessCh:
-			if guess.ok && guess.confidence >= a.config.ClassifierMinConfidence {
-				if mapped, known := aiCategoryToCoreCategory[guess.category]; known {
-					intents = []Intent{{Category: mapped, Confidence: guess.confidence, RequiresLLM: true}}
-				}
+			if guess.ok && a.config != nil && guess.confidence >= a.config.ClassifierMinConfidence {
+				intents = []Intent{{Category: guess.category, Confidence: guess.confidence, RequiresLLM: true}}
 			}
 		default:
 			// classifier still running — keyword routing already decided
@@ -729,25 +727,9 @@ func (a *Agent) buildMemoryPrompt(memCtx *MemoryContext) string {
 // intentGuess is a single ML classifier result, delivered over a buffered
 // channel so the agent never blocks on it.
 type intentGuess struct {
-	category   ai.IntentCategory
+	category   ToolCategory
 	confidence float64
 	ok         bool
-}
-
-// aiCategoryToCoreCategory maps the ai package's intent categories to core's
-// ToolCategory values (identical strings, but kept in one place to avoid an
-// import cycle between the ai and core packages).
-var aiCategoryToCoreCategory = map[ai.IntentCategory]ToolCategory{
-	ai.IntentOverview:   CategoryOverview,
-	ai.IntentSpending:   CategorySpending,
-	ai.IntentAction:     CategoryAction,
-	ai.IntentPlanning:   CategoryPlanning,
-	ai.IntentHistory:    CategoryHistory,
-	ai.IntentAutomation: CategoryAutomation,
-	ai.IntentBudget:     CategoryBudget,
-	ai.IntentMemory:     CategoryMemory,
-	ai.IntentInvestment: CategoryInvestment,
-	ai.IntentKnowledge:  CategoryKnowledge,
 }
 
 // classifierTimeout bounds the cheap ML intent classifier so it can never add

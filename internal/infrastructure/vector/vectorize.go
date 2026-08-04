@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const vectorizeAPIBase = "https://api.cloudflare.com/client/v4/accounts/%s/vectorize/v1/indexes"
+const vectorizeAPIBase = "https://api.cloudflare.com/client/v4/accounts/%s/vectorize/v2/indexes"
 
 // VectorizeConfig configures the Cloudflare Vectorize vector store client.
 type VectorizeConfig struct {
@@ -25,14 +25,14 @@ type VectorizeConfig struct {
 	DefaultDim       int    // embedding dimension (768 for @cf/baai/bge-base-en-v1.5)
 	CollectionPrefix string // optional prefix for index names
 	// BaseURL overrides the API base (default
-	// https://api.cloudflare.com/client/v4/accounts/{id}/vectorize/v1/indexes).
+	// https://api.cloudflare.com/client/v4/accounts/{id}/vectorize/v2/indexes).
 	// Used by tests; leave empty in production.
 	BaseURL string
 }
 
 // VectorizeStore implements memory.VectorStore via Cloudflare Vectorize's REST API.
 // It is a drop-in alternative to QdrantStore and works best paired with the
-// Workers AI embedder (free, same Cloudflare account).
+// Workers AI embedder (same Cloudflare account).
 type VectorizeStore struct {
 	config   *VectorizeConfig
 	embedder memory.Embedder
@@ -43,6 +43,15 @@ type VectorizeStore struct {
 
 // NewVectorizeStore creates a Vectorize vector store client.
 func NewVectorizeStore(config *VectorizeConfig, embedder memory.Embedder, logger *zap.Logger) *VectorizeStore {
+	if config == nil {
+		panic("VectorizeConfig is required")
+	}
+	if config.AccountID == "" {
+		panic("VectorizeConfig.AccountID is required")
+	}
+	if config.APIToken == "" {
+		panic("VectorizeConfig.APIToken is required")
+	}
 	if config.DefaultDim == 0 {
 		config.DefaultDim = 768
 	}
@@ -59,17 +68,44 @@ func NewVectorizeStore(config *VectorizeConfig, embedder memory.Embedder, logger
 	}
 }
 
-// indexName returns the fully-qualified Vectorize index name.
-func (v *VectorizeStore) indexName(base string) string {
+// indexName returns the fully-qualified Vectorize index name. Vectorize V2
+// requires lowercase kebab-case names, so the optional prefix is joined with a
+// hyphen and the result is validated before any API call.
+func (v *VectorizeStore) indexName(base string) (string, error) {
+	name := base
 	if v.config.CollectionPrefix != "" {
-		return v.config.CollectionPrefix + "_" + base
+		name = v.config.CollectionPrefix + "-" + base
 	}
-	return base
+	if !validIndexName(name) {
+		return "", fmt.Errorf("vectorize invalid index name %q: must be lowercase kebab-case, start with a letter, and be shorter than 32 characters", name)
+	}
+	return name, nil
+}
+
+// validIndexName reports whether name satisfies Vectorize V2 index naming rules.
+func validIndexName(name string) bool {
+	if name == "" || len(name) > 31 {
+		return false
+	}
+	if name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // Store stores a text entry as a vector in the given Vectorize index.
 func (v *VectorizeStore) Store(ctx context.Context, collection string, userID uuid.UUID, content string, metadata map[string]string) error {
-	name := v.indexName(collection)
+	name, err := v.indexName(collection)
+	if err != nil {
+		return err
+	}
 
 	if err := v.ensureIndex(ctx, name); err != nil {
 		return fmt.Errorf("vectorize ensure index: %w", err)
@@ -85,18 +121,22 @@ func (v *VectorizeStore) Store(ctx context.Context, collection string, userID uu
 		payload[k] = val
 	}
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"ids":      []string{uuid.New().String()},
-		"vectors":  [][]float32{embedding},
-		"metadata": []map[string]string{payload},
+	// V2 upserts are NDJSON: one JSON object per line.
+	line, err := json.Marshal(map[string]interface{}{
+		"id":       uuid.New().String(),
+		"values":   embedding,
+		"metadata": payload,
 	})
+	if err != nil {
+		return fmt.Errorf("vectorize marshal upsert: %w", err)
+	}
 
 	var resp struct {
 		Result struct {
-			IDs []string `json:"ids"`
+			MutationID string `json:"mutationId"`
 		} `json:"result"`
 	}
-	if err := v.do(ctx, http.MethodPost, "/"+name+"/upsert", body, &resp); err != nil {
+	if err := v.do(ctx, http.MethodPost, "/"+name+"/upsert?unparsable-behavior=error", line, "application/x-ndjson", &resp); err != nil {
 		return fmt.Errorf("vectorize upsert: %w", err)
 	}
 	return nil
@@ -104,18 +144,25 @@ func (v *VectorizeStore) Store(ctx context.Context, collection string, userID uu
 
 // Search finds the most similar entries to a query text in the given index.
 func (v *VectorizeStore) Search(ctx context.Context, collection string, userID uuid.UUID, query string, limit int) ([]memory.Result, error) {
-	name := v.indexName(collection)
+	name, err := v.indexName(collection)
+	if err != nil {
+		return nil, err
+	}
 
 	embedding, err := v.embedder.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("vectorize embed query: %w", err)
 	}
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"vector": embedding,
-		"top_k":  limit,
-		"filter": map[string]string{"user_id": userID.String()},
+	body, err := json.Marshal(map[string]interface{}{
+		"vector":         embedding,
+		"topK":           limit,
+		"returnMetadata": "indexed",
+		"filter":         map[string]string{"user_id": userID.String()},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("vectorize marshal query: %w", err)
+	}
 
 	var resp struct {
 		Result struct {
@@ -126,7 +173,7 @@ func (v *VectorizeStore) Search(ctx context.Context, collection string, userID u
 			} `json:"matches"`
 		} `json:"result"`
 	}
-	if err := v.do(ctx, http.MethodPost, "/"+name+"/query", body, &resp); err != nil {
+	if err := v.do(ctx, http.MethodPost, "/"+name+"/query", body, "application/json", &resp); err != nil {
 		return nil, fmt.Errorf("vectorize query: %w", err)
 	}
 
@@ -144,10 +191,13 @@ func (v *VectorizeStore) Search(ctx context.Context, collection string, userID u
 
 // DeleteCollection removes an entire Vectorize index.
 func (v *VectorizeStore) DeleteCollection(ctx context.Context, collection string) error {
-	name := v.indexName(collection)
+	name, err := v.indexName(collection)
+	if err != nil {
+		return err
+	}
 	// 404 is treated as success (index already gone).
 	var resp struct{}
-	err := v.do(ctx, http.MethodDelete, "/"+name, nil, &resp)
+	err = v.do(ctx, http.MethodDelete, "/"+name, nil, "application/json", &resp)
 	if err == nil || isNotFound(err) {
 		return nil
 	}
@@ -157,33 +207,65 @@ func (v *VectorizeStore) DeleteCollection(ctx context.Context, collection string
 // ensureIndex creates the index if it does not exist.
 func (v *VectorizeStore) ensureIndex(ctx context.Context, name string) error {
 	var resp struct{}
-	if err := v.do(ctx, http.MethodGet, "/"+name, nil, &resp); err == nil {
+	if err := v.do(ctx, http.MethodGet, "/"+name, nil, "application/json", &resp); err == nil {
 		return nil // exists
 	} else if !isNotFound(err) {
 		return err
 	}
 
-	createBody, _ := json.Marshal(map[string]interface{}{
-		"name":      name,
-		"dimension": v.config.DefaultDim,
-		"metric":    "cosine",
+	createBody, err := json.Marshal(map[string]interface{}{
+		"name": name,
+		"config": map[string]interface{}{
+			"dimensions": v.config.DefaultDim,
+			"metric":     "cosine",
+		},
 	})
+	if err != nil {
+		return fmt.Errorf("vectorize marshal create index: %w", err)
+	}
 	var created struct{}
-	if err := v.do(ctx, http.MethodPost, "", createBody, &created); err != nil {
+	if err := v.do(ctx, http.MethodPost, "", createBody, "application/json", &created); err != nil {
+		// Idempotency: a concurrent writer may have created the index between our
+		// GET 404 and this POST. If it now exists, treat as success.
+		if checkErr := v.do(ctx, http.MethodGet, "/"+name, nil, "application/json", &resp); checkErr == nil {
+			return v.ensureMetadataIndex(ctx, name)
+		}
 		return fmt.Errorf("vectorize create index: %w", err)
+	}
+
+	return v.ensureMetadataIndex(ctx, name)
+}
+
+// ensureMetadataIndex enables metadata filtering on user_id, which V2 requires
+// before query filters can match. V2 mutations are asynchronous, so this is
+// best-effort: a missing or racing metadata index must not fail the write.
+func (v *VectorizeStore) ensureMetadataIndex(ctx context.Context, name string) error {
+	body, err := json.Marshal(map[string]interface{}{
+		"indexType":    "string",
+		"propertyName": "user_id",
+	})
+	if err != nil {
+		return fmt.Errorf("vectorize marshal metadata index: %w", err)
+	}
+	var resp struct{}
+	if err := v.do(ctx, http.MethodPost, "/"+name+"/metadata_index/create", body, "application/json", &resp); err != nil {
+		if v.logger != nil {
+			v.logger.Debug("vectorize metadata index create failed (best-effort)", zap.String("index", name), zap.Error(err))
+		}
+		return err
 	}
 	return nil
 }
 
 // do performs an authenticated Vectorize API request and decodes the response.
 // A non-2xx status is returned as an error carrying the API error message.
-func (v *VectorizeStore) do(ctx context.Context, method, path string, body []byte, out interface{}) error {
+func (v *VectorizeStore) do(ctx context.Context, method, path string, body []byte, contentType string, out interface{}) error {
 	url := v.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("vectorize request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Authorization", "Bearer "+v.config.APIToken)
 
 	resp, err := v.http.Do(req)

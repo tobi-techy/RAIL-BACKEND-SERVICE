@@ -42,11 +42,16 @@ func serveJSON(t *testing.T, body string, lastReq *http.Request, lastBody *strin
 			*lastReq = *r
 		}
 		if lastBody != nil {
-			b, _ := io.ReadAll(r.Body)
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read request body: %v", err)
+			}
 			*lastBody = string(b)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}
 }
 
@@ -122,4 +127,27 @@ func TestWorkersAIIntentClassifier_NilClient(t *testing.T) {
 	classifier := NewWorkersAIIntentClassifier(&IntentClassifierConfig{}, zap.NewNop())
 	_, _, ok := classifier.Classify(context.Background(), "hi")
 	assert.False(t, ok)
+}
+
+func TestWorkersAIIntentClassifier_VoiceCategory(t *testing.T) {
+	classifier := newTestClassifier(t, serveJSON(t,
+		`{"success":true,"result":{"response":"{\"category\":\"Voice\",\"confidence\":0.88}"}}`,
+		nil, nil,
+	))
+	cat, conf, ok := classifier.Classify(context.Background(), "use my voice assistant")
+	assert.True(t, ok)
+	assert.Equal(t, IntentVoice, cat)
+	assert.Equal(t, 0.88, conf)
+}
+
+func TestWorkersAIClient_Constructor_RequiresCredentials(t *testing.T) {
+	assert.Panics(t, func() {
+		NewWorkersAIClient(&WorkersAIConfig{APIToken: "tok"}, zap.NewNop())
+	})
+	assert.Panics(t, func() {
+		NewWorkersAIClient(&WorkersAIConfig{AccountID: "acct"}, zap.NewNop())
+	})
+	assert.Panics(t, func() {
+		NewWorkersAIClient(nil, zap.NewNop())
+	})
 }

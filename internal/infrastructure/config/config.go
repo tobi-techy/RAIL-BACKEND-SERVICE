@@ -1089,7 +1089,11 @@ func setDefaults() {
 	viper.SetDefault("ai.cencori.timeout_seconds", 60)
 
 	// Cloudflare AI integrations (all opt-in, off by default)
+	viper.SetDefault("ai.cloudflare.account_id", "")
+	viper.SetDefault("ai.cloudflare.api_token", "")
 	viper.SetDefault("ai.cloudflare.gateway.enabled", false)
+	viper.SetDefault("ai.cloudflare.gateway.base_url", "")
+	viper.SetDefault("ai.cloudflare.gateway.api_key", "")
 	viper.SetDefault("ai.cloudflare.workers_ai.enabled", false)
 	viper.SetDefault("ai.cloudflare.workers_ai.classifier_enabled", false)
 	viper.SetDefault("ai.cloudflare.workers_ai.model", "@cf/meta/llama-3.1-8b-instruct")
