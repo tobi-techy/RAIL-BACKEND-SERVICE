@@ -22,6 +22,7 @@ type Worker struct {
 	logger        *zap.Logger
 	checkInterval time.Duration
 	stopOnce      sync.Once
+	mu            sync.Mutex
 	cancel        context.CancelFunc
 	done          chan struct{}
 }
@@ -36,8 +37,10 @@ func NewWorker(svc Reconciler, logger *zap.Logger) *Worker {
 
 func (w *Worker) Start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
+	w.mu.Lock()
 	w.cancel = cancel
 	w.done = make(chan struct{})
+	w.mu.Unlock()
 	defer close(w.done)
 	defer cancel()
 
@@ -67,14 +70,19 @@ func (w *Worker) runRecovery(ctx context.Context) {
 
 // Stop cancels the run context and waits for the in-flight recovery pass to
 // finish before returning, so shutdown never leaves database or BRIJ calls
-// running after stopWorkers completes. It is safe to call more than once.
+// running after stopWorkers completes. It is safe to call more than once and
+// to call concurrently with Start.
 func (w *Worker) Stop() {
 	w.stopOnce.Do(func() {
-		if w.cancel != nil {
-			w.cancel()
+		w.mu.Lock()
+		cancel := w.cancel
+		done := w.done
+		w.mu.Unlock()
+		if cancel != nil {
+			cancel()
 		}
-		if w.done != nil {
-			<-w.done
+		if done != nil {
+			<-done
 		}
 	})
 }

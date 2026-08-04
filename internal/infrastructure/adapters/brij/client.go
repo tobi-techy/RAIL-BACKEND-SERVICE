@@ -116,7 +116,7 @@ func (c *Client) Health(ctx context.Context) error {
 	bodyBytes, readErr := readBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		if readErr != nil {
-			c.logger.Warn("brij health: failed to read body", zap.Error(readErr))
+			return fmt.Errorf("brij health: read body: %w (status %d)", readErr, resp.StatusCode)
 		}
 		return apiErrorFrom(resp.StatusCode, bodyBytes)
 	}

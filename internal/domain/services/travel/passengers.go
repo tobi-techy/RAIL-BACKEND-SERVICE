@@ -103,7 +103,9 @@ func brijGender(sex string) string {
 }
 
 // isoBornOn converts a stored MM/DD/YYYY birth date to the YYYY-MM-DD format
-// BRIJ requires. Already-ISO values pass through unchanged.
+// BRIJ requires. Already-ISO values pass through unchanged; anything that does
+// not parse as a real date returns "" so validatePassenger surfaces a clear
+// error instead of passing malformed data to the provider.
 func isoBornOn(dob string) string {
 	d := strings.TrimSpace(dob)
 	if d == "" {
@@ -113,9 +115,11 @@ func isoBornOn(dob string) string {
 		return t.Format("2006-01-02")
 	}
 	if len(d) == 10 && d[4] == '-' && d[7] == '-' {
-		return d
+		if t, err := time.Parse("2006-01-02", d); err == nil {
+			return t.Format("2006-01-02")
+		}
 	}
-	return d
+	return ""
 }
 
 // passengerFullName returns the first passenger's full name from a stored
