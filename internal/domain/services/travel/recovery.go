@@ -2,7 +2,9 @@ package travel
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -80,7 +82,9 @@ func (s *Service) settleStuckOrder(ctx context.Context, it stuckOrder) {
 	}
 	if strings.TrimSpace(it.intent) == "" {
 		// No BRIJ intent: the hold was placed but Book never ran. Reverse.
-		_ = s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "abandoned_recovery")
+		if err := s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "abandoned_recovery"); err != nil {
+			s.logger.Error("travel recovery: failed to reverse abandoned hold", zap.Error(err), zap.String("order_id", order.ID.String()))
+		}
 		return
 	}
 	intent, err := s.client.GetIntent(ctx, it.intent)
@@ -93,13 +97,17 @@ func (s *Service) settleStuckOrder(ctx context.Context, it stuckOrder) {
 		s.finalizeBooking(ctx, order.UserID, order, intent)
 	case brij.StatusRefunded:
 		reason := refundReason(intent)
-		_ = s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "refunded")
-		_ = s.markRefunded(ctx, order.ID, reason)
+		if err := s.reverseRefundedBooking(ctx, order, reason); err != nil {
+			return
+		}
 		s.notifyRefundResolved(ctx, order, reason)
 		s.logger.Info("travel recovery: refunded stuck order", zap.String("order_id", order.ID.String()))
 	default:
 		// Still active past abandonAge with funds held on the user: release.
-		_ = s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "abandoned_recovery")
+		if err := s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "abandoned_recovery"); err != nil {
+			s.logger.Error("travel recovery: failed to reverse abandoned hold", zap.Error(err), zap.String("order_id", order.ID.String()))
+			return
+		}
 		s.notifyHoldReleased(ctx, order, "the booking never went through")
 		s.logger.Warn("travel recovery: reversed abandoned booking", zap.String("order_id", order.ID.String()), zap.String("intent_id", it.intent))
 	}
@@ -143,7 +151,10 @@ func (s *Service) finalizeTicketed(ctx context.Context, age time.Duration) {
 			// the user: the booking never settled, so release the funds. A short
 			// wait avoids racing a booking that is merely slow.
 			if time.Since(order.CreatedAt) > neverSettledAge {
-				_ = s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "booking_never_settled")
+				if err := s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "booking_never_settled"); err != nil {
+					s.logger.Error("travel recovery: failed to reverse unsettled booking hold", zap.Error(err), zap.String("order_id", order.ID.String()))
+					continue
+				}
 				s.notifyHoldReleased(ctx, order, "the airline never confirmed this booking")
 				s.logger.Warn("travel recovery: reversed booking that never settled", zap.String("order_id", order.ID.String()))
 			}
@@ -154,8 +165,9 @@ func (s *Service) finalizeTicketed(ctx context.Context, age time.Duration) {
 			s.logger.Info("travel recovery: finalized ticketed booking", zap.String("order_id", order.ID.String()))
 		} else {
 			reason := refundReason(intent)
-			_ = s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "refunded")
-			_ = s.markRefunded(ctx, order.ID, reason)
+			if err := s.reverseRefundedBooking(ctx, order, reason); err != nil {
+				continue
+			}
 			s.notifyRefundResolved(ctx, order, reason)
 			s.logger.Warn("travel recovery: booking refunded before ticketing", zap.String("order_id", order.ID.String()))
 		}
@@ -263,8 +275,9 @@ func (s *Service) settleRefundedOrder(ctx context.Context, order *orderRow, reas
 		}
 		return
 	}
-	_ = s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "refunded")
-	_ = s.markRefunded(ctx, order.ID, reason)
+	if err := s.reverseRefundedBooking(ctx, order, reason); err != nil {
+		return
+	}
 	s.notifyRefundResolved(ctx, order, reason)
 	s.logger.Info("travel recovery: refunded order settled", zap.String("order_id", order.ID.String()))
 }
@@ -277,25 +290,34 @@ func (s *Service) creditRefund(ctx context.Context, order *orderRow, reason stri
 	if s.ledger == nil {
 		return fmt.Errorf("ledger unavailable for refund credit")
 	}
-	res, err := s.db.ExecContext(ctx, `
+	// The claim UPDATE grants the deposit_id, which removes the order from the
+	// pending-refund scan. Only sql.ErrNoRows means the claim is not ours
+	// (already claimed or not credit-eligible); any other failure propagates so
+	// the worker retries instead of silently skipping the credit.
+	var depositID uuid.UUID
+	err := s.db.QueryRowContext(ctx, `
 		UPDATE travel_orders SET status='refunded', refund_status='approved', refund_reason=$2,
 		       refunded_at=NOW(), refund_credited_at=NOW(), deposit_id=gen_random_uuid(), updated_at=NOW()
-		WHERE id=$1 AND status='completed' AND deposit_id IS NULL`, order.ID, reason)
+		WHERE id=$1 AND status='completed' AND deposit_id IS NULL
+		RETURNING deposit_id`, order.ID, reason).Scan(&depositID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already claimed or not credit-eligible
+	}
 	if err != nil {
 		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return nil // already claimed or not credit-eligible
 	}
 	if err := s.ledger.ReverseTransaction(ctx, order.UserID, entities.AccountTypeSpendingBalance,
 		order.ID.String(), order.HoldAmount, map[string]interface{}{
 			"provider": "brij", "type": "travel_refund_credited", "order_id": order.ID.String(),
 		}); err != nil {
 		s.logger.Error("CRITICAL: failed to credit travel refund", zap.Error(err), zap.String("order_id", order.ID.String()))
+		// Compensate the claim so the order is retryable. If this also fails
+		// the refund stays claimed-but-uncredited; flag it for ops to reconcile.
 		if _, unclaimErr := s.db.ExecContext(ctx, `
 			UPDATE travel_orders SET status='completed', refund_status='requested', refund_reason=NULL,
 			       refunded_at=NULL, refund_credited_at=NULL, deposit_id=NULL, updated_at=NOW()
 			WHERE id=$1 AND status='refunded'`, order.ID); unclaimErr != nil {
+			s.logger.Error("CRITICAL: failed to unclaim refund after ledger failure", zap.Error(unclaimErr), zap.String("order_id", order.ID.String()))
 			return fmt.Errorf("refund credit failed: %w; unclaim also failed: %v", err, unclaimErr)
 		}
 		return err

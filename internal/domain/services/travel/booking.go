@@ -78,14 +78,18 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 		order.ID, totalHold, escrow, railFee, passengersJSON)
 	if err != nil {
 		s.logger.Error("failed to persist flight hold — reversing", zap.Error(err), zap.String("order_id", order.ID.String()))
-		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "db_fail")
+		if rerr := s.reverseHold(ctx, userID, order.ID, totalHold, "db_fail"); rerr != nil {
+			s.logger.Error("failed to reverse flight hold", zap.Error(rerr), zap.String("order_id", order.ID.String()))
+		}
 		return nil, fmt.Errorf("failed to record the booking")
 	}
 	if n, err := res.RowsAffected(); err != nil || n == 0 {
 		// A concurrent BookFlight for the same intent already flipped the order
 		// out of 'held'; reverse the hold this call created.
 		s.logger.Warn("flight order is no longer held — reversing duplicate hold", zap.Error(err), zap.String("order_id", order.ID.String()))
-		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "duplicate_book")
+		if rerr := s.reverseHold(ctx, userID, order.ID, totalHold, "duplicate_book"); rerr != nil {
+			s.logger.Error("failed to reverse duplicate flight hold", zap.Error(rerr), zap.String("order_id", order.ID.String()))
+		}
 		return nil, fmt.Errorf("this flight is already being booked")
 	}
 	order.HoldAmount = totalHold
@@ -143,8 +147,11 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 		if reason == "" {
 			reason = "the airline refunded this booking"
 		}
-		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "refunded")
-		_ = s.markRefunded(ctx, order.ID, reason)
+		// If the hold can't be reversed the order stays 'booked' so RunRecovery
+		// reconciles it later; only notify once the refund is fully settled.
+		if err := s.reverseRefundedBooking(ctx, order, reason); err != nil {
+			return base, nil
+		}
 		s.notifyRefundResolved(ctx, order, reason)
 		base.Status = StatusRefunded
 		return base, nil
@@ -166,9 +173,10 @@ func (s *Service) settleAfterFailedBook(ctx context.Context, userID uuid.UUID, o
 	case brij.StatusBooked:
 		s.finalizeBooking(ctx, userID, order, intent)
 	case brij.StatusRefunded:
-		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "book_failed_refunded")
-		_ = s.markRefunded(ctx, order.ID, "the airline refunded this booking")
-		s.notifyRefundResolved(ctx, order, "the airline refunded this booking")
+		reason := "the airline refunded this booking"
+		if err := s.reverseRefundedBooking(ctx, order, reason); err == nil {
+			s.notifyRefundResolved(ctx, order, reason)
+		}
 		s.logger.Warn("BRIJ booking failed and was refunded; user hold reversed",
 			zap.String("order_id", order.ID.String()), zap.String("intent_id", order.IntentID))
 	}
@@ -242,6 +250,21 @@ func (s *Service) markRefunded(ctx context.Context, orderID uuid.UUID, reason st
 		`UPDATE travel_orders SET status='refunded', refund_reason=$2, refunded_at=NOW(), updated_at=NOW() WHERE id=$1`,
 		orderID, reason)
 	return err
+}
+
+// reverseRefundedBooking reverses a refunded booking's hold and marks the
+// order refunded. Both steps must succeed so the order stays retryable on
+// failure; callers only send the refund notification once this returns nil.
+func (s *Service) reverseRefundedBooking(ctx context.Context, order *orderRow, reason string) error {
+	if err := s.reverseHold(ctx, order.UserID, order.ID, order.HoldAmount, "refunded"); err != nil {
+		s.logger.Error("failed to reverse refunded flight hold", zap.Error(err), zap.String("order_id", order.ID.String()))
+		return err
+	}
+	if err := s.markRefunded(ctx, order.ID, reason); err != nil {
+		s.logger.Error("failed to mark refunded flight order", zap.Error(err), zap.String("order_id", order.ID.String()))
+		return err
+	}
+	return nil
 }
 
 // GetIntentStatus fetches the live BRIJ intent state for the user's order.

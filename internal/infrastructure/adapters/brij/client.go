@@ -112,7 +112,11 @@ func (c *Client) Health(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("brij health: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.Debug("brij: close response body", zap.Error(err))
+		}
+	}()
 	bodyBytes, readErr := readBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		if readErr != nil {
@@ -257,7 +261,7 @@ func (c *Client) payLoop(ctx context.Context, method, path string, body any, hea
 	resp := first
 	for attempt := 0; attempt < maxPayAttempts; attempt++ {
 		sig, err := c.buildPaymentSignature(ctx, resp, path)
-		drainAndClose(resp)
+		c.drainAndClose(resp)
 		if err != nil {
 			return err
 		}
@@ -273,7 +277,7 @@ func (c *Client) payLoop(ctx context.Context, method, path string, body any, hea
 		}
 		return c.finish(resp, out)
 	}
-	drainAndClose(resp)
+	c.drainAndClose(resp)
 	return &PaymentVerificationError{
 		Code:    "payment_not_settled",
 		Message: "payment did not settle after repeated attempts",
@@ -524,7 +528,11 @@ func (c *Client) send(ctx context.Context, method, path string, body any, paymen
 // responses become a *Error (or *PaymentVerificationError on 402). A read
 // failure on a 2xx response is an error, never a silent zero-value success.
 func (c *Client) finish(resp *http.Response, out any) error {
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			c.logger.Debug("brij: close response body", zap.Error(err))
+		}
+	}()
 	bodyBytes, readErr := readBody(resp)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if readErr != nil {
@@ -564,12 +572,16 @@ func (c *Client) backoff(attempt int) {
 // drainAndClose consumes and closes a response body so the connection can be
 // reused. 402 challenge bodies are read only for headers, so they must be
 // drained here rather than via finish.
-func drainAndClose(resp *http.Response) {
+func (c *Client) drainAndClose(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		c.logger.Debug("brij: drain response body", zap.Error(err))
+	}
+	if err := resp.Body.Close(); err != nil {
+		c.logger.Debug("brij: close response body", zap.Error(err))
+	}
 }
 
 // readBody returns the response body, keeping the error so a failed read is

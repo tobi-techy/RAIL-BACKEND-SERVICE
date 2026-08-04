@@ -187,8 +187,8 @@ func RegisterTravelTools(r *Registry) {
 			"passport_country":  StringParam("Passport issuing country (for flights)"),
 			"passport_expiry":   StringParam("Passport expiry, MM/DD/YYYY (for flights)"),
 			"nationality":       StringParam("Nationality (for flights)"),
-			"next_of_kin":       StringParam("Next of kin full name (for bus)"),
-			"next_of_kin_phone": StringParam("Next of kin phone (for bus)"),
+			"next_of_kin":       StringParam("Next of kin full name (optional)"),
+			"next_of_kin_phone": StringParam("Next of kin phone (optional)"),
 		}, []string{"firstname", "lastname"}),
 		core.CategoryAction,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {

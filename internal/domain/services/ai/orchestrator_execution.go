@@ -221,24 +221,31 @@ func (o *AgentAdapter) quoteFlightBooking(ctx context.Context, userID uuid.UUID,
 	if strings.TrimSpace(totalUSD) == "" {
 		return
 	}
-	rate := decimal.NewFromInt(1)
-	if o.currencyRates != nil {
-		if r, rerr := o.currencyRates.GetLatestRate(ctx, "USD", "NGN"); rerr == nil && r.IsPositive() {
-			rate = r
-		}
+	total, err := decimal.NewFromString(totalUSD)
+	if err != nil || !total.IsPositive() {
+		o.logger.Warn("failed to parse flight total for confirmation card",
+			zap.Error(err), zap.String("total_usd", totalUSD), zap.String("intent_id", intentID), zap.String("user_id", userID.String()))
+		return
 	}
-	total, _ := decimal.NewFromString(totalUSD)
-	ngn := total.Mul(rate).Round(0)
-	params["quote"] = map[string]interface{}{
+	quoteParams := map[string]interface{}{
 		"intent_id":    intentID,
 		"fare_usd":     quote["fare_usd"],
 		"rail_fee_usd": quote["rail_fee_usd"],
 		"total_usd":    totalUSD,
-		"ngn_rate":     rate.String(),
-		"total_ngn":    ngn.String(),
 	}
 	params["total_usd"] = totalUSD
-	params["total_ngn"] = ngn.String()
+	// The NGN total is only attached when a live rate resolves; without one the
+	// card shows the exact USD amount and omits the naira equivalent rather
+	// than fabricating a conversion from a fallback rate.
+	if o.currencyRates != nil {
+		if r, rerr := o.currencyRates.GetLatestRate(ctx, "USD", "NGN"); rerr == nil && r.IsPositive() {
+			ngn := total.Mul(r).Round(0)
+			quoteParams["ngn_rate"] = r.String()
+			quoteParams["total_ngn"] = ngn.String()
+			params["total_ngn"] = ngn.String()
+		}
+	}
+	params["quote"] = quoteParams
 }
 
 // createExecutionAction stages a mutating Execution Engine tool call as a
@@ -264,9 +271,8 @@ func (o *AgentAdapter) createExecutionAction(ctx context.Context, userID, convID
 	delete(params, "confirm")
 
 	// Resolve the exact charge for book_flight from the persisted intent so the
-	// confirmation card never shows a model-supplied amount. The NGN total uses
-	// the live rate; on any failure it falls back to a $1 base rate rather than
-	// fabricating a number.
+	// confirmation card never shows a model-supplied amount. The NGN equivalent
+	// is attached only when a live rate resolves.
 	if tc.Name == ToolBookFlight {
 		o.quoteFlightBooking(ctx, userID, params)
 	}
