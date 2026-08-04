@@ -11,6 +11,7 @@ import (
 	travelservice "github.com/rail-service/rail_service/internal/domain/services/travel"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
 	"github.com/rail-service/rail_service/internal/infrastructure/platform"
+	"go.uber.org/zap"
 )
 
 // --- TravelProvider ---
@@ -22,12 +23,13 @@ func buildTravelProvider(c *Container) core.TravelProvider {
 	if c.TravelService == nil {
 		return nil
 	}
-	return &travelExecAdapter{svc: c.TravelService}
+	return &travelExecAdapter{svc: c.TravelService, logger: c.ZapLog}
 }
 
 // travelExecAdapter adapts *travel.Service to aicore.TravelProvider.
 type travelExecAdapter struct {
-	svc *travelservice.Service
+	svc    *travelservice.Service
+	logger *zap.Logger
 }
 
 func (a *travelExecAdapter) SearchFlights(ctx context.Context, origin, destination, departDate string, adults int) ([]map[string]interface{}, error) {
@@ -61,7 +63,7 @@ func (a *travelExecAdapter) CreateIntent(ctx context.Context, userID uuid.UUID, 
 func (a *travelExecAdapter) BookFlight(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error) {
 	res, err := a.svc.BookFlight(ctx, userID, travelservice.BookFlightRequest{
 		IntentID:  travelArgString(args, "intent_id"),
-		Passenger: flightPassengerFromArg(args, "passenger"),
+		Passenger: a.flightPassengerFromArg(args, "passenger"),
 	})
 	if err != nil {
 		return nil, err
@@ -100,9 +102,33 @@ func (a *travelExecAdapter) ListPassengers(ctx context.Context, userID uuid.UUID
 	}
 	out := make([]map[string]interface{}, 0, len(list))
 	for _, p := range list {
-		out = append(out, structToMap(&p))
+		out = append(out, structToMap(travelerSummary{
+			ID:            p.ID,
+			Label:         p.Label,
+			IsPrimary:     p.IsPrimary,
+			PassengerType: p.PassengerType,
+			Title:         p.Title,
+			FirstName:     p.FirstName,
+			MiddleName:    p.MiddleName,
+			LastName:      p.LastName,
+		}))
 	}
 	return out, nil
+}
+
+// travelerSummary is the minimal traveler data exposed to the AI tool result —
+// enough to select a saved profile without leaking passport numbers, contact
+// details, dates of birth, or next-of-kin records. The full profile is resolved
+// server-side at booking time.
+type travelerSummary struct {
+	ID            uuid.UUID `json:"id"`
+	Label         string    `json:"label"`
+	IsPrimary     bool      `json:"is_primary"`
+	PassengerType string    `json:"passenger_type"`
+	Title         string    `json:"title"`
+	FirstName     string    `json:"first_name"`
+	MiddleName    string    `json:"middle_name"`
+	LastName      string    `json:"last_name"`
 }
 
 func (a *travelExecAdapter) GetBookingHistory(ctx context.Context, userID uuid.UUID, limit int) ([]map[string]interface{}, error) {
@@ -144,8 +170,10 @@ func (a *travelExecAdapter) SavePassenger(ctx context.Context, userID uuid.UUID,
 }
 
 // flightPassengerFromArg decodes the book_flight passenger object into a BRIJ
-// passenger, normalizing title/gender/date forms the model may emit.
-func flightPassengerFromArg(args map[string]interface{}, key string) brij.PassengerInput {
+// passenger, normalizing title/gender/date forms the model may emit. A malformed
+// passenger payload is logged (validatePassenger surfaces the user-facing
+// error), never silently passed downstream.
+func (a *travelExecAdapter) flightPassengerFromArg(args map[string]interface{}, key string) brij.PassengerInput {
 	raw, ok := args[key]
 	if !ok {
 		return brij.PassengerInput{}
@@ -155,7 +183,9 @@ func flightPassengerFromArg(args map[string]interface{}, key string) brij.Passen
 	case map[string]interface{}:
 		p = t
 	case string:
-		_ = json.Unmarshal([]byte(t), &p)
+		if err := json.Unmarshal([]byte(t), &p); err != nil {
+			a.logger.Warn("book_flight passenger arg is malformed JSON", zap.Error(err))
+		}
 	}
 	if p == nil {
 		return brij.PassengerInput{}

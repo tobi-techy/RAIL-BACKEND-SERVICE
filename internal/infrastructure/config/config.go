@@ -1747,6 +1747,12 @@ func validate(config *Config) error {
 		if config.Brij.MaxEscrowUSD < 0 {
 			return fmt.Errorf("brij.max_escrow_usd must be non-negative, got %.4f", config.Brij.MaxEscrowUSD)
 		}
+		if config.Brij.HTTPTimeout < 0 {
+			return fmt.Errorf("brij.http_timeout must be non-negative, got %d", config.Brij.HTTPTimeout)
+		}
+		if config.Brij.MaxRetries < 0 {
+			return fmt.Errorf("brij.max_retries must be non-negative, got %d", config.Brij.MaxRetries)
+		}
 	}
 
 	if strings.EqualFold(strings.TrimSpace(config.KYC.Provider), "sumsub") {

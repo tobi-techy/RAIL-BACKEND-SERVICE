@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
@@ -73,17 +74,48 @@ func (p TravelPassenger) HasFlightDetails() (bool, []string) {
 	return len(missing) == 0, missing
 }
 
-// ToFlightPassenger maps a saved profile to a BRIJ flight passenger.
+// ToFlightPassenger maps a saved profile to a BRIJ flight passenger. Stored
+// profiles carry sex as "Male"/"Female" and dob as MM/DD/YYYY; BRIJ accepts only
+// m|f and YYYY-MM-DD, so both are converted here (see brijGender and isoBornOn).
 func (p TravelPassenger) ToFlightPassenger() brij.PassengerInput {
 	return brij.PassengerInput{
 		GivenName:   strings.TrimSpace(p.FirstName),
 		FamilyName:  strings.TrimSpace(p.LastName),
-		BornOn:      dateOnly(p.DOB),
+		BornOn:      isoBornOn(p.DOB),
 		Title:       strings.ToLower(strings.TrimSpace(p.Title)),
-		Gender:      strings.ToLower(strings.TrimSpace(p.Sex)),
+		Gender:      brijGender(p.Sex),
 		Email:       strings.TrimSpace(p.Email),
 		PhoneNumber: strings.TrimSpace(p.Phone),
 	}
+}
+
+// brijGender maps a stored sex value to the BRIJ m|f contract. Unrecognized
+// values map to "" so validatePassenger can surface a clear error.
+func brijGender(sex string) string {
+	switch strings.ToLower(strings.TrimSpace(sex)) {
+	case "m", "male":
+		return "m"
+	case "f", "female":
+		return "f"
+	default:
+		return ""
+	}
+}
+
+// isoBornOn converts a stored MM/DD/YYYY birth date to the YYYY-MM-DD format
+// BRIJ requires. Already-ISO values pass through unchanged.
+func isoBornOn(dob string) string {
+	d := strings.TrimSpace(dob)
+	if d == "" {
+		return ""
+	}
+	if t, err := time.Parse("01/02/2006", d); err == nil {
+		return t.Format("2006-01-02")
+	}
+	if len(d) == 10 && d[4] == '-' && d[7] == '-' {
+		return d
+	}
+	return d
 }
 
 // passengerFullName returns the first passenger's full name from a stored

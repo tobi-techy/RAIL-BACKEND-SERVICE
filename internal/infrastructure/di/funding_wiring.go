@@ -384,11 +384,12 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	// later in initializePlatformMessaging once the bridge dispatcher exists.
 	if c.Config.Brij.FundingPrivateKey != "" {
 		brijClient, err := brij.NewClient(brij.Config{
-			BaseURL:           c.Config.Brij.BaseURL,
-			SolanaRPC:         c.Config.Brij.SolanaRPC,
-			FundingPrivateKey: c.Config.Brij.FundingPrivateKey,
-			HTTPTimeout:       time.Duration(c.Config.Brij.HTTPTimeout) * time.Second,
-			MaxRetries:        c.Config.Brij.MaxRetries,
+			BaseURL:             c.Config.Brij.BaseURL,
+			SolanaRPC:           c.Config.Brij.SolanaRPC,
+			FundingPrivateKey:   c.Config.Brij.FundingPrivateKey,
+			HTTPTimeout:         time.Duration(c.Config.Brij.HTTPTimeout) * time.Second,
+			MaxRetries:          c.Config.Brij.MaxRetries,
+			MaxPaymentBaseUnits: int64(c.Config.Brij.MaxEscrowUSD * 1_000_000),
 		}, c.ZapLog)
 		if err != nil {
 			c.ZapLog.Fatal("failed to initialize BRIJ client", zap.Error(err))

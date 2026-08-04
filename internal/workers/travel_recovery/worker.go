@@ -6,6 +6,7 @@ package travel_recovery
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -20,7 +21,9 @@ type Worker struct {
 	svc           Reconciler
 	logger        *zap.Logger
 	checkInterval time.Duration
-	stopCh        chan struct{}
+	stopOnce      sync.Once
+	cancel        context.CancelFunc
+	done          chan struct{}
 }
 
 func NewWorker(svc Reconciler, logger *zap.Logger) *Worker {
@@ -28,24 +31,50 @@ func NewWorker(svc Reconciler, logger *zap.Logger) *Worker {
 		svc:           svc,
 		logger:        logger,
 		checkInterval: 2 * time.Minute,
-		stopCh:        make(chan struct{}),
 	}
 }
 
 func (w *Worker) Start(ctx context.Context) {
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	w.done = make(chan struct{})
+	defer close(w.done)
+	defer cancel()
+
 	w.logger.Info("Starting travel recovery worker", zap.Duration("check_interval", w.checkInterval))
 	ticker := time.NewTicker(w.checkInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
+		case <-runCtx.Done():
 			return
 		case <-ticker.C:
-			w.svc.RunRecovery(ctx)
+			w.runRecovery(runCtx)
 		}
 	}
 }
 
-func (w *Worker) Stop() { close(w.stopCh) }
+// runRecovery executes a reconciliation pass with panic recovery so a single
+// bad booking can never take the worker down silently.
+func (w *Worker) runRecovery(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.logger.Error("travel recovery panicked", zap.Any("panic", r), zap.Stack("stack"))
+		}
+	}()
+	w.svc.RunRecovery(ctx)
+}
+
+// Stop cancels the run context and waits for the in-flight recovery pass to
+// finish before returning, so shutdown never leaves database or BRIJ calls
+// running after stopWorkers completes. It is safe to call more than once.
+func (w *Worker) Stop() {
+	w.stopOnce.Do(func() {
+		if w.cancel != nil {
+			w.cancel()
+		}
+		if w.done != nil {
+			<-w.done
+		}
+	})
+}

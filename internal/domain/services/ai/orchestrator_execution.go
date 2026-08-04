@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,8 +43,8 @@ const (
 	ToolSaveBillBeneficiary = "save_bill_beneficiary"
 
 	// BRIJ flight bookings.
-	ToolCreateFlightIntent = "create_flight_intent"
-	ToolBookFlight         = "book_flight"
+	ToolCreateFlightIntent  = "create_flight_intent"
+	ToolBookFlight          = "book_flight"
 	ToolSaveTravelPassenger = "save_travel_passenger"
 	ToolRequestFlightRefund = "request_flight_refund"
 )
@@ -144,7 +146,14 @@ func executionActionDescription(name string, args map[string]interface{}) string
 	case ToolCreateFlightIntent:
 		return fmt.Sprintf("Lock this flight (intent %s) and prepare it for booking", arg("offer_id"))
 	case ToolBookFlight:
-		return fmt.Sprintf("Book flight for %s", arg("passenger"))
+		name := flightPassengerName(args)
+		if name == "" {
+			name = "the selected traveler"
+		}
+		// The charge shown at execution comes from the persisted intent, never
+		// from the model; the confirmation states the Spend impact instead of a
+		// model-supplied amount.
+		return fmt.Sprintf("Book flight for %s — escrow and the Rail fee are charged from Spend", name)
 	case ToolSaveTravelPassenger:
 		return fmt.Sprintf("Save traveler profile %q", arg("label"))
 	case ToolRequestFlightRefund:
@@ -152,6 +161,32 @@ func executionActionDescription(name string, args map[string]interface{}) string
 	default:
 		return "Execute " + name
 	}
+}
+
+// flightPassengerName extracts a display name from the book_flight passenger
+// object (given_name + family_name), so the confirmation card never reads
+// "Book flight for ".
+func flightPassengerName(args map[string]interface{}) string {
+	if args == nil {
+		return ""
+	}
+	raw, ok := args["passenger"]
+	if !ok {
+		return ""
+	}
+	var p map[string]interface{}
+	switch t := raw.(type) {
+	case map[string]interface{}:
+		p = t
+	case string:
+		_ = json.Unmarshal([]byte(t), &p)
+	}
+	if p == nil {
+		return ""
+	}
+	given, _ := p["given_name"].(string)
+	family, _ := p["family_name"].(string)
+	return strings.TrimSpace(given + " " + family)
 }
 
 // createExecutionAction stages a mutating Execution Engine tool call as a

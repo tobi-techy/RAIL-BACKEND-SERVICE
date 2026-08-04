@@ -77,14 +77,23 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 	if err := s.holdFunds(ctx, userID, totalHold); err != nil {
 		return nil, err
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	res, err := s.db.ExecContext(ctx, `
 		UPDATE travel_orders SET hold_amount=$2, amount_usdc=$3, rail_fee_usdc=$4, passengers=$5, updated_at=NOW()
 		WHERE id=$1 AND status='held'`,
-		order.ID, totalHold, escrow, railFee, passengersJSON); err != nil {
+		order.ID, totalHold, escrow, railFee, passengersJSON)
+	if err != nil {
 		s.logger.Error("failed to persist flight hold — reversing", zap.Error(err), zap.String("order_id", order.ID.String()))
 		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "db_fail")
 		return nil, fmt.Errorf("failed to record the booking")
 	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		// A concurrent BookFlight for the same intent already flipped the order
+		// out of 'held'; reverse the hold this call created.
+		s.logger.Warn("flight order is no longer held — reversing duplicate hold", zap.Error(err), zap.String("order_id", order.ID.String()))
+		_ = s.reverseHold(ctx, userID, order.ID, totalHold, "duplicate_book")
+		return nil, fmt.Errorf("this flight is already being booked")
+	}
+	order.HoldAmount = totalHold
 
 	// Pay the escrow + request booking. On failure the intent usually never
 	// funded, but check its live state before reversing so a settled-but-lost
@@ -114,8 +123,12 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 
 	// Poll for the terminal state within the window.
 	intent, err := s.pollIntent(ctx, intentID)
-	if err == nil && intent != nil {
+	if err == nil && intent != nil && intent.IsTerminal() {
 		status, res := s.settleIntent(ctx, userID, order, intent)
+		if res == nil {
+			// Non-terminal intent: recovery will finalize + deliver the ticket.
+			return nil, fmt.Errorf("booking is still processing — we will confirm shortly")
+		}
 		if status != StatusBooked {
 			return res, nil
 		}

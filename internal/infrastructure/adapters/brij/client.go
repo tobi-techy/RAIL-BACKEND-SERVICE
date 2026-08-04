@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,23 +37,25 @@ const (
 // and is the funding_wallet of every booking intent. Sponsored fee paying means
 // the wallet only needs a USDC balance, not SOL (unless the fee payer is us).
 type Config struct {
-	BaseURL           string
-	SolanaRPC         string
-	FundingPrivateKey string
-	HTTPTimeout       time.Duration
-	MaxRetries        int
+	BaseURL             string
+	SolanaRPC           string
+	FundingPrivateKey   string
+	HTTPTimeout         time.Duration
+	MaxRetries          int
+	MaxPaymentBaseUnits int64 // per-request x402 payment ceiling in base units; 0 = unlimited
 }
 
 // Client is the BRIJ Travel flight API client. All mutating calls are paid with
 // x402 (exact USDC on Solana mainnet); the payment is transparent to callers.
 type Client struct {
-	baseURL string
-	http    *http.Client
-	rpc     *rpc.Client
-	keypair solana.PrivateKey
-	pubkey  solana.PublicKey
-	logger  *zap.Logger
-	retries int
+	baseURL             string
+	http                *http.Client
+	rpc                 *rpc.Client
+	keypair             solana.PrivateKey
+	pubkey              solana.PublicKey
+	logger              *zap.Logger
+	retries             int
+	maxPaymentBaseUnits int64
 }
 
 // NewClient builds a BRIJ client. The funding keypair is required and validated
@@ -85,13 +88,14 @@ func NewClient(cfg Config, logger *zap.Logger) (*Client, error) {
 		retries = defaultRetries
 	}
 	return &Client{
-		baseURL: baseURL,
-		http:    &http.Client{Timeout: timeout},
-		rpc:     rpc.New(rpcURL),
-		keypair: priv,
-		pubkey:  priv.PublicKey(),
-		logger:  logger,
-		retries: retries,
+		baseURL:             baseURL,
+		http:                &http.Client{Timeout: timeout},
+		rpc:                 rpc.New(rpcURL),
+		keypair:             priv,
+		pubkey:              priv.PublicKey(),
+		logger:              logger,
+		retries:             retries,
+		maxPaymentBaseUnits: cfg.MaxPaymentBaseUnits,
 	}, nil
 }
 
@@ -100,13 +104,24 @@ func (c *Client) FundingWallet() string { return c.pubkey.String() }
 
 // Health checks BRIJ process liveness.
 func (c *Client) Health(ctx context.Context) error {
-	resp, err := c.http.Get(c.baseURL + "/health")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return fmt.Errorf("brij health: build request: %w", err)
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("brij health: %w", err)
 	}
 	defer resp.Body.Close()
+	bodyBytes, readErr := readBody(resp)
 	if resp.StatusCode != http.StatusOK {
-		return apiErrorFrom(resp.StatusCode, mustReadBody(resp))
+		if readErr != nil {
+			c.logger.Warn("brij health: failed to read body", zap.Error(readErr))
+		}
+		return apiErrorFrom(resp.StatusCode, bodyBytes)
+	}
+	if readErr != nil {
+		return fmt.Errorf("brij health: read body: %w", readErr)
 	}
 	return nil
 }
@@ -241,7 +256,8 @@ func (c *Client) doX402(ctx context.Context, method, path string, body any, out 
 func (c *Client) payLoop(ctx context.Context, method, path string, body any, headers map[string]string, out any, first *http.Response) error {
 	resp := first
 	for attempt := 0; attempt < maxPayAttempts; attempt++ {
-		sig, err := c.buildPaymentSignature(ctx, resp)
+		sig, err := c.buildPaymentSignature(ctx, resp, path)
+		drainAndClose(resp)
 		if err != nil {
 			return err
 		}
@@ -257,6 +273,7 @@ func (c *Client) payLoop(ctx context.Context, method, path string, body any, hea
 		}
 		return c.finish(resp, out)
 	}
+	drainAndClose(resp)
 	return &PaymentVerificationError{
 		Code:    "payment_not_settled",
 		Message: "payment did not settle after repeated attempts",
@@ -265,7 +282,7 @@ func (c *Client) payLoop(ctx context.Context, method, path string, body any, hea
 
 // buildPaymentSignature builds, signs, and base64-encodes the partially signed
 // Solana transaction that effects the exact USDC payment required by the 402.
-func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response) (string, error) {
+func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response, path string) (string, error) {
 	encoded := resp.Header.Get("PAYMENT-REQUIRED")
 	if encoded == "" {
 		return "", &PaymentVerificationError{Code: "missing_payment_required", Message: "402 without a PAYMENT-REQUIRED header"}
@@ -293,6 +310,21 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response)
 	}
 	if ac.Amount <= 0 {
 		return "", &PaymentVerificationError{Code: "bad_amount", Message: "challenge carries a non-positive amount"}
+	}
+	// The funding wallet pays exactly what the challenge demands — a
+	// misconfigured base URL or a compromised endpoint must never be able to
+	// drain it, so the asset and amount are pinned before any transfer is built.
+	if !strings.EqualFold(ac.Asset, USDCAccount) {
+		return "", &PaymentVerificationError{
+			Code:    "unsupported_asset",
+			Message: fmt.Sprintf("challenge asset %q is not Solana mainnet USDC", ac.Asset),
+		}
+	}
+	if c.maxPaymentBaseUnits > 0 && ac.Amount > c.maxPaymentBaseUnits {
+		return "", &PaymentVerificationError{
+			Code:    "amount_over_cap",
+			Message: fmt.Sprintf("challenge amount %d exceeds the configured per-request cap %d", ac.Amount, c.maxPaymentBaseUnits),
+		}
 	}
 
 	mint, err := solana.PublicKeyFromBase58(ac.Asset)
@@ -327,9 +359,10 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response)
 		return "", err
 	}
 
-	// Memo: seller-defined when provided, otherwise a random nonce so concurrent
-	// payments with identical parameters produce distinct transactions.
-	memoText, err := paymentMemo(ac.Extra)
+	// Memo: seller-defined when provided, otherwise binds the payment to the
+	// requested resource and amount so each transaction is self-describing and
+	// distinct even when the challenge nonce is identical.
+	memoText, err := paymentMemo(ac.Extra, path, ac.Amount)
 	if err != nil {
 		return "", err
 	}
@@ -408,9 +441,10 @@ func (c *Client) paymentBlockhash(ctx context.Context, extra map[string]any) (so
 	return recent.Value.Blockhash, nil
 }
 
-// paymentMemo returns the seller-defined memo or a random hex nonce (>= 16
+// paymentMemo returns the seller-defined memo, else a memo that binds the
+// payment to the requested resource and amount plus a random nonce (>= 16
 // bytes) to make the transaction unique.
-func paymentMemo(extra map[string]any) (string, error) {
+func paymentMemo(extra map[string]any, resource string, amount int64) (string, error) {
 	if m, ok := extra["memo"].(string); ok && m != "" {
 		if len(m) > 256 {
 			return "", &PaymentVerificationError{Code: "memo_too_long", Message: "challenge memo exceeds 256 bytes"}
@@ -421,7 +455,7 @@ func paymentMemo(extra map[string]any) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("brij: generate payment nonce: %w", err)
 	}
-	return hex.EncodeToString(nonce), nil
+	return fmt.Sprintf("rail:%s:%d:%s", strings.TrimPrefix(resource, "/"), amount, hex.EncodeToString(nonce)), nil
 }
 
 // --- plain (unpaid) request path ---
@@ -487,11 +521,15 @@ func (c *Client) send(ctx context.Context, method, path string, body any, paymen
 }
 
 // finish reads the response body and decodes a 2xx response into out. Non-2xx
-// responses become a *Error (or *PaymentVerificationError on 402).
+// responses become a *Error (or *PaymentVerificationError on 402). A read
+// failure on a 2xx response is an error, never a silent zero-value success.
 func (c *Client) finish(resp *http.Response, out any) error {
 	defer resp.Body.Close()
-	bodyBytes := mustReadBody(resp)
+	bodyBytes, readErr := readBody(resp)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if readErr != nil {
+			return fmt.Errorf("brij: read response body: %w", readErr)
+		}
 		if out != nil && len(bodyBytes) > 0 {
 			if err := json.Unmarshal(bodyBytes, out); err != nil {
 				return fmt.Errorf("brij: decode response: %w", err)
@@ -523,12 +561,25 @@ func (c *Client) backoff(attempt int) {
 	time.Sleep(time.Duration(attempt) * 150 * time.Millisecond)
 }
 
-func mustReadBody(resp *http.Response) []byte {
+// drainAndClose consumes and closes a response body so the connection can be
+// reused. 402 challenge bodies are read only for headers, so they must be
+// drained here rather than via finish.
+func drainAndClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// readBody returns the response body, keeping the error so a failed read is
+// never mistaken for an empty successful payload.
+func readBody(resp *http.Response) ([]byte, error) {
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return nil
+		return buf.Bytes(), err
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 func isRetryableNetworkErr(err error) bool {
