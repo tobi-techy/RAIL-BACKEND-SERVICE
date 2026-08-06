@@ -95,6 +95,8 @@ func TestWorkersAIEmbedder_EmbedBatch_EmptyVector(t *testing.T) {
 func TestWorkersAIEmbedder_Constructor_RequiresCredentials(t *testing.T) {
 	_, err := NewWorkersAIEmbedder("", "tok", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "accountID")
 	_, err = NewWorkersAIEmbedder("acct", "", "@cf/baai/bge-base-en-v1.5", "", zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "apiToken")
 }

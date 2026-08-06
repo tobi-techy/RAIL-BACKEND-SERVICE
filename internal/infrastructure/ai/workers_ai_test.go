@@ -144,8 +144,11 @@ func TestWorkersAIIntentClassifier_VoiceCategory(t *testing.T) {
 func TestWorkersAIClient_Constructor_RequiresCredentials(t *testing.T) {
 	_, err := NewWorkersAIClient(&WorkersAIConfig{APIToken: "tok"}, zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AccountID")
 	_, err = NewWorkersAIClient(&WorkersAIConfig{AccountID: "acct"}, zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "APIToken")
 	_, err = NewWorkersAIClient(nil, zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WorkersAIConfig is required")
 }

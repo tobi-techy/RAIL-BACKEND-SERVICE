@@ -198,8 +198,13 @@ func TestVectorizeStore_Search_EmbedError(t *testing.T) {
 func TestVectorizeStore_Constructor_RequiresCredentials(t *testing.T) {
 	_, err := NewVectorizeStore(&VectorizeConfig{APIToken: "t"}, fakeEmbedder{}, zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AccountID")
 	_, err = NewVectorizeStore(&VectorizeConfig{AccountID: "a"}, fakeEmbedder{}, zap.NewNop())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "APIToken")
+	_, err = NewVectorizeStore(nil, fakeEmbedder{}, zap.NewNop())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "VectorizeConfig is required")
 }
 
 func TestValidIndexName(t *testing.T) {
