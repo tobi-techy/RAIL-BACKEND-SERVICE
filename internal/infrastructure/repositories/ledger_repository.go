@@ -1231,8 +1231,19 @@ func (r *LedgerRepository) DeletePublishedOutboxBefore(ctx context.Context, cuto
 
 // MarkOutboxPublished sets published_at for the given outbox records.
 func (r *LedgerRepository) MarkOutboxPublished(ctx context.Context, ids []uuid.UUID) error {
-	query := `UPDATE ledger_outbox SET published_at = NOW() WHERE id = ANY($1)`
-	_, err := r.execContext(ctx, query, ids)
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// lib/pq cannot bind []uuid.UUID ("a slice of array" since uuid.UUID is
+	// [16]byte), so send text and let Postgres cast back to uuid[].
+	strIDs := make([]string, len(ids))
+	for i, id := range ids {
+		strIDs[i] = id.String()
+	}
+
+	query := `UPDATE ledger_outbox SET published_at = NOW() WHERE id = ANY($1::uuid[])`
+	_, err := r.execContext(ctx, query, pq.Array(strIDs))
 	if err != nil {
 		return fmt.Errorf("mark outbox published: %w", err)
 	}
