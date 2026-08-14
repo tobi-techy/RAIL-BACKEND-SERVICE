@@ -14,11 +14,11 @@ import (
 // OutcomeTracker records predictions, evaluates whether they materialised,
 // and provides accuracy metrics for confidence calibration.
 type OutcomeTracker struct {
-	repo       Repository
-	spending   SpendingProvider
-	balances   BalanceProvider
+	repo        Repository
+	spending    SpendingProvider
+	balances    BalanceProvider
 	obligations ObligationProvider
-	logger     *zap.Logger
+	logger      *zap.Logger
 }
 
 func NewOutcomeTracker(
@@ -99,6 +99,8 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 		spend = b
 	}
 
+	cache := &sweepCache{tracker: t, userID: userID, now: now}
+
 	var resolved []entities.MiriamPredictionOutcome
 	var toMark []entities.MiriamPredictionOutcome
 	for _, o := range pending {
@@ -107,7 +109,7 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 			continue
 		}
 
-		outcome := t.evaluatePrediction(ctx, userID, o, spend)
+		outcome := t.evaluatePrediction(ctx, o, spend, cache)
 		settled := outcome
 		o.ActualOutcome = &settled
 		o.OutcomeObservedAt = &now
@@ -115,31 +117,95 @@ func (t *OutcomeTracker) EvaluateOutcomes(ctx context.Context, userID uuid.UUID)
 		resolved = append(resolved, o)
 	}
 	if len(toMark) > 0 {
-		if err := t.repo.BatchMarkPredictionOutcomes(ctx, toMark); err != nil && t.logger != nil {
-			t.logger.Warn("failed to batch mark outcomes",
-				zap.String("user_id", userID.String()),
-				zap.Int("count", len(toMark)),
-				zap.Error(err))
+		// The parent context carries the worker's per-user budget, which the
+		// evaluation above may have exhausted. Detaching the write keeps settled
+		// outcomes from being re-evaluated on every subsequent sweep.
+		writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+
+		if err := t.repo.BatchMarkPredictionOutcomes(writeCtx, toMark); err != nil {
+			if t.logger != nil {
+				t.logger.Warn("failed to batch mark outcomes",
+					zap.String("user_id", userID.String()),
+					zap.Int("count", len(toMark)),
+					zap.Error(err))
+			}
 			return nil
 		}
 	}
 	return resolved
 }
 
-func (t *OutcomeTracker) evaluatePrediction(ctx context.Context, userID uuid.UUID, o entities.MiriamPredictionOutcome, currentSpend decimal.Decimal) bool {
+// sweepCache memoizes the reads shared by every pending outcome within one
+// EvaluateOutcomes sweep. All of them are scoped to a single user at a single
+// instant, so a user with 100 pending outcomes would otherwise issue hundreds of
+// identical queries and exhaust the worker's per-user deadline.
+type sweepCache struct {
+	tracker *OutcomeTracker
+	userID  uuid.UUID
+	now     time.Time
+
+	upcomingObligations  decimal.Decimal
+	upcomingLoaded       bool
+	imminentObligations  decimal.Decimal
+	imminentLoaded       bool
+	thisMonthFlow        *entities.MoneyFlowSummary
+	thisMonthFlowLoaded  bool
+	priorMonthFlow       *entities.MoneyFlowSummary
+	priorMonthFlowLoaded bool
+}
+
+func (c *sweepCache) monthStart() time.Time {
+	return time.Date(c.now.Year(), c.now.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func (c *sweepCache) upcoming(ctx context.Context) decimal.Decimal {
+	if !c.upcomingLoaded {
+		c.upcomingObligations = c.tracker.fetchUpcomingObligations(ctx, c.userID)
+		c.upcomingLoaded = true
+	}
+	return c.upcomingObligations
+}
+
+func (c *sweepCache) imminent(ctx context.Context, days int) decimal.Decimal {
+	if !c.imminentLoaded {
+		c.imminentObligations = c.tracker.fetchImminentObligations(ctx, c.userID, days)
+		c.imminentLoaded = true
+	}
+	return c.imminentObligations
+}
+
+func (c *sweepCache) thisMonth(ctx context.Context) *entities.MoneyFlowSummary {
+	if !c.thisMonthFlowLoaded {
+		if c.tracker.spending != nil {
+			c.thisMonthFlow, _ = c.tracker.spending.GetMoneyFlow(ctx, c.userID, c.monthStart(), c.now)
+		}
+		c.thisMonthFlowLoaded = true
+	}
+	return c.thisMonthFlow
+}
+
+func (c *sweepCache) priorMonth(ctx context.Context) *entities.MoneyFlowSummary {
+	if !c.priorMonthFlowLoaded {
+		if c.tracker.spending != nil {
+			monthStart := c.monthStart()
+			c.priorMonthFlow, _ = c.tracker.spending.GetMoneyFlow(ctx, c.userID, monthStart.AddDate(0, -1, 0), monthStart)
+		}
+		c.priorMonthFlowLoaded = true
+	}
+	return c.priorMonthFlow
+}
+
+func (t *OutcomeTracker) evaluatePrediction(ctx context.Context, o entities.MiriamPredictionOutcome, currentSpend decimal.Decimal, cache *sweepCache) bool {
 	switch o.PredictionType {
 	case entities.PredictionCashShortfall:
-		upcoming := t.fetchUpcomingObligations(ctx, userID)
-		return currentSpend.LessThan(upcoming)
+		return currentSpend.LessThan(cache.upcoming(ctx))
 
 	case entities.PredictionBillPressure:
-		imminent := t.fetchImminentObligations(ctx, userID, 7)
-		return currentSpend.LessThan(imminent)
+		return currentSpend.LessThan(cache.imminent(ctx, 7))
 
 	case entities.PredictionIncomeGap:
-		now := time.Now().UTC()
-		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		flow, _ := t.spending.GetMoneyFlow(ctx, userID, monthStart, now)
+		flow := cache.thisMonth(ctx)
 		if flow == nil {
 			return false
 		}
@@ -165,11 +231,8 @@ func (t *OutcomeTracker) evaluatePrediction(ctx context.Context, userID uuid.UUI
 		return flow.TotalDeposits.LessThan(projected.Mul(decimal.NewFromFloat(0.7)))
 
 	case entities.PredictionSpendingAnomaly:
-		now := time.Now().UTC()
-		monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		lastMonthStart := monthStart.AddDate(0, -1, 0)
-		thisMonth, _ := t.spending.GetMoneyFlow(ctx, userID, monthStart, now)
-		lastMonth, _ := t.spending.GetMoneyFlow(ctx, userID, lastMonthStart, monthStart)
+		thisMonth := cache.thisMonth(ctx)
+		lastMonth := cache.priorMonth(ctx)
 		if thisMonth == nil || lastMonth == nil {
 			return false
 		}
