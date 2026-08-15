@@ -174,9 +174,11 @@ func (s *Service) settleAfterFailedBook(ctx context.Context, userID uuid.UUID, o
 		s.finalizeBooking(ctx, userID, order, intent)
 	case brij.StatusRefunded:
 		reason := "the airline refunded this booking"
-		if err := s.reverseRefundedBooking(ctx, order, reason); err == nil {
-			s.notifyRefundResolved(ctx, order, reason)
+		if err := s.reverseRefundedBooking(ctx, order, reason); err != nil {
+			// reverseRefundedBooking already logs; leave the order for RunRecovery.
+			return
 		}
+		s.notifyRefundResolved(ctx, order, reason)
 		s.logger.Warn("BRIJ booking failed and was refunded; user hold reversed",
 			zap.String("order_id", order.ID.String()), zap.String("intent_id", order.IntentID))
 	}
