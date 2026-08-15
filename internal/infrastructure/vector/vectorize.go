@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,9 @@ type VectorizeStore struct {
 	baseURL  string
 	http     *http.Client
 	logger   *zap.Logger
+
+	mu            sync.Mutex
+	metadataReady map[string]bool // indexes where the user_id metadata index is known ready
 }
 
 // NewVectorizeStore creates a Vectorize vector store client. It returns an
@@ -62,11 +66,12 @@ func NewVectorizeStore(config *VectorizeConfig, embedder memory.Embedder, logger
 		baseURL = fmt.Sprintf(vectorizeAPIBase, config.AccountID)
 	}
 	return &VectorizeStore{
-		config:   config,
-		embedder: embedder,
-		baseURL:  baseURL,
-		http:     &http.Client{Timeout: 10 * time.Second},
-		logger:   logger,
+		config:        config,
+		embedder:      embedder,
+		baseURL:       baseURL,
+		http:          &http.Client{Timeout: 10 * time.Second},
+		logger:        logger,
+		metadataReady: make(map[string]bool),
 	}, nil
 }
 
@@ -206,11 +211,12 @@ func (v *VectorizeStore) DeleteCollection(ctx context.Context, collection string
 	return fmt.Errorf("vectorize delete: %w", err)
 }
 
-// ensureIndex creates the index if it does not exist.
+// ensureIndex creates the index if it does not exist and makes sure the
+// user_id metadata index is ready before any write.
 func (v *VectorizeStore) ensureIndex(ctx context.Context, name string) error {
 	var resp struct{}
 	if err := v.do(ctx, http.MethodGet, "/"+name, nil, "application/json", &resp); err == nil {
-		return nil // exists
+		return v.ensureMetadataIndex(ctx, name)
 	} else if !isNotFound(err) {
 		return err
 	}
@@ -228,9 +234,11 @@ func (v *VectorizeStore) ensureIndex(ctx context.Context, name string) error {
 	var created struct{}
 	if err := v.do(ctx, http.MethodPost, "", createBody, "application/json", &created); err != nil {
 		// Idempotency: a concurrent writer may have created the index between our
-		// GET 404 and this POST. If it now exists, treat as success.
-		if checkErr := v.do(ctx, http.MethodGet, "/"+name, nil, "application/json", &resp); checkErr == nil {
-			return v.ensureMetadataIndex(ctx, name)
+		// GET 404 and this POST. If it now exists, ensure its metadata index.
+		if isConflict(err) {
+			if checkErr := v.do(ctx, http.MethodGet, "/"+name, nil, "application/json", &resp); checkErr == nil {
+				return v.ensureMetadataIndex(ctx, name)
+			}
 		}
 		return fmt.Errorf("vectorize create index: %w", err)
 	}
@@ -238,10 +246,63 @@ func (v *VectorizeStore) ensureIndex(ctx context.Context, name string) error {
 	return v.ensureMetadataIndex(ctx, name)
 }
 
-// ensureMetadataIndex enables metadata filtering on user_id, which V2 requires
-// before query filters can match. V2 mutations are asynchronous, so this is
-// best-effort: a missing or racing metadata index must not fail the write.
+// ensureMetadataIndex makes sure the user_id metadata index exists and is
+// processed before a write. Vectorize metadata index creation is asynchronous,
+// so we poll the list endpoint until the index is reported ready.
 func (v *VectorizeStore) ensureMetadataIndex(ctx context.Context, name string) error {
+	if v.isMetadataReady(name) {
+		return nil
+	}
+
+	ready, err := v.metadataIndexExists(ctx, name)
+	if err != nil {
+		return fmt.Errorf("vectorize list metadata index: %w", err)
+	}
+	if !ready {
+		if err := v.createMetadataIndex(ctx, name); err != nil && !isConflict(err) {
+			return fmt.Errorf("vectorize create metadata index: %w", err)
+		}
+	}
+	if err := v.waitMetadataIndexReady(ctx, name); err != nil {
+		return fmt.Errorf("vectorize wait for metadata index: %w", err)
+	}
+	v.markMetadataReady(name)
+	return nil
+}
+
+func (v *VectorizeStore) isMetadataReady(name string) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.metadataReady[name]
+}
+
+func (v *VectorizeStore) markMetadataReady(name string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.metadataReady[name] = true
+}
+
+func (v *VectorizeStore) metadataIndexExists(ctx context.Context, name string) (bool, error) {
+	var resp struct {
+		Result struct {
+			MetadataIndexes []struct {
+				IndexType    string `json:"indexType"`
+				PropertyName string `json:"propertyName"`
+			} `json:"metadataIndexes"`
+		} `json:"result"`
+	}
+	if err := v.do(ctx, http.MethodGet, "/"+name+"/metadata_index/list", nil, "application/json", &resp); err != nil {
+		return false, err
+	}
+	for _, idx := range resp.Result.MetadataIndexes {
+		if idx.PropertyName == "user_id" && idx.IndexType == "string" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (v *VectorizeStore) createMetadataIndex(ctx context.Context, name string) error {
 	body, err := json.Marshal(map[string]interface{}{
 		"indexType":    "string",
 		"propertyName": "user_id",
@@ -250,13 +311,39 @@ func (v *VectorizeStore) ensureMetadataIndex(ctx context.Context, name string) e
 		return fmt.Errorf("vectorize marshal metadata index: %w", err)
 	}
 	var resp struct{}
-	if err := v.do(ctx, http.MethodPost, "/"+name+"/metadata_index/create", body, "application/json", &resp); err != nil {
-		if v.logger != nil {
-			v.logger.Debug("vectorize metadata index create failed (best-effort)", zap.String("index", name), zap.Error(err))
+	return v.do(ctx, http.MethodPost, "/"+name+"/metadata_index/create", body, "application/json", &resp)
+}
+
+func (v *VectorizeStore) waitMetadataIndexReady(ctx context.Context, name string) error {
+	const maxAttempts = 20
+	delay := 25 * time.Millisecond
+	for i := 0; i < maxAttempts; i++ {
+		ready, err := v.metadataIndexExists(ctx, name)
+		if err != nil {
+			return err
 		}
-		return err
+		if ready {
+			return nil
+		}
+		if i == maxAttempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay < 500*time.Millisecond {
+			delay *= 2
+		}
 	}
-	return nil
+	return fmt.Errorf("user_id metadata index did not become ready after %d attempts", maxAttempts)
+}
+
+// isConflict reports whether err is an HTTP 409 conflict response.
+func isConflict(err error) bool {
+	var statusErr *httpStatusError
+	return errors.As(err, &statusErr) && statusErr.status == http.StatusConflict
 }
 
 // do performs an authenticated Vectorize API request and decodes the response.

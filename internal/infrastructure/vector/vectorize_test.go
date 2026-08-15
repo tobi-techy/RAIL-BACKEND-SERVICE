@@ -16,6 +16,13 @@ import (
 	"go.uber.org/zap"
 )
 
+func marshalIndexes(t *testing.T, indexes []map[string]string) string {
+	t.Helper()
+	b, err := json.Marshal(indexes)
+	require.NoError(t, err)
+	return string(b)
+}
+
 // fakeEmbedder returns a fixed 3-dim vector so tests don't need a real model.
 type fakeEmbedder struct{}
 
@@ -49,6 +56,7 @@ func TestVectorizeStore_Store_CreatesIndexOnDemand(t *testing.T) {
 	userID := uuid.New()
 	var requests []string
 	var upsertContentType string
+	listCalls := 0
 	store := newTestVectorize(t, func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.RequestURI())
 		w.Header().Set("Content-Type", "application/json")
@@ -59,6 +67,14 @@ func TestVectorizeStore_Store_CreatesIndexOnDemand(t *testing.T) {
 			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"index not found"}]}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/":
 			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"idx-1","name":"episodic"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/episodic/metadata_index/list":
+			listCalls++
+			// Empty on first listing, ready on the second.
+			indexes := []map[string]string{}
+			if listCalls > 1 {
+				indexes = append(indexes, map[string]string{"indexType": "string", "propertyName": "user_id"})
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"metadataIndexes":` + marshalIndexes(t, indexes) + `}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/episodic/metadata_index/create":
 			_, _ = w.Write([]byte(`{"success":true,"result":{"mutationId":"mm1"}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/episodic/upsert":
@@ -76,7 +92,9 @@ func TestVectorizeStore_Store_CreatesIndexOnDemand(t *testing.T) {
 	assert.Equal(t, []string{
 		"GET /episodic",
 		"POST /",
+		"GET /episodic/metadata_index/list",
 		"POST /episodic/metadata_index/create",
+		"GET /episodic/metadata_index/list",
 		"POST /episodic/upsert?unparsable-behavior=error",
 	}, requests)
 	assert.Equal(t, "application/x-ndjson", upsertContentType)
@@ -93,6 +111,9 @@ func TestVectorizeStore_Store_ExistingIndex(t *testing.T) {
 				_, _ = w.Write([]byte(`{"success":true,"result":{"name":"episodic"}}`))
 				return
 			}
+		case "/episodic/metadata_index/list":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"metadataIndexes":[{"indexType":"string","propertyName":"user_id"}]}}`))
+			return
 		case "/episodic/upsert":
 			body, err := io.ReadAll(r.Body)
 			require.NoError(t, err)
@@ -119,6 +140,74 @@ func TestVectorizeStore_Store_ExistingIndex(t *testing.T) {
 	assert.Equal(t, userID.String(), line.Metadata["user_id"])
 	assert.Equal(t, "hello", line.Metadata["content"])
 	assert.Equal(t, []float32{0.1, 0.2, 0.3}, line.Values)
+}
+
+func TestVectorizeStore_Store_ExistingIndexMissingMetadata(t *testing.T) {
+	userID := uuid.New()
+	var requests []string
+	created := false
+	store := newTestVectorize(t, func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/episodic":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"name":"episodic"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/episodic/metadata_index/list":
+			indexes := []map[string]string{}
+			if created {
+				indexes = append(indexes, map[string]string{"indexType": "string", "propertyName": "user_id"})
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"metadataIndexes":` + marshalIndexes(t, indexes) + `}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/episodic/metadata_index/create":
+			created = true
+			_, _ = w.Write([]byte(`{"success":true,"result":{"mutationId":"mm1"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/episodic/upsert":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"mutationId":"m1"}}`))
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	})
+
+	err := store.Store(context.Background(), "episodic", userID, "hello", nil)
+	require.NoError(t, err)
+
+	// List finds nothing -> create -> list again sees it (synchronous in test) -> upsert.
+	assert.Equal(t, []string{
+		"GET /episodic",
+		"GET /episodic/metadata_index/list",
+		"POST /episodic/metadata_index/create",
+		"GET /episodic/metadata_index/list",
+		"POST /episodic/upsert?unparsable-behavior=error",
+	}, requests)
+}
+
+func TestVectorizeStore_Store_DelayedMetadataIndex(t *testing.T) {
+	userID := uuid.New()
+	listCalls := 0
+	store := newTestVectorize(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/episodic":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"name":"episodic"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/episodic/metadata_index/list":
+			listCalls++
+			indexes := []map[string]string{}
+			if listCalls >= 3 {
+				indexes = append(indexes, map[string]string{"indexType": "string", "propertyName": "user_id"})
+			}
+			_, _ = w.Write([]byte(`{"success":true,"result":{"metadataIndexes":` + marshalIndexes(t, indexes) + `}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/episodic/metadata_index/create":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"mutationId":"mm1"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/episodic/upsert":
+			_, _ = w.Write([]byte(`{"success":true,"result":{"mutationId":"m1"}}`))
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	})
+
+	err := store.Store(context.Background(), "episodic", userID, "hello", nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, listCalls, 3)
 }
 
 func TestVectorizeStore_Search(t *testing.T) {
