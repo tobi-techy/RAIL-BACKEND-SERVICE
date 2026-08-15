@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
+	ledger_outbox_publisher "github.com/rail-service/rail_service/internal/workers/ledger_outbox_publisher"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -17,12 +18,13 @@ type MaintenanceService interface {
 
 type OutboxCleaner interface {
 	DeletePublishedOutboxBefore(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteDeadLetteredOutboxBefore(ctx context.Context, cutoff time.Time, minRetries int) (int64, error)
 }
 
 type Worker struct {
-	svc      MaintenanceService
-	cleaner  OutboxCleaner
-	logger   *zap.Logger
+	svc     MaintenanceService
+	cleaner OutboxCleaner
+	logger  *zap.Logger
 }
 
 func NewWorker(svc MaintenanceService, cleaner OutboxCleaner, logger *zap.Logger) *Worker {
@@ -81,6 +83,18 @@ func (w *Worker) runOnce(ctx context.Context) {
 			w.logger.Info("Cleaned up published outbox records",
 				zap.Int64("deleted", deleted),
 				zap.String("cutoff", cutoff.Format("2006-01-02")))
+		}
+
+		// Events at the retry ceiling are never claimed again; purge them after
+		// retention so dead letters don't accumulate or skew backlog counts.
+		dead, err := w.cleaner.DeleteDeadLetteredOutboxBefore(ctx, cutoff, ledger_outbox_publisher.MaxOutboxRetries)
+		if err != nil {
+			w.logger.Error("Failed to clean up dead-lettered outbox records", zap.Error(err))
+		} else if dead > 0 {
+			w.logger.Warn("Purged dead-lettered outbox records",
+				zap.Int64("deleted", dead),
+				zap.String("cutoff", cutoff.Format("2006-01-02")),
+				zap.Int("retry_ceiling", ledger_outbox_publisher.MaxOutboxRetries))
 		}
 	}
 }

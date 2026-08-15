@@ -1011,6 +1011,192 @@ func TestLedger_Outbox_IncrementRetry(t *testing.T) {
 	assert.Contains(t, lastErr, "test error")
 }
 
+// Regression: MarkOutboxPublished used to pass []uuid.UUID straight to lib/pq,
+// which rejects it as "a slice of array", so published_at was never set and the
+// publisher re-dispatched the same events forever.
+func TestLedger_Outbox_MarkPublishedSetsTimestamp(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	repo := repositories.NewLedgerRepository(db)
+	userID := uniqueUserID()
+	amount := decimal.NewFromInt(40)
+
+	spendAcct := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeSpendingBalance, amount)
+	stashAcct, err := svc.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	require.NoError(t, err)
+
+	_, err = svc.CreateTransaction(ctx, &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   strPtr("mark_published_test"),
+		IdempotencyKey:  uniqueKey("mark_published"),
+		Description:     strPtr("mark published test"),
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAcct.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USD"},
+			{AccountID: stashAcct.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USD"},
+		},
+	})
+	require.NoError(t, err)
+
+	pending, err := repo.GetUnpublishedOutboxEvents(ctx, 100)
+	require.NoError(t, err)
+	require.NotEmpty(t, pending, "transaction should have written outbox events")
+
+	ids := make([]uuid.UUID, 0, len(pending))
+	for _, rec := range pending {
+		ids = append(ids, rec.ID)
+	}
+
+	require.NoError(t, repo.MarkOutboxPublished(ctx, ids))
+
+	remaining, err := repo.CountUnpublishedOutbox(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, remaining, "every marked event must have published_at set")
+
+	// Empty input must be a no-op rather than a malformed query.
+	require.NoError(t, repo.MarkOutboxPublished(ctx, nil))
+}
+
+func TestLedger_Outbox_ClaimIsExclusive(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	repo := repositories.NewLedgerRepository(db)
+	userID := uniqueUserID()
+	amount := decimal.NewFromInt(30)
+
+	spendAcct := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeSpendingBalance, amount)
+	stashAcct, err := svc.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	require.NoError(t, err)
+
+	_, err = svc.CreateTransaction(ctx, &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   strPtr("claim_test"),
+		IdempotencyKey:  uniqueKey("claim"),
+		Description:     strPtr("claim test"),
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAcct.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USD"},
+			{AccountID: stashAcct.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USD"},
+		},
+	})
+	require.NoError(t, err)
+
+	claimOnce := func() []repositories.OutboxRecord {
+		txCtx, err := repo.BeginTx(ctx)
+		require.NoError(t, err)
+		claimed, err := repo.ClaimUnpublishedOutbox(txCtx, 100, 10)
+		require.NoError(t, err)
+		require.NoError(t, repo.CommitTx(txCtx))
+		return claimed
+	}
+
+	first := claimOnce()
+	require.NotEmpty(t, first, "first claim should reserve the pending batch")
+	assert.Nil(t, first[0].PublishedAt, "a claim is a lease, not a publication")
+	require.NotNil(t, first[0].ClaimedAt, "a claim must lease the event")
+
+	second := claimOnce()
+	assert.Empty(t, second, "leased events must not be handed out twice")
+
+	// A dispatch failure releases the lease and returns the event to the queue
+	// for a later tick.
+	require.NoError(t, repo.IncrementOutboxRetry(ctx, first[0].ID, "dispatch failed"))
+	third := claimOnce()
+	require.Len(t, third, 1)
+	assert.Equal(t, first[0].ID, third[0].ID)
+	assert.Equal(t, 1, third[0].RetryCount)
+	require.NotNil(t, third[0].ClaimedAt, "the re-claimed event is leased again")
+
+	// Marking a claimed event published sets published_at and releases the lease.
+	require.NoError(t, repo.MarkOutboxPublished(ctx, []uuid.UUID{third[0].ID}))
+	var publishedAt *time.Time
+	err = db.GetContext(ctx, &publishedAt, `SELECT published_at FROM ledger_outbox WHERE id = $1`, third[0].ID)
+	require.NoError(t, err)
+	assert.NotNil(t, publishedAt)
+	var claimedAt *time.Time
+	err = db.GetContext(ctx, &claimedAt, `SELECT claimed_at FROM ledger_outbox WHERE id = $1`, third[0].ID)
+	require.NoError(t, err)
+	assert.Nil(t, claimedAt, "marking published must release the claim lease")
+}
+
+func TestLedger_Outbox_ConcurrentClaimsAreDisjoint(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	repo := repositories.NewLedgerRepository(db)
+	userID := uniqueUserID()
+	amount := decimal.NewFromInt(30)
+
+	spendAcct := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeSpendingBalance, amount)
+	stashAcct, err := svc.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	require.NoError(t, err)
+
+	_, err = svc.CreateTransaction(ctx, &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   strPtr("concurrent_claim_test"),
+		IdempotencyKey:  uniqueKey("concurrent_claim"),
+		Description:     strPtr("concurrent claim test"),
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAcct.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USD"},
+			{AccountID: stashAcct.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USD"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Transaction A claims inside an open transaction; transaction B must skip
+	// the rows A holds (FOR UPDATE SKIP LOCKED) instead of blocking on them.
+	txCtxA, err := repo.BeginTx(ctx)
+	require.NoError(t, err)
+	claimedA, err := repo.ClaimUnpublishedOutbox(txCtxA, 100, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, claimedA, "first claim should reserve the pending batch")
+
+	txCtxB, err := repo.BeginTx(ctx)
+	require.NoError(t, err)
+	claimedB, err := repo.ClaimUnpublishedOutbox(txCtxB, 100, 10)
+	require.NoError(t, err)
+	assert.Empty(t, claimedB, "FOR UPDATE SKIP LOCKED must hide rows locked by another open tx")
+
+	require.NoError(t, repo.CommitTx(txCtxB))
+	require.NoError(t, repo.CommitTx(txCtxA))
+}
+
+func TestLedger_Outbox_ClaimSkipsExhaustedRetries(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	repo := repositories.NewLedgerRepository(db)
+	userID := uniqueUserID()
+	amount := decimal.NewFromInt(20)
+
+	spendAcct := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeSpendingBalance, amount)
+	stashAcct, err := svc.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
+	require.NoError(t, err)
+
+	_, err = svc.CreateTransaction(ctx, &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		ReferenceType:   strPtr("exhausted_test"),
+		IdempotencyKey:  uniqueKey("exhausted"),
+		Description:     strPtr("exhausted retries test"),
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spendAcct.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USD"},
+			{AccountID: stashAcct.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USD"},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx, `UPDATE ledger_outbox SET retry_count = 10 WHERE published_at IS NULL`)
+	require.NoError(t, err)
+
+	txCtx, err := repo.BeginTx(ctx)
+	require.NoError(t, err)
+	claimed, err := repo.ClaimUnpublishedOutbox(txCtx, 100, 10)
+	require.NoError(t, err)
+	require.NoError(t, repo.CommitTx(txCtx))
+
+	assert.Empty(t, claimed, "events at the retry ceiling are dead-lettered, not re-claimed")
+}
+
 // --- Security Layer Tests: Hash Chain, Audit Trail, Velocity -----------------
 
 func TestLedger_HashChain_ComputedOnCreate(t *testing.T) {
