@@ -152,6 +152,7 @@ type Container struct {
 	RedisClient        cache.RedisClient
 	SupermemoryClient  *supermemoryclient.Client
 	QdrantStore        *vector.QdrantStore
+	VectorizeStore     *vector.VectorizeStore
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter

@@ -181,15 +181,22 @@ type CencoriEmbeddingsClient struct {
 }
 
 // NewCencoriEmbeddingsClient creates a new embeddings client using the Cencori SDK.
-func NewCencoriEmbeddingsClient(apiKey string, model string, logger *zap.Logger) *CencoriEmbeddingsClient {
+// baseURL may be empty (default Cencori endpoint) or a Cloudflare AI Gateway URL
+// to route embedding traffic through the gateway for caching/analytics.
+func NewCencoriEmbeddingsClient(apiKey string, model string, baseURL string, logger *zap.Logger) *CencoriEmbeddingsClient {
 	if model == "" {
 		model = "text-embedding-3-small"
 	}
 
-	client, err := cencori.NewClient(
+	opts := []cencori.Option{
 		cencori.WithAPIKey(apiKey),
-		cencori.WithTimeout(30*time.Second),
-	)
+		cencori.WithTimeout(30 * time.Second),
+	}
+	if baseURL != "" {
+		opts = append(opts, cencori.WithBaseURL(baseURL))
+	}
+
+	client, err := cencori.NewClient(opts...)
 	if err != nil {
 		logger.Error("Failed to create Cencori embeddings client", zap.Error(err))
 		return &CencoriEmbeddingsClient{

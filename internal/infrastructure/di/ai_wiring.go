@@ -61,6 +61,15 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		Timeout:          resolveTimeout(c.Config.AI.Cencori.TimeoutSeconds),
 		RateLimitRPM:     c.Config.AI.Cencori.RateLimitRPM,
 	}
+
+	// Optional Cloudflare AI Gateway: when enabled, point the Cencori client at
+	// the gateway URL and authenticate with the gateway-scoped key. The gateway
+	// proxies to Cencori with response caching, rate limiting, and cost analytics.
+	gatewayBaseURL, gatewayAPIKey := c.cloudflareGateway(cencoriConfig.APIKey)
+	if gatewayBaseURL != "" {
+		cencoriConfig.BaseURL = gatewayBaseURL
+		cencoriConfig.APIKey = gatewayAPIKey
+	}
 	c.AIProvider = ai.NewCencoriProvider(cencoriConfig, c.ZapLog)
 
 	// Validate Cencori connectivity at startup (non-blocking)
@@ -192,9 +201,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 
 	// Initialize knowledge base (RAG)
-	// Embeddings route through Cencori gateway for provider failover + billing.
+	// Embeddings route through Cencori gateway for provider failover + billing,
+	// or through Cloudflare Workers AI (BGE model) when that is configured.
 	if c.Config.AI.Cencori.APIKey != "" {
-		c.EmbeddingsClient = embeddings.NewCencoriEmbeddingsClient(strings.TrimSpace(c.Config.AI.Cencori.APIKey), "", c.ZapLog)
+		embBaseURL, embAPIKey := c.cloudflareGateway(strings.TrimSpace(c.Config.AI.Cencori.APIKey))
+		c.EmbeddingsClient = embeddings.NewCencoriEmbeddingsClient(embAPIKey, "", embBaseURL, c.ZapLog)
 		c.KnowledgeRepo = repositories.NewKnowledgeRepository(c.DB, c.ZapLog)
 		c.KnowledgeService = knowledgesvc.NewService(c.KnowledgeRepo, c.EmbeddingsClient, c.RedisClient, c.ZapLog)
 		c.AIOrchestrator.SetKnowledge(c.KnowledgeService)
@@ -221,6 +232,48 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		}, c.EmbeddingsClient, c.ZapLog)
 		// QdrantStore is used by the memory adapter (agent_wiring.go) for SearchEpisodic/SearchFacts
 		c.ZapLog.Info("Qdrant vector store initialized", zap.String("base_url", baseURL))
+	}
+
+	// Cloudflare Vectorize: serverless alternative to Qdrant for episodic + fact
+	// memory. Pairs best with the Workers AI embedder (same account).
+	cf := c.Config.AI.Cloudflare
+	if cf.Vectorize.Enabled && strings.TrimSpace(cf.AccountID) != "" && strings.TrimSpace(cf.APIToken) != "" {
+		// Prefer the Workers AI BGE embedder for memory vectors when enabled.
+		if cf.WorkersAI.Enabled && cf.WorkersAI.EmbeddingsEnabled && strings.TrimSpace(cf.WorkersAI.EmbeddingsModel) != "" {
+			embedder, err := embeddings.NewWorkersAIEmbedder(
+				strings.TrimSpace(cf.AccountID),
+				strings.TrimSpace(cf.APIToken),
+				strings.TrimSpace(cf.WorkersAI.EmbeddingsModel),
+				"",
+				c.ZapLog,
+			)
+			if err != nil {
+				c.ZapLog.Warn("Workers AI embedder not initialized", zap.Error(err))
+			} else {
+				c.EmbeddingsClient = embedder
+				c.ZapLog.Info("Workers AI embedder initialized",
+					zap.String("model", cf.WorkersAI.EmbeddingsModel))
+			}
+		}
+		if c.EmbeddingsClient != nil {
+			dim := cf.Vectorize.DefaultDim
+			if dim == 0 {
+				dim = 768
+			}
+			vs, err := vector.NewVectorizeStore(&vector.VectorizeConfig{
+				AccountID:        strings.TrimSpace(cf.AccountID),
+				APIToken:         strings.TrimSpace(cf.APIToken),
+				DefaultDim:       dim,
+				CollectionPrefix: strings.TrimSpace(cf.Vectorize.CollectionPrefix),
+			}, c.EmbeddingsClient, c.ZapLog)
+			if err != nil {
+				c.ZapLog.Warn("Cloudflare Vectorize not initialized", zap.Error(err))
+			} else {
+				c.VectorizeStore = vs
+				// VectorizeStore is used by the memory adapter (agent_wiring.go) for SearchEpisodic/SearchFacts
+				c.ZapLog.Info("Cloudflare Vectorize initialized", zap.Int("default_dim", dim))
+			}
+		}
 	}
 
 	// Wire Tavily web search (powers web_search: places, flights, products, recs)
@@ -389,6 +442,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			AIProvider:          c.AIProvider,
 			ToolRegistry:        toolRegistry,
 			Memory:              memSvc,
+			IntentClassifier:    c.intentClassifier(),
 			State:               buildStateService(c),
 			Conversations:       buildConversationService(c),
 			Usage:               buildUsageService(c),
@@ -850,4 +904,84 @@ func (a *prefsResolverAdapter) ProactivePrefs(ctx context.Context, userID uuid.U
 		AllowNudges:    p.AllowNudges,
 		AllowFollowups: p.AllowFollowups,
 	}
+}
+
+// cloudflareGateway returns the Cloudflare AI Gateway base URL and
+// gateway-scoped API key when the gateway is configured. When disabled it
+// returns the origin key unchanged, so callers can treat the result as "no
+// override".
+func (c *Container) cloudflareGateway(originKey string) (baseURL, apiKey string) {
+	gw := c.Config.AI.Cloudflare.Gateway
+	if !gw.Enabled || strings.TrimSpace(gw.BaseURL) == "" || strings.TrimSpace(gw.APIKey) == "" {
+		return "", originKey
+	}
+	return strings.TrimSuffix(strings.TrimSpace(gw.BaseURL), "/"), strings.TrimSpace(gw.APIKey)
+}
+
+// intentClassifier builds the cheap Cloudflare Workers AI intent classifier when
+// configured. Returns nil otherwise, in which case the agent keeps its
+// deterministic keyword routing.
+func (c *Container) intentClassifier() aicore.IntentClassifier {
+	cf := c.Config.AI.Cloudflare
+	workers := cf.WorkersAI
+	if !workers.ClassifierEnabled || strings.TrimSpace(cf.AccountID) == "" || strings.TrimSpace(cf.APIToken) == "" {
+		return nil
+	}
+
+	timeout := time.Duration(workers.ClassifierTimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 800 * time.Millisecond
+	}
+	client, err := ai.NewWorkersAIClient(&ai.WorkersAIConfig{
+		AccountID: strings.TrimSpace(cf.AccountID),
+		APIToken:  strings.TrimSpace(cf.APIToken),
+		Model:     strings.TrimSpace(workers.Model),
+	}, c.ZapLog)
+	if err != nil {
+		c.ZapLog.Warn("Workers AI intent classifier not initialized", zap.Error(err))
+		return nil
+	}
+	inner := ai.NewWorkersAIIntentClassifier(&ai.IntentClassifierConfig{
+		Client:  client,
+		Model:   strings.TrimSpace(workers.Model),
+		Timeout: timeout,
+	}, c.ZapLog)
+	return &coreIntentClassifier{inner: inner}
+}
+
+// aiCategoryToCoreCategory maps the ai package's intent categories to core's
+// ToolCategory values (identical strings, kept in one place here so the domain
+// layer never depends on the infrastructure classifier).
+var aiCategoryToCoreCategory = map[ai.IntentCategory]aicore.ToolCategory{
+	ai.IntentOverview:   aicore.CategoryOverview,
+	ai.IntentSpending:   aicore.CategorySpending,
+	ai.IntentAction:     aicore.CategoryAction,
+	ai.IntentPlanning:   aicore.CategoryPlanning,
+	ai.IntentHistory:    aicore.CategoryHistory,
+	ai.IntentAutomation: aicore.CategoryAutomation,
+	ai.IntentBudget:     aicore.CategoryBudget,
+	ai.IntentMemory:     aicore.CategoryMemory,
+	ai.IntentVoice:      aicore.CategoryVoice,
+	ai.IntentInvestment: aicore.CategoryInvestment,
+	ai.IntentKnowledge:  aicore.CategoryKnowledge,
+}
+
+// coreIntentClassifier adapts the infrastructure intent classifier to the
+// domain-owned port, translating provider categories into core ToolCategory
+// values. Unmappable categories are treated as untrustworthy so the agent falls
+// back to deterministic keyword routing.
+type coreIntentClassifier struct {
+	inner ai.IntentClassifier
+}
+
+func (c *coreIntentClassifier) Classify(ctx context.Context, message string) (aicore.ToolCategory, float64, bool) {
+	category, confidence, ok := c.inner.Classify(ctx, message)
+	if !ok {
+		return "", confidence, false
+	}
+	mapped, known := aiCategoryToCoreCategory[category]
+	if !known {
+		return "", confidence, false
+	}
+	return mapped, confidence, true
 }
