@@ -335,6 +335,9 @@ func (v *VectorizeStore) waitMetadataIndexReady(ctx context.Context, name string
 		}
 		if delay < 500*time.Millisecond {
 			delay *= 2
+			if delay > 500*time.Millisecond {
+				delay = 500 * time.Millisecond
+			}
 		}
 	}
 	return fmt.Errorf("user_id metadata index did not become ready after %d attempts", maxAttempts)
