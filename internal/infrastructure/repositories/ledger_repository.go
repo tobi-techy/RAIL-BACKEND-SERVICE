@@ -1273,7 +1273,10 @@ func (r *LedgerRepository) DeleteDeadLetteredOutboxBefore(ctx context.Context, c
 	if err != nil {
 		return 0, fmt.Errorf("delete dead-lettered outbox: %w", err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete dead-lettered outbox rows affected: %w", err)
+	}
 	return n, nil
 }
 
