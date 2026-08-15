@@ -65,6 +65,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/strategy"
 	subscriptionsvc "github.com/rail-service/rail_service/internal/domain/services/subscription"
+	"github.com/rail-service/rail_service/internal/domain/services/travel"
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
@@ -216,6 +217,7 @@ type Container struct {
 	MiriamBridgeDispatcher         *platform.BridgeDispatcher
 	AutomationService              *automation.Service
 	BillPayService                 *billpay.Service
+	TravelService                  *travel.Service
 	SharedGoalService              *sharedgoal.Service
 	GrowthMailService              *growthmail.Service
 	GrowthEngineService            *growthengine.Service

@@ -2,13 +2,17 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // Execution Engine (spec 5.2) tool names. The tools themselves are implemented
@@ -39,6 +43,12 @@ const (
 	ToolPayBill             = "pay_bill"
 	ToolAutomateBill        = "automate_bill"
 	ToolSaveBillBeneficiary = "save_bill_beneficiary"
+
+	// BRIJ flight bookings.
+	ToolCreateFlightIntent  = "create_flight_intent"
+	ToolBookFlight          = "book_flight"
+	ToolSaveTravelPassenger = "save_travel_passenger"
+	ToolRequestFlightRefund = "request_flight_refund"
 )
 
 // isExecutionActionTool reports whether the tool is a mutating Execution
@@ -50,6 +60,9 @@ func isExecutionActionTool(name string) bool {
 		ToolCopyTrader, ToolPauseTradeCopying, ToolResumeTradeCopying,
 		ToolStopTradeCopying,
 		ToolPayBill, ToolAutomateBill, ToolSaveBillBeneficiary,
+		// BRIJ flight bookings (staged for confirmation; book_flight is
+		// fund-moving and requires Face ID step-up).
+		ToolCreateFlightIntent, ToolBookFlight, ToolSaveTravelPassenger, ToolRequestFlightRefund,
 		// Mandate acceptance re-runs the core registry tool with confirm=true.
 		"accept_mandate_suggestion", "create_miriam_mandate",
 		// P2P + receipt split + automation create — execute via registry on confirm.
@@ -132,9 +145,107 @@ func executionActionDescription(name string, args map[string]interface{}) string
 		return fmt.Sprintf("Automate %s payment of ₦%s to %s (%s)", arg("category"), arg("amount_ngn"), arg("recipient"), arg("schedule"))
 	case ToolSaveBillBeneficiary:
 		return fmt.Sprintf("Save bill beneficiary %q (%s)", arg("label"), arg("category"))
+	case ToolCreateFlightIntent:
+		return fmt.Sprintf("Lock this flight (intent %s) and prepare it for booking", arg("offer_id"))
+	case ToolBookFlight:
+		name := flightPassengerName(args)
+		if name == "" {
+			name = "the selected traveler"
+		}
+		// The charge shown at execution comes from the persisted intent, never
+		// from the model; the confirmation states the Spend impact instead of a
+		// model-supplied amount.
+		if totalUSD, ok := args["total_usd"].(string); ok && totalUSD != "" {
+			line := fmt.Sprintf("Book flight for %s — $%s total (fare + Rail fee) charged from Spend", name, totalUSD)
+			if ngn, ok := args["total_ngn"].(string); ok && ngn != "" {
+				line += fmt.Sprintf(" (≈₦%s)", ngn)
+			}
+			return line
+		}
+		return fmt.Sprintf("Book flight for %s — escrow and the Rail fee are charged from Spend", name)
+	case ToolSaveTravelPassenger:
+		return fmt.Sprintf("Save traveler profile %q", arg("label"))
+	case ToolRequestFlightRefund:
+		return fmt.Sprintf("Request refund for flight %s: %s", arg("intent_id"), arg("reason"))
 	default:
 		return "Execute " + name
 	}
+}
+
+// flightPassengerName extracts a display name from the book_flight passenger
+// object (given_name + family_name), so the confirmation card never reads
+// "Book flight for ".
+func flightPassengerName(args map[string]interface{}) string {
+	if args == nil {
+		return ""
+	}
+	raw, ok := args["passenger"]
+	if !ok {
+		return ""
+	}
+	var p map[string]interface{}
+	switch t := raw.(type) {
+	case map[string]interface{}:
+		p = t
+	case string:
+		_ = json.Unmarshal([]byte(t), &p)
+	}
+	if p == nil {
+		return ""
+	}
+	given, _ := p["given_name"].(string)
+	family, _ := p["family_name"].(string)
+	return strings.TrimSpace(given + " " + family)
+}
+
+// quoteFlightBooking resolves the exact charge for a staged book_flight from
+// the persisted intent (never model-supplied numbers) and attaches it to the
+// pending-action params so the confirmation card shows the fare + Rail fee
+// breakdown with USD and NGN totals. Best effort: on any failure the params
+// are left unchanged and the card falls back to its generic wording.
+func (o *AgentAdapter) quoteFlightBooking(ctx context.Context, userID uuid.UUID, params map[string]interface{}) {
+	intentID := ""
+	if v, ok := params["intent_id"].(string); ok {
+		intentID = strings.TrimSpace(v)
+	}
+	if intentID == "" || o.travel == nil {
+		return
+	}
+	quote, err := o.travel.QuoteIntent(ctx, userID, intentID)
+	if err != nil {
+		o.logger.Warn("failed to resolve flight quote for confirmation card",
+			zap.Error(err), zap.String("intent_id", intentID), zap.String("user_id", userID.String()))
+		return
+	}
+	totalUSD, _ := quote["total_usd"].(string)
+	if strings.TrimSpace(totalUSD) == "" {
+		return
+	}
+	total, err := decimal.NewFromString(totalUSD)
+	if err != nil || !total.IsPositive() {
+		o.logger.Warn("failed to parse flight total for confirmation card",
+			zap.Error(err), zap.String("total_usd", totalUSD), zap.String("intent_id", intentID), zap.String("user_id", userID.String()))
+		return
+	}
+	quoteParams := map[string]interface{}{
+		"intent_id":    intentID,
+		"fare_usd":     quote["fare_usd"],
+		"rail_fee_usd": quote["rail_fee_usd"],
+		"total_usd":    totalUSD,
+	}
+	params["total_usd"] = totalUSD
+	// The NGN total is only attached when a live rate resolves; without one the
+	// card shows the exact USD amount and omits the naira equivalent rather
+	// than fabricating a conversion from a fallback rate.
+	if o.currencyRates != nil {
+		if r, rerr := o.currencyRates.GetLatestRate(ctx, "USD", "NGN"); rerr == nil && r.IsPositive() {
+			ngn := total.Mul(r).Round(0)
+			quoteParams["ngn_rate"] = r.String()
+			quoteParams["total_ngn"] = ngn.String()
+			params["total_ngn"] = ngn.String()
+		}
+	}
+	params["quote"] = quoteParams
 }
 
 // createExecutionAction stages a mutating Execution Engine tool call as a
@@ -158,6 +269,13 @@ func (o *AgentAdapter) createExecutionAction(ctx context.Context, userID, convID
 	}
 	// The confirm flag is granted by the user's confirmation, never by the model.
 	delete(params, "confirm")
+
+	// Resolve the exact charge for book_flight from the persisted intent so the
+	// confirmation card never shows a model-supplied amount. The NGN equivalent
+	// is attached only when a live rate resolves.
+	if tc.Name == ToolBookFlight {
+		o.quoteFlightBooking(ctx, userID, params)
+	}
 
 	action := &entities.PendingAction{
 		ID:             uuid.New().String(),

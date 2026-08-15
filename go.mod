@@ -16,7 +16,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/textract v1.41.2
 	github.com/gagliardetto/solana-go v1.22.0
 	github.com/gin-gonic/gin v1.11.0
-	github.com/go-pdf/fpdf v0.9.0
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/go-webauthn/webauthn v0.15.0
 	github.com/golang-jwt/jwt/v5 v5.3.0

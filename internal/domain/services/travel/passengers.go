@@ -3,11 +3,14 @@ package travel
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/travu"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
+	"go.uber.org/zap"
 )
 
 // TravelPassenger is a saved traveler profile reused across bookings.
@@ -72,51 +75,90 @@ func (p TravelPassenger) HasFlightDetails() (bool, []string) {
 	return len(missing) == 0, missing
 }
 
-// ToBusPassenger maps a saved profile to a Travu bus passenger.
-func (p TravelPassenger) ToBusPassenger(isPrimary bool, age string) travu.Passenger {
-	return travu.Passenger{
-		Title:          p.Title,
-		Name:           p.FullName(),
-		Age:            age,
-		Sex:            p.Sex,
-		Phone:          p.Phone,
-		Email:          p.Email,
-		Blood:          p.Blood,
-		NextOfKin:      p.NextOfKin,
-		NextOfKinPhone: p.NextOfKinPhone,
-		IsPrimary:      isPrimary,
+// ToFlightPassenger maps a saved profile to a BRIJ flight passenger. Stored
+// profiles carry sex as "Male"/"Female" and dob as MM/DD/YYYY; BRIJ accepts only
+// m|f and YYYY-MM-DD, so both are converted here (see brijGender and isoBornOn).
+func (p TravelPassenger) ToFlightPassenger() brij.PassengerInput {
+	return brij.PassengerInput{
+		GivenName:   strings.TrimSpace(p.FirstName),
+		FamilyName:  strings.TrimSpace(p.LastName),
+		BornOn:      isoBornOn(p.DOB),
+		Title:       strings.ToLower(strings.TrimSpace(p.Title)),
+		Gender:      brijGender(p.Sex),
+		Email:       strings.TrimSpace(p.Email),
+		PhoneNumber: strings.TrimSpace(p.Phone),
 	}
 }
 
-// ToFlightPassenger maps a saved profile to a Travu flight passenger.
-func (p TravelPassenger) ToFlightPassenger() travu.FlightPassenger {
-	passengerType := p.PassengerType
-	if passengerType == "" {
-		passengerType = "Adult"
+// brijGender maps a stored sex value to the BRIJ m|f contract. Unrecognized
+// values map to "" so validatePassenger can surface a clear error.
+func brijGender(sex string) string {
+	switch strings.ToLower(strings.TrimSpace(sex)) {
+	case "m", "male":
+		return "m"
+	case "f", "female":
+		return "f"
+	default:
+		return ""
 	}
-	country := p.PassportCountry
-	if country == "" {
-		country = p.Nationality
+}
+
+// isoBornOn converts a stored MM/DD/YYYY birth date to the YYYY-MM-DD format
+// BRIJ requires. Already-ISO values pass through unchanged; anything that does
+// not parse as a real date returns "" so validatePassenger surfaces a clear
+// error instead of passing malformed data to the provider.
+func isoBornOn(dob string) string {
+	d := strings.TrimSpace(dob)
+	if d == "" {
+		return ""
 	}
-	return travu.FlightPassenger{
-		PassengerType:   passengerType,
-		FirstName:       p.FirstName,
-		MiddleName:      p.MiddleName,
-		LastName:        p.LastName,
-		DOB:             p.DOB,
-		Phone:           p.Phone,
-		PassportNumber:  p.PassportNumber,
-		ExpiryDate:      p.PassportExpiry,
-		PassportCountry: country,
-		Gender:          p.Sex,
-		Title:           p.Title,
-		Email:           p.Email,
-		Address:         p.Address,
-		Country:         p.Country,
-		CountryCode:     p.CountryCode,
-		City:            p.City,
-		PostalCode:      p.PostalCode,
+	if t, err := time.Parse("01/02/2006", d); err == nil {
+		return t.Format("2006-01-02")
 	}
+	if len(d) == 10 && d[4] == '-' && d[7] == '-' {
+		if t, err := time.Parse("2006-01-02", d); err == nil {
+			return t.Format("2006-01-02")
+		}
+	}
+	return ""
+}
+
+// passengerFullName returns the first passenger's full name from a stored
+// travel_orders.passengers snapshot (JSON array of brij.PassengerInput).
+func passengerFullName(passengers []byte) string {
+	list := decodePassengers(passengers)
+	if len(list) == 0 {
+		return ""
+	}
+	parts := []string{list[0].GivenName, list[0].FamilyName}
+	out := make([]string, 0, 2)
+	for _, s := range parts {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// passengerFamilyName returns the first passenger's family name from a stored
+// passengers snapshot. Required by the refund endpoint as a header value.
+func passengerFamilyName(passengers []byte) string {
+	list := decodePassengers(passengers)
+	if len(list) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(list[0].FamilyName)
+}
+
+func decodePassengers(passengers []byte) []brij.PassengerInput {
+	var list []brij.PassengerInput
+	if len(passengers) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(passengers, &list); err != nil {
+		return nil
+	}
+	return list
 }
 
 // ListPassengers returns a user's saved traveler profiles, primary first.
@@ -226,4 +268,73 @@ func (s *Service) GetPassengerByID(ctx context.Context, userID, passengerID uuid
 		}
 	}
 	return nil, sql.ErrNoRows
+}
+
+// autoSavePassenger upserts a traveler profile from the passenger used for a
+// booking, so future bookings don't re-ask for these fields. Best effort: it
+// never blocks or fails the booking. Matching is on normalized email; when a
+// profile already exists only its empty fields are filled in so richer saved
+// data is never clobbered.
+func (s *Service) autoSavePassenger(ctx context.Context, userID uuid.UUID, p brij.PassengerInput) {
+	email := strings.ToLower(strings.TrimSpace(p.Email))
+	if email == "" || strings.TrimSpace(p.FamilyName) == "" {
+		return
+	}
+	profile := TravelPassenger{
+		Title:     strings.ToLower(strings.TrimSpace(p.Title)),
+		FirstName: strings.TrimSpace(p.GivenName),
+		LastName:  strings.TrimSpace(p.FamilyName),
+		DOB:       strings.TrimSpace(p.BornOn),
+		Sex:       sexFromGender(p.Gender),
+		Email:     email,
+		Phone:     strings.TrimSpace(p.PhoneNumber),
+	}
+	list, err := s.ListPassengers(ctx, userID)
+	if err != nil {
+		s.logger.Warn("failed to list travelers for auto-save", zap.Error(err), zap.String("user_id", userID.String()))
+		return
+	}
+	for i := range list {
+		if strings.ToLower(strings.TrimSpace(list[i].Email)) != email {
+			continue
+		}
+		merged := list[i]
+		merged.FirstName = firstNonEmpty(merged.FirstName, profile.FirstName)
+		merged.LastName = firstNonEmpty(merged.LastName, profile.LastName)
+		merged.Title = firstNonEmpty(merged.Title, profile.Title)
+		merged.DOB = firstNonEmpty(merged.DOB, profile.DOB)
+		merged.Sex = firstNonEmpty(merged.Sex, profile.Sex)
+		merged.Email = firstNonEmpty(merged.Email, profile.Email)
+		merged.Phone = firstNonEmpty(merged.Phone, profile.Phone)
+		if !merged.IsPrimary && len(list) == 1 {
+			merged.IsPrimary = true
+		}
+		if _, err := s.SavePassenger(ctx, userID, merged); err != nil {
+			s.logger.Warn("failed to update saved traveler", zap.Error(err), zap.String("user_id", userID.String()))
+		}
+		return
+	}
+	profile.IsPrimary = len(list) == 0
+	if _, err := s.SavePassenger(ctx, userID, profile); err != nil {
+		s.logger.Warn("failed to auto-save traveler", zap.Error(err), zap.String("user_id", userID.String()))
+	}
+}
+
+// sexFromGender maps the BRIJ m|f contract back to a stored profile sex value.
+func sexFromGender(g string) string {
+	switch strings.ToLower(strings.TrimSpace(g)) {
+	case "m":
+		return "Male"
+	case "f":
+		return "Female"
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
