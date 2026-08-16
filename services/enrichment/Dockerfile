@@ -11,6 +11,8 @@ COPY . .
 RUN python -m scripts.generate_synthetic_data_with_labels && \
     python -m scripts.train_brand_classifier
 
-EXPOSE 8090
+# AtlasFlow health probes port 3000 by default. docker-compose sets PORT=8090.
+ENV PORT=3000
+EXPOSE 3000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090"]
+CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-3000}"]
