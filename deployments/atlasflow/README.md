@@ -307,8 +307,12 @@ REPO=tobi-techy/RAIL-BACKEND-SERVICE ./deploy.sh
   path-level changes).
 - **Health checks**: AtlasFlow probes `http://<vm>:<port>/` every 15s (port
   from `PORT`, default 3000). All four services now answer `/` and `/health`.
-- **Replicas**: Set `--min-replicas 2` for production to avoid downtime during
-  deployments. The Go backend should have at least 2 replicas.
+- **Replicas**: `rail-backend-service` should run `--min-replicas 2` once
+  worker leader election is live (`WORKERS_LEADER_ELECTION`, on by default in
+  production). Only the Redis lock holder runs crons. Leave `spectrum-bridge`
+  at 1 (local `spaces.json`). Enrichment and OCR stay at 1 until queue depth
+  says otherwise.
+- **Staging**: `atlasflow projects environments create rail-backend-service --slug staging --branch staging`
 - **OCR warm-up**: PaddleOCR warms its model cache at Docker build time. First
   request after deploy may take a few seconds; subsequent requests are fast.
 - **Secrets**: Never commit real secrets to the repo. Set all secrets as

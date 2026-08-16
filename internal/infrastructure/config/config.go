@@ -672,6 +672,10 @@ type WorkerConfig struct {
 	JobTimeout                  int  `mapstructure:"job_timeout"`
 	MiriamIntelligenceLocal     bool `mapstructure:"miriam_intelligence_local"`
 	MiriamIntelligenceBatchSize int  `mapstructure:"miriam_intelligence_batch_size"`
+	// LeaderElection, when true, lets only one API replica run background
+	// workers (Redis SET NX). HTTP stays up on every replica. Default on in
+	// production so min-replicas > 1 does not double money crons.
+	LeaderElection bool `mapstructure:"leader_election"`
 }
 
 // AlpacaConfig contains brokerage API configuration
@@ -1149,6 +1153,7 @@ func setDefaults() {
 	viper.SetDefault("workers.job_timeout", 300)
 	viper.SetDefault("workers.miriam_intelligence_local", true)
 	viper.SetDefault("workers.miriam_intelligence_batch_size", 500)
+	viper.SetDefault("workers.leader_election", false)
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -1599,6 +1604,11 @@ func overrideFromEnv() {
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
 	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
 	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
+	viper.BindEnv("workers.leader_election", "WORKERS_LEADER_ELECTION")
+	if os.Getenv("WORKERS_LEADER_ELECTION") == "" &&
+		(os.Getenv("ENVIRONMENT") == "production" || viper.GetString("environment") == "production") {
+		viper.Set("workers.leader_election", true)
+	}
 
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)

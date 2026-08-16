@@ -133,6 +133,11 @@ type Application struct {
 	redisMonitor  *cache.HealthMonitor
 	monitorCancel context.CancelFunc
 
+	// Worker leader election (production, multi-replica)
+	leaderLock     *cache.LeaderLock
+	leaderCancel   context.CancelFunc
+	workersStarted bool
+
 	// Tracing
 	tracingShutdown func(context.Context) error
 }
@@ -189,8 +194,11 @@ func (app *Application) Initialize() error {
 		return fmt.Errorf("security config validation failed: %w", err)
 	}
 
-	// Initialize workers
-	if err := app.initializeWorkers(); err != nil {
+	// Redis monitor is per-process. Background workers run on one replica only
+	// when leader election is on (production default) so min-replicas > 1 does
+	// not double money crons.
+	app.startRedisMonitor()
+	if err := app.startWorkersOrElect(); err != nil {
 		return fmt.Errorf("failed to initialize workers: %w", err)
 	}
 
@@ -228,28 +236,6 @@ func (app *Application) initializeTracing() error {
 
 // initializeWorkers initializes all background workers
 func (app *Application) initializeWorkers() error {
-	// Redis health monitor — alerts on Redis down/recovered (e.g. Upstash budget
-	// suspension) so it pages us instead of becoming user-facing 503s.
-	if app.container != nil && app.container.RedisClient != nil {
-		alerter := alerting.NewTelegramAlerter(app.cfg.TelegramAlerts.BotToken, app.cfg.TelegramAlerts.ChatID)
-		monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 60*time.Second, func(up bool, err error) {
-			if up {
-				if alerter != nil {
-					alerter.SendFatal("✅ Redis recovered", nil)
-				}
-				return
-			}
-			app.log.Error("Redis is DOWN — auth blacklist failing closed, rate limiting degraded", "error", err)
-			if alerter != nil {
-				alerter.SendFatal("🚨 Redis DOWN (check Upstash budget/suspension)", err)
-			}
-		})
-		monCtx, monCancel := context.WithCancel(context.Background())
-		app.monitorCancel = monCancel
-		app.redisMonitor = monitor
-		monitor.Start(monCtx)
-	}
-
 	// Wallet provisioning scheduler
 	if err := app.initializeWalletProvisioning(); err != nil {
 		return fmt.Errorf("failed to initialize wallet provisioning: %w", err)
@@ -1235,6 +1221,13 @@ func (app *Application) startMetricsCollection() {
 func (app *Application) Shutdown() error {
 	app.log.Info("Shutting down server...")
 
+	if app.leaderCancel != nil {
+		app.leaderCancel()
+	}
+	if app.leaderLock != nil {
+		app.leaderLock.Release(context.Background())
+	}
+
 	// Stop workers
 	app.stopWorkers()
 
@@ -1380,13 +1373,7 @@ func (app *Application) stopWorkers() {
 		app.autopilotCancel()
 	}
 
-	// Stop Redis health monitor.
-	if app.monitorCancel != nil {
-		app.monitorCancel()
-	}
-	if app.redisMonitor != nil {
-		app.redisMonitor.Wait()
-	}
+	app.stopRedisMonitor()
 }
 
 type dailyPulseUserRepoAdapter struct {
