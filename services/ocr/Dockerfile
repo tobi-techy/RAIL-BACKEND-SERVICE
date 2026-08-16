@@ -17,6 +17,8 @@ COPY . .
 # Warm the PaddleOCR model cache at build time so first request is fast.
 RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en', show_log=False)" || true
 
-EXPOSE 8091
+# AtlasFlow health probes port 3000 by default. docker-compose sets PORT=8091.
+ENV PORT=3000
+EXPOSE 3000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8091"]
+CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-3000}"]

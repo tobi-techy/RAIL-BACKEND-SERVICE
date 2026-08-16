@@ -114,8 +114,11 @@ def enrich_batch(req: BatchEnrichRequest):
     return BatchEnrichResponse(results=[enrich_single(t) for t in req.transactions])
 
 
+@app.get("/")
 @app.get("/health")
 def health():
+    # AtlasFlow probes GET / every 15s (any 2xx = healthy). Keep /health too
+    # for docker-compose and rail-api sidecar checks.
     model = get_model()
     pipeline = get_pipeline()
     return {"status": "ok", "model_loaded": model is not None, "pipeline_ready": pipeline is not None}
