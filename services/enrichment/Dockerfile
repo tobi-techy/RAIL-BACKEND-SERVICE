@@ -7,9 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Generate training data and train model at build time
-RUN python -m scripts.generate_synthetic_data_with_labels && \
-    python -m scripts.train_brand_classifier
+# Model is trained offline and committed at models/brand_classifier.joblib.
+# Training in the image made every deploy wait on sklearn on a standard builder.
+RUN test -f models/brand_classifier.joblib
 
 # AtlasFlow health probes port 3000 by default. docker-compose sets PORT=8090.
 ENV PORT=3000

@@ -106,6 +106,7 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 | `GIN_MODE` | `release` | |
 | `LOG_LEVEL` | `info` | |
 | `LOG_FORMAT` | `json` | |
+| `WORKERS_LEADER_ELECTION` | `true` | Production default. Only one API replica runs crons. |
 
 ### Database / Redis
 
