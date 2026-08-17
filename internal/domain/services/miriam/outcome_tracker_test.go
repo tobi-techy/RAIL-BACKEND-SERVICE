@@ -97,7 +97,6 @@ func (s *splitFlowProvider) GetMoneyFlow(_ context.Context, _ uuid.UUID, _, _ ti
 	return s.last, nil
 }
 
-
 func duePending(predictionType string) entities.MiriamPredictionOutcome {
 	return entities.MiriamPredictionOutcome{
 		ID:             uuid.New(),
