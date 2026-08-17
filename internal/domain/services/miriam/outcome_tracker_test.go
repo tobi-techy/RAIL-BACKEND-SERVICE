@@ -63,6 +63,41 @@ func (c *countingObligationProvider) ListActive(_ context.Context, _ uuid.UUID) 
 	return c.obligations, nil
 }
 
+// cancelingBalanceProvider cancels the sweep's parent context on its first
+// read, mimicking the worker's per-user deadline expiring mid-evaluation after
+// the expensive reads have started.
+type cancelingBalanceProvider struct {
+	cancel context.CancelFunc
+	spend  decimal.Decimal
+	calls  int
+}
+
+func (c *cancelingBalanceProvider) GetAccountBalance(_ context.Context, _ uuid.UUID, _ entities.AccountType) (decimal.Decimal, error) {
+	c.calls++
+	if c.calls == 1 {
+		c.cancel()
+	}
+	return c.spend, nil
+}
+
+// splitFlowProvider returns a different MoneyFlowSummary per month window so
+// spending-anomaly cases can model a jump between this month and last month.
+type splitFlowProvider struct {
+	this  *entities.MoneyFlowSummary
+	last  *entities.MoneyFlowSummary
+	calls int
+}
+
+func (s *splitFlowProvider) GetMoneyFlow(_ context.Context, _ uuid.UUID, _, _ time.Time) (*entities.MoneyFlowSummary, error) {
+	// The first window is the current month, the second is the prior month.
+	s.calls++
+	if s.calls <= 1 {
+		return s.this, nil
+	}
+	return s.last, nil
+}
+
+
 func duePending(predictionType string) entities.MiriamPredictionOutcome {
 	return entities.MiriamPredictionOutcome{
 		ID:             uuid.New(),
@@ -122,6 +157,7 @@ func TestEvaluateOutcomes_ResolutionMatchesPerTypeRules(t *testing.T) {
 		spend          decimal.Decimal
 		obligation     decimal.Decimal
 		flow           *entities.MoneyFlowSummary
+		priorFlow      *entities.MoneyFlowSummary
 		threshold      string
 		want           bool
 	}{
@@ -169,6 +205,27 @@ func TestEvaluateOutcomes_ResolutionMatchesPerTypeRules(t *testing.T) {
 			obligation:     decimal.NewFromInt(999),
 			want:           false,
 		},
+		{
+			name:           "spending anomaly materialises when this month outflow exceeds last month by 35%",
+			predictionType: entities.PredictionSpendingAnomaly,
+			flow:           &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(200)},
+			priorFlow:      &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(100)},
+			want:           true,
+		},
+		{
+			name:           "spending anomaly misses when outflow growth stays under 35%",
+			predictionType: entities.PredictionSpendingAnomaly,
+			flow:           &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(130)},
+			priorFlow:      &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(100)},
+			want:           false,
+		},
+		{
+			name:           "spending anomaly misses when prior month had no outflow",
+			predictionType: entities.PredictionSpendingAnomaly,
+			flow:           &entities.MoneyFlowSummary{TotalCardSpend: decimal.NewFromInt(200)},
+			priorFlow:      &entities.MoneyFlowSummary{},
+			want:           false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -192,11 +249,15 @@ func TestEvaluateOutcomes_ResolutionMatchesPerTypeRules(t *testing.T) {
 			if flow == nil {
 				flow = &entities.MoneyFlowSummary{}
 			}
+			spending := SpendingProvider(&countingSpendingProvider{flow: flow})
+			if tc.priorFlow != nil {
+				spending = &splitFlowProvider{this: flow, last: tc.priorFlow}
+			}
 
 			repo := &fakeOutcomeRepo{pending: []entities.MiriamPredictionOutcome{outcome}}
 			tracker := NewOutcomeTracker(
 				repo,
-				&countingSpendingProvider{flow: flow},
+				spending,
 				fakeBalanceProvider{spend: tc.spend},
 				obligations,
 				zap.NewNop(),
@@ -224,17 +285,23 @@ func TestEvaluateOutcomes_SkipsOutcomesBeforeHorizon(t *testing.T) {
 	assert.Zero(t, repo.markCalls)
 }
 
-// The write must survive an already-expired parent context, otherwise settled
-// outcomes stay pending and are re-evaluated on every sweep.
+// The write must survive a parent context that expires mid-evaluation,
+// otherwise settled outcomes stay pending and are re-evaluated on every sweep.
 func TestEvaluateOutcomes_PersistsWithExpiredParentContext(t *testing.T) {
-	repo := &fakeOutcomeRepo{pending: []entities.MiriamPredictionOutcome{duePending(entities.PredictionCashShortfall)}}
-	tracker := newTracker(repo, &countingSpendingProvider{flow: &entities.MoneyFlowSummary{}}, &countingObligationProvider{})
-
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	balances := &cancelingBalanceProvider{cancel: cancel, spend: decimal.NewFromInt(100)}
+	repo := &fakeOutcomeRepo{pending: []entities.MiriamPredictionOutcome{duePending(entities.PredictionCashShortfall)}}
+	tracker := NewOutcomeTracker(
+		repo,
+		&countingSpendingProvider{flow: &entities.MoneyFlowSummary{}},
+		balances,
+		&countingObligationProvider{},
+		zap.NewNop(),
+	)
 
 	resolved := tracker.EvaluateOutcomes(ctx, uuid.New())
 
+	require.True(t, ctx.Err() != nil, "the parent context must actually have expired")
 	require.Len(t, resolved, 1)
 	assert.Equal(t, 1, repo.markCalls)
 	assert.True(t, repo.markCtxOK, "write context must not inherit parent cancellation")
@@ -250,4 +317,24 @@ func TestEvaluateOutcomes_ReturnsNilWhenPersistFails(t *testing.T) {
 
 	assert.Nil(t, tracker.EvaluateOutcomes(context.Background(), uuid.New()))
 	assert.Equal(t, 1, repo.markCalls)
+}
+
+func TestEvaluateOutcomes_ReturnsNilWhenPersistFailsUnderExpiredParent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	balances := &cancelingBalanceProvider{cancel: cancel, spend: decimal.NewFromInt(100)}
+	repo := &fakeOutcomeRepo{
+		pending: []entities.MiriamPredictionOutcome{duePending(entities.PredictionCashShortfall)},
+		markErr: errors.New("begin tx: connection refused"),
+	}
+	tracker := NewOutcomeTracker(
+		repo,
+		&countingSpendingProvider{flow: &entities.MoneyFlowSummary{}},
+		balances,
+		&countingObligationProvider{},
+		zap.NewNop(),
+	)
+
+	assert.Nil(t, tracker.EvaluateOutcomes(ctx, uuid.New()))
+	assert.Equal(t, 1, repo.markCalls, "the detached write must still be attempted")
+	assert.True(t, repo.markCtxOK, "write context must not inherit parent cancellation")
 }

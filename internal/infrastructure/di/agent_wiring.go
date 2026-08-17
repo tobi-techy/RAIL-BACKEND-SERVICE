@@ -34,17 +34,22 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
-	"github.com/rail-service/rail_service/internal/infrastructure/vector"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
 // buildNewMemoryService creates a unified memory service from container components.
 func buildNewMemoryService(c *Container) aicore.MemoryService {
+	var vectorStore aimemory.VectorStore
+	if c.QdrantStore != nil {
+		vectorStore = c.QdrantStore
+	} else if c.VectorizeStore != nil {
+		vectorStore = c.VectorizeStore
+	}
 	return &memoryAdapter{
 		oldMemory:   c.MemoryService,
 		supermemory: c.SupermemoryClient,
-		qdrantStore: c.QdrantStore,
+		vectorStore: vectorStore,
 		logger:      c.ZapLog,
 	}
 }
@@ -79,7 +84,7 @@ func (s *workingMemorySnapshot) GetMessageCount() int { return s.entry.MessageCo
 type memoryAdapter struct {
 	oldMemory   *aiservice.MemoryService
 	supermemory *supermemoryclient.Client
-	qdrantStore *vector.QdrantStore
+	vectorStore aimemory.VectorStore
 	logger      *zap.Logger
 }
 
@@ -107,10 +112,10 @@ func (m *memoryAdapter) SearchMemory(ctx context.Context, userID uuid.UUID, quer
 		}
 	}
 
-	if m.qdrantStore != nil {
-		episodic, err := m.qdrantStore.Search(ctx, "episodic", userID, query, limit)
+	if m.vectorStore != nil {
+		episodic, err := m.vectorStore.Search(ctx, "episodic", userID, query, limit)
 		if err != nil {
-			m.logger.Warn("Qdrant memory search failed", zap.Error(err))
+			m.logger.Warn("vector memory search failed", zap.Error(err))
 		} else {
 			for _, r := range episodic {
 				out = append(out, aicore.SupermemoryResult{
@@ -161,12 +166,12 @@ func (m *memoryAdapter) SearchFacts(ctx context.Context, userID uuid.UUID, query
 		}
 	}
 
-	if m.qdrantStore == nil {
+	if m.vectorStore == nil {
 		return nil, nil
 	}
-	results, err := m.qdrantStore.Search(ctx, "facts", userID, query, limit)
+	results, err := m.vectorStore.Search(ctx, "facts", userID, query, limit)
 	if err != nil {
-		m.logger.Warn("Qdrant SearchFacts failed", zap.Error(err))
+		m.logger.Warn("vector SearchFacts failed", zap.Error(err))
 		return nil, nil
 	}
 	out := make([]aicore.Fact, 0, len(results))
@@ -174,7 +179,7 @@ func (m *memoryAdapter) SearchFacts(ctx context.Context, userID uuid.UUID, query
 		out = append(out, aicore.Fact{
 			Fact:       r.Content,
 			Confidence: r.Similarity,
-			Source:     "qdrant",
+			Source:     "vector",
 		})
 	}
 	return out, nil
@@ -188,12 +193,12 @@ func (m *memoryAdapter) ForgetFact(ctx context.Context, userID, factID uuid.UUID
 }
 
 func (m *memoryAdapter) SearchEpisodic(ctx context.Context, userID uuid.UUID, query string, limit int) ([]aicore.Episode, error) {
-	if m.qdrantStore == nil {
+	if m.vectorStore == nil {
 		return nil, nil
 	}
-	results, err := m.qdrantStore.Search(ctx, "episodic", userID, query, limit)
+	results, err := m.vectorStore.Search(ctx, "episodic", userID, query, limit)
 	if err != nil {
-		m.logger.Warn("Qdrant SearchEpisodic failed", zap.Error(err))
+		m.logger.Warn("vector SearchEpisodic failed", zap.Error(err))
 		return nil, nil
 	}
 	out := make([]aicore.Episode, 0, len(results))

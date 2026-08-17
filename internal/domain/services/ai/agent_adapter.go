@@ -82,6 +82,7 @@ type AgentAdapter struct {
 	workingMemory       *memory.WorkingMemoryStore
 	eventStore          *memory.EventStore
 	stepUpVerifier      StepUpVerifier
+	travel              core.TravelProvider
 	logger              *zap.Logger
 }
 

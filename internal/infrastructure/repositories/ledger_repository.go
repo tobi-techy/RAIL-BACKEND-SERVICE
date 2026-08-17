@@ -1110,7 +1110,12 @@ type OutboxRecord struct {
 	LastError     *string         `db:"last_error"`
 	CreatedAt     time.Time       `db:"created_at"`
 	PublishedAt   *time.Time      `db:"published_at"`
+	ClaimedAt     *time.Time      `db:"claimed_at"`
 }
+
+// outboxLease is how long a claimed outbox event stays reserved before an
+// interrupted dispatch is treated as abandoned and reclaimed by a later tick.
+const outboxLease = 2 * time.Minute
 
 // ===== Outbox Operations =====
 
@@ -1134,7 +1139,7 @@ func (r *LedgerRepository) InsertOutboxRecord(ctx context.Context, eventType str
 func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxRecord, error) {
 	query := `
 		SELECT id, event_type, aggregate_id, aggregate_type, payload,
-		       retry_count, last_error, created_at, published_at
+		       retry_count, last_error, created_at, published_at, claimed_at
 		FROM ledger_outbox
 		WHERE published_at IS NULL
 		ORDER BY created_at
@@ -1150,7 +1155,7 @@ func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit
 	for rows.Next() {
 		var rec OutboxRecord
 		if err := rows.Scan(&rec.ID, &rec.EventType, &rec.AggregateID, &rec.AggregateType, &rec.Payload,
-			&rec.RetryCount, &rec.LastError, &rec.CreatedAt, &rec.PublishedAt); err != nil {
+			&rec.RetryCount, &rec.LastError, &rec.CreatedAt, &rec.PublishedAt, &rec.ClaimedAt); err != nil {
 			return nil, fmt.Errorf("scan outbox record: %w", err)
 		}
 		records = append(records, rec)
@@ -1160,7 +1165,11 @@ func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit
 
 // ClaimUnpublishedOutbox atomically claims a batch of unpublished outbox records
 // using FOR UPDATE SKIP LOCKED, so multiple concurrent publisher workers can
-// coexist without double-publishing. Must be called within a transaction.
+// coexist without double-publishing. Claiming sets a lease (claimed_at) rather
+// than published_at: events whose dispatch never completed are reclaimed once
+// the lease expires instead of being permanently lost. Must be called within a
+// transaction. The caller marks events published via MarkOutboxPublished after
+// dispatch succeeds.
 func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize int, maxRetries int) ([]OutboxRecord, error) {
 	if txFromContext(ctx) == nil {
 		return nil, fmt.Errorf("ClaimUnpublishedOutbox must be called within a transaction")
@@ -1168,21 +1177,22 @@ func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize
 
 	query := `
 		UPDATE ledger_outbox
-		SET published_at = NOW()
+		SET claimed_at = NOW()
 		WHERE id IN (
 			SELECT id
 			FROM ledger_outbox
 			WHERE published_at IS NULL
 			  AND retry_count < $2
+			  AND (claimed_at IS NULL OR claimed_at < NOW() - ($3 * INTERVAL '1 second'))
 			ORDER BY created_at
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
 		RETURNING id, event_type, aggregate_id, aggregate_type, payload,
-		          retry_count, last_error, created_at, published_at
+		          retry_count, last_error, created_at, published_at, claimed_at
 	`
 
-	rows, err := r.queryxContext(ctx, query, batchSize, maxRetries)
+	rows, err := r.queryxContext(ctx, query, batchSize, maxRetries, int(outboxLease.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("claim unpublished outbox: %w", err)
 	}
@@ -1192,7 +1202,7 @@ func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize
 	for rows.Next() {
 		var rec OutboxRecord
 		if err := rows.Scan(&rec.ID, &rec.EventType, &rec.AggregateID, &rec.AggregateType, &rec.Payload,
-			&rec.RetryCount, &rec.LastError, &rec.CreatedAt, &rec.PublishedAt); err != nil {
+			&rec.RetryCount, &rec.LastError, &rec.CreatedAt, &rec.PublishedAt, &rec.ClaimedAt); err != nil {
 			return nil, fmt.Errorf("scan outbox record: %w", err)
 		}
 		records = append(records, rec)
@@ -1201,13 +1211,14 @@ func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize
 }
 
 // IncrementOutboxRetry increments the retry_count and sets last_error for a
-// failed publish attempt, without touching published_at.
+// failed publish attempt, releasing the claim lease so the event can be claimed
+// again on a later tick. published_at stays NULL.
 func (r *LedgerRepository) IncrementOutboxRetry(ctx context.Context, id uuid.UUID, lastErr string) error {
 	query := `
 		UPDATE ledger_outbox
 		SET retry_count = retry_count + 1,
 		    last_error = $2,
-		    published_at = NULL
+		    claimed_at = NULL
 		WHERE id = $1
 	`
 	_, err := r.execContext(ctx, query, id, lastErr)
@@ -1229,7 +1240,8 @@ func (r *LedgerRepository) DeletePublishedOutboxBefore(ctx context.Context, cuto
 	return n, nil
 }
 
-// MarkOutboxPublished sets published_at for the given outbox records.
+// MarkOutboxPublished sets published_at for the given outbox records and
+// releases their claim leases. Called after dispatch succeeds.
 func (r *LedgerRepository) MarkOutboxPublished(ctx context.Context, ids []uuid.UUID) error {
 	if len(ids) == 0 {
 		return nil
@@ -1242,12 +1254,30 @@ func (r *LedgerRepository) MarkOutboxPublished(ctx context.Context, ids []uuid.U
 		strIDs[i] = id.String()
 	}
 
-	query := `UPDATE ledger_outbox SET published_at = NOW() WHERE id = ANY($1::uuid[])`
+	query := `UPDATE ledger_outbox SET published_at = NOW(), claimed_at = NULL WHERE id = ANY($1::uuid[])`
 	_, err := r.execContext(ctx, query, pq.Array(strIDs))
 	if err != nil {
 		return fmt.Errorf("mark outbox published: %w", err)
 	}
 	return nil
+}
+
+// DeleteDeadLetteredOutboxBefore deletes outbox events that hit the retry
+// ceiling and were created before the given cutoff. They are never claimed or
+// delivered again, so retention keeps them from accumulating without bound and
+// keeps CountUnpublishedOutbox converging on zero. Returns the number of rows
+// deleted.
+func (r *LedgerRepository) DeleteDeadLetteredOutboxBefore(ctx context.Context, cutoff time.Time, minRetries int) (int64, error) {
+	query := `DELETE FROM ledger_outbox WHERE published_at IS NULL AND retry_count >= $2 AND created_at < $1`
+	res, err := r.execContext(ctx, query, cutoff, minRetries)
+	if err != nil {
+		return 0, fmt.Errorf("delete dead-lettered outbox: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete dead-lettered outbox rows affected: %w", err)
+	}
+	return n, nil
 }
 
 // CountUnpublishedOutbox returns the number of unpublished outbox records.

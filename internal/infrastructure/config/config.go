@@ -40,7 +40,7 @@ type Config struct {
 	RampHub         RampHubConfig        `mapstructure:"ramphub"`
 	Graph           GraphConfig          `mapstructure:"graph"`
 	Airbills        AirbillsConfig       `mapstructure:"airbills"`
-	Travu           TravuConfig          `mapstructure:"travu"`
+	Brij            BrijConfig           `mapstructure:"brij"`
 	Workers         WorkerConfig         `mapstructure:"workers"`
 	Reconciliation  ReconciliationConfig `mapstructure:"reconciliation"`
 	SocialAuth      SocialAuthConfig     `mapstructure:"social_auth"`
@@ -139,6 +139,58 @@ type AIConfig struct {
 	// formatting). Off by default in production; the simulation harness turns it
 	// on. Env: AI_RESPONSE_GUARD.
 	ResponseGuard bool `mapstructure:"response_guard"`
+
+	// Cloudflare configures optional Cloudflare AI integrations: AI Gateway
+	// (caching/observability in front of Cencori), Workers AI (cheap model for
+	// intent classification and embeddings), and Vectorize (serverless vector
+	// store for episodic/fact memory). Every sub-feature is opt-in; when unset
+	// the existing direct Cencori/Qdrant paths are used unchanged.
+	Cloudflare CloudflareAIConfig `mapstructure:"cloudflare"`
+}
+
+// CloudflareAIConfig groups the optional Cloudflare AI services. AccountID and
+// APIToken are shared by Workers AI and Vectorize.
+// Env: AI_CLOUDFLARE_ACCOUNT_ID, AI_CLOUDFLARE_API_TOKEN.
+type CloudflareAIConfig struct {
+	AccountID string `mapstructure:"account_id"`
+	APIToken  string `mapstructure:"api_token"`
+
+	// Gateway proxies all Cencori chat/embedding traffic through Cloudflare AI
+	// Gateway for response caching, rate limiting, upstream fallback, and cost
+	// analytics without changing the agent's provider code.
+	Gateway CloudflareGatewayConfig `mapstructure:"gateway"`
+
+	// WorkersAI provides cheap/fast models for the agent's housekeeping steps
+	// (intent classification) and embeddings.
+	WorkersAI WorkersAIConfig `mapstructure:"workers_ai"`
+
+	// Vectorize is a serverless vector store that can back episodic/fact memory
+	// in place of (or alongside) Qdrant.
+	Vectorize VectorizeConfig `mapstructure:"vectorize"`
+}
+
+// CloudflareGatewayConfig configures routing AI traffic through Cloudflare AI Gateway.
+type CloudflareGatewayConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	BaseURL string `mapstructure:"base_url"` // full gateway URL, e.g. https://gateway.ai.cloudflare.com/v1/<account>/<gateway>
+	APIKey  string `mapstructure:"api_key"`  // gateway-scoped API key (replaces the origin key)
+}
+
+// WorkersAIConfig configures Cloudflare Workers AI for cheap agent housekeeping.
+type WorkersAIConfig struct {
+	Enabled             bool   `mapstructure:"enabled"`
+	ClassifierEnabled   bool   `mapstructure:"classifier_enabled"`
+	Model               string `mapstructure:"model"` // intent classification model
+	EmbeddingsEnabled   bool   `mapstructure:"embeddings_enabled"`
+	EmbeddingsModel     string `mapstructure:"embeddings_model"`
+	ClassifierTimeoutMS int    `mapstructure:"classifier_timeout_ms"`
+}
+
+// VectorizeConfig configures the Cloudflare Vectorize vector store.
+type VectorizeConfig struct {
+	Enabled          bool   `mapstructure:"enabled"`
+	DefaultDim       int    `mapstructure:"default_dim"`
+	CollectionPrefix string `mapstructure:"collection_prefix"`
 }
 
 // SupermemoryConfig contains Supermemory API configuration.
@@ -601,17 +653,17 @@ type AirbillsConfig struct {
 	MaxAmountNGN        float64 `mapstructure:"max_amount_ngn"`        // hard per-payment ceiling in NGN (safety cap)
 }
 
-// TravuConfig configures the Travu bus + flight booking aggregator. Bookings
-// debit Rail's prefunded NGN float on the Travu dashboard; Rail charges the
-// user in USDC via a ledger hold at the live FX rate.
-type TravuConfig struct {
-	SecretKey           string  `mapstructure:"secret_key"`            // Bearer token sent in the Authorization header
-	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.travu.africa/api/v1
-	Sandbox             bool    `mapstructure:"sandbox"`               // when true, use the /test base URL
-	AgentEmail          string  `mapstructure:"agent_email"`           // Rail's Travu account email, sent on bus bookings
-	FlightSearchEnabled bool    `mapstructure:"flight_search_enabled"` // gate flight search until Travu enables the endpoint
+// BrijConfig configures BRIJ Travel (travel.brij.fi), Rail's flight provider.
+// Flights are settled per call with x402 micropayments in USDC on Solana
+// mainnet from Rail's funding wallet; Rail charges the user via a ledger hold.
+type BrijConfig struct {
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://travel.brij.fi
+	SolanaRPC           string  `mapstructure:"solana_rpc"`            // Solana mainnet RPC (default: public mainnet-beta)
+	FundingPrivateKey   string  `mapstructure:"funding_private_key"`   // Rail's Solana wallet used to pay x402 charges
+	HTTPTimeout         int     `mapstructure:"http_timeout"`          // per-request timeout in seconds (default 30)
+	MaxRetries          int     `mapstructure:"max_retries"`           // retries for non-payment failures (default 2)
 	DeveloperFeePercent float64 `mapstructure:"developer_fee_percent"` // Rail's service fee % added to each booking
-	MaxAmountNGN        float64 `mapstructure:"max_amount_ngn"`        // hard per-booking ceiling in NGN (safety cap)
+	MaxEscrowUSD        float64 `mapstructure:"max_escrow_usd"`        // hard per-booking escrow ceiling in USDC (safety cap)
 }
 
 // WorkerConfig contains background worker configuration
@@ -620,6 +672,10 @@ type WorkerConfig struct {
 	JobTimeout                  int  `mapstructure:"job_timeout"`
 	MiriamIntelligenceLocal     bool `mapstructure:"miriam_intelligence_local"`
 	MiriamIntelligenceBatchSize int  `mapstructure:"miriam_intelligence_batch_size"`
+	// LeaderElection, when true, lets only one API replica run background
+	// workers (Redis SET NX). HTTP stays up on every replica. Default on in
+	// production so min-replicas > 1 does not double money crons.
+	LeaderElection bool `mapstructure:"leader_election"`
 }
 
 // AlpacaConfig contains brokerage API configuration
@@ -1036,6 +1092,22 @@ func setDefaults() {
 	viper.SetDefault("ai.cencori.top_p", 0.9)
 	viper.SetDefault("ai.cencori.timeout_seconds", 60)
 
+	// Cloudflare AI integrations (all opt-in, off by default)
+	viper.SetDefault("ai.cloudflare.account_id", "")
+	viper.SetDefault("ai.cloudflare.api_token", "")
+	viper.SetDefault("ai.cloudflare.gateway.enabled", false)
+	viper.SetDefault("ai.cloudflare.gateway.base_url", "")
+	viper.SetDefault("ai.cloudflare.gateway.api_key", "")
+	viper.SetDefault("ai.cloudflare.workers_ai.enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.classifier_enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.model", "@cf/meta/llama-3.1-8b-instruct")
+	viper.SetDefault("ai.cloudflare.workers_ai.embeddings_enabled", false)
+	viper.SetDefault("ai.cloudflare.workers_ai.embeddings_model", "@cf/baai/bge-base-en-v1.5")
+	viper.SetDefault("ai.cloudflare.workers_ai.classifier_timeout_ms", 800)
+	viper.SetDefault("ai.cloudflare.vectorize.enabled", false)
+	viper.SetDefault("ai.cloudflare.vectorize.default_dim", 768)
+	viper.SetDefault("ai.cloudflare.vectorize.collection_prefix", "")
+
 	// Compute defaults
 	viper.SetDefault("zerog.compute.broker_endpoint", "")
 	viper.SetDefault("zerog.compute.provider_id", "")
@@ -1081,6 +1153,7 @@ func setDefaults() {
 	viper.SetDefault("workers.job_timeout", 300)
 	viper.SetDefault("workers.miriam_intelligence_local", true)
 	viper.SetDefault("workers.miriam_intelligence_batch_size", 500)
+	viper.SetDefault("workers.leader_election", false)
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -1531,6 +1604,11 @@ func overrideFromEnv() {
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
 	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
 	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
+	viper.BindEnv("workers.leader_election", "WORKERS_LEADER_ELECTION")
+	if os.Getenv("WORKERS_LEADER_ELECTION") == "" &&
+		(os.Getenv("ENVIRONMENT") == "production" || viper.GetString("environment") == "production") {
+		viper.Set("workers.leader_election", true)
+	}
 
 	if chainrailsAPIKey := os.Getenv("CHAINRAILS_API_KEY"); chainrailsAPIKey != "" {
 		viper.Set("chainrails.api_key", chainrailsAPIKey)
@@ -1592,13 +1670,13 @@ func overrideFromEnv() {
 		{"airbills.developer_fee_percent", "AIRBILLS_DEVELOPER_FEE_PERCENT"},
 		{"airbills.default_token", "AIRBILLS_DEFAULT_TOKEN"},
 		{"airbills.max_amount_ngn", "AIRBILLS_MAX_AMOUNT_NGN"},
-		{"travu.secret_key", "TRAVU_SECRET_KEY"},
-		{"travu.base_url", "TRAVU_BASE_URL"},
-		{"travu.sandbox", "TRAVU_SANDBOX"},
-		{"travu.agent_email", "TRAVU_AGENT_EMAIL"},
-		{"travu.flight_search_enabled", "TRAVU_FLIGHT_SEARCH_ENABLED"},
-		{"travu.developer_fee_percent", "TRAVU_DEVELOPER_FEE_PERCENT"},
-		{"travu.max_amount_ngn", "TRAVU_MAX_AMOUNT_NGN"},
+		{"brij.base_url", "BRIJ_BASE_URL"},
+		{"brij.solana_rpc", "BRIJ_SOLANA_RPC"},
+		{"brij.funding_private_key", "BRIJ_FUNDING_PRIVATE_KEY"},
+		{"brij.http_timeout", "BRIJ_HTTP_TIMEOUT"},
+		{"brij.max_retries", "BRIJ_MAX_RETRIES"},
+		{"brij.developer_fee_percent", "BRIJ_DEVELOPER_FEE_PERCENT"},
+		{"brij.max_escrow_usd", "BRIJ_MAX_ESCROW_USD"},
 	} {
 		viper.BindEnv(kv[0], kv[1])
 		if v := os.Getenv(kv[1]); v != "" {
@@ -1740,9 +1818,18 @@ func validate(config *Config) error {
 		}
 	}
 
-	if config.Travu.SecretKey != "" {
-		if config.Travu.DeveloperFeePercent < 0 || config.Travu.DeveloperFeePercent > 100 {
-			return fmt.Errorf("travu.developer_fee_percent must be between 0 and 100, got %.4f", config.Travu.DeveloperFeePercent)
+	if config.Brij.FundingPrivateKey != "" {
+		if config.Brij.DeveloperFeePercent < 0 || config.Brij.DeveloperFeePercent > 100 {
+			return fmt.Errorf("brij.developer_fee_percent must be between 0 and 100, got %.4f", config.Brij.DeveloperFeePercent)
+		}
+		if config.Brij.MaxEscrowUSD < 0 {
+			return fmt.Errorf("brij.max_escrow_usd must be non-negative, got %.4f", config.Brij.MaxEscrowUSD)
+		}
+		if config.Brij.HTTPTimeout < 0 {
+			return fmt.Errorf("brij.http_timeout must be non-negative, got %d", config.Brij.HTTPTimeout)
+		}
+		if config.Brij.MaxRetries < 0 {
+			return fmt.Errorf("brij.max_retries must be non-negative, got %d", config.Brij.MaxRetries)
 		}
 	}
 

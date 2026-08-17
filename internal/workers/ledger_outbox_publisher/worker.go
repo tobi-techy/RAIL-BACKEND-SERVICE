@@ -13,8 +13,15 @@ import (
 )
 
 const (
-	maxOutboxRetries = 10
+	// MaxOutboxRetries is the retry ceiling: events reaching it are dead-lettered
+	// and never claimed again. The ledger maintenance worker purges them after
+	// the retention window.
+	MaxOutboxRetries = 10
 	outboxBatchSize  = 100
+
+	// outboxWriteTimeout bounds detached dispatch-outcome writes so an
+	// exhausted or cancelled parent context never strands an event.
+	outboxWriteTimeout = 5 * time.Second
 )
 
 type OutboxReader interface {
@@ -23,6 +30,7 @@ type OutboxReader interface {
 	RollbackTx(ctx context.Context) error
 	ClaimUnpublishedOutbox(ctx context.Context, batchSize int, maxRetries int) ([]repositories.OutboxRecord, error)
 	IncrementOutboxRetry(ctx context.Context, id uuid.UUID, lastErr string) error
+	MarkOutboxPublished(ctx context.Context, ids []uuid.UUID) error
 }
 
 type Worker struct {
@@ -69,38 +77,63 @@ func (w *Worker) publishOnce(ctx context.Context) {
 		return
 	}
 
-	// Claiming already set published_at, so success needs no further write.
-	// Failures reset published_at via IncrementOutboxRetry.
+	// Claiming sets a lease (claimed_at), not published_at: events are only
+	// marked published once dispatch succeeds, so an interrupted or failed
+	// dispatch is reclaimed on a later tick instead of being silently lost.
+	var published []uuid.UUID
 	var failed int
 	for _, evt := range events {
-		err := w.dispatch(evt)
-		if err == nil {
+		if err := w.dispatch(evt); err != nil {
+			failed++
+			w.logger.Error("Failed to dispatch outbox event",
+				zap.String("event_id", evt.ID.String()),
+				zap.String("event_type", evt.EventType),
+				zap.Error(err))
+			w.recordDispatchFailure(ctx, evt, err)
 			continue
 		}
+		published = append(published, evt.ID)
+	}
 
-		failed++
-		w.logger.Error("Failed to dispatch outbox event",
-			zap.String("event_id", evt.ID.String()),
-			zap.String("event_type", evt.EventType),
-			zap.Error(err))
-
-		if retryErr := w.store.IncrementOutboxRetry(ctx, evt.ID, err.Error()); retryErr != nil {
-			w.logger.Error("Failed to increment outbox retry",
-				zap.String("event_id", evt.ID.String()),
-				zap.Error(retryErr))
-		}
-
-		if evt.RetryCount+1 >= maxOutboxRetries {
-			w.logger.Warn("Outbox event exceeded max retries, dead-lettering",
-				zap.String("event_id", evt.ID.String()),
-				zap.Int("retry_count", evt.RetryCount+1))
+	if len(published) > 0 {
+		// Dispatch-outcome writes must survive shutdown or an exhausted caller
+		// context; if this write fails the lease expires and the batch is
+		// re-dispatched (at-least-once) on a later tick.
+		writeCtx, cancel := detachedWriteCtx(ctx)
+		defer cancel()
+		if err := w.store.MarkOutboxPublished(writeCtx, published); err != nil {
+			w.logger.Error("Failed to mark outbox events published",
+				zap.Int("count", len(published)),
+				zap.Error(err))
 		}
 	}
 
 	w.logger.Info("Outbox batch published",
 		zap.Int("claimed", len(events)),
-		zap.Int("dispatched", len(events)-failed),
+		zap.Int("dispatched", len(published)),
 		zap.Int("failed", failed))
+}
+
+// recordDispatchFailure un-claims a failed event so it is retried on a later
+// tick, and warns once the event hits the retry ceiling (dead-lettering).
+func (w *Worker) recordDispatchFailure(ctx context.Context, evt repositories.OutboxRecord, dispatchErr error) {
+	writeCtx, cancel := detachedWriteCtx(ctx)
+	defer cancel()
+	if err := w.store.IncrementOutboxRetry(writeCtx, evt.ID, dispatchErr.Error()); err != nil {
+		w.logger.Error("Failed to increment outbox retry",
+			zap.String("event_id", evt.ID.String()),
+			zap.Error(err))
+		// The claim lease expires and the event is reclaimed on a later tick,
+		// so the failed attempt is never silently dropped.
+		return
+	}
+
+	if evt.RetryCount+1 >= MaxOutboxRetries {
+		w.logger.Warn("Outbox event reached max retries, dead-lettering",
+			zap.String("event_id", evt.ID.String()),
+			zap.String("event_type", evt.EventType),
+			zap.Int("retry_count", evt.RetryCount+1))
+	}
 }
 
 // claim atomically reserves a batch of outbox events in its own transaction so
@@ -111,7 +144,7 @@ func (w *Worker) claim(ctx context.Context) ([]repositories.OutboxRecord, error)
 		return nil, fmt.Errorf("begin outbox claim tx: %w", err)
 	}
 
-	events, err := w.store.ClaimUnpublishedOutbox(txCtx, outboxBatchSize, maxOutboxRetries)
+	events, err := w.store.ClaimUnpublishedOutbox(txCtx, outboxBatchSize, MaxOutboxRetries)
 	if err != nil {
 		if rbErr := w.store.RollbackTx(txCtx); rbErr != nil {
 			w.logger.Error("Failed to roll back outbox claim tx", zap.Error(rbErr))
@@ -123,6 +156,13 @@ func (w *Worker) claim(ctx context.Context) ([]repositories.OutboxRecord, error)
 		return nil, fmt.Errorf("commit outbox claim tx: %w", err)
 	}
 	return events, nil
+}
+
+// detachedWriteCtx returns a context detached from the caller's cancellation so
+// dispatch-outcome writes survive an exhausted or cancelled parent context
+// (per-user budgets, worker shutdown).
+func detachedWriteCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), outboxWriteTimeout)
 }
 
 func (w *Worker) dispatch(evt repositories.OutboxRecord) error {

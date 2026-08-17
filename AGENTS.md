@@ -31,6 +31,19 @@ Recent history follows imperative subjects with prefixes such as `feat:`, `fix:`
 
 Never commit live secrets or edited `.env` files. Start from `.env.example` and config under `configs/`. Prefer secret managers and environment variables for credentials. If you touch auth, payments, or webhooks, run `make security-scan` before review.
 
+## Deployment — AtlasFlow
+
+Rail deploys to [AtlasFlow](https://atlasflow.com). Full guide: `deployments/atlasflow/README.md`. Secrets live in the AtlasFlow dashboard (never in git).
+
+| Project slug | Root | Port | Tier |
+|---|---|---|---|
+| `rail-backend-service` | `/` | 8080 | medium — live API + Miriam at `https://api.userail.money` |
+| `spectrum-bridge` | `/cmd/spectrum-bridge` | 3000 | small — set Spectrum/AMQP/HMAC before first healthy deploy |
+| `rail-enrichment` | `/services/enrichment` | 8090 | small — no secrets |
+| `rail-ocr` | `/services/ocr` | 8091 | large — no secrets |
+
+Workspace `tobi-omotade-2cd167ac`. GitHub `tobi-techy/RAIL-BACKEND-SERVICE`. There is no separate Miriam project. Do not create `rail-api`.
+
 ## What we have learned
 
 - Outcome tracking & calibration: `OutcomeTracker` (outcome_tracker.go) records every prediction as a pending outcome, evaluates whether it materialised after the horizon expires, and stores the result in `miriam_prediction_outcomes`. `GetPredictionHitRate` returns accuracy ratio over a lookback period. In `RefreshMoneyState`, the confidence score is multiplied by the hit rate (if > 0) so past prediction accuracy directly scales confidence — a system that's been 60% right can't claim "high confidence". Migration file: `219_miriam_prediction_outcomes`.
@@ -49,3 +62,5 @@ Never commit live secrets or edited `.env` files. Start from `.env.example` and 
 - Audit trail on every ledger transaction: `initiated_by` (user/system/admin/webhook/bridge/automation) and `reason` (free-text). `CreateTransactionRequest` requires `InitiatedBy`; defaults to `"system"` in `createTransaction` and `CreatePendingTransaction`. All 15 internal callers set the correct value (TransferStashToSpending=user, AdminTransferStashToSpending=admin, AutomationTransferSpendToStash=automation, etc.).
 - Velocity limits (circuit breaker): `ledger_velocity_buckets` table tracks daily outflow + tx count per account. `SetVelocityConfig(cfg)` on `Service` to configure `MaxDailyOutflow` and `MaxDailyTxCount`. Check runs inside `executeTransaction` before each debit entry. Increments bucket atomically after balance update. Only applies to debit (EntryTypeCredit) entries. Nil config = disabled. 31 integration tests pass.
 - Circle webhooks: Circle's fungible `/balances` endpoint does NOT include NFTs — NFTs are served by `/v1/w3s/wallets/{id}/nfts` and carry an `nftTokenId` (token id within the contract) distinct from the token UUID. An NFT inbound used to 500-loop because `GetTokenSymbol` only searched `/balances`. `processInboundDeposit` now falls back to `GetNFTTokenID`; resolvable NFTs are returned to sender via `ReturnUnsupportedNFT` (Circle requires `nftTokenIds`, not `tokenId`, for NFT transfers), and unresolvable tokens are acked (200) instead of erroring. Only real API failures or return-transfer failures still surface 500 for retry. Minted spam drops (source = `0x0000...0000` zero address) are never refunded — `isUnreturnableSource` skips empty/zero/burn/same-wallet sources so we don't 500-loop or burn the asset.
+- AtlasFlow is the deploy target. Live Go slug is `rail-backend-service`. Sidecar roots must start with `/`. Health probes `GET /` on `PORT` (default 3000). Workspace plan allows only `standard` build-tier; OCR runtime can be `large`. Env vars are dashboard-only. Shared names: `PLATFORM_AMQP_URL`/`AMQP_URL` and `PLATFORM_BRIDGE_HMAC_SECRET`/`RAIL_HMAC_SECRET`.
+- Worker leader election (`WORKERS_LEADER_ELECTION`, default on in production): Redis `rail:worker-leader` SET NX so only one API replica runs crons. HTTP stays up on every replica. Required before `--min-replicas 2`. Spectrum stays at 1 replica (local `spaces.json`). Enrichment model is vendored at `services/enrichment/models/brand_classifier.joblib` — do not train it in Docker.

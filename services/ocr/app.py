@@ -43,8 +43,10 @@ class OCRResponse(BaseModel):
     lines: list[OCRLine]
 
 
+@app.get("/")
 @app.get("/health")
 def health() -> dict[str, str]:
+    # AtlasFlow probes GET / every 15s (any 2xx = healthy).
     return {"status": "ok"}
 
 

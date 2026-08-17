@@ -178,7 +178,15 @@ func (c *sweepCache) imminent(ctx context.Context, days int) decimal.Decimal {
 func (c *sweepCache) thisMonth(ctx context.Context) *entities.MoneyFlowSummary {
 	if !c.thisMonthFlowLoaded {
 		if c.tracker.spending != nil {
-			c.thisMonthFlow, _ = c.tracker.spending.GetMoneyFlow(ctx, c.userID, c.monthStart(), c.now)
+			flow, err := c.tracker.spending.GetMoneyFlow(ctx, c.userID, c.monthStart(), c.now)
+			if err != nil {
+				if c.tracker.logger != nil {
+					c.tracker.logger.Warn("failed to fetch this month flow for prediction evaluation",
+						zap.String("user_id", c.userID.String()), zap.Error(err))
+				}
+			} else {
+				c.thisMonthFlow = flow
+			}
 		}
 		c.thisMonthFlowLoaded = true
 	}
@@ -189,7 +197,15 @@ func (c *sweepCache) priorMonth(ctx context.Context) *entities.MoneyFlowSummary 
 	if !c.priorMonthFlowLoaded {
 		if c.tracker.spending != nil {
 			monthStart := c.monthStart()
-			c.priorMonthFlow, _ = c.tracker.spending.GetMoneyFlow(ctx, c.userID, monthStart.AddDate(0, -1, 0), monthStart)
+			flow, err := c.tracker.spending.GetMoneyFlow(ctx, c.userID, monthStart.AddDate(0, -1, 0), monthStart)
+			if err != nil {
+				if c.tracker.logger != nil {
+					c.tracker.logger.Warn("failed to fetch prior month flow for prediction evaluation",
+						zap.String("user_id", c.userID.String()), zap.Error(err))
+				}
+			} else {
+				c.priorMonthFlow = flow
+			}
 		}
 		c.priorMonthFlowLoaded = true
 	}
@@ -205,50 +221,57 @@ func (t *OutcomeTracker) evaluatePrediction(ctx context.Context, o entities.Miri
 		return currentSpend.LessThan(cache.imminent(ctx, 7))
 
 	case entities.PredictionIncomeGap:
-		flow := cache.thisMonth(ctx)
-		if flow == nil {
-			return false
-		}
-		// Parse projected_income from the prediction snapshot stored in threshold_data.
-		var td struct {
-			DataSnapshot string `json:"data_snapshot"`
-		}
-		if err := json.Unmarshal(o.ThresholdData, &td); err != nil || td.DataSnapshot == "" {
-			return false
-		}
-		var snap struct {
-			ProjectedIncome string `json:"projected_income"`
-		}
-		if err := json.Unmarshal([]byte(td.DataSnapshot), &snap); err != nil || snap.ProjectedIncome == "" {
-			return false
-		}
-		projected, err := decimal.NewFromString(snap.ProjectedIncome)
-		if err != nil || !projected.IsPositive() {
-			return false
-		}
-		// Income gap is "true" if current month actual deposits trailed
-		// the projected income by more than 30%.
-		return flow.TotalDeposits.LessThan(projected.Mul(decimal.NewFromFloat(0.7)))
+		return resolveIncomeGap(ctx, o.ThresholdData, cache)
 
 	case entities.PredictionSpendingAnomaly:
-		thisMonth := cache.thisMonth(ctx)
-		lastMonth := cache.priorMonth(ctx)
-		if thisMonth == nil || lastMonth == nil {
-			return false
-		}
-		thisOut := totalOut(thisMonth)
-		lastOut := totalOut(lastMonth)
-		return lastOut.IsPositive() && thisOut.GreaterThan(lastOut.Mul(decimal.NewFromFloat(1.35)))
+		return resolveSpendingAnomaly(ctx, cache)
 
-	case entities.PredictionIdleSurplus:
-		return false // idle surplus is not a negative outcome — just informational
-
-	case entities.PredictionStashOpportunity:
-		return false // stash opportunity is informational
+	case entities.PredictionIdleSurplus, entities.PredictionStashOpportunity:
+		return false // both outcomes are informational, never negative
 
 	default:
 		return false
 	}
+}
+
+// resolveIncomeGap reports whether current month deposits trailed the projected
+// income captured in the prediction snapshot by more than 30%.
+func resolveIncomeGap(ctx context.Context, thresholdData []byte, cache *sweepCache) bool {
+	flow := cache.thisMonth(ctx)
+	if flow == nil {
+		return false
+	}
+	// Parse projected_income from the prediction snapshot stored in threshold_data.
+	var td struct {
+		DataSnapshot string `json:"data_snapshot"`
+	}
+	if err := json.Unmarshal(thresholdData, &td); err != nil || td.DataSnapshot == "" {
+		return false
+	}
+	var snap struct {
+		ProjectedIncome string `json:"projected_income"`
+	}
+	if err := json.Unmarshal([]byte(td.DataSnapshot), &snap); err != nil || snap.ProjectedIncome == "" {
+		return false
+	}
+	projected, err := decimal.NewFromString(snap.ProjectedIncome)
+	if err != nil || !projected.IsPositive() {
+		return false
+	}
+	return flow.TotalDeposits.LessThan(projected.Mul(decimal.NewFromFloat(0.7)))
+}
+
+// resolveSpendingAnomaly reports whether this month's outflow exceeded last
+// month's by more than 35% (the growth threshold used when the prediction was made).
+func resolveSpendingAnomaly(ctx context.Context, cache *sweepCache) bool {
+	thisMonth := cache.thisMonth(ctx)
+	lastMonth := cache.priorMonth(ctx)
+	if thisMonth == nil || lastMonth == nil {
+		return false
+	}
+	thisOut := totalOut(thisMonth)
+	lastOut := totalOut(lastMonth)
+	return lastOut.IsPositive() && thisOut.GreaterThan(lastOut.Mul(decimal.NewFromFloat(1.35)))
 }
 
 // GetHitRate returns the fraction of evaluated predictions that were correct

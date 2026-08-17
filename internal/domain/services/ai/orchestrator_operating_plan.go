@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -32,6 +33,12 @@ func (o *AgentAdapter) SetFinancialObligationProvider(p FinancialObligationProvi
 
 func (o *AgentAdapter) SetCurrencyRateProvider(p CurrencyRateProvider) {
 	o.currencyRates = p
+}
+
+// SetTravel wires the BRIJ travel provider used to resolve the exact booking
+// charge for the book_flight confirmation card.
+func (o *AgentAdapter) SetTravel(t core.TravelProvider) {
+	o.travel = t
 }
 
 func MoneyOperatingPlanTool() infraai.Tool {

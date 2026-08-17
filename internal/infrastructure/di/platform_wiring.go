@@ -85,6 +85,10 @@ func (c *Container) initializePlatformMessaging() {
 			c.MiriamBridgeDispatcher = bridgeDispatcher
 			c.MiriamProactiveChatSender = bridgeDispatcher
 
+			if c.TravelService != nil {
+				c.TravelService.SetTicketMessenger(&travelMessengerAdapter{dispatcher: bridgeDispatcher})
+			}
+
 			// Voice notes (TTS out / STT in) via ElevenLabs, when configured.
 			var voiceTranscoder platform.VoiceTranscoder
 			if el := c.Config.AI.ElevenLabs; el.APIKey != "" && el.VoiceID != "" {

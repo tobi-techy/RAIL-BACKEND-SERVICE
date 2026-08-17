@@ -42,6 +42,7 @@ import (
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	airbills_recovery "github.com/rail-service/rail_service/internal/workers/airbills_recovery"
+	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	autopilot_worker "github.com/rail-service/rail_service/internal/workers/autopilot_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
@@ -103,6 +104,7 @@ type Application struct {
 	ramphubOnrampRecoveryWorker  *ramphub_onramp_recovery.Worker
 	graphNGNRecoveryWorker       *graph_ngn_recovery.Worker
 	airbillsRecoveryWorker       *airbills_recovery.Worker
+	travelRecoveryWorker         *travel_recovery.Worker
 	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
 	rebalancingWorker            *rebalancing_worker.Worker
@@ -130,6 +132,11 @@ type Application struct {
 	// Redis health monitor
 	redisMonitor  *cache.HealthMonitor
 	monitorCancel context.CancelFunc
+
+	// Worker leader election (production, multi-replica)
+	leaderLock     *cache.LeaderLock
+	leaderCancel   context.CancelFunc
+	workersStarted bool
 
 	// Tracing
 	tracingShutdown func(context.Context) error
@@ -187,8 +194,11 @@ func (app *Application) Initialize() error {
 		return fmt.Errorf("security config validation failed: %w", err)
 	}
 
-	// Initialize workers
-	if err := app.initializeWorkers(); err != nil {
+	// Redis monitor is per-process. Background workers run on one replica only
+	// when leader election is on (production default) so min-replicas > 1 does
+	// not double money crons.
+	app.startRedisMonitor()
+	if err := app.startWorkersOrElect(); err != nil {
 		return fmt.Errorf("failed to initialize workers: %w", err)
 	}
 
@@ -226,28 +236,6 @@ func (app *Application) initializeTracing() error {
 
 // initializeWorkers initializes all background workers
 func (app *Application) initializeWorkers() error {
-	// Redis health monitor — alerts on Redis down/recovered (e.g. Upstash budget
-	// suspension) so it pages us instead of becoming user-facing 503s.
-	if app.container != nil && app.container.RedisClient != nil {
-		alerter := alerting.NewTelegramAlerter(app.cfg.TelegramAlerts.BotToken, app.cfg.TelegramAlerts.ChatID)
-		monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 60*time.Second, func(up bool, err error) {
-			if up {
-				if alerter != nil {
-					alerter.SendFatal("✅ Redis recovered", nil)
-				}
-				return
-			}
-			app.log.Error("Redis is DOWN — auth blacklist failing closed, rate limiting degraded", "error", err)
-			if alerter != nil {
-				alerter.SendFatal("🚨 Redis DOWN (check Upstash budget/suspension)", err)
-			}
-		})
-		monCtx, monCancel := context.WithCancel(context.Background())
-		app.monitorCancel = monCancel
-		app.redisMonitor = monitor
-		monitor.Start(monCtx)
-	}
-
 	// Wallet provisioning scheduler
 	if err := app.initializeWalletProvisioning(); err != nil {
 		return fmt.Errorf("failed to initialize wallet provisioning: %w", err)
@@ -383,6 +371,14 @@ func (app *Application) initializeWorkers() error {
 		app.airbillsRecoveryWorker = airbills_recovery.NewWorker(app.container.BillPayService, app.log.Zap())
 		go app.airbillsRecoveryWorker.Start(context.Background())
 		app.log.Info("Airbills recovery worker started")
+	}
+
+	// Travel recovery worker — reverses abandoned flight holds, finalizes
+	// ticketed bookings, and re-delivers tickets that failed to send.
+	if app.container.TravelService != nil {
+		app.travelRecoveryWorker = travel_recovery.NewWorker(app.container.TravelService, app.log.Zap())
+		go app.travelRecoveryWorker.Start(context.Background())
+		app.log.Info("Travel recovery worker started")
 	}
 
 	// Withdrawal recovery worker — auto-reverses stuck crypto withdrawals and
@@ -1225,6 +1221,13 @@ func (app *Application) startMetricsCollection() {
 func (app *Application) Shutdown() error {
 	app.log.Info("Shutting down server...")
 
+	if app.leaderCancel != nil {
+		app.leaderCancel()
+	}
+	if app.leaderLock != nil {
+		app.leaderLock.Release(context.Background())
+	}
+
 	// Stop workers
 	app.stopWorkers()
 
@@ -1324,6 +1327,9 @@ func (app *Application) stopWorkers() {
 	if app.airbillsRecoveryWorker != nil {
 		app.airbillsRecoveryWorker.Stop()
 	}
+	if app.travelRecoveryWorker != nil {
+		app.travelRecoveryWorker.Stop()
+	}
 
 	// Stop KYC auto-invest worker
 	if app.kycAutoInvestWorker != nil {
@@ -1367,13 +1373,7 @@ func (app *Application) stopWorkers() {
 		app.autopilotCancel()
 	}
 
-	// Stop Redis health monitor.
-	if app.monitorCancel != nil {
-		app.monitorCancel()
-	}
-	if app.redisMonitor != nil {
-		app.redisMonitor.Wait()
-	}
+	app.stopRedisMonitor()
 }
 
 type dailyPulseUserRepoAdapter struct {

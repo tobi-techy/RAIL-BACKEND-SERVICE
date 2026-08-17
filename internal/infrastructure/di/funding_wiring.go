@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -22,9 +23,11 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	"github.com/rail-service/rail_service/internal/domain/services/pajfunding"
 	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
+	"github.com/rail-service/rail_service/internal/domain/services/travel"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/airbills"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	graphadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/graph"
 	pajadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/paj"
@@ -373,6 +376,35 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.ZapLog.Fatal("SECURITY: Airbills webhook_secret is required when Airbills secret key is configured — refusing to start with unauthenticated callbacks")
 	} else {
 		c.ZapLog.Warn("Airbills secret key is empty, skipping bill payments initialization")
+	}
+
+	// --- BRIJ Travel (flight bookings via travel.brij.fi). Settlement is per
+	// call via x402 micropayments from Rail's funding wallet; the user is
+	// charged through the ledger with a spend-balance hold. Messenger is wired
+	// later in initializePlatformMessaging once the bridge dispatcher exists.
+	if c.Config.Brij.FundingPrivateKey != "" {
+		brijClient, err := brij.NewClient(brij.Config{
+			BaseURL:             c.Config.Brij.BaseURL,
+			SolanaRPC:           c.Config.Brij.SolanaRPC,
+			FundingPrivateKey:   c.Config.Brij.FundingPrivateKey,
+			HTTPTimeout:         time.Duration(c.Config.Brij.HTTPTimeout) * time.Second,
+			MaxRetries:          c.Config.Brij.MaxRetries,
+			MaxPaymentBaseUnits: int64(c.Config.Brij.MaxEscrowUSD * 1_000_000),
+		}, c.ZapLog)
+		if err != nil {
+			c.ZapLog.Fatal("failed to initialize BRIJ client", zap.Error(err))
+		}
+		travelService := travel.NewService(sqlxDB, brijClient, travel.Config{
+			DeveloperFeePercent: c.Config.Brij.DeveloperFeePercent,
+			MaxEscrowUSD:        c.Config.Brij.MaxEscrowUSD,
+		}, c.ZapLog)
+		if c.LedgerService != nil {
+			travelService.SetLedger(&WithdrawalLedgerAdapter{ledgerService: c.LedgerService})
+		}
+		c.TravelService = travelService
+		c.ZapLog.Info("BRIJ travel initialized")
+	} else {
+		c.ZapLog.Warn("BRIJ funding private key is empty, skipping travel initialization")
 	}
 
 	// Initialize unified activity feed service
