@@ -29,7 +29,7 @@ services:
       - UNOSEND_API_KEY=${UNOSEND_API_KEY:-}
       - RESEND_API_KEY=${RESEND_API_KEY:-}
       - EMAIL_FROM_EMAIL=${EMAIL_FROM_EMAIL:-noreply@mail.userail.money}
-      - EMAIL_FROM_NAME=${EMAIL_FROM_NAME:-RAIL Staging}
+      - EMAIL_FROM_NAME=${EMAIL_FROM_NAME:-RAIL}
       - EMAIL_REPLY_TO=${EMAIL_REPLY_TO:-support@userail.money}
     depends_on:
       db:

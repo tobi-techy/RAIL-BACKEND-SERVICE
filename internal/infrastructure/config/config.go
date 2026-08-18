@@ -1444,6 +1444,10 @@ func overrideFromEnv() {
 	}
 	if fromName := os.Getenv("EMAIL_FROM_NAME"); fromName != "" {
 		viper.Set("email.from_name", fromName)
+	} else if strings.EqualFold(os.Getenv("ENVIRONMENT"), "production") {
+		// In production, never inherit the "RAIL Staging" default from
+		// docker-compose / config.yaml when EMAIL_FROM_NAME is unset.
+		viper.Set("email.from_name", "RAIL")
 	}
 	if replyTo := os.Getenv("EMAIL_REPLY_TO"); replyTo != "" {
 		viper.Set("email.reply_to", replyTo)
@@ -1695,6 +1699,25 @@ func overrideFromEnv() {
 		viper.Set("social_auth.apple.private_key", v)
 	}
 
+	// Google Sign-In — explicit env binding so SOCIAL_AUTH_GOOGLE_* vars reliably
+	// override the empty defaults in config.yaml. AutomaticEnv alone is unreliable
+	// for nested keys across viper versions.
+	if v := os.Getenv("SOCIAL_AUTH_GOOGLE_CLIENT_ID"); v != "" {
+		viper.Set("social_auth.google.client_id", v)
+	}
+	if v := os.Getenv("SOCIAL_AUTH_GOOGLE_CLIENT_SECRET"); v != "" {
+		viper.Set("social_auth.google.client_secret", v)
+	}
+	if v := os.Getenv("SOCIAL_AUTH_GOOGLE_REDIRECT_URI"); v != "" {
+		viper.Set("social_auth.google.redirect_uri", v)
+	}
+	if v := os.Getenv("SOCIAL_AUTH_APPLE_CLIENT_ID"); v != "" {
+		viper.Set("social_auth.apple.client_id", v)
+	}
+	if v := os.Getenv("SOCIAL_AUTH_APPLE_REDIRECT_URI"); v != "" {
+		viper.Set("social_auth.apple.redirect_uri", v)
+	}
+
 	// Blend.money yield
 	if v := os.Getenv("BLEND_ENABLED"); v != "" {
 		viper.Set("blend.enabled", v)
@@ -1852,6 +1875,18 @@ func validate(config *Config) error {
 	if config.Environment == "production" {
 		if config.Redis.Password == "" {
 			return fmt.Errorf("redis password is required in %s environment", config.Environment)
+		}
+		// SAFETY: Never allow "Staging" in production email from_name.
+		// Auto-correct to "RAIL" and warn instead of failing the boot —
+		// failing would take down production. This catches misconfigured
+		// EMAIL_FROM_NAME env vars that would otherwise send users emails
+		// branded as "RAIL Staging" in production.
+		if strings.Contains(strings.ToLower(config.Email.FromName), "staging") {
+			fmt.Fprintf(os.Stderr,
+				"WARNING: email.from_name is %q in production environment — overriding to \"RAIL\". "+
+					"Set EMAIL_FROM_NAME to a production-appropriate value in the deployment dashboard.\n",
+				config.Email.FromName)
+			config.Email.FromName = "RAIL"
 		}
 	}
 

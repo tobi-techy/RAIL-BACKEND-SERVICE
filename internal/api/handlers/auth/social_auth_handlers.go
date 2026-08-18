@@ -157,6 +157,16 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		socialInfo, err = h.socialAuthService.Authenticate(ctx, &req)
 		if err != nil {
 			h.logger.Error("Social authentication failed", zap.Error(err), zap.String("provider", string(req.Provider)))
+			// Distinguish config errors from auth failures so the client can show
+			// a actionable message instead of a generic "Authentication failed".
+			errMsg := strings.ToLower(err.Error())
+			if strings.Contains(errMsg, "not configured") || strings.Contains(errMsg, "missing client id") {
+				c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
+					Code:    "SOCIAL_AUTH_UNAVAILABLE",
+					Message: "Social authentication is not configured on the server. Please contact support or use email sign in.",
+				})
+				return
+			}
 			c.JSON(http.StatusUnauthorized, entities.ErrorResponse{Code: "AUTH_FAILED", Message: "Authentication failed"})
 			return
 		}
