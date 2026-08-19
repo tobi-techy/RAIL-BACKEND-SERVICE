@@ -2,6 +2,7 @@ package platform
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/platform"
+	"go.uber.org/zap"
 )
 
 type PlatformHandler struct {
@@ -16,10 +18,15 @@ type PlatformHandler struct {
 	// bridgeAddress is the platform address users text the link code to (e.g. the
 	// bridge's iMessage handle). Empty if not configured.
 	bridgeAddress string
+	logger        *zap.Logger
 }
 
 func NewPlatformHandler(ls *platform.LinkingService, bridgeAddress string) *PlatformHandler {
 	return &PlatformHandler{linkingService: ls, bridgeAddress: bridgeAddress}
+}
+
+func NewPlatformHandlerWithLogger(ls *platform.LinkingService, bridgeAddress string, logger *zap.Logger) *PlatformHandler {
+	return &PlatformHandler{linkingService: ls, bridgeAddress: bridgeAddress, logger: logger}
 }
 
 type initiateLinkRequest struct {
@@ -128,4 +135,44 @@ func (h *PlatformHandler) ListLinked(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, identities)
+}
+
+// HandleInbound receives an inbound message from the bridge via HTTP POST
+// and feeds it to the processor. HMAC-authenticated via middleware.
+func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 5*1024*1024))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+		if err := processor.Process(c.Request.Context(), body); err != nil {
+			if h.logger != nil {
+				h.logger.Warn("platform inbound processing failed", zap.Error(err))
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
+// HandleAction receives an action postback (confirm/cancel) from the bridge
+// via HTTP POST and feeds it to the processor. HMAC-authenticated via middleware.
+func (h *PlatformHandler) HandleAction(processor *platform.Processor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1024*1024))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+		if err := processor.ProcessAction(c.Request.Context(), body); err != nil {
+			if h.logger != nil {
+				h.logger.Warn("platform action processing failed", zap.Error(err))
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
 }

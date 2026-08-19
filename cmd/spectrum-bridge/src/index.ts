@@ -1,11 +1,10 @@
-import { Spectrum, type Space, type Message } from "spectrum-ts";
+import { Spectrum, type Space, type Message, typing } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { telegram } from "spectrum-ts/providers/telegram";
 import { whatsappBusiness } from "spectrum-ts/providers/whatsapp-business";
 import express from "express";
 import crypto from "node:crypto";
 import { loadConfig } from "./config";
-import { createRabbitMQ, InboundMessage, ActionEvent, RetryableOutboundError } from "./rabbitmq";
 import { MessageHandler, OutboundMessage } from "./handler";
 import { getLogger, childLogger } from "./logger";
 import { SpaceStore } from "./space-store";
@@ -15,6 +14,40 @@ const log = getLogger();
 
 const app = express();
 
+// Webhook route MUST be registered BEFORE the global express.json() middleware.
+// express.json() consumes the request body stream; if it runs first, the route-level
+// express.raw() can't recover the raw bytes the Spectrum SDK needs for HMAC verification.
+// We use a deferred handler since the agent isn't created until start().
+let webhookAgent: Awaited<ReturnType<typeof Spectrum>> | null = null;
+
+app.post(
+  config.SPECTRUM_WEBHOOK_PATH,
+  express.raw({ type: "*/*" }),
+  async (req, res) => {
+    if (!webhookAgent) {
+      res.status(503).json({ error: "bridge not ready" });
+      return;
+    }
+    try {
+      const result = await webhookAgent.webhook(
+        {
+          body: req.body as Uint8Array,
+          headers: req.headers as Record<string, string>,
+        },
+        async (space: Space, message: Message) => {
+          await handleInbound(space, message);
+        },
+      );
+      res.status(result.status).set(result.headers).send(Buffer.from(result.body));
+    } catch (err) {
+      log.error({ err }, "webhook handler failed");
+      res.status(500).json({ error: "internal error" });
+    }
+  },
+);
+
+// Global JSON parser for /send and other JSON endpoints — registered AFTER the
+// webhook route so it doesn't consume the webhook's raw body.
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -23,12 +56,6 @@ app.use(
   }),
 );
 
-const rabbit = createRabbitMQ(
-  config.AMQP_URL,
-  config.AMQP_EXCHANGE,
-  config.AMQP_OUTBOUND_QUEUE,
-  config.AMQP_OUTBOUND_ROUTING_KEY,
-);
 const handler = new MessageHandler();
 
 // Persistent space store — survives bridge restarts so we know which threads exist.
@@ -42,6 +69,17 @@ spaceStore.startAutoSave();
 // which covers every reply/confirmation path.
 const spaces = new Map<string, Space>();
 
+// Outbound delivery queue: messages that couldn't be delivered because the Space
+// was cold (bridge restarted, space not yet re-discovered). Retried with backoff.
+interface QueuedOutbound {
+  msg: OutboundMessage;
+  attempts: number;
+  nextRetry: number;
+}
+const outboundQueue: QueuedOutbound[] = [];
+const MAX_OUTBOUND_RETRIES = 5;
+const RETRY_BASE_MS = 2_000;
+
 function verifyHMAC(payload: string, signature: string): boolean {
   try {
     const expected = crypto
@@ -54,10 +92,6 @@ function verifyHMAC(payload: string, signature: string): boolean {
   }
 }
 
-// The backend stores platforms by its own lowercase enums (imessage, whatsapp,
-// telegram), but the SDK names them differently per provider ("iMessage",
-// "WhatsApp Business"). Normalize inbound platform labels so linking, identity
-// resolution, and routing keys all agree.
 function normalizePlatform(platform: string): string {
   switch (platform.toLowerCase()) {
     case "imessage":
@@ -72,23 +106,92 @@ function normalizePlatform(platform: string): string {
   }
 }
 
-async function sendToSpace(msg: OutboundMessage): Promise<void> {
+function signPayload(payload: string): string {
+  return crypto
+    .createHmac("sha256", config.RAIL_HMAC_SECRET)
+    .update(payload)
+    .digest("hex");
+}
+
+async function postToBackend(path: string, body: unknown): Promise<void> {
+  const url = `${config.RAIL_BACKEND_URL}${path}`;
+  const payload = JSON.stringify(body);
+  const sig = signPayload(payload);
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-HMAC-SHA256": sig,
+    },
+    body: payload,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    log.error({ url, status: resp.status, body: text.slice(0, 200) }, "backend POST failed");
+    throw new Error(`backend ${path}: ${resp.status}`);
+  }
+}
+
+async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
   const space = spaces.get(msg.thread_id);
   if (!space) {
-    // Track that we had a miss for observability, then surface as retryable so
-    // the message is requeued — when the user messages again, the space will be
-    // rediscovered and the message will be delivered.
     const known = spaceStore.has(msg.thread_id);
     log.warn(
       { thread_id: msg.thread_id, known_space: known },
-      `no active space for thread_id="${msg.thread_id}" — will requeue`,
+      `no active space for thread_id="${msg.thread_id}"`,
     );
-    throw new RetryableOutboundError(`no active space for thread_id="${msg.thread_id}"`);
+    return false;
   }
-  await handler.handleOutbound(space, msg);
+  try {
+    await handler.handleOutbound(space, msg);
+    // Mark inbound message as read after successful reply
+    const lastInbound = handler.getLastInboundMessage(msg.thread_id);
+    if (lastInbound) {
+      space.read(lastInbound).catch(() => {});
+    }
+    return true;
+  } catch (err) {
+    log.error({ err, thread_id: msg.thread_id }, "failed to send to space");
+    return false;
+  }
 }
 
-// HTTP fallback (primary path is the RabbitMQ outbound queue). Signature required.
+// Process outbound queue — retry messages that failed due to cold spaces.
+function processOutboundQueue(): void {
+  const now = Date.now();
+  for (let i = outboundQueue.length - 1; i >= 0; i--) {
+    const item = outboundQueue[i];
+    if (now < item.nextRetry) continue;
+
+    outboundQueue.splice(i, 1);
+
+    sendToSpace(item.msg).then((sent) => {
+      if (!sent && item.attempts < MAX_OUTBOUND_RETRIES) {
+        const delay = RETRY_BASE_MS * Math.pow(2, item.attempts);
+        outboundQueue.push({
+          msg: item.msg,
+          attempts: item.attempts + 1,
+          nextRetry: Date.now() + delay,
+        });
+        log.info(
+          { thread_id: item.msg.thread_id, attempt: item.attempts + 1, retry_in: delay },
+          "outbound queued for retry",
+        );
+      } else if (!sent) {
+        log.warn(
+          { thread_id: item.msg.thread_id, attempts: item.attempts },
+          "outbound delivery failed after max retries",
+        );
+      }
+    });
+  }
+}
+
+setInterval(processOutboundQueue, 5_000);
+
+// HTTP endpoint for the backend to send outbound messages to the bridge.
 app.post("/send", (req, res) => {
   const raw =
     (req as express.Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body);
@@ -98,8 +201,14 @@ app.post("/send", (req, res) => {
     res.status(401).json({ error: "invalid or missing HMAC signature" });
     return;
   }
-  sendToSpace(req.body as OutboundMessage).catch((err) => {
-    log.error({ err }, "HTTP /send failed");
+  const msg = req.body as OutboundMessage;
+
+  sendToSpace(msg).then((sent) => {
+    if (!sent) {
+      // Queue for retry — user will need to message again to warm the space,
+      // or the space will be re-discovered on next inbound.
+      outboundQueue.push({ msg, attempts: 0, nextRetry: Date.now() + RETRY_BASE_MS });
+    }
   });
   res.json({ status: "queued" });
 });
@@ -109,23 +218,10 @@ app.get(["/", "/health"], (_req, res) => {
     status: "ok",
     spaces: spaces.size,
     known_threads: spaceStore.count(),
-    rabbitmq_connected: rabbit.isConnected(),
+    queued_outbound: outboundQueue.length,
     uptime_sec: Math.floor(process.uptime()),
   });
 });
-
-// Outbound consumer — primary path.
-rabbit.consumeOutbound(async (raw: string) => {
-  let msg: OutboundMessage;
-  try {
-    msg = JSON.parse(raw) as OutboundMessage;
-  } catch {
-    log.error({ raw: raw.slice(0, 200) }, "invalid outbound message JSON — dead-lettering");
-    // Throw to trigger DLQ in the consumer
-    throw new Error("invalid outbound message JSON");
-  }
-  await sendToSpace(msg);
-}, config.AMQP_OUTBOUND_QUEUE);
 
 async function handleInbound(space: Space, message: Message): Promise<void> {
   const threadID = space.id;
@@ -145,109 +241,124 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     return;
   }
 
-  // A poll vote is how users confirm/cancel actions (iMessage has no buttons).
-  // poll_option also fires on de-select — only act when an option is selected.
-  if (content.type === "poll_option") {
-    if (!content.selected) return;
-    const choice = content.option.title.trim().toLowerCase();
-    const event: ActionEvent = {
-      action: choice === "confirm" ? "confirm" : "cancel",
-      poll_title: content.poll.title,
-      user_id: senderId,
-      space_id: space.id,
-      platform,
-    };
-    await rabbit.publishAction(event);
-    log.info({ action: event.action }, "published poll vote");
-    return;
-  }
+  // Show typing indicator while we process
+  space.startTyping().catch(() => {});
 
-  // Voice note — ship the audio to the backend for transcription.
-  if (content.type === "voice") {
-    let audioB64: string;
-    try {
-      const buf = await content.read();
-      audioB64 = Buffer.from(buf).toString("base64");
-    } catch (err) {
-      log.error({ err }, "failed to read voice note");
+  try {
+    // Poll vote — confirm/cancel action
+    if (content.type === "poll_option") {
+      if (!content.selected) return;
+      const choice = content.option.title.trim().toLowerCase();
+      const event = {
+        action: choice === "confirm" ? "confirm" : "cancel",
+        poll_title: content.poll.title,
+        user_id: senderId,
+        space_id: space.id,
+        platform,
+      };
+      await postToBackend("/api/v1/platform/action", event);
+      log.info({ action: event.action }, "posted poll vote to backend");
       return;
     }
-    const inbound: InboundMessage = {
-      platform,
-      user_id: senderId,
-      thread_id: space.id,
-      text: "",
-      space_id: space.id,
-      msg_id: message.id,
-      is_voice: true,
-      audio_b64: audioB64,
-      audio_mime: content.mimeType,
-    };
-    await rabbit.publishInbound(inbound);
-    log.info({ audio_len: audioB64.length }, "published voice note");
-    return;
-  }
 
-  // Image attachment — treat as a receipt/photo for OCR on the backend.
-  if (content.type === "attachment") {
-    if (!content.mimeType?.startsWith("image/")) {
-      log.debug({ mime: content.mimeType }, "ignoring non-image attachment");
+    // Voice note
+    if (content.type === "voice") {
+      let audioB64: string;
+      try {
+        const buf = await content.read();
+        audioB64 = Buffer.from(buf).toString("base64");
+      } catch (err) {
+        log.error({ err }, "failed to read voice note");
+        return;
+      }
+      const inbound = {
+        platform,
+        user_id: senderId,
+        thread_id: space.id,
+        text: "",
+        space_id: space.id,
+        msg_id: message.id,
+        is_voice: true,
+        audio_b64: audioB64,
+        audio_mime: content.mimeType,
+      };
+      await postToBackend("/api/v1/platform/inbound", inbound);
+      log.info({ audio_len: audioB64.length }, "posted voice note to backend");
       return;
     }
-    let imageB64: string;
-    try {
-      const buf = await content.read();
-      imageB64 = Buffer.from(buf).toString("base64");
-    } catch (err) {
-      log.error({ err }, "failed to read attachment");
+
+    // Image attachment
+    if (content.type === "attachment") {
+      if (!content.mimeType?.startsWith("image/")) {
+        log.debug({ mime: content.mimeType }, "ignoring non-image attachment");
+        return;
+      }
+      let imageB64: string;
+      try {
+        const buf = await content.read();
+        imageB64 = Buffer.from(buf).toString("base64");
+      } catch (err) {
+        log.error({ err }, "failed to read attachment");
+        return;
+      }
+      const inbound = {
+        platform,
+        user_id: senderId,
+        thread_id: space.id,
+        text: "",
+        space_id: space.id,
+        msg_id: message.id,
+        is_image: true,
+        image_b64: imageB64,
+        image_mime: content.mimeType,
+      };
+      await postToBackend("/api/v1/platform/inbound", inbound);
+      log.info({ image_len: imageB64.length }, "posted image to backend");
       return;
     }
-    const inbound: InboundMessage = {
-      platform,
-      user_id: senderId,
-      thread_id: space.id,
-      text: "",
-      space_id: space.id,
-      msg_id: message.id,
-      is_image: true,
-      image_b64: imageB64,
-      image_mime: content.mimeType,
-    };
-    await rabbit.publishInbound(inbound);
-    log.info({ image_len: imageB64.length, mime: content.mimeType }, "published image attachment");
-    return;
-  }
 
-  if (content.type === "text") {
-    const text = content.text?.trim();
-    if (!text) return;
-    const inbound: InboundMessage = {
-      platform,
-      user_id: senderId,
-      thread_id: space.id,
-      text,
-      space_id: space.id,
-      msg_id: message.id,
-    };
-    await rabbit.publishInbound(inbound);
-    log.info({ text: text.slice(0, 60) }, "published inbound message");
+    // Text message
+    if (content.type === "text") {
+      const text = content.text?.trim();
+      if (!text) return;
+
+      // Check for YES/NO confirmation replies (for platforms without poll support)
+      const normalized = text.toLowerCase();
+      if (normalized === "yes" || normalized === "confirm" || normalized === "no" || normalized === "cancel") {
+        const event = {
+          action: normalized === "yes" || normalized === "confirm" ? "confirm" : "cancel",
+          poll_title: "",
+          user_id: senderId,
+          space_id: space.id,
+          platform,
+        };
+        await postToBackend("/api/v1/platform/action", event);
+        log.info({ action: event.action, text }, "posted YES/NO confirmation to backend");
+        return;
+      }
+
+      const inbound = {
+        platform,
+        user_id: senderId,
+        thread_id: space.id,
+        text,
+        space_id: space.id,
+        msg_id: message.id,
+      };
+      await postToBackend("/api/v1/platform/inbound", inbound);
+      log.info({ text: text.slice(0, 60) }, "posted inbound message to backend");
+    }
+  } finally {
+    space.stopTyping().catch(() => {});
   }
 }
 
 async function start() {
   log.info(
-    {
-      exchange: config.AMQP_EXCHANGE,
-      inboundQueue: config.AMQP_INBOUND_QUEUE,
-      outboundQueue: config.AMQP_OUTBOUND_QUEUE,
-    },
+    { backend_url: config.RAIL_BACKEND_URL },
     "starting spectrum bridge",
   );
 
-  // Providers are enabled by env. iMessage is always on; Telegram and WhatsApp
-  // join when their credentials are configured. Each bridge process binds its
-  // own outbound queue (AMQP_OUTBOUND_ROUTING_KEY=message.outbound.<platform>)
-  // so replies never cross platforms.
   const providers = [imessage.config()];
   if (config.TELEGRAM_BOT_TOKEN) {
     providers.push(
@@ -269,7 +380,7 @@ async function start() {
         ...(config.WHATSAPP_APP_SECRET ? { appSecret: config.WHATSAPP_APP_SECRET } : {}),
       }) as never,
     );
-    log.info("WhatsApp Business provider enabled");
+    log.info("WhatsApp Business enabled");
   }
 
   const agent = await Spectrum({
@@ -279,29 +390,7 @@ async function start() {
     ...(config.SPECTRUM_WEBHOOK_SECRET ? { webhookSecret: config.SPECTRUM_WEBHOOK_SECRET } : {}),
   });
 
-  // Webhook route — register after agent is initialized so the closure works.
-  // Must use raw body so the SDK can verify HMAC/protobuf decode.
-  app.post(
-    config.SPECTRUM_WEBHOOK_PATH,
-    express.raw({ type: "*/*" }),
-    async (req, res) => {
-      try {
-        const result = await agent.webhook(
-          {
-            body: req.body as Uint8Array,
-            headers: req.headers as Record<string, string>,
-          },
-          async (space: Space, message: Message) => {
-            await handleInbound(space, message);
-          },
-        );
-        res.status(result.status).set(result.headers).send(Buffer.from(result.body));
-      } catch (err) {
-        log.error({ err }, "webhook handler failed");
-        res.status(500).json({ error: "internal error" });
-      }
-    },
-  );
+  webhookAgent = agent;
 
   app.listen(config.BRIDGE_PORT, () => {
     log.info({ port: config.BRIDGE_PORT }, "bridge HTTP server listening");
@@ -323,7 +412,6 @@ process.on("SIGTERM", async () => {
   log.info("shutting down...");
   await spaceStore.flush();
   spaceStore.stopAutoSave();
-  await rabbit.close();
   process.exit(0);
 });
 
@@ -331,6 +419,5 @@ process.on("SIGINT", async () => {
   log.info("shutting down (SIGINT)...");
   await spaceStore.flush();
   spaceStore.stopAutoSave();
-  await rabbit.close();
   process.exit(0);
 });

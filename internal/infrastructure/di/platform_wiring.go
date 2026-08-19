@@ -1,8 +1,14 @@
 package di
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	platformhandlers "github.com/rail-service/rail_service/internal/api/handlers/platform"
@@ -26,7 +32,7 @@ func (c *Container) initializePlatformMessaging() {
 		)
 		c.PlatformHandler = platformhandlers.NewPlatformHandler(linkingSvc, c.Config.Platform.BridgeMessagingAddress)
 
-		if c.Config.Platform.AMQPURL != "" {
+		if c.Config.Platform.BridgeBaseURL != "" {
 			userResolver := platform.NewUserResolver(platformIdentityRepo)
 			respBuilder := platform.NewResponseBuilder()
 			platformOrchestrator := &orchestratorAdapter{
@@ -35,28 +41,38 @@ func (c *Container) initializePlatformMessaging() {
 				deepLinkBase: c.Config.Platform.AppDeepLinkBaseURL,
 			}
 
-			var consumer *platform.Consumer
+			bridgeBaseURL := strings.TrimRight(c.Config.Platform.BridgeBaseURL, "/")
+			bridgeHMACSecret := c.Config.Platform.BridgeHMACSecret
 
 			sendFunc := func(ctx context.Context, msg *platform.OutboundMessage) error {
 				data, err := respBuilder.JSON(msg)
 				if err != nil {
 					return err
 				}
-				if consumer == nil {
-					return fmt.Errorf("platform outbound publisher not ready")
+				if bridgeBaseURL == "" {
+					return fmt.Errorf("platform bridge URL not configured")
 				}
-				// Per-platform routing key so multiple bridge consumers (iMessage,
-				// Telegram, WhatsApp) never cross-talk. Falls back to the bare key
-				// if the platform is somehow unset so the DLQ still catches it.
-				routingKey := "message.outbound"
-				if msg != nil && msg.Platform != "" {
-					routingKey = "message.outbound." + string(msg.Platform)
+				// HMAC-sign the payload so the bridge's /send endpoint can verify it.
+				mac := hmac.New(sha256.New, []byte(bridgeHMACSecret))
+				mac.Write(data)
+				sig := hex.EncodeToString(mac.Sum(nil))
+
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, bridgeBaseURL+"/send", bytes.NewReader(data))
+				if err != nil {
+					return fmt.Errorf("create bridge request: %w", err)
 				}
-				if pubErr := consumer.Publish(ctx, c.Config.Platform.AMQPExchange, routingKey, data); pubErr != nil {
-					// Surface as an error so the caller does not ack the inbound
-					// message; it will be requeued and the reply retried.
-					c.ZapLog.Warn("AMQP outbound publish failed", zap.Error(pubErr))
-					return fmt.Errorf("publish outbound: %w", pubErr)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("X-HMAC-SHA256", sig)
+
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					c.ZapLog.Warn("bridge HTTP outbound failed", zap.Error(err))
+					return fmt.Errorf("bridge outbound: %w", err)
+				}
+				resp.Body.Close()
+				if resp.StatusCode >= 300 {
+					c.ZapLog.Warn("bridge HTTP outbound returned error", zap.Int("status", resp.StatusCode))
+					return fmt.Errorf("bridge outbound: status %d", resp.StatusCode)
 				}
 				return nil
 			}
@@ -131,56 +147,9 @@ func (c *Container) initializePlatformMessaging() {
 			c.platformProcessor = proc
 			c.platformLinking = linkingSvc
 
-			var cErr error
-			consumer, cErr = platform.NewConsumer(
-				c.Config.Platform.AMQPURL,
-				c.Config.Platform.AMQPExchange,
-				c.Config.Platform.AMQPQueue,
-				c.Config.Platform.AMQPRoutingKey,
-				proc,
+			c.ZapLog.Info("Platform messaging via HTTP (bridge)",
+				zap.String("bridge_url", bridgeBaseURL),
 			)
-			if cErr != nil {
-				c.ZapLog.Warn("Platform consumer init failed (AMQP), platform disabled", zap.Error(cErr))
-			} else {
-				c.PlatformConsumer = consumer
-				if err := consumer.Start(); err != nil {
-					c.ZapLog.Warn("Platform consumer start failed", zap.Error(err))
-				} else {
-					c.ZapLog.Info("Platform messaging consumer started",
-						zap.String("exchange", c.Config.Platform.AMQPExchange),
-						zap.String("queue", c.Config.Platform.AMQPQueue),
-					)
-				}
-			}
-
-			actionQueue := c.Config.Platform.AMQPActionQueue
-			if actionQueue == "" {
-				actionQueue = "miriam.actions"
-			}
-			actionRoutingKey := c.Config.Platform.AMQPActionRoutingKey
-			if actionRoutingKey == "" {
-				actionRoutingKey = "action.postback"
-			}
-			actionConsumer, aErr := platform.NewActionConsumer(
-				c.Config.Platform.AMQPURL,
-				c.Config.Platform.AMQPExchange,
-				actionQueue,
-				actionRoutingKey,
-				proc,
-			)
-			if aErr != nil {
-				c.ZapLog.Warn("Platform action consumer init failed, action postbacks disabled", zap.Error(aErr))
-			} else {
-				c.PlatformActionConsumer = actionConsumer
-				if err := actionConsumer.Start(); err != nil {
-					c.ZapLog.Warn("Platform action consumer start failed", zap.Error(err))
-				} else {
-					c.ZapLog.Info("Platform action consumer started",
-						zap.String("exchange", c.Config.Platform.AMQPExchange),
-						zap.String("queue", actionQueue),
-					)
-				}
-			}
 		}
 	}
 }

@@ -155,13 +155,12 @@ Create as AtlasFlow project `spectrum-bridge`, root `cmd/spectrum-bridge/`, port
 |---|---|---|
 | `SPECTRUM_PROJECT_ID` | Spectrum dashboard | **SECRET, required** |
 | `SPECTRUM_PROJECT_SECRET` | Spectrum dashboard | **SECRET, required** |
-| `AMQP_URL` | same CloudAMQP URL as `PLATFORM_AMQP_URL` | **SECRET, required** |
-| `AMQP_EXCHANGE` | `miriam` | |
-| `RAIL_HMAC_SECRET` | same as `PLATFORM_BRIDGE_HMAC_SECRET` | **SECRET, required** |
-| `RAIL_BACKEND_URL` | `https://api.userail.money` | |
+| `RAIL_HMAC_SECRET` | same as `PLATFORM_BRIDGE_HMAC_SECRET` | **SECRET, required** — used to sign outbound requests to backend |
+| `RAIL_BACKEND_URL` | `https://api.userail.money` | backend base URL for inbound/action HTTP POSTs |
 | `BRIDGE_PORT` | `3000` | AtlasFlow default health port |
 | `NODE_ENV` | `production` | |
 | `LOG_LEVEL` | `info` | |
+| `SPECTRUM_WEBHOOK_PATH` | `/spectrum/webhook` | |
 | `SPECTRUM_WEBHOOK_SECRET` | optional | **SECRET** |
 | `TELEGRAM_BOT_TOKEN` | optional, enables Telegram | **SECRET** |
 | `WHATSAPP_ACCESS_TOKEN` | optional | **SECRET** |

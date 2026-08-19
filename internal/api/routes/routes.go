@@ -857,6 +857,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					platformGroup.GET("/linked", container.PlatformHandler.ListLinked)
 					platformGroup.DELETE("/:platform", middleware.AuthRateLimit(5), container.PlatformHandler.Unlink)
 				}
+
+				// Bridge-to-backend inbound + action endpoints (HMAC-authenticated, not JWT).
+				// The Spectrum bridge POSTs inbound messages and action postbacks here.
+				bridgeHMACSecret := container.Config.Platform.BridgeHMACSecret
+				proc := container.GetPlatformProcessor()
+				if bridgeHMACSecret != "" && proc != nil {
+					bridgeGroup := v1.Group("/platform")
+					bridgeGroup.Use(middleware.BridgeHMAC(bridgeHMACSecret))
+					bridgeGroup.Use(middleware.RateLimit(100))
+					{
+						bridgeGroup.POST("/inbound", container.PlatformHandler.HandleInbound(proc))
+						bridgeGroup.POST("/action", container.PlatformHandler.HandleAction(proc))
+					}
+				}
+			}
 			}
 
 			// KYC status utilities (auth required but no KYC gate)

@@ -737,3 +737,8 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 	}
 	return opportunityhandlers.NewHandlers(c.OpportunityService, c.ZapLog)
 }
+
+// GetPlatformProcessor returns the platform message processor, or nil if platform messaging is disabled.
+func (c *Container) GetPlatformProcessor() *platform.Processor {
+	return c.platformProcessor
+}
