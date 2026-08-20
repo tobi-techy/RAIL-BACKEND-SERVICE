@@ -53,7 +53,8 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	}
 	cencoriConfig := &ai.CencoriConfig{
 		APIKey:           strings.TrimSpace(c.Config.AI.Cencori.APIKey),
-		Model:            c.Config.AI.Cencori.Model,
+		ModelSmart:       c.Config.AI.Cencori.ModelSmart,
+		ModelFast:        c.Config.AI.Cencori.ModelFast,
 		MaxTokens:        c.Config.AI.Cencori.MaxTokens,
 		MaxContextTokens: c.Config.AI.Cencori.MaxContextTokens,
 		Temperature:      c.Config.AI.Cencori.Temperature,
@@ -71,6 +72,31 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		cencoriConfig.APIKey = gatewayAPIKey
 	}
 	c.AIProvider = ai.NewCencoriProvider(cencoriConfig, c.ZapLog)
+
+	// Per-user daily/monthly cost ceiling enforcement. Refuses Cencori calls
+	// before they hit the gateway when a user has burned through their cap.
+	// Fail-open on Redis errors so a Redis blip doesn't deny service.
+	if c.Config.AI.CostGuard.Enabled && c.RedisClient != nil {
+		costGuard := ai.NewGuard(
+			c.RedisClient,
+			c.ZapLog,
+			c.Config.AI.CostGuard.DailyCeilingUSD,
+			c.Config.AI.CostGuard.MonthlyCeilingUSD,
+		)
+		if cp, ok := c.AIProvider.(*ai.CencoriProvider); ok {
+			cp.SetCostGuard(costGuard)
+		}
+		// Hold a reference so core.Agent.Dependencies.CostGuard and the
+		// spending_coach worker can share the same guard instance (single
+		// source of truth for running totals).
+		c.AICostGuard = costGuard
+		c.ZapLog.Info("AI cost guard enabled",
+			zap.Float64("daily_usd", c.Config.AI.CostGuard.DailyCeilingUSD),
+			zap.Float64("monthly_usd", c.Config.AI.CostGuard.MonthlyCeilingUSD),
+		)
+	} else if c.Config.AI.CostGuard.Enabled {
+		c.ZapLog.Warn("AI cost guard configured but Redis unavailable — running unenforced")
+	}
 
 	// Validate Cencori connectivity at startup (non-blocking)
 	go func() {
@@ -435,6 +461,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		aitools.RegisterExecutionTools(toolRegistry)
 		aitools.RegisterBillTools(toolRegistry)
 		aitools.RegisterTravelTools(toolRegistry)
+		aitools.RegisterSavingsGoalsV2Tools(toolRegistry)
 
 		c.NewToolRegistry = toolRegistry
 
@@ -447,6 +474,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			State:               buildStateService(c),
 			Conversations:       buildConversationService(c),
 			Usage:               buildUsageService(c),
+			CostGuard:           buildAgentCostGuard(c),
 			Portfolio:           buildPortfolioProvider(c),
 			Spending:            buildSpendingProvider(c),
 			Transactions:        buildTransactionProvider(c),
@@ -591,10 +619,18 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			// Obligation manager
 			agentDeps.ObligationManager = &obligationManagerAdapter{service: c.FinancialObligationService}
 
-			// Savings goals store
+			// Savings goals store (legacy single-goal Redis path; preserved for
+			// backward compat with the existing set_savings_goal tool).
 			if c.RedisClient != nil {
 				inner := aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog)
 				agentDeps.SavingsGoals = &coreSavingsGoalStoreAdapter{inner: inner}
+			}
+
+			// User goals store (new Postgres-backed multi-goal). Wired here so
+			// the v2 tools (create_user_goal, list_user_goals, etc.) work for
+			// every chat turn once the registry is registered.
+			if c.UserGoalRepo != nil && c.GoalsService != nil {
+				agentDeps.UserGoals = &coreUserGoalStoreAdapter{svc: c.GoalsService}
 			}
 
 			// Conversation persister
