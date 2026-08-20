@@ -132,7 +132,7 @@ func TestBuildVarsFromState(t *testing.T) {
 		LiquidityRunwayDays: 14,
 		StashTarget:         decimal.NewFromInt(1000),
 	}
-	vars := BuildVarsFromState(state, decimal.NewFromInt(500), decimal.NewFromInt(200), decimal.NewFromInt(50))
+	vars := BuildVarsFromState(state, decimal.NewFromInt(500), decimal.NewFromInt(200), decimal.NewFromInt(50), "$")
 
 	assert.Equal(t, "$500", vars.Spend)
 	assert.Equal(t, "$200", vars.Stash)
@@ -141,6 +141,24 @@ func TestBuildVarsFromState(t *testing.T) {
 	assert.Equal(t, "$20", vars.Safe)
 	assert.Equal(t, 14, vars.Runway)
 	assert.Equal(t, "$1000", vars.Target)
+}
+
+func TestBuildVarsFromState_NGN(t *testing.T) {
+	state := &entities.MiriamMoneyState{
+		UpcomingObligations: decimal.NewFromInt(300),
+		SafeToSpendDaily:    decimal.NewFromInt(20),
+		LiquidityRunwayDays: 14,
+		StashTarget:         decimal.NewFromInt(1000),
+	}
+	vars := BuildVarsFromState(state, decimal.NewFromInt(500), decimal.NewFromInt(200), decimal.NewFromInt(50), "₦")
+
+	assert.Equal(t, "₦500", vars.Spend)
+	assert.Equal(t, "₦200", vars.Stash)
+	assert.Equal(t, "₦50", vars.Amount)
+	assert.Equal(t, "₦300", vars.Obligations)
+	assert.Equal(t, "₦20", vars.Safe)
+	assert.Equal(t, 14, vars.Runway)
+	assert.Equal(t, "₦1000", vars.Target)
 }
 
 func TestPhaseContext_ReturnsNonEmptyForAllPhases(t *testing.T) {

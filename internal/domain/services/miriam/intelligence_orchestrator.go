@@ -551,7 +551,19 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 	case MiriamMandateBillReservation:
 		if err = o.recordBillReservation(ctx, userID, amount, mandate); err == nil {
 			if o.notifier != nil {
-				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("$%s noted for upcoming bills.", amount.StringFixed(2)))
+				sym := "$"
+				if o.service != nil && o.service.profiles != nil {
+					if profile, pErr := o.service.profiles.GetByUserID(ctx, userID); pErr == nil && profile != nil {
+						country := profile.ResidenceCountry
+						if country == "" {
+							country = profile.TaxCountry
+						}
+						if country != "" {
+							sym = entities.CurrencySymbol(country)
+						}
+					}
+				}
+				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("%s%s noted for upcoming bills.", sym, amount.StringFixed(2)))
 			}
 		}
 	case MiriamMandateSpendCooldown:

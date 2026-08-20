@@ -52,14 +52,15 @@ type CadenceReader interface {
 
 // ProactiveNudgeEngine generates context-aware push notifications.
 type ProactiveNudgeEngine struct {
-	store       ProactiveNudgeStore
-	predictions *PredictiveEngine
-	balances    BalanceProvider
-	memory      MemoryReader
-	notifier    Notifier
-	chatSender  ProactiveChatSender
-	cadence     CadenceReader
-	logger      *zap.Logger
+	store           ProactiveNudgeStore
+	predictions     *PredictiveEngine
+	balances        BalanceProvider
+	memory          MemoryReader
+	financialProfile FinancialProfileProvider
+	notifier        Notifier
+	chatSender      ProactiveChatSender
+	cadence         CadenceReader
+	logger          *zap.Logger
 }
 
 // NewProactiveNudgeEngine creates a proactive nudge engine.
@@ -79,6 +80,27 @@ func NewProactiveNudgeEngine(
 // SetMemory injects a MemoryReader after construction (deferred wiring).
 func (e *ProactiveNudgeEngine) SetMemory(m MemoryReader) {
 	e.memory = m
+}
+
+// SetFinancialProfile injects a FinancialProfileProvider after construction.
+func (e *ProactiveNudgeEngine) SetFinancialProfile(p FinancialProfileProvider) {
+	e.financialProfile = p
+}
+
+// currencySymbolForUser resolves the user's currency symbol from their financial profile.
+func (e *ProactiveNudgeEngine) currencySymbolForUser(ctx context.Context, userID uuid.UUID) string {
+	if e.financialProfile != nil {
+		if profile, err := e.financialProfile.GetByUserID(ctx, userID); err == nil && profile != nil {
+			country := profile.ResidenceCountry
+			if country == "" {
+				country = profile.TaxCountry
+			}
+			if country != "" {
+				return entities.CurrencySymbol(country)
+			}
+		}
+	}
+	return "$"
 }
 
 // SetNotifier injects a Notifier after construction (deferred wiring).
@@ -252,14 +274,15 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 
 			pct := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
 			phase := ResolvePhase(state)
-			vars := BuildVarsFromState(state, spend, stash, remaining)
+			sym := e.currencySymbolForUser(ctx, userID)
+			vars := BuildVarsFromState(state, spend, stash, remaining, sym)
 			vars.Pct = pct
-			vars.Remaining = "$" + remaining.StringFixed(0)
-			vars.Target = "$" + state.StashTarget.StringFixed(0)
+			vars.Remaining = sym + remaining.StringFixed(0)
+			vars.Target = sym + state.StashTarget.StringFixed(0)
 
 			msg := PhaseMessage(phase, MsgGoalProgress, vars)
 			if msg == "" {
-				msg = fmt.Sprintf("You're %d%% of the way to your $%s goal. Add more?", pct, state.StashTarget.StringFixed(0))
+				msg = fmt.Sprintf("You're %d%% of the way to your %s%s goal. Add more?", pct, sym, state.StashTarget.StringFixed(0))
 			}
 
 			return &entities.ProactiveNudge{
@@ -305,13 +328,14 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 		}
 
 		phase := ResolvePhase(state)
-		vars := BuildVarsFromState(state, spend, stash, gap)
-		vars.Gap = "$" + gap.StringFixed(0)
+		sym := e.currencySymbolForUser(ctx, userID)
+		vars := BuildVarsFromState(state, spend, stash, gap, sym)
+		vars.Gap = sym + gap.StringFixed(0)
 
 		msg := PhaseMessage(phase, MsgBillWarning, vars)
 		if msg == "" {
-			msg = fmt.Sprintf("Bills ($%s) exceed Spend ($%s). Stash has $%s — tap to cover the $%s gap.",
-				state.UpcomingObligations.StringFixed(0), spend.StringFixed(0), stash.StringFixed(0), gap.StringFixed(0))
+			msg = fmt.Sprintf("Bills (%s%s) exceed Spend (%s%s). Stash has %s%s — tap to cover the %s%s gap.",
+				sym, state.UpcomingObligations.StringFixed(0), sym, spend.StringFixed(0), sym, stash.StringFixed(0), sym, gap.StringFixed(0))
 		}
 
 		return &entities.ProactiveNudge{
@@ -350,7 +374,8 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 	}
 
 	phase := ResolvePhase(state)
-	vars := BuildVarsFromState(state, spend, stash, p.ProjectedAmount)
+	sym := e.currencySymbolForUser(ctx, userID)
+	vars := BuildVarsFromState(state, spend, stash, p.ProjectedAmount, sym)
 	vars.Runway = state.LiquidityRunwayDays
 
 	var msgType MessageType
