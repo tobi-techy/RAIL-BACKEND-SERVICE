@@ -140,12 +140,29 @@ type AIConfig struct {
 	// on. Env: AI_RESPONSE_GUARD.
 	ResponseGuard bool `mapstructure:"response_guard"`
 
+	// CostGuard configures per-user daily cost ceilings enforced before each
+	// Cencori call. CostGuard.Enabled must be true to actually enforce; the
+	// DailyCeilingUSD and MonthlyCeilingUSD fields override the entity-level
+	// defaults (entities.DailyCostCeilingUSD = $0.25, entities.CostCeilingUSD =
+	// $2.00). On AtlasFlow we set DailyCeilingUSD=0.10 to protect the $20 budget.
+	CostGuard CostGuardConfig `mapstructure:"cost_guard"`
+
 	// Cloudflare configures optional Cloudflare AI integrations: AI Gateway
 	// (caching/observability in front of Cencori), Workers AI (cheap model for
 	// intent classification and embeddings), and Vectorize (serverless vector
 	// store for episodic/fact memory). Every sub-feature is opt-in; when unset
 	// the existing direct Cencori/Qdrant paths are used unchanged.
 	Cloudflare CloudflareAIConfig `mapstructure:"cloudflare"`
+}
+
+// CostGuardConfig tunes the per-user cost ceiling enforcement. When enabled,
+// the Cencori provider and the core.Agent both refuse to dispatch a request
+// that would push the user over their DailyCeilingUSD / MonthlyCeilingUSD
+// (estimated from Redis-backed running totals). Env: AI_COST_GUARD_*.
+type CostGuardConfig struct {
+	Enabled          bool    `mapstructure:"enabled"`
+	DailyCeilingUSD  float64 `mapstructure:"daily_ceiling_usd"`
+	MonthlyCeilingUSD float64 `mapstructure:"monthly_ceiling_usd"`
 }
 
 // CloudflareAIConfig groups the optional Cloudflare AI services. AccountID and
@@ -244,7 +261,8 @@ type ElevenLabsConfig struct {
 // prompt injection protection, and end-user billing via an OpenAI-compatible API.
 type CencoriConfig struct {
 	APIKey           string  `mapstructure:"api_key"`
-	Model            string  `mapstructure:"model"` // Model ID to route through Cencori
+	ModelSmart       string  `mapstructure:"model_smart"` // High-reasoning model for complex analysis (e.g. "gpt-4o")
+	ModelFast        string  `mapstructure:"model_fast"` // Fast/cheap model for simple queries (e.g. "gpt-4o-mini")
 	MaxTokens        int     `mapstructure:"max_tokens"`
 	MaxContextTokens int     `mapstructure:"max_context_tokens"`
 	Temperature      float64 `mapstructure:"temperature"`
@@ -1060,6 +1078,17 @@ func setDefaults() {
 	viper.SetDefault("ai.response_guard", false)
 	viper.BindEnv("ai.response_guard", "AI_RESPONSE_GUARD")
 
+	// Cost guard — per-user daily/monthly ceilings enforced before each
+	// Cencori call. Off by default for backwards compatibility; the AtlasFlow
+	// deploy sets AI_COST_GUARD_ENABLED=true with a tight $0.10/day cap to
+	// protect the $20 Cencori balance from runaway loops.
+	viper.SetDefault("ai.cost_guard.enabled", false)
+	viper.SetDefault("ai.cost_guard.daily_ceiling_usd", 0.25)
+	viper.SetDefault("ai.cost_guard.monthly_ceiling_usd", 2.00)
+	viper.BindEnv("ai.cost_guard.enabled", "AI_COST_GUARD_ENABLED")
+	viper.BindEnv("ai.cost_guard.daily_ceiling_usd", "AI_COST_GUARD_DAILY_USD")
+	viper.BindEnv("ai.cost_guard.monthly_ceiling_usd", "AI_COST_GUARD_MONTHLY_USD")
+
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.SetDefault("ai.elevenlabs.stability", 0.5)
 	viper.SetDefault("ai.elevenlabs.similarity_boost", 0.75)
@@ -1085,8 +1114,10 @@ func setDefaults() {
 
 	// Cencori AI gateway
 	viper.BindEnv("ai.cencori.api_key", "CENCORI_API_KEY")
-	viper.BindEnv("ai.cencori.model", "CENCORI_MODEL")
-	viper.SetDefault("ai.cencori.model", "gpt-4o")
+	viper.BindEnv("ai.cencori.model_smart", "CENCORI_MODEL_SMART")
+	viper.BindEnv("ai.cencori.model_fast", "CENCORI_MODEL_FAST")
+	viper.SetDefault("ai.cencori.model_smart", "gpt-4o")
+	viper.SetDefault("ai.cencori.model_fast", "gpt-4o-mini")
 	viper.SetDefault("ai.cencori.max_tokens", 4096)
 	viper.SetDefault("ai.cencori.temperature", 0.7)
 	viper.SetDefault("ai.cencori.top_p", 0.9)

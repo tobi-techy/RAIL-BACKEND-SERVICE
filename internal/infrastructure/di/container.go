@@ -38,6 +38,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/document"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	"github.com/rail-service/rail_service/internal/domain/services/goals"
 	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
 	"github.com/rail-service/rail_service/internal/domain/services/growthmail"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -222,6 +223,25 @@ type Container struct {
 	GrowthMailService              *growthmail.Service
 	GrowthEngineService            *growthengine.Service
 	NotificationService            *services.NotificationService
+	// GoalsService is the new Postgres-backed multi-goal service that powers
+	// the v2 savings-goal tools + the goal_progress + spending_coach workers.
+	GoalsService                   *goals.Service
+	// UserGoalRepo is the persistence layer behind GoalsService.
+	UserGoalRepo                   *repositories.UserGoalRepository
+	// BabyStepsSeeder seeds the 7-step ladder for first-time users.
+	BabyStepsSeeder                *goals.BabyStepsSeed
+	// GoalProgressHooks is the optional deposit-allocated callback wired
+	// into automation.Service.
+	GoalProgressHooks              *GoalProgressHooks
+	// ProactiveCoordinator is the unified per-user daily-cap enforcer for
+	// all proactive workers (autopilot, ai_insights, daily_pulse,
+	// scheduled_notifications, goal_progress, spending_coach).
+	ProactiveCoordinator           *platform.ProactiveCoordinator
+	// AICostGuard is the fast Redis-backed per-user daily/monthly AI cost
+	// ceiling. Injected into both the Cencori provider (provider-level check)
+	// and core.Agent.Dependencies (agent-level pre-check). nil disables the
+	// guard; Cencori will continue without ceiling enforcement.
+	AICostGuard                    *ai.Guard
 	SocialAuthService              *socialauth.Service
 	WebAuthnService                *webauthn.Service
 	LimitsService                  *limits.Service

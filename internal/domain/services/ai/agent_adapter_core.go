@@ -126,6 +126,11 @@ type UsageTracker interface {
 // as system context instead of mixed into user text.
 type ChatOptions struct {
 	ToneMode string
+	// ModelHint selects between cost-tier models ("fast" or "smart"). Routed
+	// through to the underlying provider so simple queries avoid expensive
+	// reasoning models. Empty defers to the core agent's intent-classifier
+	// based default.
+	ModelHint string
 	// SystemContext holds extra system prompts from the caller. These are
 	// trusted, product-authored instructions (for example the cross-channel
 	// continuity framing) and are appended to the consolidated personality block

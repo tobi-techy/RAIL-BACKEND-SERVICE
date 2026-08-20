@@ -298,6 +298,10 @@ type Dependencies struct {
 	State         StateService
 	Conversations ConversationService
 	Usage         UsageService
+	// CostGuard is the fast Redis-backed daily/monthly ceiling. Optional;
+	// when nil, no fast-fail is performed (UsageService still applies the
+	// slower Postgres-backed monthly cap).
+	CostGuard     CostGuard
 	Portfolio     PortfolioProvider
 	Spending      SpendingProvider
 	Transactions  TransactionProvider
@@ -411,8 +415,13 @@ type Dependencies struct {
 	// ObligationManager lists and manages financial obligations.
 	ObligationManager FinancialObligationManager
 
-	// SavingsGoals persists and retrieves savings goals.
+	// SavingsGoals persists and retrieves the legacy single savings goal.
+	// Deprecated: prefer UserGoals below for multi-goal flows.
 	SavingsGoals SavingsGoalStore
+
+	// UserGoals is the new multi-goal store backed by Postgres. Used by the
+	// v2 savings-goal tools and the goal_progress worker.
+	UserGoals UserGoalStore
 
 	// ConversationsPersister builds context from and records exchanges to a conversation.
 	ConversationsPersister ConversationPersister
@@ -569,6 +578,25 @@ type ConversationService interface {
 type UsageService interface {
 	TrackInteraction(ctx context.Context, userID uuid.UUID, model string, tokens int) error
 	IsOverCostCeiling(ctx context.Context, userID uuid.UUID) bool
+}
+
+// CostGuard is a fast, Redis-backed per-user AI cost ceiling. It is checked
+// before each LLM call so a runaway loop (or a single malicious user) cannot
+// burn through the project's Cencori balance, and recorded after each
+// successful response so the running totals stay accurate. nil disables the
+// check (matches UsageService's nil-tolerance). Satisfied by
+// infraai.Guard; the core package stays free of the infrastructure import.
+//
+// Allow returns a typed error when the user is over their daily or monthly
+// ceiling. The Agent translates that into the same costCeilingResponse as
+// UsageService so the chat surface is identical to the user.
+//
+// Record is fire-and-forget — callers should not block the response path on
+// it. Implementations should also be fail-open on Redis errors so a transient
+// cache outage doesn't deny service.
+type CostGuard interface {
+	Allow(ctx context.Context, userID uuid.UUID) error
+	Record(ctx context.Context, userID uuid.UUID, costUSD float64)
 }
 
 type PortfolioProvider interface {
@@ -840,9 +868,51 @@ type SavingsGoalData struct {
 }
 
 // SavingsGoalStore persists and retrieves savings goals.
+//
+// Deprecated: kept for backward compat with the legacy Redis-backed single-goal
+// store. New code should use UserGoalStore + goals.Service, which is Postgres-
+// backed, supports multi-goal, milestone tracking, and Baby-Step tagging.
 type SavingsGoalStore interface {
 	Set(ctx context.Context, userID uuid.UUID, goal *SavingsGoalData) error
 	Get(ctx context.Context, userID uuid.UUID) (*SavingsGoalData, error)
+}
+
+// UserGoalData is the data shape exposed to the LLM through UserGoalStore.
+// Mirrors entities.UserGoal but with strings (no decimal.Decimal in the LLM
+// boundary) so the model can quote exact figures.
+type UserGoalData struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	TargetAmount    string  `json:"target_amount"`
+	CurrentAmount   string  `json:"current_amount"`
+	Currency        string  `json:"currency"`
+	Deadline        *string `json:"deadline,omitempty"`
+	BabyStep        *int    `json:"baby_step,omitempty"`
+	Category        string  `json:"category"`
+	Source          string  `json:"source"`
+	PercentComplete float64 `json:"percent_complete"`
+}
+
+// UserGoalStore is the new multi-goal interface used by the v2 tools and the
+// goal_progress worker. The legacy SavingsGoalStore is preserved for
+// backward compatibility; new code must use UserGoalStore.
+type UserGoalStore interface {
+	List(ctx context.Context, userID uuid.UUID, includeArchived bool) ([]UserGoalData, error)
+	Create(ctx context.Context, userID uuid.UUID, in CreateUserGoalInput) (*UserGoalData, error)
+	Archive(ctx context.Context, userID uuid.UUID, goalID string) error
+	UpdateProgress(ctx context.Context, userID uuid.UUID, goalID string, newAmount string) (*UserGoalData, error)
+	HasAny(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+// CreateUserGoalInput is the create payload exposed to the LLM.
+type CreateUserGoalInput struct {
+	Name           string  `json:"name"`
+	TargetAmount   string  `json:"target_amount"`
+	TargetCurrency string  `json:"target_currency,omitempty"`
+	Deadline       *string `json:"deadline,omitempty"`
+	BabyStep       *int    `json:"baby_step,omitempty"`
+	Category       string  `json:"category,omitempty"`
+	Source         string  `json:"source,omitempty"`
 }
 
 // ConversationPersister builds context from and records exchanges to a conversation.

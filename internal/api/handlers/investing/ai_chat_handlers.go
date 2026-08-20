@@ -275,6 +275,25 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 			h.logger.Info("Stream chat client disconnected", "user_id", userID.String())
 			return
 		}
+
+		// Cost-ceiling errors get a dedicated friendly stream event so the
+		// user understands *why* the reply stopped, not just that it did.
+		if ex, ok := ai.IsExceeded(err); ok {
+			h.logger.Info("Stream chat refused — user over cost ceiling",
+				"user_id", userID.String(),
+				"scope", ex.Scope,
+				"spent_usd", ex.SpentUSD,
+				"limit_usd", ex.LimitUSD,
+			)
+			errEvent, _ := json.Marshal(aiservice.StreamEvent{
+				Type:    "error",
+				Content: friendlyCeilingMessage(ex),
+			})
+			fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
+			c.Writer.Flush()
+			return
+		}
+
 		h.logger.Error("Stream chat failed", "error", err, "user_id", userID.String())
 		// Emit a visible error event. error_after_partial is silently dropped by the
 		// client when no tokens were streamed (e.g. a tool call ran but the follow-up
@@ -353,6 +372,25 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 
 		resp, err := h.orchestrator.ChatWithConversationWithOptions(c.Request.Context(), userID, conv, message, aiservice.ChatOptions{ToneMode: req.ToneMode})
 		if err != nil {
+			// Cost ceiling → HTTP 429 with a human message + reset hint.
+			if ex, ok := ai.IsExceeded(err); ok {
+				h.logger.Info("Chat refused — user over cost ceiling",
+					"user_id", userID.String(),
+					"scope", ex.Scope,
+					"spent_usd", ex.SpentUSD,
+					"limit_usd", ex.LimitUSD,
+				)
+				c.JSON(http.StatusTooManyRequests, gin.H{
+					"error":         "cost_ceiling_exceeded",
+					"scope":         ex.Scope,
+					"limit_usd":     ex.LimitUSD,
+					"spent_usd":     ex.SpentUSD,
+					"message":       friendlyCeilingMessage(ex),
+					"retry_after":   nextResetUnix(ex.Scope),
+				})
+				return
+			}
+
 			h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 
 			msg := "I'm having a moment — try again in a few seconds"
@@ -384,6 +422,25 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 	// Fallback when conversation persistence is unavailable.
 	resp, err := h.orchestrator.ChatInContextWithOptions(c.Request.Context(), userID, uuid.Nil, message, req.History, aiservice.ChatOptions{ToneMode: req.ToneMode})
 	if err != nil {
+		// Cost ceiling → HTTP 429 with a human message + reset hint.
+		if ex, ok := ai.IsExceeded(err); ok {
+			h.logger.Info("Chat refused — user over cost ceiling (fallback path)",
+				"user_id", userID.String(),
+				"scope", ex.Scope,
+				"spent_usd", ex.SpentUSD,
+				"limit_usd", ex.LimitUSD,
+			)
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":       "cost_ceiling_exceeded",
+				"scope":       ex.Scope,
+				"limit_usd":   ex.LimitUSD,
+				"spent_usd":   ex.SpentUSD,
+				"message":     friendlyCeilingMessage(ex),
+				"retry_after": nextResetUnix(ex.Scope),
+			})
+			return
+		}
+
 		h.logger.Error("Chat failed", "error", err, "user_id", userID.String())
 
 		msg := "I'm having a moment — try again in a few seconds"
@@ -747,6 +804,39 @@ type WrappedCard struct {
 	Title   string                 `json:"title"`
 	Content string                 `json:"content"`
 	Data    map[string]interface{} `json:"data,omitempty"`
+}
+
+// friendlyCeilingMessage turns a CostGuard ExceededError into the message the
+// user sees. Tone matches Miriam's persona (warm, no jargon, no scare quotes).
+func friendlyCeilingMessage(ex *ai.ExceededError) string {
+	if ex == nil {
+		return "Miriam's had a busy day — try again in a bit."
+	}
+	switch ex.Scope {
+	case "daily":
+		return "You've hit today's chat limit with me — your limit resets at midnight UTC. You can still check balances, transactions, and automations in the app."
+	case "monthly":
+		return "You've hit your monthly chat limit — your limit resets at the start of next month. The app's tabs (Balances, Transactions, Automations) still work the same."
+	default:
+		return "Miriam's had a busy day — try again in a bit."
+	}
+}
+
+// nextResetUnix returns the unix timestamp (seconds) when the user's counter
+// will reset, so clients can show a "resets in 4h 12m" countdown. Daily resets
+// at next UTC midnight; monthly resets at the 1st of next month UTC.
+func nextResetUnix(scope string) int64 {
+	now := time.Now().UTC()
+	switch scope {
+	case "daily":
+		tomorrow := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+		return tomorrow.Unix()
+	case "monthly":
+		firstNext := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		return firstNext.Unix()
+	default:
+		return now.Add(1 * time.Hour).Unix()
+	}
 }
 
 // Nudge handles POST /api/v1/ai/nudge — lightweight ambient nudge for Miriam.
