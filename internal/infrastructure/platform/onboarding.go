@@ -107,6 +107,7 @@ type ChatOnboarder struct {
 	linker      OnboardingLinker
 	appURL      string
 	logger      *zap.Logger
+	babySteps   BabyStepsSeeder
 }
 
 func NewChatOnboarder(
@@ -130,6 +131,14 @@ func NewChatOnboarder(
 		appURL:      strings.TrimSpace(appDownloadURL),
 		logger:      logger,
 	}
+}
+
+// SetBabyStepsSeeder installs the first-login goal seeder. After a successful
+// chat-first onboarding, the seeder materializes the 7-step Baby Steps ladder
+// for the new user so the goal_progress worker has something to track on the
+// next tick. Nil-safe.
+func (c *ChatOnboarder) SetBabyStepsSeeder(s BabyStepsSeeder) {
+	c.babySteps = s
 }
 
 func onboardingKey(platform entities.Platform, senderID string) string {
@@ -395,6 +404,10 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 		c.logger.Error("phone-first auto-link failed", zap.Error(err), zap.String("user_id", st.UserID))
 		return textReply("I couldn't finish linking this chat to your account just now. Reply YES to try again."), nil
 	}
+	// Fire the first-login goal seeder for the new user so the goal_progress
+	// worker has a 7-step ladder to track on its next tick. Async + recover
+	// so a failure here can't fail the onboarding completion.
+	SeedBabyStepsOnLink(c.babySteps, uid, c.logger)
 	c.clear(ctx, key)
 	return textReply(c.completionMessage(st.FirstName, st.Country)), nil
 }

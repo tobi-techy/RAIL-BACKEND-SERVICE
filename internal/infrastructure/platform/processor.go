@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"go.uber.org/zap"
 )
 
 // VoiceTranscoder synthesizes Miriam's replies to speech and transcribes inbound
@@ -118,9 +119,11 @@ type Processor struct {
 	responseBuilder *ResponseBuilder
 	linking         *LinkingService
 	onboarder       *ChatOnboarder
+	babyStepsSeeder BabyStepsSeeder
 	voice           VoiceTranscoder
 	vision          ReceiptVision
 	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
+	logger          *zap.Logger
 }
 
 func NewProcessor(
@@ -138,7 +141,16 @@ func NewProcessor(
 		linking:         linking,
 		voice:           voice,
 		sendFunc:        sendFunc,
+		logger:          zap.NewNop(),
 	}
+}
+
+// SetLogger replaces the no-op logger with the real one. Wired from DI.
+func (p *Processor) SetLogger(l *zap.Logger) {
+	if l == nil {
+		return
+	}
+	p.logger = l
 }
 
 // SetReceiptVision enables receipt-photo understanding. When unset, images get
@@ -155,6 +167,14 @@ func (p *Processor) visionEnabled() bool {
 // unlinked senders are asked to link from the app (legacy behavior).
 func (p *Processor) SetOnboarder(o *ChatOnboarder) {
 	p.onboarder = o
+}
+
+// SetBabyStepsSeeder installs the first-login goal seeder. Called after a
+// successful handshake so a freshly-linked iMessage/WhatsApp/Telegram user
+// gets the 7-step Baby Steps ladder materialized into user_goals. Nil-safe:
+// a nil seeder is a no-op (legacy behavior).
+func (p *Processor) SetBabyStepsSeeder(s BabyStepsSeeder) {
+	p.babyStepsSeeder = s
 }
 
 func (p *Processor) voiceEnabled() bool {
@@ -309,6 +329,10 @@ func (p *Processor) tryCompleteHandshake(ctx context.Context, msg InboundMessage
 			log.Printf("failed to clear onboarding session for %s: %v", msg.UserID, err)
 		}
 	}
+	// Fire the first-login goal seeder so a freshly-linked user gets the 7-step
+	// Baby Steps ladder materialized into user_goals. Async + recover so a
+	// failure here can't break the link confirmation.
+	SeedBabyStepsOnLink(p.babyStepsSeeder, identity.UserID, p.logger)
 	out := p.responseBuilder.EffectResponse(identity,
 		"Your iMessage is now linked to RAIL! Ask me about your balances, spending, savings — anything.",
 		msg.ThreadID, EffectCelebration)

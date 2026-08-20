@@ -120,6 +120,7 @@ func (c *Container) initializePlatformMessaging() {
 			}
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
+			proc.SetLogger(c.ZapLog)
 
 			// Receipt photos texted to Miriam: build a lightweight vision pipeline
 			// (OCR -> classify -> extract) so she can summarize and offer to log or
@@ -143,7 +144,10 @@ func (c *Container) initializePlatformMessaging() {
 				}
 			}
 
-			// Onboarder needs OnboardingService, wired after domain services init.
+			// First-login goal seeder: after a successful handshake or chat
+			// onboarding, the user gets a 7-step Baby Steps ladder in user_goals
+			// so the goal_progress worker has something to track on the next tick.
+			// Wired below; the processor + onboarder both need it.
 			c.platformProcessor = proc
 			c.platformLinking = linkingSvc
 
