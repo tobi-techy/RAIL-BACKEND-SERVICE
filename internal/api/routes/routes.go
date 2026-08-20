@@ -872,10 +872,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					}
 				}
 			}
-			}
 
-			// KYC status utilities (auth required but no KYC gate)
-			kycProtected := protected.Group("/kyc")
+		// KYC status utilities (auth required but no KYC gate)
+		kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)

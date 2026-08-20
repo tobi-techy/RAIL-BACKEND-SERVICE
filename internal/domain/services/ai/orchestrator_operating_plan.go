@@ -393,6 +393,17 @@ func operatingPlanRiskFlags(profile *entities.FinancialProfile, obligations []en
 	if profile.UserType == "high_earner" && taxReserve.IsZero() {
 		add("tax_packet_missing", "high", "High earner profile has no tax reserve or tax obligation; prepare a tax packet for professional review.")
 	}
+	// Debt-aware allocation note: if obligations include debts, suggest 80/20 sprint allocation
+	hasDebt := false
+	for _, ob := range obligations {
+		if ob.Type == entities.ObligationTypeDebt && ob.Status == entities.ObligationStatusActive {
+			hasDebt = true
+			break
+		}
+	}
+	if hasDebt {
+		add("allocation_note", "info", "While debts exist, consider shifting more to debt (e.g. 80/20 spend/debt) instead of the standard 70/30 split.")
+	}
 	return flags
 }
 

@@ -130,6 +130,27 @@ func (o *IntelligenceOrchestrator) SetEnricher(e *TransactionEnricher) {
 	o.enricher = e
 }
 
+// resolveSymbol returns the user's local currency symbol, defaulting to "$".
+func (o *IntelligenceOrchestrator) resolveSymbol(ctx context.Context, userID uuid.UUID) string {
+	if o.service == nil || o.service.profiles == nil {
+		return "$"
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	profile, err := o.service.profiles.GetByUserID(fetchCtx, userID)
+	if err != nil || profile == nil {
+		return "$"
+	}
+	country := profile.ResidenceCountry
+	if country == "" {
+		country = profile.TaxCountry
+	}
+	if country == "" {
+		return "$"
+	}
+	return entities.CurrencySymbol(country)
+}
+
 // SetPatternAnalyzer injects a TransactionPatternAnalyzer after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetPatternAnalyzer(a *TransactionPatternAnalyzer) {
 	o.patternAnalyzer = a
@@ -551,7 +572,8 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 	case MiriamMandateBillReservation:
 		if err = o.recordBillReservation(ctx, userID, amount, mandate); err == nil {
 			if o.notifier != nil {
-				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("$%s noted for upcoming bills.", amount.StringFixed(2)))
+				symbol := o.resolveSymbol(ctx, userID)
+				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("%s%s noted for upcoming bills.", symbol, amount.StringFixed(2)))
 			}
 		}
 	case MiriamMandateSpendCooldown:

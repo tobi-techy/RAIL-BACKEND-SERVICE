@@ -93,6 +93,8 @@ var planningPatterns = []string{
 	"operating plan", "tax", "how can i save", "suggestions",
 	"invest", "investment", "where to put", "grow my money",
 	"subscriptions", "bills", "yield", "idle cash",
+	"debt", "debt payoff", "debt snowball", "baby steps", "sprint phase", "debt free",
+	"pay off", "payoff", "interest rate", "minimum payment",
 }
 
 var spendingPatterns = []string{
@@ -196,6 +198,7 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolSearchKnowledge:        true,
 		ToolGetInvestmentProducts:  true,
 		ToolWebSearch:              true,
+		ToolGetBabySteps:           true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,

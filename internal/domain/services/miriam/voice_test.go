@@ -132,7 +132,7 @@ func TestBuildVarsFromState(t *testing.T) {
 		LiquidityRunwayDays: 14,
 		StashTarget:         decimal.NewFromInt(1000),
 	}
-	vars := BuildVarsFromState(state, decimal.NewFromInt(500), decimal.NewFromInt(200), decimal.NewFromInt(50))
+	vars := BuildVarsFromState(state, decimal.NewFromInt(500), decimal.NewFromInt(200), decimal.NewFromInt(50), "$")
 
 	assert.Equal(t, "$500", vars.Spend)
 	assert.Equal(t, "$200", vars.Stash)

@@ -878,6 +878,8 @@ var alwaysOnTools = map[string]bool{
 	"validate_meter": true, "detect_network": true,
 	// Engagement
 	"celebrate": true, "send_poll": true,
+	// Debt coaching
+	"get_baby_steps": true,
 }
 
 // selectTools returns the subset of tools relevant to the user's intents.

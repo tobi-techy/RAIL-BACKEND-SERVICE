@@ -382,7 +382,7 @@ func (m *MemoryService) updateTone(ctx context.Context, userID uuid.UUID, result
 	}
 
 	// Validate locale_style against DB CHECK constraint
-	validLocales := map[string]bool{"global": true, "nigeria": true, "west_africa": true, "diaspora_us": true, "diaspora_uk": true, "europe": true, "formal_global": true}
+	validLocales := map[string]bool{"global": true, "nigeria": true, "west_africa": true, "east_africa": true, "southern_africa": true, "diaspora_us": true, "diaspora_uk": true, "europe": true, "formal_global": true}
 	localeStyle := t.LocaleStyle
 	if !validLocales[localeStyle] {
 		localeStyle = "global"
