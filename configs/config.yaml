@@ -177,6 +177,8 @@ workers:
   job_timeout: 300
   miriam_intelligence_local: true
   miriam_intelligence_batch_size: 500
+  miriam_event_driven: true
+  miriam_adaptive_loop: true
 
 # Legacy Circle configuration (deprecated; Bridge is primary)
 circle:

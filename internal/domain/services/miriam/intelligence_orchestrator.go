@@ -71,23 +71,23 @@ const (
 // IntelligenceOrchestrator is Miriam's unified brain — a single evaluation pass
 // that coordinates predictions, decisions, memory, learning, and actions.
 type IntelligenceOrchestrator struct {
-	service       *Service
-	decisions     *DecisionEngine
-	nudges        *ProactiveNudgeEngine
-	predictions   *PredictiveEngine
-	signals       *SignalDetector
-	suggestions   *MandateSuggestionEngine
-	obDetector    *ObligationAutoDetector
-	enricher      *TransactionEnricher
+	service         *Service
+	decisions       *DecisionEngine
+	nudges          *ProactiveNudgeEngine
+	predictions     *PredictiveEngine
+	signals         *SignalDetector
+	suggestions     *MandateSuggestionEngine
+	obDetector      *ObligationAutoDetector
+	enricher        *TransactionEnricher
 	patternAnalyzer *TransactionPatternAnalyzer
-	dispatcher    *NotificationDispatcher
-	memory        MemoryReader
-	notifier      Notifier
-	healthScore   *HealthScoreTracker
-	outcomeTrack  *OutcomeTracker
-	selfReview    *SelfReviewEngine
-	controlLevel  ControlLevelReader
-	logger        *zap.Logger
+	dispatcher      *NotificationDispatcher
+	memory          MemoryReader
+	notifier        Notifier
+	healthScore     *HealthScoreTracker
+	outcomeTrack    *OutcomeTracker
+	selfReview      *SelfReviewEngine
+	controlLevel    ControlLevelReader
+	logger          *zap.Logger
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -356,7 +356,10 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	// the level, we do NOT execute.
 	decisionsMade := 0
 	actionsExecuted := 0
-	mandateEvent := eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual
+	// Autonomous (always-on) events are read-only. They may analyze, message,
+	// and stage pending actions, but they never execute mandates or move money.
+	isAutonomous := IsAutonomousEvent(eventType)
+	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual)
 	gateReason := ""
 	if mandateEvent {
 		gateReason = o.autonomyGateReason(ctx, userID)

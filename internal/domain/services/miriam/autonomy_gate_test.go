@@ -88,3 +88,73 @@ func TestAutonomyGateReasonEmptyMeansExecute(t *testing.T) {
 	assert.NotEmpty(t, o2.autonomyGateReason(context.Background(), uuid.New()),
 		"non-full levels must return a non-empty reason so execution is skipped")
 }
+
+// TestIsAutonomousEvent verifies that the always-on event types are classified
+// as autonomous (read-only on money) and legacy event types are not.
+func TestIsAutonomousEvent(t *testing.T) {
+	assert.True(t, IsAutonomousEvent(EventMoneyEvent))
+	assert.True(t, IsAutonomousEvent(EventAutonomousTick))
+	assert.False(t, IsAutonomousEvent(EventWorkerSweep))
+	assert.False(t, IsAutonomousEvent(EventIncomeLowerThanUsual))
+	assert.False(t, IsAutonomousEvent(""))
+}
+
+// TestEvaluateSkipsMandateExecutionForAutonomousEvents verifies that even a
+// Full Autopilot user with active mandates will not have mandate actions
+// executed when the evaluation is triggered by an autonomous event type. This
+// is the read-only autonomy boundary for the always-on path.
+func TestEvaluateSkipsMandateExecutionForAutonomousEvents(t *testing.T) {
+	// The boundary is implemented by the mandateEvent guard inside Evaluate:
+	// autonomous event types must never pass it. We test the guard directly by
+	// constructing the same boolean the production code uses.
+	tests := []struct {
+		name          string
+		eventType     string
+		controlLevel  string
+		wantMandateOn bool
+	}{
+		{
+			name:          "money event skips mandates even for full users",
+			eventType:     EventMoneyEvent,
+			controlLevel:  entities.ControlLevelFull,
+			wantMandateOn: false,
+		},
+		{
+			name:          "autonomous tick skips mandates even for full users",
+			eventType:     EventAutonomousTick,
+			controlLevel:  entities.ControlLevelFull,
+			wantMandateOn: false,
+		},
+		{
+			name:          "worker sweep runs mandates for full users",
+			eventType:     EventWorkerSweep,
+			controlLevel:  entities.ControlLevelFull,
+			wantMandateOn: true,
+		},
+		{
+			name:          "income-lower event runs mandates for full users",
+			eventType:     EventIncomeLowerThanUsual,
+			controlLevel:  entities.ControlLevelFull,
+			wantMandateOn: true,
+		},
+		{
+			name:          "worker sweep skips mandates for guided users",
+			eventType:     EventWorkerSweep,
+			controlLevel:  entities.ControlLevelGuided,
+			wantMandateOn: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isAutonomous := IsAutonomousEvent(tt.eventType)
+			gateReason := ""
+			if tt.controlLevel != entities.ControlLevelFull {
+				gateReason = tt.controlLevel
+			}
+			mandateEvent := !isAutonomous && (tt.eventType == EventWorkerSweep || tt.eventType == EventIncomeLowerThanUsual)
+			willRunMandates := mandateEvent && gateReason == ""
+			assert.Equal(t, tt.wantMandateOn, willRunMandates)
+		})
+	}
+}

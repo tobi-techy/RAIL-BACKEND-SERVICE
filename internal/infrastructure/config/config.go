@@ -160,8 +160,8 @@ type AIConfig struct {
 // that would push the user over their DailyCeilingUSD / MonthlyCeilingUSD
 // (estimated from Redis-backed running totals). Env: AI_COST_GUARD_*.
 type CostGuardConfig struct {
-	Enabled          bool    `mapstructure:"enabled"`
-	DailyCeilingUSD  float64 `mapstructure:"daily_ceiling_usd"`
+	Enabled           bool    `mapstructure:"enabled"`
+	DailyCeilingUSD   float64 `mapstructure:"daily_ceiling_usd"`
 	MonthlyCeilingUSD float64 `mapstructure:"monthly_ceiling_usd"`
 }
 
@@ -262,7 +262,7 @@ type ElevenLabsConfig struct {
 type CencoriConfig struct {
 	APIKey           string  `mapstructure:"api_key"`
 	ModelSmart       string  `mapstructure:"model_smart"` // High-reasoning model for complex analysis (e.g. "gpt-4o")
-	ModelFast        string  `mapstructure:"model_fast"` // Fast/cheap model for simple queries (e.g. "gpt-4o-mini")
+	ModelFast        string  `mapstructure:"model_fast"`  // Fast/cheap model for simple queries (e.g. "gpt-4o-mini")
 	MaxTokens        int     `mapstructure:"max_tokens"`
 	MaxContextTokens int     `mapstructure:"max_context_tokens"`
 	Temperature      float64 `mapstructure:"temperature"`
@@ -690,6 +690,14 @@ type WorkerConfig struct {
 	JobTimeout                  int  `mapstructure:"job_timeout"`
 	MiriamIntelligenceLocal     bool `mapstructure:"miriam_intelligence_local"`
 	MiriamIntelligenceBatchSize int  `mapstructure:"miriam_intelligence_batch_size"`
+	// MiriamEventDriven wires ledger outbox money events into the Miriam
+	// intelligence worker so she reacts within seconds of a deposit clearing,
+	// card transaction, or balance update. Default false; enable per env.
+	MiriamEventDriven bool `mapstructure:"miriam_event_driven"`
+	// MiriamAdaptiveLoop, when true, replaces the fixed 15-min intelligence
+	// worker ticker with an event-woken + backoff loop. Must be enabled with
+	// MiriamEventDriven. Default false.
+	MiriamAdaptiveLoop bool `mapstructure:"miriam_adaptive_loop"`
 	// LeaderElection, when true, lets only one API replica run background
 	// workers (Redis SET NX). HTTP stays up on every replica. Default on in
 	// production so min-replicas > 1 does not double money crons.
@@ -1184,6 +1192,8 @@ func setDefaults() {
 	viper.SetDefault("workers.job_timeout", 300)
 	viper.SetDefault("workers.miriam_intelligence_local", true)
 	viper.SetDefault("workers.miriam_intelligence_batch_size", 500)
+	viper.SetDefault("workers.miriam_event_driven", true)
+	viper.SetDefault("workers.miriam_adaptive_loop", true)
 	viper.SetDefault("workers.leader_election", false)
 
 	// Rate limiting defaults
@@ -1639,6 +1649,8 @@ func overrideFromEnv() {
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
 	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
 	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
+	viper.BindEnv("workers.miriam_event_driven", "WORKERS_MIRIAM_EVENT_DRIVEN")
+	viper.BindEnv("workers.miriam_adaptive_loop", "WORKERS_MIRIAM_ADAPTIVE_LOOP")
 	viper.BindEnv("workers.leader_election", "WORKERS_LEADER_ELECTION")
 	if os.Getenv("WORKERS_LEADER_ELECTION") == "" &&
 		(os.Getenv("ENVIRONMENT") == "production" || viper.GetString("environment") == "production") {
