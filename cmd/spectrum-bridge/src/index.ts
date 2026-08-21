@@ -78,6 +78,7 @@ outboundQueue.startAutoSave();
 const spaces = new Map<string, Space>();
 
 const HMAC_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+const MAX_SEEN_NONCES = 10_000;
 const seenNonces = new Map<string, number>(); // nonce -> expiration timestamp
 
 // Periodically evict expired nonces used for replay protection.
@@ -88,6 +89,21 @@ setInterval(() => {
   }
 }, 60_000);
 
+function evictOldestNoncesIfNeeded(): void {
+  if (seenNonces.size < MAX_SEEN_NONCES) return;
+
+  // Emergency cleanup: remove oldest nonces by expiration time, keeping ~80%
+  // of the limit to avoid thrashing.
+  const entries = Array.from(seenNonces.entries());
+  entries.sort((a, b) => a[1] - b[1]);
+  const keepCount = Math.floor(MAX_SEEN_NONCES * 0.8);
+  const dropCount = Math.max(0, entries.length - keepCount);
+  for (let i = 0; i < dropCount; i++) {
+    seenNonces.delete(entries[i][0]);
+  }
+  log.warn({ dropped: dropCount, remaining: seenNonces.size }, "emergency nonce eviction");
+}
+
 function isFreshTimestamp(timestampSec: number): boolean {
   const nowMs = Date.now();
   const tsMs = timestampSec * 1000;
@@ -96,6 +112,7 @@ function isFreshTimestamp(timestampSec: number): boolean {
 
 function isNonceUnique(nonce: string, timestampSec: number): boolean {
   if (seenNonces.has(nonce)) return false;
+  evictOldestNoncesIfNeeded();
   seenNonces.set(nonce, timestampSec * 1000 + HMAC_FRESHNESS_WINDOW_MS);
   return true;
 }

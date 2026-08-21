@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -24,6 +25,10 @@ const (
 
 	// bridgeHMACMaxBody caps the body we will read for signing.
 	bridgeHMACMaxBody = 5 * 1024 * 1024
+
+	// maxNoncesInMemory caps the number of recent nonces tracked for replay
+	// protection. Emergency eviction removes oldest entries when exceeded.
+	maxNoncesInMemory = 10000
 )
 
 // nonceStore tracks recent nonces for replay protection. It is per-process, so
@@ -33,11 +38,18 @@ type nonceStore struct {
 	mu      sync.RWMutex
 	nonces  map[string]time.Time
 	maxAge  time.Duration
+	maxSize int
+}
+
+type nonceEntry struct {
+	nonce   string
+	expires time.Time
 }
 
 var bridgeNonceStore = &nonceStore{
-	nonces: make(map[string]time.Time),
-	maxAge: bridgeHMACMaxSkewSeconds * 2 * time.Second,
+	nonces:  make(map[string]time.Time),
+	maxAge:  bridgeHMACMaxSkewSeconds * 2 * time.Second,
+	maxSize: maxNoncesInMemory,
 }
 
 func (s *nonceStore) isUnique(nonce string) bool {
@@ -47,8 +59,41 @@ func (s *nonceStore) isUnique(nonce string) bool {
 	if _, seen := s.nonces[nonce]; seen {
 		return false
 	}
+
+	if len(s.nonces) >= s.maxSize {
+		s.evictOldestLocked()
+	}
+
 	s.nonces[nonce] = time.Now().Add(s.maxAge)
 	return true
+}
+
+// evictOldestLocked removes oldest nonces by expiration time, keeping ~80% of
+// maxSize. Caller must hold s.mu.
+func (s *nonceStore) evictOldestLocked() {
+	entries := make([]nonceEntry, 0, len(s.nonces))
+	for nonce, expires := range s.nonces {
+		entries = append(entries, nonceEntry{nonce: nonce, expires: expires})
+	}
+	sortEntriesByTime(entries)
+
+	keepCount := int(float64(s.maxSize) * 0.8)
+	if keepCount < 1 {
+		keepCount = 1
+	}
+	dropCount := len(entries) - keepCount
+	if dropCount <= 0 {
+		return
+	}
+	for i := 0; i < dropCount; i++ {
+		delete(s.nonces, entries[i].nonce)
+	}
+}
+
+func sortEntriesByTime(entries []nonceEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].expires.Before(entries[j].expires)
+	})
 }
 
 func (s *nonceStore) evict(now time.Time) {
@@ -102,7 +147,7 @@ func BridgeHMAC(secret string, logger *zap.Logger) gin.HandlerFunc {
 			abortBridgeHMAC(c, logger, "invalid timestamp")
 			return
 		}
-		if skew := time.Now().Unix() - ts; skew > bridgeHMACMaxSkewSeconds || skew < -bridgeHMACMaxSkewSeconds {
+		if skew := time.Now().Unix() - ts; skew > int64(bridgeHMACMaxSkewSeconds) || skew < -int64(bridgeHMACMaxSkewSeconds) {
 			abortBridgeHMAC(c, logger, "timestamp out of range")
 			return
 		}

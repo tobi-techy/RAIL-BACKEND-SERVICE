@@ -105,9 +105,14 @@ export class PersistentOutboundQueue {
       return "";
     }
 
-    // Enforce a bounded queue: drop oldest messages first when over capacity.
+    // Enforce a bounded queue: drop the oldest message when over capacity.
     if (this.records.size >= this.opts.maxSize) {
-      const oldest = Array.from(this.records.values()).sort((a, b) => a.createdAt - b.createdAt)[0];
+      let oldest: QueuedMessage | undefined;
+      for (const rec of this.records.values()) {
+        if (!oldest || rec.createdAt < oldest.createdAt) {
+          oldest = rec;
+        }
+      }
       if (oldest) {
         this.records.delete(oldest.id);
         log.warn({ thread_id: oldest.threadId }, "dropped oldest queued message to enforce max size");
