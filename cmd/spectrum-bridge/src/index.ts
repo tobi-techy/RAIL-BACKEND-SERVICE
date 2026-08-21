@@ -8,7 +8,7 @@ import { loadConfig } from "./config";
 import { MessageHandler, OutboundMessage } from "./handler";
 import { getLogger, childLogger } from "./logger";
 import { SpaceStore } from "./space-store";
-import { PersistentOutboundQueue } from "./outbound-queue";
+import { PersistentOutboundQueue, type QueuedMessage } from "./outbound-queue";
 
 const config = loadConfig();
 const log = getLogger();
@@ -77,12 +77,43 @@ outboundQueue.startAutoSave();
 // which covers every reply/confirmation path.
 const spaces = new Map<string, Space>();
 
-function verifyHMAC(payload: string, signature: string): boolean {
+const HMAC_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
+const seenNonces = new Map<string, number>(); // nonce -> expiration timestamp
+
+// Periodically evict expired nonces used for replay protection.
+setInterval(() => {
+  const now = Date.now();
+  for (const [nonce, expiresAt] of seenNonces) {
+    if (expiresAt < now) seenNonces.delete(nonce);
+  }
+}, 60_000);
+
+function isFreshTimestamp(timestampSec: number): boolean {
+  const nowMs = Date.now();
+  const tsMs = timestampSec * 1000;
+  return tsMs >= nowMs - HMAC_FRESHNESS_WINDOW_MS && tsMs <= nowMs + HMAC_FRESHNESS_WINDOW_MS;
+}
+
+function isNonceUnique(nonce: string, timestampSec: number): boolean {
+  if (seenNonces.has(nonce)) return false;
+  seenNonces.set(nonce, timestampSec * 1000 + HMAC_FRESHNESS_WINDOW_MS);
+  return true;
+}
+
+function signPayload(payload: string, timestamp: string, nonce: string): string {
+  return crypto
+    .createHmac("sha256", config.RAIL_HMAC_SECRET)
+    .update(`${timestamp}.${nonce}.${payload}`)
+    .digest("hex");
+}
+
+function verifyHMAC(payload: string, signature: string, timestamp: string, nonce: string): boolean {
   try {
-    const expected = crypto
-      .createHmac("sha256", config.RAIL_HMAC_SECRET)
-      .update(payload)
-      .digest("hex");
+    const ts = parseInt(timestamp, 10);
+    if (!Number.isFinite(ts) || !isFreshTimestamp(ts) || !isNonceUnique(nonce, ts)) {
+      return false;
+    }
+    const expected = signPayload(payload, timestamp, nonce);
     return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
   } catch {
     return false;
@@ -103,25 +134,29 @@ function normalizePlatform(platform: string): string {
   }
 }
 
-function signPayload(payload: string): string {
-  return crypto
-    .createHmac("sha256", config.RAIL_HMAC_SECRET)
-    .update(payload)
-    .digest("hex");
+function makeHMACHeaders(payload: string): Record<string, string> {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomUUID();
+  return {
+    "X-HMAC-Timestamp": timestamp,
+    "X-HMAC-Nonce": nonce,
+    "X-HMAC-SHA256": signPayload(payload, timestamp, nonce),
+  };
 }
 
 async function postToBackend(path: string, body: unknown): Promise<void> {
   const url = `${config.RAIL_BACKEND_URL}${path}`;
   const payload = JSON.stringify(body);
-  const sig = signPayload(payload);
+  const hmacHeaders = makeHMACHeaders(payload);
 
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-HMAC-SHA256": sig,
+      ...hmacHeaders,
     },
     body: payload,
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!resp.ok) {
@@ -156,7 +191,7 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
 }
 
 // Send a queued message and update the queue based on the outcome.
-async function attemptQueuedSend(item: import("./outbound-queue").QueuedMessage): Promise<void> {
+async function attemptQueuedSend(item: QueuedMessage): Promise<void> {
   const sent = await sendToSpace(item.msg);
   if (sent) {
     outboundQueue.remove(item.id);
@@ -185,14 +220,17 @@ function processOutboundQueue(): void {
 setInterval(processOutboundQueue, 5_000);
 
 // Flush any messages queued for a thread that just warmed up. Called after an
-// inbound message registers the space handle.
+// inbound message registers the space handle. This deliberately does not await
+// individual sends so the inbound webhook can respond promptly.
 async function flushQueuedMessages(threadID: string): Promise<void> {
   const pending = outboundQueue.bumpThread(threadID);
   if (pending.length === 0) return;
 
   log.info({ thread_id: threadID, count: pending.length }, "flushing queued messages for warmed space");
   for (const item of pending) {
-    await attemptQueuedSend(item);
+    attemptQueuedSend(item).catch((err) =>
+      log.error({ err, thread_id: item.msg.thread_id }, "failed to flush queued outbound"),
+    );
   }
 }
 
@@ -201,7 +239,9 @@ app.post("/send", (req, res) => {
   const raw =
     (req as express.Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body);
   const sig = req.headers["x-hmac-sha256"] as string | undefined;
-  if (!sig || !verifyHMAC(raw, sig)) {
+  const timestamp = req.headers["x-hmac-timestamp"] as string | undefined;
+  const nonce = req.headers["x-hmac-nonce"] as string | undefined;
+  if (!sig || !timestamp || !nonce || !verifyHMAC(raw, sig, timestamp, nonce)) {
     log.warn({ ip: req.ip }, "invalid HMAC signature on /send");
     res.status(401).json({ error: "invalid or missing HMAC signature" });
     return;
@@ -364,6 +404,8 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       await postToBackend("/api/v1/platform/inbound", inbound);
       log.info({ text: text.slice(0, 60) }, "posted inbound message to backend");
     }
+  } catch (err) {
+    log.error({ err, thread_id: threadID }, "inbound handling failed");
   } finally {
     space.stopTyping().catch(() => {});
   }

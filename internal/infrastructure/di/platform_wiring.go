@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	platformhandlers "github.com/rail-service/rail_service/internal/api/handlers/platform"
@@ -30,7 +33,7 @@ func (c *Container) initializePlatformMessaging() {
 			platformIdentityRepo,
 			c.Config.Platform.HandshakeTokenTTL,
 		)
-		c.PlatformHandler = platformhandlers.NewPlatformHandler(linkingSvc, c.Config.Platform.BridgeMessagingAddress)
+		c.PlatformHandler = platformhandlers.NewPlatformHandlerWithLogger(linkingSvc, c.Config.Platform.BridgeMessagingAddress, c.ZapLog)
 
 		if c.Config.Platform.BridgeBaseURL != "" {
 			userResolver := platform.NewUserResolver(platformIdentityRepo)
@@ -43,6 +46,7 @@ func (c *Container) initializePlatformMessaging() {
 
 			bridgeBaseURL := strings.TrimRight(c.Config.Platform.BridgeBaseURL, "/")
 			bridgeHMACSecret := c.Config.Platform.BridgeHMACSecret
+			bridgeHTTPClient := &http.Client{Timeout: 30 * time.Second}
 
 			sendFunc := func(ctx context.Context, msg *platform.OutboundMessage) error {
 				data, err := respBuilder.JSON(msg)
@@ -52,9 +56,18 @@ func (c *Container) initializePlatformMessaging() {
 				if bridgeBaseURL == "" {
 					return fmt.Errorf("platform bridge URL not configured")
 				}
-				// HMAC-sign the payload so the bridge's /send endpoint can verify it.
+
+				// HMAC-sign timestamp.nonce.body so the bridge's /send endpoint can
+				// verify the request and reject replays.
+				timestamp := fmt.Sprintf("%d", time.Now().Unix())
+				nonceBytes := make([]byte, 16)
+				if _, err := rand.Read(nonceBytes); err != nil {
+					return fmt.Errorf("generate bridge nonce: %w", err)
+				}
+				nonce := hex.EncodeToString(nonceBytes)
+				payload := fmt.Sprintf("%s.%s.%s", timestamp, nonce, string(data))
 				mac := hmac.New(sha256.New, []byte(bridgeHMACSecret))
-				mac.Write(data)
+				mac.Write([]byte(payload))
 				sig := hex.EncodeToString(mac.Sum(nil))
 
 				req, err := http.NewRequestWithContext(ctx, http.MethodPost, bridgeBaseURL+"/send", bytes.NewReader(data))
@@ -62,14 +75,23 @@ func (c *Container) initializePlatformMessaging() {
 					return fmt.Errorf("create bridge request: %w", err)
 				}
 				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("X-HMAC-Timestamp", timestamp)
+				req.Header.Set("X-HMAC-Nonce", nonce)
 				req.Header.Set("X-HMAC-SHA256", sig)
 
-				resp, err := http.DefaultClient.Do(req)
+				resp, err := bridgeHTTPClient.Do(req)
 				if err != nil {
 					c.ZapLog.Warn("bridge HTTP outbound failed", zap.Error(err))
 					return fmt.Errorf("bridge outbound: %w", err)
 				}
-				resp.Body.Close()
+				defer func() {
+					if _, drainErr := io.Copy(io.Discard, resp.Body); drainErr != nil {
+						c.ZapLog.Warn("failed to drain bridge response body", zap.Error(drainErr))
+					}
+					if closeErr := resp.Body.Close(); closeErr != nil {
+						c.ZapLog.Warn("failed to close bridge response body", zap.Error(closeErr))
+					}
+				}()
 				if resp.StatusCode >= 300 {
 					c.ZapLog.Warn("bridge HTTP outbound returned error", zap.Int("status", resp.StatusCode))
 					return fmt.Errorf("bridge outbound: status %d", resp.StatusCode)

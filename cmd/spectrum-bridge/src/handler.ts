@@ -81,8 +81,14 @@ export class MessageHandler {
 
   registerInboundMessage(msg: Message): void {
     this.messageStore.set(msg.id, msg);
-    // Track the most recent inbound per thread for read receipts
-    this.lastInboundByThread.set(msg.space?.id ?? "", msg);
+
+    // Track the most recent inbound per thread for read receipts.
+    // Skip messages without a space id to avoid collisions on the empty key,
+    // and delete-then-set so Map insertion order reflects most-recent activity.
+    const threadId = msg.space?.id;
+    if (!threadId) return;
+    this.lastInboundByThread.delete(threadId);
+    this.lastInboundByThread.set(threadId, msg);
   }
 
   getLastInboundMessage(threadId: string): Message | undefined {

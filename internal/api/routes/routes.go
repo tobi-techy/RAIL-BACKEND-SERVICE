@@ -864,7 +864,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				proc := container.GetPlatformProcessor()
 				if bridgeHMACSecret != "" && proc != nil {
 					bridgeGroup := v1.Group("/platform")
-					bridgeGroup.Use(middleware.BridgeHMAC(bridgeHMACSecret))
+					bridgeGroup.Use(middleware.BridgeHMAC(bridgeHMACSecret, container.ZapLog))
 					bridgeGroup.Use(middleware.RateLimit(100))
 					{
 						bridgeGroup.POST("/inbound", container.PlatformHandler.HandleInbound(proc))

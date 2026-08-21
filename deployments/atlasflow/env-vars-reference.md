@@ -196,12 +196,12 @@ Runtime tier **large**. Current workspace plan only allows build-tier `standard`
 
 ## Shared secrets (must match)
 
-| rail-backend-service | spectrum-bridge |
-|---|---|
-| `PLATFORM_AMQP_URL` | `AMQP_URL` |
-| `PLATFORM_BRIDGE_HMAC_SECRET` | `RAIL_HMAC_SECRET` |
+| rail-backend-service | spectrum-bridge | Notes |
+|---|---|---|
+| `PLATFORM_BRIDGE_HMAC_SECRET` | `RAIL_HMAC_SECRET` | **SECRET.** Used to HMAC-sign HTTP traffic in both directions. |
+| `PLATFORM_BRIDGE_BASE_URL` | `RAIL_BACKEND_URL` | The backend's outbound URL must point at the bridge (`https://spectrum-bridge-…atlasflow.dev`); the bridge's `RAIL_BACKEND_URL` must point back at the Go API (`https://api.userail.money`). |
 
-RabbitMQ is **external** (CloudAMQP / AWS MQ). It is not an AtlasFlow project.
+The bridge and backend communicate over HTTP (AMQP/RabbitMQ is no longer used).
 
 ---
 

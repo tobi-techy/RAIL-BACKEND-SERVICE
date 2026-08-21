@@ -32,6 +32,7 @@ export interface PersistentOutboundQueueOptions {
   criticalTtlMs?: number;
   normalTtlMs?: number;
   autoSaveIntervalMs?: number;
+  maxSize?: number;
 }
 
 const DEFAULT_OPTIONS: Required<PersistentOutboundQueueOptions> = {
@@ -40,7 +41,14 @@ const DEFAULT_OPTIONS: Required<PersistentOutboundQueueOptions> = {
   criticalTtlMs: 24 * 60 * 60 * 1000, // 24 hours
   normalTtlMs: 4 * 60 * 60 * 1000,    // 4 hours
   autoSaveIntervalMs: 30_000,
+  maxSize: 10_000,
 };
+
+function isValidOutboundMessage(msg: unknown): msg is OutboundMessage {
+  if (!msg || typeof msg !== "object") return false;
+  const m = msg as Record<string, unknown>;
+  return typeof m.thread_id === "string" && m.thread_id.length > 0 && typeof m.text === "string";
+}
 
 /**
  * PersistentOutboundQueue survives bridge restarts so proactive messages are
@@ -70,7 +78,7 @@ export class PersistentOutboundQueue {
       let dropped = 0;
       const now = Date.now();
       for (const rec of parsed) {
-        if (!rec.id || !rec.threadId || !rec.msg) {
+        if (!rec.id || !rec.threadId || !isValidOutboundMessage(rec.msg)) {
           dropped++;
           continue;
         }
@@ -92,6 +100,20 @@ export class PersistentOutboundQueue {
    * Enqueue a message for later delivery. Returns the queued message id.
    */
   enqueue(msg: OutboundMessage, category: MessageCategory = "normal"): string {
+    if (!isValidOutboundMessage(msg)) {
+      log.warn({ msg }, "refusing to enqueue invalid outbound message");
+      return "";
+    }
+
+    // Enforce a bounded queue: drop oldest messages first when over capacity.
+    if (this.records.size >= this.opts.maxSize) {
+      const oldest = Array.from(this.records.values()).sort((a, b) => a.createdAt - b.createdAt)[0];
+      if (oldest) {
+        this.records.delete(oldest.id);
+        log.warn({ thread_id: oldest.threadId }, "dropped oldest queued message to enforce max size");
+      }
+    }
+
     const id = randomUUID();
     const now = Date.now();
     const ttl = category === "critical" ? this.opts.criticalTtlMs : this.opts.normalTtlMs;

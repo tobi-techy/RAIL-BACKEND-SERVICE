@@ -21,10 +21,6 @@ type PlatformHandler struct {
 	logger        *zap.Logger
 }
 
-func NewPlatformHandler(ls *platform.LinkingService, bridgeAddress string) *PlatformHandler {
-	return &PlatformHandler{linkingService: ls, bridgeAddress: bridgeAddress}
-}
-
 func NewPlatformHandlerWithLogger(ls *platform.LinkingService, bridgeAddress string, logger *zap.Logger) *PlatformHandler {
 	return &PlatformHandler{linkingService: ls, bridgeAddress: bridgeAddress, logger: logger}
 }
@@ -141,6 +137,14 @@ func (h *PlatformHandler) ListLinked(c *gin.Context) {
 // and feeds it to the processor. HMAC-authenticated via middleware.
 func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if processor == nil {
+			if h.logger != nil {
+				h.logger.Error("platform processor not configured for inbound handler")
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor not configured"})
+			return
+		}
+
 		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 5*1024*1024))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
@@ -161,6 +165,14 @@ func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.Handl
 // via HTTP POST and feeds it to the processor. HMAC-authenticated via middleware.
 func (h *PlatformHandler) HandleAction(processor *platform.Processor) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if processor == nil {
+			if h.logger != nil {
+				h.logger.Error("platform processor not configured for action handler")
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor not configured"})
+			return
+		}
+
 		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1024*1024))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
