@@ -89,15 +89,46 @@ setInterval(() => {
   }
 }, 60_000);
 
+/**
+ * Quickselect (Hoare's algorithm): partially reorders `arr` so that the element
+ * at index `k` is in its final sorted position, with all smaller elements before
+ * it and all larger elements after it. O(n) average time, O(1) extra space.
+ * Avoids the O(n log n) full sort that was previously used for nonce eviction.
+ */
+function quickselect(arr: [string, number][], k: number): void {
+  let lo = 0;
+  let hi = arr.length - 1;
+  while (lo < hi) {
+    const pivot = arr[(lo + hi) >> 1][1];
+    let i = lo;
+    let j = hi;
+    while (i <= j) {
+      while (arr[i][1] < pivot) i++;
+      while (arr[j][1] > pivot) j--;
+      if (i <= j) {
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+        i++;
+        j--;
+      }
+    }
+    if (k <= j) hi = j;
+    else if (k >= i) lo = i;
+    else break;
+  }
+}
+
 function evictOldestNoncesIfNeeded(): void {
   if (seenNonces.size < MAX_SEEN_NONCES) return;
 
   // Emergency cleanup: remove oldest nonces by expiration time, keeping ~80%
-  // of the limit to avoid thrashing.
+  // of the limit to avoid thrashing. Uses quickselect (O(n) average) instead
+  // of a full sort (O(n log n)) to find the eviction cutoff.
   const entries = Array.from(seenNonces.entries());
-  entries.sort((a, b) => a[1] - b[1]);
   const keepCount = Math.floor(MAX_SEEN_NONCES * 0.8);
   const dropCount = Math.max(0, entries.length - keepCount);
+  if (dropCount === 0) return;
+
+  quickselect(entries, dropCount);
   for (let i = 0; i < dropCount; i++) {
     seenNonces.delete(entries[i][0]);
   }
