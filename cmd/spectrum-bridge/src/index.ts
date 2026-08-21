@@ -8,6 +8,7 @@ import { loadConfig } from "./config";
 import { MessageHandler, OutboundMessage } from "./handler";
 import { getLogger, childLogger } from "./logger";
 import { SpaceStore } from "./space-store";
+import { PersistentOutboundQueue } from "./outbound-queue";
 
 const config = loadConfig();
 const log = getLogger();
@@ -63,22 +64,18 @@ const spaceStore = new SpaceStore();
 await spaceStore.load();
 spaceStore.startAutoSave();
 
+// Persistent outbound queue — survives bridge restarts so proactive messages are
+// not lost when the live Space handle is cold. Messages flush when the user texts
+// again and the space warms up.
+const outboundQueue = new PersistentOutboundQueue();
+await outboundQueue.load();
+outboundQueue.startAutoSave();
+
 // Registry of Space handles seen on inbound messages, so the outbound consumer
 // can send to a conversation by id. Spectrum only surfaces Space objects through
 // the inbound stream, so we can only send to spaces the user has messaged from —
 // which covers every reply/confirmation path.
 const spaces = new Map<string, Space>();
-
-// Outbound delivery queue: messages that couldn't be delivered because the Space
-// was cold (bridge restarted, space not yet re-discovered). Retried with backoff.
-interface QueuedOutbound {
-  msg: OutboundMessage;
-  attempts: number;
-  nextRetry: number;
-}
-const outboundQueue: QueuedOutbound[] = [];
-const MAX_OUTBOUND_RETRIES = 5;
-const RETRY_BASE_MS = 2_000;
 
 function verifyHMAC(payload: string, signature: string): boolean {
   try {
@@ -158,38 +155,46 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
   }
 }
 
+// Send a queued message and update the queue based on the outcome.
+async function attemptQueuedSend(item: import("./outbound-queue").QueuedMessage): Promise<void> {
+  const sent = await sendToSpace(item.msg);
+  if (sent) {
+    outboundQueue.remove(item.id);
+    return;
+  }
+
+  const updated = outboundQueue.recordAttempt(item.id);
+  if (updated) {
+    log.info(
+      { thread_id: item.msg.thread_id, attempt: updated.attempts, retry_in: updated.nextRetryAt - Date.now() },
+      "outbound queued for retry",
+    );
+  }
+}
+
 // Process outbound queue — retry messages that failed due to cold spaces.
 function processOutboundQueue(): void {
-  const now = Date.now();
-  for (let i = outboundQueue.length - 1; i >= 0; i--) {
-    const item = outboundQueue[i];
-    if (now < item.nextRetry) continue;
-
-    outboundQueue.splice(i, 1);
-
-    sendToSpace(item.msg).then((sent) => {
-      if (!sent && item.attempts < MAX_OUTBOUND_RETRIES) {
-        const delay = RETRY_BASE_MS * Math.pow(2, item.attempts);
-        outboundQueue.push({
-          msg: item.msg,
-          attempts: item.attempts + 1,
-          nextRetry: Date.now() + delay,
-        });
-        log.info(
-          { thread_id: item.msg.thread_id, attempt: item.attempts + 1, retry_in: delay },
-          "outbound queued for retry",
-        );
-      } else if (!sent) {
-        log.warn(
-          { thread_id: item.msg.thread_id, attempts: item.attempts },
-          "outbound delivery failed after max retries",
-        );
-      }
-    });
+  const ready = outboundQueue.getReady();
+  for (const item of ready) {
+    attemptQueuedSend(item).catch((err) =>
+      log.error({ err, thread_id: item.msg.thread_id }, "failed to process queued outbound"),
+    );
   }
 }
 
 setInterval(processOutboundQueue, 5_000);
+
+// Flush any messages queued for a thread that just warmed up. Called after an
+// inbound message registers the space handle.
+async function flushQueuedMessages(threadID: string): Promise<void> {
+  const pending = outboundQueue.bumpThread(threadID);
+  if (pending.length === 0) return;
+
+  log.info({ thread_id: threadID, count: pending.length }, "flushing queued messages for warmed space");
+  for (const item of pending) {
+    await attemptQueuedSend(item);
+  }
+}
 
 // HTTP endpoint for the backend to send outbound messages to the bridge.
 app.post("/send", (req, res) => {
@@ -206,19 +211,23 @@ app.post("/send", (req, res) => {
   sendToSpace(msg).then((sent) => {
     if (!sent) {
       // Queue for retry — user will need to message again to warm the space,
-      // or the space will be re-discovered on next inbound.
-      outboundQueue.push({ msg, attempts: 0, nextRetry: Date.now() + RETRY_BASE_MS });
+      // or the space will be re-discovered on next inbound. Critical messages
+      // get a longer TTL so anomaly alerts and money receipts survive longer.
+      outboundQueue.enqueue(msg, msg.category ?? "normal");
     }
   });
   res.json({ status: "queued" });
 });
 
 app.get(["/", "/health"], (_req, res) => {
+  const stats = outboundQueue.getStats();
   res.json({
     status: "ok",
     spaces: spaces.size,
     known_threads: spaceStore.count(),
-    queued_outbound: outboundQueue.length,
+    queued_outbound: stats.totalQueued,
+    queued_by_thread: stats.byThread,
+    queued_oldest_ms: stats.oldestMessage ? Date.now() - stats.oldestMessage : undefined,
     uptime_sec: Math.floor(process.uptime()),
   });
 });
@@ -229,6 +238,13 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   spaces.set(threadID, space);
   spaceStore.register(threadID, space.id);
   handler.registerInboundMessage(message);
+
+  // The space just warmed up. Flush any proactive messages that were queued
+  // while the handle was cold (bridge restart or eviction) without blocking
+  // the inbound path.
+  flushQueuedMessages(threadID).catch((err) =>
+    log.error({ err, thread_id: threadID }, "failed to flush queued messages"),
+  );
 
   const senderId = message.sender?.id;
   if (!senderId) return;
@@ -412,6 +428,8 @@ process.on("SIGTERM", async () => {
   log.info("shutting down...");
   await spaceStore.flush();
   spaceStore.stopAutoSave();
+  await outboundQueue.flush();
+  outboundQueue.stopAutoSave();
   process.exit(0);
 });
 
@@ -419,5 +437,7 @@ process.on("SIGINT", async () => {
   log.info("shutting down (SIGINT)...");
   await spaceStore.flush();
   spaceStore.stopAutoSave();
+  await outboundQueue.flush();
+  outboundQueue.stopAutoSave();
   process.exit(0);
 });

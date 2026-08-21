@@ -50,6 +50,10 @@ export interface OutboundMessage {
 
   // structured insight cards (rendered as per-platform card text)
   cards?: InsightCard[];
+
+  // delivery category: critical messages survive longer in the bridge's
+  // persistent outbound queue when the Space handle is cold.
+  category?: "critical" | "normal";
 }
 
 const EFFECTS: Record<string, IMessageMessageEffect> = {
