@@ -652,7 +652,7 @@ func personaGuidance(userType string) string {
 	case "high_earner":
 		return "Focus on coordination and risk. Keep tax, estate, and legal guidance informational and recommend professional review for decisions."
 	default:
-		return "Cover budget, debt, savings, investing, and taxes in that order. Protect liquidity before suggesting more Stash or investing."
+		return "Cover budget, debt, savings, investing, and taxes in that order. Debt freedom is the priority — protect liquidity before suggesting more Stash or investing. While debts exist, strongly discourage investing beyond emergency fund."
 	}
 }
 

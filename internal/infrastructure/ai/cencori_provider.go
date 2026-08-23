@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	cencori "github.com/cencori/cencori-go"
 	"go.uber.org/zap"
 )
@@ -19,7 +20,8 @@ const (
 // CencoriConfig holds configuration for the Cencori AI gateway provider.
 type CencoriConfig struct {
 	APIKey           string
-	Model            string // Model ID to route through Cencori (e.g. "gpt-4o", "claude-sonnet-4-20250514")
+	ModelSmart       string // High-reasoning model (e.g. "gpt-4o", "claude-sonnet-4-20250514")
+	ModelFast        string // Fast/cheap model (e.g. "gpt-4o-mini", "gemini-2.0-flash")
 	MaxTokens        int
 	MaxContextTokens int
 	Temperature      float64
@@ -47,15 +49,19 @@ type CencoriProvider struct {
 	config      *CencoriConfig
 	logger      *zap.Logger
 	traceHeader string
+	// costGuard, when non-nil, refuses requests that would push a user over
+	// their daily/monthly ceiling and records the post-call cost. Set by DI.
+	costGuard *Guard
 }
 
 // NewCencoriProvider creates a new Cencori AI gateway provider using the official SDK.
 func NewCencoriProvider(config *CencoriConfig, logger *zap.Logger) *CencoriProvider {
 	if config == nil {
 		config = &CencoriConfig{
-			Model:    "gpt-4o",
-			MaxTokens: 4096,
-			Timeout:  60 * time.Second,
+			ModelSmart: "gpt-4o",
+			ModelFast:  "gpt-4o-mini",
+			MaxTokens:  4096,
+			Timeout:    60 * time.Second,
 		}
 	}
 
@@ -90,6 +96,76 @@ func NewCencoriProvider(config *CencoriConfig, logger *zap.Logger) *CencoriProvi
 	}
 }
 
+// SetCostGuard attaches a per-user cost ceiling guard. Pass nil to disable.
+// Safe to call multiple times (last writer wins).
+func (p *CencoriProvider) SetCostGuard(g *Guard) {
+	p.costGuard = g
+}
+
+// chatGuardAndRecord runs the pre-call ceiling check and the post-call cost
+// recording. For streaming responses, the cost is recorded on stream
+// completion using the response's total tokens. For non-streaming, on the
+// returned response.
+func (p *CencoriProvider) checkGuard(ctx context.Context, userID string) error {
+	if p.costGuard == nil || !p.costGuard.IsEnabled() || userID == "" {
+		return nil
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		// Unknown user id format — let the call proceed. The billing layer
+		// will tag this as anonymous and we don't gate anonymous traffic.
+		return nil
+	}
+	if err := p.costGuard.Allow(ctx, uid); err != nil {
+		p.logger.Info("cencori: refusing call — user over cost ceiling",
+			zap.String("user_id", userID),
+			zap.Error(err),
+		)
+		return err
+	}
+	return nil
+}
+
+func (p *CencoriProvider) recordCost(ctx context.Context, userID string, tokens int, model string) {
+	if p.costGuard == nil || !p.costGuard.IsEnabled() || userID == "" {
+		return
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return
+	}
+	cost := estimateCostUSD(model, tokens)
+	p.costGuard.Record(ctx, uid, cost)
+}
+
+// estimateCostUSD mirrors entities.EstimateCost but kept local so the
+// infrastructure package doesn't pull in the entity-layer pricing table for
+// every call. Pricing tracks the model table in internal/domain/entities.
+func estimateCostUSD(model string, tokens int) float64 {
+	pricePerToken, ok := cencoriModelPricing[model]
+	if !ok {
+		pricePerToken = 0.00001 // $10/M fallback
+	}
+	return pricePerToken * float64(tokens)
+}
+
+// cencoriModelPricing tracks per-output-token USD cost for Cencori-routed
+// models. Update when provider prices change; the entities layer keeps a
+// parallel table for billing reports.
+var cencoriModelPricing = map[string]float64{
+	"gpt-4o":                       0.00001,    // $10/1M
+	"gpt-4o-mini":                  0.0000006,  // $0.60/1M
+	"claude-haiku-4-5":             0.000001,   // $1/1M
+	"claude-sonnet-4-5":            0.000015,   // $15/1M
+	"claude-sonnet-4-20250514":     0.000015,   // legacy
+	"claude-3-5-haiku-20241022":    0.000001,   // legacy
+	"claude-3-haiku-20240307":      0.00000125, // legacy
+	"gemini-2.0-flash":             0.0000001,  // effectively free
+	"gemini-2.5-flash":             0.00000015,
+	"kimi-k2.6":                    0.000002,
+	"kimi":                         0.000002,
+}
+
 // ChatCompletion performs a standard chat completion via Cencori.
 func (p *CencoriProvider) ChatCompletion(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	return p.ChatCompletionWithTools(ctx, req, nil)
@@ -106,6 +182,13 @@ func (p *CencoriProvider) ChatCompletionWithTools(ctx context.Context, req *Chat
 		}
 	}
 
+	// Per-user cost ceiling enforcement. Refuse the call before we hit the
+	// gateway if the user is over budget — this is the single most important
+	// safeguard for the $20 Cencori balance.
+	if err := p.checkGuard(ctx, req.UserID); err != nil {
+		return nil, err
+	}
+
 	startTime := time.Now()
 
 	// Build Cencori messages
@@ -114,9 +197,12 @@ func (p *CencoriProvider) ChatCompletionWithTools(ctx context.Context, req *Chat
 	// Build Cencori tools
 	cencoriTools := p.buildTools(tools)
 
+	// Resolve model based on tier (cost optimization)
+	model := p.resolveModel(req)
+
 	// Build params
 	params := &cencori.ChatParams{
-		Model:    p.config.Model,
+		Model:    model,
 		Messages: messages,
 	}
 
@@ -154,7 +240,16 @@ func (p *CencoriProvider) ChatCompletionWithTools(ctx context.Context, req *Chat
 		return nil, p.handleError(err)
 	}
 
-	return p.convertResponse(resp, time.Since(startTime)), nil
+	result := p.convertResponse(resp, time.Since(startTime))
+
+	// Record the post-call cost. We use the model's reported total tokens
+	// (prompt + completion) since Cencori's pricing is per-token and we don't
+	// have a separate breakdown.
+	if req.UserID != "" {
+		p.recordCost(ctx, req.UserID, result.TokensUsed, result.Model)
+	}
+
+	return result, nil
 }
 
 // ChatCompletionStream streams via the Cencori SDK.
@@ -170,15 +265,23 @@ func (p *CencoriProvider) ChatCompletionStream(ctx context.Context, req *ChatReq
 		}
 	}
 
+	// Per-user cost ceiling enforcement — same gate as the non-streaming path.
+	if err := p.checkGuard(ctx, req.UserID); err != nil {
+		return err
+	}
+
 	// Build Cencori messages
 	messages := p.buildMessages(req)
 
 	// Build Cencori tools
 	cencoriTools := p.buildTools(tools)
 
+	// Resolve model based on tier
+	model := p.resolveModel(req)
+
 	// Build params
 	params := &cencori.ChatParams{
-		Model:    p.config.Model,
+		Model:    model,
 		Messages: messages,
 		Stream:   true,
 	}
@@ -217,7 +320,11 @@ func (p *CencoriProvider) ChatCompletionStream(ctx context.Context, req *ChatReq
 		return p.handleError(err)
 	}
 
-	// Convert stream chunks to our format
+	// Convert stream chunks to our format. The Cencori SDK does not emit
+	// usage on each stream chunk, so we accumulate content length and
+	// estimate tokens on completion. This is intentionally conservative —
+	// we never want to underestimate user cost.
+	var contentLen int
 	for chunk := range stream {
 		if chunk.Err != nil {
 			select {
@@ -232,6 +339,7 @@ func (p *CencoriProvider) ChatCompletionStream(ctx context.Context, req *ChatReq
 
 		if chunk.Delta != "" {
 			sc.Content = chunk.Delta
+			contentLen += len(chunk.Delta)
 		}
 
 		if len(chunk.Choices) > 0 {
@@ -245,6 +353,21 @@ func (p *CencoriProvider) ChatCompletionStream(ctx context.Context, req *ChatReq
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+	}
+
+	// Record cost on stream completion. Include input estimate (system
+	// prompt + messages) so we don't bill only for output. The estimate is
+	// intentionally rough; the Cencori dashboard is the source of truth.
+	if req.UserID != "" {
+		inputChars := len(req.SystemPrompt)
+		for _, m := range req.Messages {
+			inputChars += len(m.Content)
+		}
+		totalTokens := (inputChars + contentLen) / 4
+		if totalTokens < 1 {
+			totalTokens = 1
+		}
+		p.recordCost(ctx, req.UserID, totalTokens, model)
 	}
 
 	return nil
@@ -261,9 +384,10 @@ func (p *CencoriProvider) IsAvailable(ctx context.Context) bool {
 		return false
 	}
 
-	// Try a lightweight request to verify connectivity
+	// Use the smart model for the connectivity ping; cheaper to also test fast,
+	// but a single request proves gateway reachability.
 	_, err := p.client.Chat.Create(ctx, &cencori.ChatParams{
-		Model: p.config.Model,
+		Model: p.resolveModel(&ChatRequest{}),
 		Messages: []cencori.Message{
 			{Role: "user", Content: "ping"},
 		},
@@ -271,6 +395,20 @@ func (p *CencoriProvider) IsAvailable(ctx context.Context) bool {
 	})
 	// We don't care about the response, just that we could connect
 	return err == nil || !errors.Is(err, cencori.ErrInvalidAPIKey)
+}
+
+// resolveModel picks the model ID based on the requested tier.
+// "fast" routes to the cheap/fast model; everything else uses the smart model.
+func (p *CencoriProvider) resolveModel(req *ChatRequest) string {
+	if req.ModelHint == "fast" && p.config.ModelFast != "" {
+		return p.config.ModelFast
+	}
+	if p.config.ModelSmart != "" {
+		return p.config.ModelSmart
+	}
+	// Backwards-compatible fallback if someone constructed the config with only
+	// the legacy "Model" field (shouldn't happen with the new DI wiring).
+	return "gpt-4o"
 }
 
 // buildMessages converts our messages to Cencori format.
@@ -442,11 +580,11 @@ func (p *CencoriProvider) handleError(err error) error {
 		}
 
 	case errors.Is(err, cencori.ErrInvalidModel):
-		p.logger.Error("Cencori: invalid model", zap.String("model", p.config.Model))
+		p.logger.Error("Cencori: invalid model", zap.String("model", p.config.ModelSmart))
 		return &ProviderError{
 			Provider:  cencoriName,
 			Code:      ErrorCodeInvalidRequest,
-			Message:   fmt.Sprintf("Invalid model: %s", p.config.Model),
+			Message:   fmt.Sprintf("Invalid model: %s", p.config.ModelSmart),
 			Retryable: false,
 		}
 

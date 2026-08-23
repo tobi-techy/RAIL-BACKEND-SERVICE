@@ -45,6 +45,13 @@ type NewsDataProvider interface {
 	GetWeeklyNews(ctx context.Context, userID uuid.UUID) ([]*entities.UserNews, error)
 }
 
+// MonoAnalysisProvider gives Miriam access to spending analysis derived from
+// Mono-linked bank accounts. When a user has linked their bank through Mono,
+// this replaces/supplements uploaded bank statement data for spending insights.
+type MonoAnalysisProvider interface {
+	GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, days int) (*entities.MonoSpendingAnalysis, error)
+}
+
 // ContextSignalProvider reads active behavioral signals for ambient Miriam nudges.
 type ContextSignalProvider interface {
 	GetActiveByUser(ctx context.Context, userID uuid.UUID) ([]entities.UserContextSignal, error)
@@ -126,6 +133,11 @@ type UsageTracker interface {
 // as system context instead of mixed into user text.
 type ChatOptions struct {
 	ToneMode string
+	// ModelHint selects between cost-tier models ("fast" or "smart"). Routed
+	// through to the underlying provider so simple queries avoid expensive
+	// reasoning models. Empty defers to the core agent's intent-classifier
+	// based default.
+	ModelHint string
 	// SystemContext holds extra system prompts from the caller. These are
 	// trusted, product-authored instructions (for example the cross-channel
 	// continuity framing) and are appended to the consolidated personality block

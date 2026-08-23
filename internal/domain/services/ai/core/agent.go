@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
@@ -105,9 +106,31 @@ func (a *Agent) Chat(ctx context.Context, userID, convID uuid.UUID, message stri
 		return nil, err
 	}
 
+	// 0. Cost optimization: route simple interactions to a cheaper model tier
+	// before paying for context assembly + LLM calls. Empty tier → caller has
+	// already picked one or wants the default (smart).
+	if opts.ModelHint == "" {
+		opts.ModelHint = a.chooseModelHint(ctx, message, opts)
+	}
+
 	// 1. Check cost ceiling
 	if a.deps.Usage != nil && a.deps.Usage.IsOverCostCeiling(ctx, userID) {
 		return a.costCeilingResponse(), nil
+	}
+
+	// 1b. Fast Redis-backed daily/monthly ceiling (defense-in-depth with the
+	// Usage check above). Saves the work of context assembly + tool selection
+	// when the user is over their cap. The provider layer also re-checks via
+	// chatGuardAndRecord, so even if this step is skipped the cost is still
+	// accounted for.
+	if a.deps.CostGuard != nil {
+		if err := a.deps.CostGuard.Allow(ctx, userID); err != nil {
+			a.logger.Info("core.Agent: refusing call — cost guard ceiling hit",
+				zap.Stringer("user_id", userID),
+				zap.Error(err),
+			)
+			return a.costCeilingResponse(), nil
+		}
 	}
 
 	// 2. Fast path: trivial messages (greetings, thanks, acks)
@@ -219,6 +242,20 @@ func (a *Agent) Chat(ctx context.Context, userID, convID uuid.UUID, message stri
 		anomalies := a.anomalyContext(ctx, userID)
 		if guarded := a.deps.ResponseGuard(result.Content, grounding, anomalies); strings.TrimSpace(guarded) != "" {
 			result.Content = guarded
+		}
+	}
+
+	// 10c. Record the actual cost against the Redis-backed guard. The
+	// provider layer already records via chatGuardAndRecord; we record again
+	// here using core.Agent's authoritative token count (the provider's count
+	// may include retries or be a streaming estimate). Idempotent: the guard's
+	// INCRBY is monotonic, so a double-record of the same tokens just bumps
+	// the counter by the same amount twice. CostGuard implementations are
+	// fail-open, so an error here never breaks the response path.
+	if a.deps.CostGuard != nil && result.TokensUsed > 0 {
+		cost := entities.EstimateCost(opts.ModelHint, result.TokensUsed)
+		if cost.IsPositive() {
+			a.deps.CostGuard.Record(ctx, userID, cost.InexactFloat64())
 		}
 	}
 
@@ -878,6 +915,10 @@ var alwaysOnTools = map[string]bool{
 	"validate_meter": true, "detect_network": true,
 	// Engagement
 	"celebrate": true, "send_poll": true,
+	// Debt coaching
+	"get_baby_steps": true,
+	// Bank statement analysis
+	"get_bank_statement_analysis": true,
 }
 
 // selectTools returns the subset of tools relevant to the user's intents.
@@ -947,34 +988,16 @@ func stripConfirm(args map[string]interface{}) map[string]interface{} {
 }
 
 // isActionTool reports whether a tool mutates state and therefore must be staged
-// for explicit user confirmation instead of executing inline. This mirrors the
-// streaming path's isExecutionActionTool set plus raw fund moves.
+// for explicit user confirmation instead of executing inline. The canonical set
+// lives in StageConfirmTools (execution_tools.go) so the prompt tier list is
+// derived from the same source this enforcement check uses.
 //
 // MVP: stage high-stakes writes (money + automations + mandate acceptance).
 // Low-risk record-keeping (set_budget, set_savings_goal, create_obligation_reminder,
 // mark_obligation_paid, protect_subscription) still auto-execute — they don't move
 // money at call time.
 func (a *Agent) isActionTool(name string) bool {
-	actionTools := map[string]bool{
-		"transfer_funds": true, "initiate_withdrawal": true,
-		// Execution Engine (spec 5.2) — mutating tools, gated by Monitor mode
-		// here and staged for confirmation on the non-streaming path.
-		"setup_bill_autopay": true, "cancel_subscription": true,
-		"execute_investment": true, "optimize_yield": true,
-		"block_merchant": true, "unblock_merchant": true,
-		"copy_trader": true, "pause_trade_copying": true,
-		"resume_trade_copying": true, "stop_trade_copying": true,
-		// Nigerian bill payments (Airbills). pay_bill/automate_bill move money;
-		// save_bill_beneficiary is a confirmed write.
-		"pay_bill": true, "automate_bill": true, "save_bill_beneficiary": true,
-		// P2P + receipt splits move real Spend balance (or reserve for claim links).
-		"send_money": true, "split_receipt": true,
-		// Automations and mandate acceptance create lasting autonomous behavior.
-		"create_automation":         true,
-		"accept_mandate_suggestion": true,
-		"create_miriam_mandate":     true,
-	}
-	return actionTools[name]
+	return StageConfirmTools[name]
 }
 
 // executeActionTool handles action tools that require confirmation.
@@ -1183,4 +1206,37 @@ func (a *Agent) IsUserOverCostCeiling(ctx context.Context, userID uuid.UUID) boo
 		return false
 	}
 	return a.deps.Usage.IsOverCostCeiling(ctx, userID)
+}
+
+// chooseModelHint decides whether this query can safely use the fast/cheap
+// model or needs the smart/reasoning model. Trivial greetings and short
+// conversational acks go to fast; anything that the intent classifier labels
+// as an Action, Planning, or Investment intent upgrades to smart.
+func (a *Agent) chooseModelHint(ctx context.Context, message string, opts ChatOptions) string {
+	// Explicit caller override wins.
+	if opts.ModelHint == "fast" || opts.ModelHint == "smart" {
+		return opts.ModelHint
+	}
+
+	// Trivial replies never reach the LLM, so tier doesn't matter for them,
+	// but if the caller didn't pick one we still pick the cheap tier to
+	// avoid surprising a future prompt assembly step that does.
+	if a.trivialReply(message) != "" {
+		return "fast"
+	}
+
+	// Ask the cheap classifier to route. No classifier (or low confidence,
+	// or any error) falls back to the safe "smart" tier; we don't want to
+	// silently downgrade a money question because the classifier hiccuped.
+	if a.deps.IntentClassifier != nil {
+		category, confidence, ok := a.deps.IntentClassifier.Classify(ctx, message)
+		if ok && confidence >= a.deps.Config.ClassifierMinConfidence {
+			switch category {
+			case CategoryOverview, CategoryMemory, CategoryEngagement:
+				return "fast"
+			}
+		}
+	}
+
+	return "smart"
 }

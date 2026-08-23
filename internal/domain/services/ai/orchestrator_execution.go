@@ -51,27 +51,9 @@ const (
 	ToolRequestFlightRefund = "request_flight_refund"
 )
 
-// isExecutionActionTool reports whether the tool is a mutating Execution
-// Engine tool that must go through the pending-action confirm flow in chat.
-func isExecutionActionTool(name string) bool {
-	switch name {
-	case ToolSetupBillAutopay, ToolCancelSubscription, ToolExecuteInvestment,
-		ToolOptimizeYield, ToolBlockMerchant, ToolUnblockMerchant,
-		ToolCopyTrader, ToolPauseTradeCopying, ToolResumeTradeCopying,
-		ToolStopTradeCopying,
-		ToolPayBill, ToolAutomateBill, ToolSaveBillBeneficiary,
-		// BRIJ flight bookings (staged for confirmation; book_flight is
-		// fund-moving and requires Face ID step-up).
-		ToolCreateFlightIntent, ToolBookFlight, ToolSaveTravelPassenger, ToolRequestFlightRefund,
-		// Mandate acceptance re-runs the core registry tool with confirm=true.
-		"accept_mandate_suggestion", "create_miriam_mandate",
-		// P2P + receipt split + automation create — execute via registry on confirm.
-		"send_money", "split_receipt", "create_automation":
-		return true
-	default:
-		return false
-	}
-}
+// isExecutionActionTool moved to execution_tiers.go — it is derived from the
+// canonical core.StageConfirmTools set (plus streaming-only extras) so the
+// prompt tier list and this enforcement check can never drift apart.
 
 // executionActionDescription builds the human-readable summary shown on the
 // pending-action confirmation card.
@@ -91,8 +73,6 @@ func executionActionDescription(name string, args map[string]interface{}) string
 	switch name {
 	case "accept_mandate_suggestion":
 		return "Activate this quiet-money mandate so Miriam can act within its limits"
-	case "create_miriam_mandate":
-		return "Create a new Miriam autopilot mandate"
 	case "send_money":
 		return fmt.Sprintf("Send $%s to %s", arg("amount"), arg("identifier"))
 	case "split_receipt":

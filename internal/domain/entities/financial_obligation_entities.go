@@ -53,6 +53,7 @@ type FinancialObligation struct {
 	DueDay       *int            `json:"due_day,omitempty" db:"due_day"`
 	Priority     string          `json:"priority" db:"priority"`
 	Counterparty *string         `json:"counterparty,omitempty" db:"counterparty"`
+	InterestRate *decimal.Decimal `json:"interest_rate,omitempty" db:"interest_rate"`
 	Status       string          `json:"status" db:"status"`
 	Metadata     json.RawMessage `json:"metadata,omitempty" db:"metadata"`
 	CreatedAt    time.Time       `json:"created_at" db:"created_at"`

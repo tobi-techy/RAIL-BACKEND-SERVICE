@@ -9,9 +9,11 @@ var currencySymbols = map[string]string{
 	"GB": "£", "US": "$", "CA": "CA$", "AU": "A$",
 	"IN": "₹", "PH": "₱", "BR": "R$", "MX": "MX$",
 	"DE": "€", "FR": "€", "ES": "€", "NL": "€", "IE": "€",
+	"EU": "€", "JP": "¥", "KR": "₩", "CN": "¥",
 }
 
-// CurrencySymbol returns the display symbol for a country code.
+// CurrencySymbol returns the display symbol for a given ISO country code.
+// Used by voice, nudges, and daily pulse to avoid hardcoded "$".
 // Falls back to "$" for unknown countries.
 func CurrencySymbol(country string) string {
 	country = strings.ToUpper(strings.TrimSpace(country))

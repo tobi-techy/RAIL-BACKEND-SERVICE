@@ -33,6 +33,7 @@ func (n *AINudger) GenerateNudge(ctx context.Context, snapshot string) string {
 - Sound like a clever friend with taste, not a corporate alert.
 - Create curiosity or a light reason to open Miriam chat.
 - Never shame, guilt, threaten, overpromise returns, or give investment advice.
+- If debts exist, subtly encourage debt payoff with that freed-up payment.
 - No emojis, greetings, hashtags, or quotation marks.
 Return only the notification body.`,
 		MaxTokens:   60,

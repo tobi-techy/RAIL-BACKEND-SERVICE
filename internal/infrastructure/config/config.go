@@ -53,9 +53,22 @@ type Config struct {
 	TelegramAlerts  TelegramConfig       `mapstructure:"telegram_alerts"`
 	Umbra           UmbraConfig          `mapstructure:"umbra"`
 	Enrichment      EnrichmentConfig     `mapstructure:"enrichment"`
+	Mono            MonoConfig           `mapstructure:"mono"`
 	Statement       StatementConfig      `mapstructure:"statement"`
 	Document        DocumentConfig       `mapstructure:"document"`
+	DataRetention   DataRetentionConfig  `mapstructure:"data_retention"`
 	AdminAlertEmail string               `mapstructure:"admin_alert_email"`
+}
+
+// DataRetentionConfig controls how long non-critical AI tracking data
+// (predictions, outcomes, health scores) is kept before automatic cleanup.
+// Financial ledger, audit, and compliance records are never affected.
+type DataRetentionConfig struct {
+	HealthScoreDays     int `mapstructure:"health_score_days"`
+	PredictionDays      int `mapstructure:"prediction_days"`
+	OutcomeDays         int `mapstructure:"outcome_days"`
+	NotificationDays    int `mapstructure:"notification_days"`
+	CampaignDeliveryDays int `mapstructure:"campaign_delivery_days"`
 }
 
 // DocumentConfig configures the document-intelligence pipeline (PaddleOCR sidecar + R2).
@@ -95,6 +108,17 @@ type UmbraConfig struct {
 type EnrichmentConfig struct {
 	ServiceURL string `mapstructure:"service_url"` // URL of the enrichment sidecar (e.g. http://enrichment:8090)
 	Enabled    bool   `mapstructure:"enabled"`     // Enable transaction enrichment pipeline
+}
+
+// MonoConfig holds configuration for Mono (open-banking data + DirectPay).
+// Sandbox base URL: https://api.withmono.com  |  Live: https://api.withmono.com
+type MonoConfig struct {
+	APIKey         string `mapstructure:"api_key"`          // mono-sec-key from Mono dashboard
+	Environment    string `mapstructure:"environment"`      // "sandbox" or "production"
+	BaseURL        string `mapstructure:"base_url"`         // defaults to https://api.withmono.com
+	WebhookSecret  string `mapstructure:"webhook_secret"`   // for verifying webhook signatures
+	Timeout        int    `mapstructure:"timeout"`          // HTTP timeout in seconds (default 30)
+	MaxRetries     int    `mapstructure:"max_retries"`      // retry attempts for 5xx (default 3)
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration
@@ -140,12 +164,29 @@ type AIConfig struct {
 	// on. Env: AI_RESPONSE_GUARD.
 	ResponseGuard bool `mapstructure:"response_guard"`
 
+	// CostGuard configures per-user daily cost ceilings enforced before each
+	// Cencori call. CostGuard.Enabled must be true to actually enforce; the
+	// DailyCeilingUSD and MonthlyCeilingUSD fields override the entity-level
+	// defaults (entities.DailyCostCeilingUSD = $0.25, entities.CostCeilingUSD =
+	// $2.00). On AtlasFlow we set DailyCeilingUSD=0.10 to protect the $20 budget.
+	CostGuard CostGuardConfig `mapstructure:"cost_guard"`
+
 	// Cloudflare configures optional Cloudflare AI integrations: AI Gateway
 	// (caching/observability in front of Cencori), Workers AI (cheap model for
 	// intent classification and embeddings), and Vectorize (serverless vector
 	// store for episodic/fact memory). Every sub-feature is opt-in; when unset
 	// the existing direct Cencori/Qdrant paths are used unchanged.
 	Cloudflare CloudflareAIConfig `mapstructure:"cloudflare"`
+}
+
+// CostGuardConfig tunes the per-user cost ceiling enforcement. When enabled,
+// the Cencori provider and the core.Agent both refuse to dispatch a request
+// that would push the user over their DailyCeilingUSD / MonthlyCeilingUSD
+// (estimated from Redis-backed running totals). Env: AI_COST_GUARD_*.
+type CostGuardConfig struct {
+	Enabled           bool    `mapstructure:"enabled"`
+	DailyCeilingUSD   float64 `mapstructure:"daily_ceiling_usd"`
+	MonthlyCeilingUSD float64 `mapstructure:"monthly_ceiling_usd"`
 }
 
 // CloudflareAIConfig groups the optional Cloudflare AI services. AccountID and
@@ -244,7 +285,8 @@ type ElevenLabsConfig struct {
 // prompt injection protection, and end-user billing via an OpenAI-compatible API.
 type CencoriConfig struct {
 	APIKey           string  `mapstructure:"api_key"`
-	Model            string  `mapstructure:"model"` // Model ID to route through Cencori
+	ModelSmart       string  `mapstructure:"model_smart"` // High-reasoning model for complex analysis (e.g. "gpt-4o")
+	ModelFast        string  `mapstructure:"model_fast"`  // Fast/cheap model for simple queries (e.g. "gpt-4o-mini")
 	MaxTokens        int     `mapstructure:"max_tokens"`
 	MaxContextTokens int     `mapstructure:"max_context_tokens"`
 	Temperature      float64 `mapstructure:"temperature"`
@@ -672,6 +714,17 @@ type WorkerConfig struct {
 	JobTimeout                  int  `mapstructure:"job_timeout"`
 	MiriamIntelligenceLocal     bool `mapstructure:"miriam_intelligence_local"`
 	MiriamIntelligenceBatchSize int  `mapstructure:"miriam_intelligence_batch_size"`
+	// MiriamEventDriven wires ledger outbox money events into the Miriam
+	// intelligence worker so she reacts within seconds of a deposit clearing,
+	// card transaction, or balance update. Defaults to true; operators must
+	// set WORKERS_MIRIAM_EVENT_DRIVEN=false to opt out.
+	MiriamEventDriven bool `mapstructure:"miriam_event_driven"`
+	// MiriamAdaptiveLoop, when true, replaces the fixed 15-min intelligence
+	// worker ticker with an event-woken + backoff loop. Defaults to true;
+	// operators must set WORKERS_MIRIAM_ADAPTIVE_LOOP=false to opt out.
+	// The adaptive loop's event-wakeup is a sub-condition of MiriamEventDriven:
+	// money events flag users as hot only when both settings are enabled.
+	MiriamAdaptiveLoop bool `mapstructure:"miriam_adaptive_loop"`
 	// LeaderElection, when true, lets only one API replica run background
 	// workers (Redis SET NX). HTTP stays up on every replica. Default on in
 	// production so min-replicas > 1 does not double money crons.
@@ -736,12 +789,6 @@ type EvalConfig struct {
 // PlatformConfig contains configuration for external platform messaging (iMessage, WhatsApp, Telegram).
 type PlatformConfig struct {
 	Enabled                bool   `mapstructure:"enabled"`
-	AMQPURL                string `mapstructure:"amqp_url"`
-	AMQPExchange           string `mapstructure:"amqp_exchange"`
-	AMQPQueue              string `mapstructure:"amqp_queue"`
-	AMQPRoutingKey         string `mapstructure:"amqp_routing_key"`
-	AMQPActionQueue        string `mapstructure:"amqp_action_queue"`
-	AMQPActionRoutingKey   string `mapstructure:"amqp_action_routing_key"`
 	HandshakeTokenTTL      int    `mapstructure:"handshake_token_ttl_seconds"` // TTL for handshake tokens (default 900 = 15 min)
 	BridgeBaseURL          string `mapstructure:"bridge_base_url"`             // URL of the Spectrum Bridge service
 	BridgeHMACSecret       string `mapstructure:"bridge_hmac_secret"`          // HMAC signing secret for Bridge↔Go
@@ -842,7 +889,9 @@ func Load() (*Config, error) {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// Override specific environment variables
-	overrideFromEnv()
+	if err := overrideFromEnv(); err != nil {
+		return nil, fmt.Errorf("override from env: %w", err)
+	}
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -909,6 +958,13 @@ func setDefaults() {
 	viper.SetDefault("database.conn_max_lifetime", 300) // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
+
+	// Data retention defaults - 30-day retention for non-critical AI tracking data
+	viper.SetDefault("data_retention.health_score_days", 30)
+	viper.SetDefault("data_retention.prediction_days", 30)
+	viper.SetDefault("data_retention.outcome_days", 30)
+	viper.SetDefault("data_retention.notification_days", 30)
+	viper.SetDefault("data_retention.campaign_delivery_days", 30)
 
 	// Redis defaults
 	viper.SetDefault("redis.host", "localhost")
@@ -1047,18 +1103,20 @@ func setDefaults() {
 	viper.SetDefault("security.adaptive_rate_limit.enable_risk_scoring", true)
 
 	// AI Provider defaults
-	viper.SetDefault("ai.primary", "kimi")
 	viper.SetDefault("ai.assemblyai.voice", "ivy")
-	viper.SetDefault("ai.openai.model", "gpt-4o-mini")
-	viper.SetDefault("ai.openai.realtime_model", "gpt-4o-mini-realtime-preview")
-	viper.SetDefault("ai.openai.max_tokens", 500)
-	viper.SetDefault("ai.openai.temperature", 0.7)
-	viper.SetDefault("ai.gemini.model", "gemini-2.0-flash")
-	viper.SetDefault("ai.gemini.max_tokens", 500)
-	viper.SetDefault("ai.gemini.temperature", 0.7)
-	viper.SetDefault("ai.kimi.model", "moonshot-v1-32k")
 	viper.SetDefault("ai.response_guard", false)
 	viper.BindEnv("ai.response_guard", "AI_RESPONSE_GUARD")
+
+	// Cost guard — per-user daily/monthly ceilings enforced before each
+	// Cencori call. Off by default for backwards compatibility; the AtlasFlow
+	// deploy sets AI_COST_GUARD_ENABLED=true with a tight $0.10/day cap to
+	// protect the $20 Cencori balance from runaway loops.
+	viper.SetDefault("ai.cost_guard.enabled", false)
+	viper.SetDefault("ai.cost_guard.daily_ceiling_usd", 0.25)
+	viper.SetDefault("ai.cost_guard.monthly_ceiling_usd", 2.00)
+	viper.BindEnv("ai.cost_guard.enabled", "AI_COST_GUARD_ENABLED")
+	viper.BindEnv("ai.cost_guard.daily_ceiling_usd", "AI_COST_GUARD_DAILY_USD")
+	viper.BindEnv("ai.cost_guard.monthly_ceiling_usd", "AI_COST_GUARD_MONTHLY_USD")
 
 	// Explicit env bindings for AI keys (task def uses short names)
 	viper.SetDefault("ai.elevenlabs.stability", 0.5)
@@ -1085,8 +1143,10 @@ func setDefaults() {
 
 	// Cencori AI gateway
 	viper.BindEnv("ai.cencori.api_key", "CENCORI_API_KEY")
-	viper.BindEnv("ai.cencori.model", "CENCORI_MODEL")
-	viper.SetDefault("ai.cencori.model", "gpt-4o")
+	viper.BindEnv("ai.cencori.model_smart", "CENCORI_MODEL_SMART")
+	viper.BindEnv("ai.cencori.model_fast", "CENCORI_MODEL_FAST")
+	viper.SetDefault("ai.cencori.model_smart", "gpt-4o")
+	viper.SetDefault("ai.cencori.model_fast", "gpt-4o-mini")
 	viper.SetDefault("ai.cencori.max_tokens", 4096)
 	viper.SetDefault("ai.cencori.temperature", 0.7)
 	viper.SetDefault("ai.cencori.top_p", 0.9)
@@ -1153,6 +1213,8 @@ func setDefaults() {
 	viper.SetDefault("workers.job_timeout", 300)
 	viper.SetDefault("workers.miriam_intelligence_local", true)
 	viper.SetDefault("workers.miriam_intelligence_batch_size", 500)
+	viper.SetDefault("workers.miriam_event_driven", true)
+	viper.SetDefault("workers.miriam_adaptive_loop", true)
 	viper.SetDefault("workers.leader_election", false)
 
 	// Rate limiting defaults
@@ -1194,17 +1256,15 @@ func setDefaults() {
 
 	// Platform defaults
 	viper.SetDefault("platform.enabled", false)
-	viper.SetDefault("platform.amqp_exchange", "miriam")
-	viper.SetDefault("platform.amqp_queue", "miriam.inbound")
-	viper.SetDefault("platform.amqp_routing_key", "message.inbound")
 	viper.SetDefault("platform.handshake_token_ttl_seconds", 900)
 	viper.SetDefault("platform.bridge_base_url", "http://localhost:4000")
+	viper.SetDefault("platform.app_deep_link_base_url", "rail://")
 	viper.SetDefault("platform.push_notification_rule", "action_only")
 	viper.SetDefault("platform.onboarding_enabled", false)
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
 }
 
-func overrideFromEnv() {
+func overrideFromEnv() error {
 	// Server
 	if port := os.Getenv("PORT"); port != "" {
 		if p, err := strconv.Atoi(port); err == nil {
@@ -1218,15 +1278,36 @@ func overrideFromEnv() {
 		viper.Set("server.trusted_proxies", strings.Split(trustedProxies, ","))
 	}
 
-	// Platform
-	if url := os.Getenv("PLATFORM_AMQP_URL"); url != "" {
-		viper.Set("platform.amqp_url", url)
+	// Platform messaging (iMessage / WhatsApp / Telegram via Spectrum bridge).
+	// Explicit env overrides for every field — viper.AutomaticEnv() alone is
+	// unreliable for nested keys that have no SetDefault and no config.yaml entry.
+	if v := os.Getenv("PLATFORM_ENABLED"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			viper.Set("platform.enabled", enabled)
+		}
+	}
+	if v := os.Getenv("PLATFORM_ONBOARDING_ENABLED"); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			viper.Set("platform.onboarding_enabled", enabled)
+		}
 	}
 	if secret := os.Getenv("PLATFORM_BRIDGE_HMAC_SECRET"); secret != "" {
 		viper.Set("platform.bridge_hmac_secret", secret)
 	}
 	if url := os.Getenv("PLATFORM_BRIDGE_BASE_URL"); url != "" {
 		viper.Set("platform.bridge_base_url", url)
+	}
+	if v := os.Getenv("PLATFORM_BRIDGE_MESSAGING_ADDRESS"); v != "" {
+		viper.Set("platform.bridge_messaging_address", v)
+	}
+	if v := os.Getenv("PLATFORM_APP_DEEP_LINK_BASE_URL"); v != "" {
+		viper.Set("platform.app_deep_link_base_url", v)
+	}
+	if v := os.Getenv("PLATFORM_APP_DOWNLOAD_URL"); v != "" {
+		viper.Set("platform.app_download_url", v)
+	}
+	if v := os.Getenv("PLATFORM_PUSH_NOTIFICATION_RULE"); v != "" {
+		viper.Set("platform.push_notification_rule", v)
 	}
 
 	// WebAuthn
@@ -1608,6 +1689,12 @@ func overrideFromEnv() {
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
 	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
 	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
+	if err := viper.BindEnv("workers.miriam_event_driven", "WORKERS_MIRIAM_EVENT_DRIVEN"); err != nil {
+		return fmt.Errorf("bind env workers.miriam_event_driven: %w", err)
+	}
+	if err := viper.BindEnv("workers.miriam_adaptive_loop", "WORKERS_MIRIAM_ADAPTIVE_LOOP"); err != nil {
+		return fmt.Errorf("bind env workers.miriam_adaptive_loop: %w", err)
+	}
 	viper.BindEnv("workers.leader_election", "WORKERS_LEADER_ELECTION")
 	if os.Getenv("WORKERS_LEADER_ELECTION") == "" &&
 		(os.Getenv("ENVIRONMENT") == "production" || viper.GetString("environment") == "production") {
@@ -1786,6 +1873,7 @@ func overrideFromEnv() {
 	if v := os.Getenv("UMBRA_SIDECAR_AUTH_TOKEN"); v != "" {
 		viper.Set("umbra.auth_token", v)
 	}
+	return nil
 }
 
 func validate(config *Config) error {

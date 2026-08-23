@@ -24,6 +24,12 @@ const (
 	ContentTypeCards    ContentType = "cards"    // structured InsightCards (rendered per platform)
 )
 
+// Delivery categories for the bridge's persistent outbound queue.
+const (
+	MessageCategoryCritical = "critical"
+	MessageCategoryNormal   = "normal"
+)
+
 // iMessage message-effect ids supported by spectrum-ts (imessage.effect.message.*).
 // Unknown values fall back to a plain send on the bridge.
 const (
@@ -70,6 +76,11 @@ type OutboundMessage struct {
 	// structured insight cards (the engine's tool pipeline produces these for the
 	// in-app canvas; messaging renders them as portable per-platform card text)
 	Cards []entities.InsightCard `json:"cards,omitempty"`
+
+	// Category tells the bridge how long a message may live in the persistent
+	// outbound queue when the Space handle is cold. Critical messages (anomaly
+	// alerts, money-move receipts) survive longer than routine nudges.
+	Category string `json:"category,omitempty"`
 }
 
 type ResponseBuilder struct{}

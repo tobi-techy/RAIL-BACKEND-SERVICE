@@ -287,6 +287,35 @@ func (t *OutcomeTracker) GetHitRate(ctx context.Context, userID uuid.UUID, predi
 	return rate
 }
 
+// CleanupOldPredictions removes predictions older than the retention period
+// (default 30 days). Once a prediction's outcome has been evaluated, the
+// prediction row itself is historical and can be safely removed.
+func (t *OutcomeTracker) CleanupOldPredictions(ctx context.Context, retentionDays int) (int64, error) {
+	if t.repo == nil {
+		return 0, nil
+	}
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+	before := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	return t.repo.DeletePredictionsOlderThan(ctx, before)
+}
+
+// CleanupEvaluatedOutcomes removes prediction outcomes that have been evaluated
+// (actual_outcome IS NOT NULL) and are older than the retention period (default
+// 30 days). Pending outcomes are preserved so they can still be evaluated when
+// their horizon expires.
+func (t *OutcomeTracker) CleanupEvaluatedOutcomes(ctx context.Context, retentionDays int) (int64, error) {
+	if t.repo == nil {
+		return 0, nil
+	}
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+	before := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	return t.repo.DeleteEvaluatedOutcomesOlderThan(ctx, before)
+}
+
 func (t *OutcomeTracker) fetchUpcomingObligations(ctx context.Context, userID uuid.UUID) decimal.Decimal {
 	if t.obligations == nil {
 		return decimal.Zero

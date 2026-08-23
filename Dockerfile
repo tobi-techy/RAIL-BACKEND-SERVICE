@@ -59,8 +59,9 @@ COPY --from=builder /app/static /static
 # Use non-root user
 USER builduser
 
-# Expose port
-EXPOSE 3000
+# Expose port — defaults to 8080 in the app (config.go: server.port default 8080,
+# overridden by PORT env var). AtlasFlow reads PORT to know where to probe.
+EXPOSE 8080
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

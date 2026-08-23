@@ -147,3 +147,6 @@ miriam_test_cli
 
 # Spectrum bridge local data (space store persistence)
 cmd/spectrum-bridge/data/
+
+# Foglamp local review metadata
+.foglamp/

@@ -25,6 +25,7 @@ import (
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	"github.com/rail-service/rail_service/internal/domain/services/goals"
 	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -1356,6 +1357,14 @@ func (c *Container) initializeDomainServices() error {
 			c.ZapLog,
 		)
 		c.platformProcessor.SetOnboarder(onboarder)
+		// Fire the first-login Baby Steps seeder from both paths: iMessage
+		// handshake (processor.tryCompleteHandshake) and chat-first onboarding
+		// completion (onboarder.handleConsent). The seeder is idempotent —
+		// HasAnyGoal gates the inserts — so racing both paths is safe.
+		if c.BabyStepsSeeder != nil {
+			c.platformProcessor.SetBabyStepsSeeder(c.BabyStepsSeeder)
+			onboarder.SetBabyStepsSeeder(c.BabyStepsSeeder)
+		}
 		c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
 	}
 
@@ -1437,6 +1446,25 @@ func (c *Container) initializeDomainServices() error {
 	if c.YieldService != nil {
 		c.AutomationService.SetYieldSnapshotRecorder(c.YieldService)
 	}
+
+	// Goals service (Postgres-backed multi-goal). Wired early so subsequent
+	// services (automation, AI, workers) can hold a reference.
+	c.UserGoalRepo = repositories.NewUserGoalRepository(sqlxDB)
+	c.GoalsService = goals.NewService(c.UserGoalRepo, c.ZapLog)
+	c.BabyStepsSeeder = goals.NewBabyStepsSeed(c.GoalsService, c.UserGoalRepo, c.FinancialProfileRepo, c.FinancialObligationService, c.ZapLog)
+	c.GoalProgressHooks = NewGoalProgressHooks(c.GoalsService, c.ZapLog)
+	if c.AutomationService != nil && c.GoalProgressHooks != nil {
+		c.AutomationService.SetDepositHook(c.GoalProgressHooks)
+	}
+	// ProactiveCoordinator — single per-user daily cap across all sources.
+	// Default cap is 5/day; tunable via MIRIAM_DAILY_PROACTIVE_CAP.
+	c.ProactiveCoordinator = platform.NewProactiveCoordinator(
+		c.RedisClient, c.ZapLog, 5, map[string]int{
+			platform.ProactiveCategorySpendingCoach: 1, // weekly only
+			platform.ProactiveCategoryGoalProgress:  2, // milestones + pace
+		},
+	)
+
 	moneyGuardSpendingSvc := spendingsvc.NewService(c.LedgerSpendingRepo)
 	c.MoneyGuardService = moneyguardservice.NewService(
 		repositories.NewMoneyGuardRepository(sqlxDB),

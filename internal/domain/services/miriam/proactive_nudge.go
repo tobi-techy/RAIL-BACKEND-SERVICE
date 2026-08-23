@@ -52,15 +52,15 @@ type CadenceReader interface {
 
 // ProactiveNudgeEngine generates context-aware push notifications.
 type ProactiveNudgeEngine struct {
-	store           ProactiveNudgeStore
-	predictions     *PredictiveEngine
-	balances        BalanceProvider
-	memory          MemoryReader
+	store            ProactiveNudgeStore
+	predictions      *PredictiveEngine
+	balances         BalanceProvider
+	memory           MemoryReader
+	notifier         Notifier
+	chatSender       ProactiveChatSender
+	cadence          CadenceReader
 	financialProfile FinancialProfileProvider
-	notifier        Notifier
-	chatSender      ProactiveChatSender
-	cadence         CadenceReader
-	logger          *zap.Logger
+	logger           *zap.Logger
 }
 
 // NewProactiveNudgeEngine creates a proactive nudge engine.
@@ -82,27 +82,6 @@ func (e *ProactiveNudgeEngine) SetMemory(m MemoryReader) {
 	e.memory = m
 }
 
-// SetFinancialProfile injects a FinancialProfileProvider after construction.
-func (e *ProactiveNudgeEngine) SetFinancialProfile(p FinancialProfileProvider) {
-	e.financialProfile = p
-}
-
-// currencySymbolForUser resolves the user's currency symbol from their financial profile.
-func (e *ProactiveNudgeEngine) currencySymbolForUser(ctx context.Context, userID uuid.UUID) string {
-	if e.financialProfile != nil {
-		if profile, err := e.financialProfile.GetByUserID(ctx, userID); err == nil && profile != nil {
-			country := profile.ResidenceCountry
-			if country == "" {
-				country = profile.TaxCountry
-			}
-			if country != "" {
-				return entities.CurrencySymbol(country)
-			}
-		}
-	}
-	return "$"
-}
-
 // SetNotifier injects a Notifier after construction (deferred wiring).
 func (e *ProactiveNudgeEngine) SetNotifier(n Notifier) {
 	e.notifier = n
@@ -116,6 +95,32 @@ func (e *ProactiveNudgeEngine) SetChatSender(s ProactiveChatSender) {
 // SetCadenceReader injects a CadenceReader after construction (deferred wiring).
 func (e *ProactiveNudgeEngine) SetCadenceReader(c CadenceReader) {
 	e.cadence = c
+}
+
+// SetFinancialProfile injects a FinancialProfileProvider for country-aware currency display.
+func (e *ProactiveNudgeEngine) SetFinancialProfile(fp FinancialProfileProvider) {
+	e.financialProfile = fp
+}
+
+// resolveSymbol returns the currency symbol for the user's country, defaulting to "$".
+func (e *ProactiveNudgeEngine) resolveSymbol(ctx context.Context, userID uuid.UUID) string {
+	if e.financialProfile == nil {
+		return "$"
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	profile, err := e.financialProfile.GetByUserID(fetchCtx, userID)
+	if err != nil || profile == nil {
+		return "$"
+	}
+	country := profile.ResidenceCountry
+	if country == "" {
+		country = profile.TaxCountry
+	}
+	if country == "" {
+		return "$"
+	}
+	return entities.CurrencySymbol(country)
 }
 
 // GenerateProactiveNudges evaluates a user's state and produces 0–3 nudges.
@@ -267,6 +272,7 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 				continue
 			}
 
+			symbol := e.resolveSymbol(ctx, userID)
 			remaining := state.StashTarget.Sub(stash)
 			if remaining.LessThan(decimal.NewFromFloat(1)) {
 				continue
@@ -274,15 +280,14 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 
 			pct := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
 			phase := ResolvePhase(state)
-			sym := e.currencySymbolForUser(ctx, userID)
-			vars := BuildVarsFromState(state, spend, stash, remaining, sym)
+			vars := BuildVarsFromState(state, spend, stash, remaining, symbol)
 			vars.Pct = pct
-			vars.Remaining = sym + remaining.StringFixed(0)
-			vars.Target = sym + state.StashTarget.StringFixed(0)
+			vars.Remaining = symbol + remaining.StringFixed(0)
+			vars.Target = symbol + state.StashTarget.StringFixed(0)
 
 			msg := PhaseMessage(phase, MsgGoalProgress, vars)
 			if msg == "" {
-				msg = fmt.Sprintf("You're %d%% of the way to your %s%s goal. Add more?", pct, sym, state.StashTarget.StringFixed(0))
+				msg = fmt.Sprintf("You're %d%% of the way to your %s%s goal. Add more?", pct, symbol, state.StashTarget.StringFixed(0))
 			}
 
 			return &entities.ProactiveNudge{
@@ -327,15 +332,15 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 			stash = decimal.Zero
 		}
 
+		symbol := e.resolveSymbol(ctx, userID)
 		phase := ResolvePhase(state)
-		sym := e.currencySymbolForUser(ctx, userID)
-		vars := BuildVarsFromState(state, spend, stash, gap, sym)
-		vars.Gap = sym + gap.StringFixed(0)
+		vars := BuildVarsFromState(state, spend, stash, gap, symbol)
+		vars.Gap = symbol + gap.StringFixed(0)
 
 		msg := PhaseMessage(phase, MsgBillWarning, vars)
 		if msg == "" {
-			msg = fmt.Sprintf("Bills (%s%s) exceed Spend (%s%s). Stash has %s%s — tap to cover the %s%s gap.",
-				sym, state.UpcomingObligations.StringFixed(0), sym, spend.StringFixed(0), sym, stash.StringFixed(0), sym, gap.StringFixed(0))
+			msg = fmt.Sprintf("Bills (%s) exceed Spend (%s). Stash has %s — tap to cover the %s gap.",
+				symbol+state.UpcomingObligations.StringFixed(0), symbol+spend.StringFixed(0), symbol+stash.StringFixed(0), symbol+gap.StringFixed(0))
 		}
 
 		return &entities.ProactiveNudge{
@@ -374,8 +379,8 @@ func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userI
 	}
 
 	phase := ResolvePhase(state)
-	sym := e.currencySymbolForUser(ctx, userID)
-	vars := BuildVarsFromState(state, spend, stash, p.ProjectedAmount, sym)
+	symbol := e.resolveSymbol(ctx, userID)
+	vars := BuildVarsFromState(state, spend, stash, p.ProjectedAmount, symbol)
 	vars.Runway = state.LiquidityRunwayDays
 
 	var msgType MessageType

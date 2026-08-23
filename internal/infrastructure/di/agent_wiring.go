@@ -453,6 +453,23 @@ func (u *usageService) IsOverCostCeiling(ctx context.Context, userID uuid.UUID) 
 	return over
 }
 
+// --- CostGuard ---
+
+// buildAgentCostGuard wires the Redis-backed per-user daily/monthly ceiling
+// into the core agent. Returns nil when no guard is configured (the agent
+// then falls back to the slower Postgres-backed UsageService check alone).
+// The *infraai.Guard type satisfies the core.CostGuard interface implicitly
+// via Allow/Record method names.
+func buildAgentCostGuard(c *Container) aicore.CostGuard {
+	if c.AICostGuard == nil {
+		return nil
+	}
+	if !c.AICostGuard.IsEnabled() {
+		return nil
+	}
+	return c.AICostGuard
+}
+
 // =======================================================
 // REAL PROVIDERS — wrap actual container services
 // =======================================================

@@ -210,7 +210,10 @@ func convertChatEngineResponse(resp *core.ChatEngineResponse) *ChatResponse {
 }
 
 func convertCoreChatOptions(opts ChatOptions) core.ChatOptions {
-	return core.ChatOptions{ToneMode: opts.ToneMode}
+	return core.ChatOptions{
+		ToneMode:  opts.ToneMode,
+		ModelHint: opts.ModelHint,
+	}
 }
 
 func convertCoreStreamEvent(event core.StreamEvent) StreamEvent {

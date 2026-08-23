@@ -212,10 +212,11 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 	messages := make([]ai.Message, len(history), len(history)+10)
 	copy(messages, history)
 
-	// Assemble all context in parallel (3s ceiling)
+	// Assemble all context in parallel (~1.5s ceiling)
 	messages = append(messages, o.assembleContext(ctx, userID, ContextAssemblyOpts{
 		ToneMode: opts.ToneMode,
 		Message:  message,
+		ConvID:   convID,
 	})...)
 
 	// Tool usage rules — skip for very short casual messages to save tokens
@@ -393,6 +394,7 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 					}
 				}
 			}
+			content = o.applyResponseGuard(ctx, userID, content, req.Messages)
 			emitWithBubbleBreaks(content, emit)
 		}
 		modelName := resp.Model
@@ -437,6 +439,10 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 	if len(filtered) > len(fullContent) {
 		emit(StreamEvent{Type: "token", Content: filtered[len(fullContent):]})
 	}
+
+	// Tokens already reached the client, so repair is impossible — detect
+	// ungrounded figures for observability only.
+	o.logUngroundedAmounts(userID, fullContent, req.Messages, span)
 
 	cumulativeTokens += streamTokens
 

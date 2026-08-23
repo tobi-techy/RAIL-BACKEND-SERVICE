@@ -73,6 +73,49 @@ func stripFabricatedAmounts(content, grounding string) string {
 	return strings.Join(kept, "")
 }
 
+// UngroundedAmountReport is privacy-safe detection metadata: which sentences
+// violated the grounding rule (by index) and which currency figures triggered
+// it. It deliberately carries NO reply text so violations can be logged
+// without exposing financial details or personal context.
+type UngroundedAmountReport struct {
+	// Indexes are positions of violating sentences in split order.
+	Indexes []int
+	// Amounts are the ungrounded currency tokens detected (e.g. "$5,000").
+	Amounts []string
+}
+
+// DetectUngroundedAmounts reports currency figures that cannot be traced to
+// (or trivially derived from) the grounding corpus. This is the read-only
+// counterpart of stripFabricatedAmounts — used on content that was already
+// streamed to the client where repair is impossible and detection exists
+// purely for observability. Returns redacted metadata only, never sentence text.
+func DetectUngroundedAmounts(content, grounding string) UngroundedAmountReport {
+	grounded := groundedNumberSet(grounding)
+	if len(grounded) == 0 {
+		return UngroundedAmountReport{}
+	}
+	var report UngroundedAmountReport
+	for i, s := range sentenceSplitRe.FindAllString(content, -1) {
+		if !sentenceHasUngroundedAmount(s, grounded) {
+			continue
+		}
+		report.Indexes = append(report.Indexes, i)
+		for _, m := range guardCurrencyRe.FindAllString(s, -1) {
+			val, ok := parseCurrencyAmount(m)
+			if !ok {
+				continue
+			}
+			// A violating sentence can mix grounded and fabricated figures —
+			// only report the amounts that are themselves ungrounded.
+			if amountGrounded(val, grounded) {
+				continue
+			}
+			report.Amounts = append(report.Amounts, m)
+		}
+	}
+	return report
+}
+
 func sentenceHasUngroundedAmount(s string, grounded []decimal.Decimal) bool {
 	for _, m := range guardCurrencyRe.FindAllString(s, -1) {
 		val, ok := parseCurrencyAmount(m)

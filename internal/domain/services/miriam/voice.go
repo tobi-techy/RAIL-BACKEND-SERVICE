@@ -556,18 +556,18 @@ func NudgeFrequencyLimit(phase Phase) int {
 }
 
 // BuildVarsFromState constructs MessageVars from common state and balance data.
-func BuildVarsFromState(state *entities.MiriamMoneyState, spend, stash, projectedAmount decimal.Decimal, currencySymbol string) MessageVars {
-	if currencySymbol == "" {
-		currencySymbol = "$"
+func BuildVarsFromState(state *entities.MiriamMoneyState, spend, stash, projectedAmount decimal.Decimal, symbol string) MessageVars {
+	if symbol == "" {
+		symbol = "$"
 	}
 	return MessageVars{
-		Spend:       voiceFormatAmount(spend, currencySymbol),
-		Stash:       voiceFormatAmount(stash, currencySymbol),
-		Amount:      voiceFormatAmount(projectedAmount, currencySymbol),
-		Obligations: voiceFormatAmount(state.UpcomingObligations, currencySymbol),
-		Safe:        voiceFormatAmount(state.SafeToSpendDaily, currencySymbol),
+		Spend:       voiceFormatAmount(spend, symbol),
+		Stash:       voiceFormatAmount(stash, symbol),
+		Amount:      voiceFormatAmount(projectedAmount, symbol),
+		Obligations: voiceFormatAmount(state.UpcomingObligations, symbol),
+		Safe:        voiceFormatAmount(state.SafeToSpendDaily, symbol),
 		Runway:      state.LiquidityRunwayDays,
-		Target:      voiceFormatAmount(state.StashTarget, currencySymbol),
+		Target:      voiceFormatAmount(state.StashTarget, symbol),
 	}
 }
 

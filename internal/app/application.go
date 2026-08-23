@@ -38,11 +38,11 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/infrastructure/miriamevents"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	airbills_recovery "github.com/rail-service/rail_service/internal/workers/airbills_recovery"
-	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
 	autopilot_worker "github.com/rail-service/rail_service/internal/workers/autopilot_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
@@ -61,6 +61,7 @@ import (
 	ledger_maintenance "github.com/rail-service/rail_service/internal/workers/ledger_maintenance"
 	ledger_outbox_publisher "github.com/rail-service/rail_service/internal/workers/ledger_outbox_publisher"
 	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
+	miriam_event_worker "github.com/rail-service/rail_service/internal/workers/miriam_event_worker"
 	miriam_worker "github.com/rail-service/rail_service/internal/workers/miriam_worker"
 	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
@@ -73,6 +74,7 @@ import (
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
+	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
 	walletprovisioning "github.com/rail-service/rail_service/internal/workers/wallet_provisioning"
 	withdrawal_recovery "github.com/rail-service/rail_service/internal/workers/withdrawal_recovery"
 	"github.com/rail-service/rail_service/pkg/alerting"
@@ -124,6 +126,8 @@ type Application struct {
 	dailyPulseWorker             *daily_pulse.Worker
 	engagementWorker             *engagement_worker.Worker
 	ledgerOutboxPublisher        *ledger_outbox_publisher.Worker
+	miriamEventWorker            *miriam_event_worker.Worker
+	miriamEventWorkerCancel      context.CancelFunc
 	ledgerMaintenance            *ledger_maintenance.Worker
 	workerMu                     sync.Mutex
 	opportunitySyncWorker        *opportunity_sync.Worker
@@ -530,11 +534,60 @@ func (app *Application) initializeWorkers() error {
 			app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
 			app.log.Info("Miriam intelligence worker started (classic mode)")
 		}
+		// Adaptive loop: event-woken fast path + periodic full sweep. The event
+		// worker pokes Notify() when a money event arrives, so Miriam re-evaluates
+		// hot users within ~1 minute instead of waiting for the 15-min sweep.
+		if app.cfg.Workers.MiriamAdaptiveLoop {
+			app.miriamWorker.SetAdaptive(app.container.RedisClient, 0, 0)
+			app.log.Info("Miriam intelligence worker adaptive loop enabled")
+		}
 		miriamCtx, miriamCancel := context.WithCancel(context.Background())
 		app.miriamWorkerCancel = miriamCancel
 		go app.miriamWorker.Start(miriamCtx)
 	} else if !app.cfg.Workers.MiriamIntelligenceLocal {
 		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
+	}
+
+	// Miriam event-driven pipeline: ledger outbox publisher + event worker.
+	// This is independent of KYC initialization so KYC-disabled deployments
+	// still get always-on money-event evaluation.
+	app.ledgerOutboxPublisher = ledger_outbox_publisher.NewWorker(
+		app.container.LedgerRepo,
+		app.log.Zap(),
+	)
+	// Wire Miriam's always-on event stream when enabled. The stream publishes
+	// money events from the ledger outbox; a separate worker consumes them and
+	// triggers a read-only evaluation within seconds.
+	var miriamEventStream *miriamevents.RedisStream
+	if app.cfg.Workers.MiriamEventDriven && app.container.RedisClient != nil {
+		miriamEventStream = miriamevents.NewRedisStreamWithLogger(app.container.RedisClient, "", app.log.Zap())
+		if miriamEventStream != nil {
+			app.ledgerOutboxPublisher.SetMiriamPublisher(miriamEventStream)
+			app.log.Info("Ledger outbox publisher wired to Miriam event stream")
+		}
+	}
+	go app.ledgerOutboxPublisher.Start(context.Background())
+	app.log.Info("Ledger outbox publisher started")
+
+	// Miriam event-driven worker: consumes money events and evaluates users.
+	// Read-only on money — EventMoneyEvent skips mandate execution.
+	if app.cfg.Workers.MiriamEventDriven && miriamEventStream != nil && app.container.MiriamIntelligenceOrchestrator != nil {
+		app.miriamEventWorker = miriam_event_worker.NewWorker(
+			miriamEventStream,
+			app.container.MiriamIntelligenceOrchestrator,
+			app.log.Zap(),
+		)
+		// If the adaptive loop is running, money events also flag the user as hot
+		// so the fast ticker re-evaluates them within ~1 minute.
+		if app.cfg.Workers.MiriamAdaptiveLoop && app.miriamWorker != nil {
+			app.miriamEventWorker.SetWakeup(app.miriamWorker)
+		}
+		eventCtx, eventCancel := context.WithCancel(context.Background())
+		app.miriamEventWorkerCancel = eventCancel
+		go app.miriamEventWorker.Start(eventCtx)
+		app.log.Info("Miriam event worker started")
+	} else if app.cfg.Workers.MiriamEventDriven {
+		app.log.Info("Miriam event worker not started — requires Redis + MiriamIntelligenceOrchestrator")
 	}
 
 	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks
@@ -896,14 +949,6 @@ func (app *Application) initializeKYCSyncWorker() error {
 	)
 	go app.balanceReconciliationWorker.Start(context.Background())
 	app.log.Info("Balance reconciliation worker started")
-
-	// Initialize ledger outbox publisher (polls unpublished events every 5s)
-	app.ledgerOutboxPublisher = ledger_outbox_publisher.NewWorker(
-		app.container.LedgerRepo,
-		app.log.Zap(),
-	)
-	go app.ledgerOutboxPublisher.Start(context.Background())
-	app.log.Info("Ledger outbox publisher started")
 
 	// Initialize ledger maintenance worker (daily snapshots + integrity checks)
 	app.ledgerMaintenance = ledger_maintenance.NewWorker(
@@ -1368,6 +1413,11 @@ func (app *Application) stopWorkers() {
 	}
 	if app.miriamWorkerCancel != nil {
 		app.miriamWorkerCancel()
+	}
+	if app.miriamEventWorkerCancel != nil {
+		app.log.Info("Stopping Miriam event worker...")
+		app.miriamEventWorkerCancel()
+		app.miriamEventWorkerCancel = nil
 	}
 	if app.autopilotCancel != nil {
 		app.autopilotCancel()

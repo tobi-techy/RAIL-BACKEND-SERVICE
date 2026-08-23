@@ -38,6 +38,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/document"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
+	"github.com/rail-service/rail_service/internal/domain/services/goals"
 	"github.com/rail-service/rail_service/internal/domain/services/growthengine"
 	"github.com/rail-service/rail_service/internal/domain/services/growthmail"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
@@ -46,6 +47,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
+	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
@@ -138,6 +140,7 @@ type Container struct {
 	ReconciliationRepo        repositories.ReconciliationRepository
 	GrowthMailRepo            *repositories.GrowthMailRepository
 	GrowthEngineRepo          *repositories.GrowthEngineRepository
+	MonoRepo                  *repositories.MonoRepository
 
 	// External Services
 	AlpacaClient       *alpaca.Client
@@ -222,6 +225,25 @@ type Container struct {
 	GrowthMailService              *growthmail.Service
 	GrowthEngineService            *growthengine.Service
 	NotificationService            *services.NotificationService
+	// GoalsService is the new Postgres-backed multi-goal service that powers
+	// the v2 savings-goal tools + the goal_progress + spending_coach workers.
+	GoalsService                   *goals.Service
+	// UserGoalRepo is the persistence layer behind GoalsService.
+	UserGoalRepo                   *repositories.UserGoalRepository
+	// BabyStepsSeeder seeds the 7-step ladder for first-time users.
+	BabyStepsSeeder                *goals.BabyStepsSeed
+	// GoalProgressHooks is the optional deposit-allocated callback wired
+	// into automation.Service.
+	GoalProgressHooks              *GoalProgressHooks
+	// ProactiveCoordinator is the unified per-user daily-cap enforcer for
+	// all proactive workers (autopilot, ai_insights, daily_pulse,
+	// scheduled_notifications, goal_progress, spending_coach).
+	ProactiveCoordinator           *platform.ProactiveCoordinator
+	// AICostGuard is the fast Redis-backed per-user daily/monthly AI cost
+	// ceiling. Injected into both the Cencori provider (provider-level check)
+	// and core.Agent.Dependencies (agent-level pre-check). nil disables the
+	// guard; Cencori will continue without ceiling enforcement.
+	AICostGuard                    *ai.Guard
 	SocialAuthService              *socialauth.Service
 	WebAuthnService                *webauthn.Service
 	LimitsService                  *limits.Service
@@ -432,11 +454,13 @@ type Container struct {
 	// Platform Messaging (iMessage, WhatsApp, Telegram)
 	PlatformIdentityRepo   *repositories.PlatformIdentityRepository
 	PlatformHandler        *platformhandlers.PlatformHandler
-	PlatformConsumer       *platform.Consumer
-	PlatformActionConsumer *platform.ActionConsumer
 	platformProcessor      *platform.Processor
 	platformLinking        *platform.LinkingService
 	EvalHandler            *evalhandlers.Handler
+
+	// Mono (open-banking data + DirectPay)
+	MonoService *monosvc.Service
+	MonoWebhookHandler *webhooks.MonoWebhookHandler
 }
 
 // NewContainer creates a new dependency injection container
@@ -705,6 +729,11 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
 	container.initializePlatformMessaging()
 
+	// Initialize Mono open-banking adapter + service (gated on API key)
+	if err := container.initializeMono(); err != nil {
+		zapLog.Warn("Mono initialization failed, open-banking features degraded", zap.Error(err))
+	}
+
 	// Miriam evaluation endpoint (terminal test harness). Gated + token-guarded.
 	if cfg.Eval.Enabled && container.AIOrchestrator != nil && cfg.Eval.Token != "" {
 		container.EvalHandler = evalhandlers.NewHandler(
@@ -736,4 +765,9 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 		return nil
 	}
 	return opportunityhandlers.NewHandlers(c.OpportunityService, c.ZapLog)
+}
+
+// GetPlatformProcessor returns the platform message processor, or nil if platform messaging is disabled.
+func (c *Container) GetPlatformProcessor() *platform.Processor {
+	return c.platformProcessor
 }

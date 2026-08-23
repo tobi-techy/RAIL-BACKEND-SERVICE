@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -314,6 +315,60 @@ func TestPublishOnce_DeadLetterWarnLoggedAtRetryCeiling(t *testing.T) {
 	require.Len(t, store.unpublished, 1)
 	assert.Equal(t, MaxOutboxRetries, store.unpublished[0].RetryCount, "event is dead-lettered at the ceiling")
 	assert.Equal(t, 1, logs.FilterMessage("Outbox event reached max retries, dead-lettering").Len())
+}
+
+type fakeMiriamPublisher struct {
+	published []miriam.MoneyEvent
+	failNext  error
+}
+
+func (f *fakeMiriamPublisher) PublishMoneyEvent(_ context.Context, evt miriam.MoneyEvent) error {
+	if f.failNext != nil {
+		err := f.failNext
+		f.failNext = nil
+		return err
+	}
+	f.published = append(f.published, evt)
+	return nil
+}
+
+// TestPublishOnce_PublishesMoneyEventsToMiriam verifies that when a Miriam
+// publisher is wired, the outbox dispatches money events to Miriam's always-on
+// event stream. A publish failure leaves the event leased for retry (the
+// standard dispatch-error path).
+func TestPublishOnce_PublishesMoneyEventsToMiriam(t *testing.T) {
+	rec := record("transaction.completed")
+	rec.Payload = []byte(`{"amount":"100.00","currency":"USD"}`)
+	store := &fakeStore{unpublished: []repositories.OutboxRecord{rec}}
+	pub := &fakeMiriamPublisher{}
+
+	w := NewWorker(store, zap.NewNop())
+	w.SetMiriamPublisher(pub)
+
+	w.publishOnce(context.Background())
+
+	require.Len(t, pub.published, 1)
+	assert.Equal(t, rec.ID.String(), pub.published[0].ID)
+	assert.Equal(t, rec.AggregateID, pub.published[0].UserID)
+	assert.Equal(t, rec.EventType, pub.published[0].EventType)
+	assert.Equal(t, "100.00", pub.published[0].Payload["amount"])
+	assert.Empty(t, store.leased, "successful publish marks the event published")
+}
+
+func TestPublishOnce_MiriamPublishFailureRetries(t *testing.T) {
+	rec := record("balance.updated")
+	store := &fakeStore{unpublished: []repositories.OutboxRecord{rec}}
+	pub := &fakeMiriamPublisher{failNext: errors.New("redis unavailable")}
+
+	w := NewWorker(store, zap.NewNop())
+	w.SetMiriamPublisher(pub)
+
+	w.publishOnce(context.Background())
+
+	assert.Empty(t, pub.published)
+	require.Len(t, store.retries, 1)
+	assert.Equal(t, rec.ID, store.retries[0].id)
+	assert.Contains(t, store.retries[0].lastErr, "redis unavailable")
 }
 
 // LedgerRepository must keep satisfying the interface the worker is wired with
