@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	ToolListFinancialObligations = "list_financial_obligations"
-	ToolFindObligationPayments   = "find_obligation_payment_matches"
+	ToolListFinancialObligations = "list_obligations"
+	ToolFindObligationPayments   = "find_payment_matches"
 	ToolMarkObligationPaid       = "mark_obligation_paid"
 )
 

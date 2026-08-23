@@ -58,16 +58,15 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 
 | Variable | Notes |
 |---|---|
-| `CENCORI_API_KEY` | **SECRET.** Miriam’s LLM gateway. Without this she cannot think. |
+| `CENCORI_API_KEY` | **SECRET.** Miriam's LLM gateway. Without this she cannot think. |
 | `CENCORI_MODEL` | `gpt-4o` (or your chosen quality model) |
 | `CENCORI_FAST_MODEL` | `gpt-4o-mini` |
 | `CENCORI_VISION_MODEL` | `gpt-4o` |
 | `PLATFORM_ENABLED` | `true` |
-| `PLATFORM_AMQP_URL` | **SECRET.** CloudAMQP URL. Must match spectrum-bridge `AMQP_URL`. |
-| `PLATFORM_AMQP_EXCHANGE` | `miriam` |
 | `PLATFORM_BRIDGE_HMAC_SECRET` | **SECRET.** Must match spectrum-bridge `RAIL_HMAC_SECRET`. |
 | `PLATFORM_BRIDGE_BASE_URL` | `https://spectrum-bridge-tobi-omotade-2cd167ac.atlasflow.dev` (after that project is up) |
-| `PLATFORM_APP_DEEP_LINK_BASE_URL` | `rail://` |
+| `PLATFORM_BRIDGE_MESSAGING_ADDRESS` | The bridge's iMessage handle (e.g. `+15555550100`). Users text the link token here. Required for account linking deep links. |
+| `PLATFORM_APP_DEEP_LINK_BASE_URL` | `rail://` (defaults to `rail://` if unset) |
 | `PLATFORM_ONBOARDING_ENABLED` | `true` |
 
 ### Sidecar URLs (set after those projects are running)
@@ -155,13 +154,12 @@ Create as AtlasFlow project `spectrum-bridge`, root `cmd/spectrum-bridge/`, port
 |---|---|---|
 | `SPECTRUM_PROJECT_ID` | Spectrum dashboard | **SECRET, required** |
 | `SPECTRUM_PROJECT_SECRET` | Spectrum dashboard | **SECRET, required** |
-| `AMQP_URL` | same CloudAMQP URL as `PLATFORM_AMQP_URL` | **SECRET, required** |
-| `AMQP_EXCHANGE` | `miriam` | |
-| `RAIL_HMAC_SECRET` | same as `PLATFORM_BRIDGE_HMAC_SECRET` | **SECRET, required** |
-| `RAIL_BACKEND_URL` | `https://api.userail.money` | |
+| `RAIL_HMAC_SECRET` | same as `PLATFORM_BRIDGE_HMAC_SECRET` | **SECRET, required** — used to sign outbound requests to backend |
+| `RAIL_BACKEND_URL` | `https://api.userail.money` | backend base URL for inbound/action HTTP POSTs |
 | `BRIDGE_PORT` | `3000` | AtlasFlow default health port |
 | `NODE_ENV` | `production` | |
 | `LOG_LEVEL` | `info` | |
+| `SPECTRUM_WEBHOOK_PATH` | `/spectrum/webhook` | |
 | `SPECTRUM_WEBHOOK_SECRET` | optional | **SECRET** |
 | `TELEGRAM_BOT_TOKEN` | optional, enables Telegram | **SECRET** |
 | `WHATSAPP_ACCESS_TOKEN` | optional | **SECRET** |
@@ -197,12 +195,12 @@ Runtime tier **large**. Current workspace plan only allows build-tier `standard`
 
 ## Shared secrets (must match)
 
-| rail-backend-service | spectrum-bridge |
-|---|---|
-| `PLATFORM_AMQP_URL` | `AMQP_URL` |
-| `PLATFORM_BRIDGE_HMAC_SECRET` | `RAIL_HMAC_SECRET` |
+| rail-backend-service | spectrum-bridge | Notes |
+|---|---|---|
+| `PLATFORM_BRIDGE_HMAC_SECRET` | `RAIL_HMAC_SECRET` | **SECRET.** Used to HMAC-sign HTTP traffic in both directions. |
+| `PLATFORM_BRIDGE_BASE_URL` | `RAIL_BACKEND_URL` | The backend's outbound URL must point at the bridge (`https://spectrum-bridge-…atlasflow.dev`); the bridge's `RAIL_BACKEND_URL` must point back at the Go API (`https://api.userail.money`). |
 
-RabbitMQ is **external** (CloudAMQP / AWS MQ). It is not an AtlasFlow project.
+The bridge and backend communicate over HTTP (AMQP/RabbitMQ is no longer used).
 
 ---
 

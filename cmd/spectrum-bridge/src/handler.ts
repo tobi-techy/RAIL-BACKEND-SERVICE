@@ -1,7 +1,6 @@
 import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice } from "spectrum-ts";
 import { effect, imessage, type IMessageMessageEffect } from "spectrum-ts/providers/imessage";
 import { childLogger } from "./logger";
-import { RetryableOutboundError } from "./rabbitmq";
 
 const log = childLogger({ module: "handler" });
 
@@ -51,6 +50,10 @@ export interface OutboundMessage {
 
   // structured insight cards (rendered as per-platform card text)
   cards?: InsightCard[];
+
+  // delivery category: critical messages survive longer in the bridge's
+  // persistent outbound queue when the Space handle is cold.
+  category?: "critical" | "normal";
 }
 
 const EFFECTS: Record<string, IMessageMessageEffect> = {
@@ -69,6 +72,7 @@ export class MessageHandler {
   private seen = new Map<string, number>();
   private readonly dedupWindowMs = 2000;
   private messageStore = new Map<string, Message>();
+  private lastInboundByThread = new Map<string, Message>();
   private pendingReplyLookups = new Map<string, Promise<Message | undefined>>();
 
   constructor() {
@@ -77,6 +81,18 @@ export class MessageHandler {
 
   registerInboundMessage(msg: Message): void {
     this.messageStore.set(msg.id, msg);
+
+    // Track the most recent inbound per thread for read receipts.
+    // Skip messages without a space id to avoid collisions on the empty key,
+    // and delete-then-set so Map insertion order reflects most-recent activity.
+    const threadId = msg.space?.id;
+    if (!threadId) return;
+    this.lastInboundByThread.delete(threadId);
+    this.lastInboundByThread.set(threadId, msg);
+  }
+
+  getLastInboundMessage(threadId: string): Message | undefined {
+    return this.lastInboundByThread.get(threadId);
   }
 
   private evictStaleMessages(): void {
@@ -86,6 +102,13 @@ export class MessageHandler {
         this.messageStore.delete(id);
       }
       log.debug({ remaining: this.messageStore.size }, "evicted stale messages");
+    }
+    // Keep lastInboundByThread bounded — only retain the most recent 100 threads
+    if (this.lastInboundByThread.size > 100) {
+      const entries = [...this.lastInboundByThread.entries()];
+      for (const [id] of entries.slice(0, entries.length - 100)) {
+        this.lastInboundByThread.delete(id);
+      }
     }
   }
 

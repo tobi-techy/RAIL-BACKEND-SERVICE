@@ -8,6 +8,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	aicore "github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	goalssvc "github.com/rail-service/rail_service/internal/domain/services/goals"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -64,7 +65,110 @@ func mapCoreSupermemoryResults(results []supermemoryclient.SearchResult) []aicor
 	return out
 }
 
-// --- SavingsGoalStore adapter ---
+// --- UserGoalStore adapter (new Postgres-backed multi-goal) ---
+
+type coreUserGoalStoreAdapter struct {
+	svc *goalssvc.Service
+}
+
+func (a *coreUserGoalStoreAdapter) List(ctx context.Context, userID uuid.UUID, includeArchived bool) ([]aicore.UserGoalData, error) {
+	list, err := a.svc.List(ctx, userID, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	return mapUserGoalEntities(list), nil
+}
+
+func (a *coreUserGoalStoreAdapter) Create(ctx context.Context, userID uuid.UUID, in aicore.CreateUserGoalInput) (*aicore.UserGoalData, error) {
+	target, err := decimal.NewFromString(in.TargetAmount)
+	if err != nil {
+		return nil, err
+	}
+	var deadline *time.Time
+	if in.Deadline != nil && *in.Deadline != "" {
+		t, perr := time.Parse(time.RFC3339, *in.Deadline)
+		if perr == nil {
+			deadline = &t
+		}
+	}
+	created, err := a.svc.Create(ctx, userID, goalssvc.CreateInput{
+		Name:           in.Name,
+		TargetAmount:   target,
+		TargetCurrency: in.TargetCurrency,
+		Deadline:       deadline,
+		BabyStep:       in.BabyStep,
+		Category:       in.Category,
+		Source:         in.Source,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := mapUserGoalEntity(created)
+	return &out, nil
+}
+
+func (a *coreUserGoalStoreAdapter) Archive(ctx context.Context, userID uuid.UUID, goalID string) error {
+	id, err := uuid.Parse(goalID)
+	if err != nil {
+		return err
+	}
+	return a.svc.Archive(ctx, userID, id)
+}
+
+func (a *coreUserGoalStoreAdapter) UpdateProgress(ctx context.Context, userID uuid.UUID, goalID string, newAmount string) (*aicore.UserGoalData, error) {
+	id, err := uuid.Parse(goalID)
+	if err != nil {
+		return nil, err
+	}
+	amt, err := decimal.NewFromString(newAmount)
+	if err != nil {
+		return nil, err
+	}
+	updated, _, _, err := a.svc.UpdateProgress(ctx, userID, id, amt)
+	if err != nil {
+		return nil, err
+	}
+	out := mapUserGoalEntity(updated)
+	return &out, nil
+}
+
+func (a *coreUserGoalStoreAdapter) HasAny(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return a.svc.HasAnyGoal(ctx, userID)
+}
+
+func mapUserGoalEntities(list []entities.UserGoal) []aicore.UserGoalData {
+	out := make([]aicore.UserGoalData, 0, len(list))
+	for _, g := range list {
+		out = append(out, mapUserGoalEntity(&g))
+	}
+	return out
+}
+
+func mapUserGoalEntity(g *entities.UserGoal) aicore.UserGoalData {
+	out := aicore.UserGoalData{
+		ID:              g.ID.String(),
+		Name:            g.Name,
+		TargetAmount:    g.TargetAmount.StringFixed(2),
+		CurrentAmount:   g.CurrentAmount.StringFixed(2),
+		Currency:        g.TargetCurrency,
+		Category:        g.Category,
+		Source:          g.Source,
+		BabyStep:        g.BabyStep,
+		PercentComplete: percentToFloat(g.PercentComplete()),
+	}
+	if g.Deadline != nil {
+		s := g.Deadline.Format(time.RFC3339)
+		out.Deadline = &s
+	}
+	return out
+}
+
+func percentToFloat(p decimal.Decimal) float64 {
+	f, _ := p.Float64()
+	return f
+}
+
+// --- SavingsGoalStore adapter (deprecated Redis path) ---
 
 type coreSavingsGoalStoreAdapter struct {
 	inner aiservice.SavingsGoalStore
@@ -274,6 +378,16 @@ func (a *coreBankStatementContextAdapter) GetContext(ctx context.Context, userID
 	return a.inner.BuildContext(ctx, userID), nil
 }
 
+// --- BankStatementAnalysisProvider adapter ---
+
+type coreBankStatementAnalysisAdapter struct {
+	inner *aiservice.BankStatementAnalysisAdapter
+}
+
+func (a *coreBankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID uuid.UUID, months int) (map[string]interface{}, error) {
+	return a.inner.GetAnalysis(ctx, userID, months)
+}
+
 // --- helpers ---
 
 func getStringField(m map[string]interface{}, key string) string {
@@ -286,6 +400,7 @@ func getStringField(m map[string]interface{}, key string) string {
 // Ensure adapter types satisfy core interfaces at compile time.
 var (
 	_ aicore.SupermemoryClient            = (*coreSupermemoryAdapter)(nil)
+	_ aicore.UserGoalStore                = (*coreUserGoalStoreAdapter)(nil)
 	_ aicore.SavingsGoalStore             = (*coreSavingsGoalStoreAdapter)(nil)
 	_ aicore.SpendingAnalyzer             = (*coreSpendingAnalyzerAdapter)(nil)
 	_ aicore.BalanceHistoryProvider       = (*coreBalanceHistoryAdapter)(nil)

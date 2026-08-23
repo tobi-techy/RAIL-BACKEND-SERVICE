@@ -1011,4 +1011,6 @@ func RegisterAllRemainingTools(r *Registry) {
 	RegisterControlLevelTool(r)
 	RegisterAccountSummaryTool(r)
 	RegisterGameplayTools(r)
+	RegisterBabyStepsTools(r)
+	RegisterBankStatementTools(r)
 }

@@ -402,3 +402,36 @@ func (r *BankStatementRepository) FindMatchingTransaction(ctx context.Context, u
 	}
 	return &txn, nil
 }
+
+// GetIncomeExpenseSummary returns total credits (income), total debits (expenses),
+// and the period covered by the user's uploaded bank statement transactions.
+// Totals are decimal.Decimal end-to-end so kobo-scale sums never lose precision;
+// NULL SUMs (no rows) come back as decimal.Zero.
+func (r *BankStatementRepository) GetIncomeExpenseSummary(ctx context.Context, userID uuid.UUID) (totalIncome, totalExpense decimal.Decimal, periodStart, periodEnd *time.Time, err error) {
+	type summary struct {
+		TotalIncome  decimal.NullDecimal `db:"total_income"`
+		TotalExpense decimal.NullDecimal `db:"total_expense"`
+		MinDate      *time.Time          `db:"min_date"`
+		MaxDate      *time.Time          `db:"max_date"`
+	}
+	var s summary
+	err = r.db.GetContext(ctx, &s, `
+		SELECT
+			SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END) AS total_income,
+			SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END) AS total_expense,
+			MIN(transaction_date) AS min_date,
+			MAX(transaction_date) AS max_date
+		FROM bank_statement_transactions WHERE user_id = $1`, userID)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, nil, nil, err
+	}
+	if s.TotalIncome.Valid {
+		totalIncome = s.TotalIncome.Decimal
+	}
+	if s.TotalExpense.Valid {
+		totalExpense = s.TotalExpense.Decimal
+	}
+	periodStart = s.MinDate
+	periodEnd = s.MaxDate
+	return totalIncome, totalExpense, periodStart, periodEnd, nil
+}

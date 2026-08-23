@@ -105,11 +105,16 @@ func (d *BridgeDispatcher) deliver(ctx context.Context, userID uuid.UUID, messag
 		return nil
 	}
 
+	msgCategory := MessageCategoryNormal
+	if critical {
+		msgCategory = MessageCategoryCritical
+	}
 	msg := &OutboundMessage{
 		Platform: d.platform,
 		UserID:   userID.String(),
 		ThreadID: threadID,
 		Text:     message,
+		Category: msgCategory,
 	}
 	if err := d.send(ctx, msg); err != nil {
 		return fmt.Errorf("send proactive message: %w", err)

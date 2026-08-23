@@ -102,8 +102,23 @@ type Service struct {
 	goals           GoalChecker
 	billPayer       BillPayer
 	utilityBills    UtilityBillPayer
-	logger          *zap.Logger
+	// depositHook is an optional callback fired after a deposit is split into
+	// spend/stash. The default goals-coaching build wires this to refresh
+	// user_goals progress; nil is a safe no-op.
+	depositHook DepositHook
+	logger      *zap.Logger
 }
+
+// DepositHook is the optional callback signature for deposit-split events.
+// The caller (allocation service) passes the user's UUID + the post-split
+// stash allocation. Implementations should be best-effort — failures must
+// not propagate, since the deposit path is safety-critical.
+type DepositHook interface {
+	OnDepositAllocated(ctx context.Context, userID uuid.UUID, allocatedStashAmount decimal.Decimal)
+}
+
+// SetDepositHook wires the optional deposit hook.
+func (s *Service) SetDepositHook(h DepositHook) { s.depositHook = h }
 
 func NewService(repo *repositories.AutomationRepository, balance BalanceProvider, transfer TransferExecutor, logger *zap.Logger) *Service {
 	return &Service{repo: repo, balance: balance, transfer: transfer, logger: logger}
@@ -1149,6 +1164,25 @@ func (s *Service) checkGoalMilestone(ctx context.Context, userID, goalID uuid.UU
 // EvaluateDepositReceived triggers all deposit_received automations for a user.
 // Called by the allocation service after a deposit is split.
 func (s *Service) EvaluateDepositReceived(ctx context.Context, userID uuid.UUID, depositAmount decimal.Decimal) {
+	// Optional deposit hook — defaults to a no-op when not wired. Lets the
+	// goal_progress build refresh user_goals without coupling the automation
+	// service to the goals domain package.
+	if s.depositHook != nil && depositAmount.IsPositive() {
+		// 30% of the deposit lands in Stash (per the Rail split). The hook
+		// treats this as the "new stash amount allocated this deposit" so
+		// user_goals progress is updated against the right base.
+		stashAllocated := depositAmount.Mul(decimal.NewFromFloat(0.30))
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.logger.Warn("deposit hook panicked",
+						zap.Stringer("user_id", userID), zap.Any("recover", r))
+				}
+			}()
+			s.depositHook.OnDepositAllocated(ctx, userID, stashAllocated)
+		}()
+	}
+
 	automations, err := s.repo.ListByUser(ctx, userID)
 	if err != nil {
 		s.logger.Warn("failed to list automations for deposit trigger", zap.Error(err))

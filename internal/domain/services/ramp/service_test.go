@@ -34,6 +34,13 @@ func (f *fakeRedis) Incr(ctx context.Context, key string) (int64, error) {
 	f.counts[key]++
 	return f.counts[key], nil
 }
+func (f *fakeRedis) IncrBy(ctx context.Context, key string, value int64) (int64, error) {
+	if f.incrErr != nil {
+		return 0, f.incrErr
+	}
+	f.counts[key] += value
+	return f.counts[key], nil
+}
 func (f *fakeRedis) Expire(ctx context.Context, key string, ttl time.Duration) error { return nil }
 func (f *fakeRedis) Set(ctx context.Context, key string, v interface{}, ttl time.Duration) error {
 	return nil
@@ -44,10 +51,10 @@ func (f *fakeRedis) Exists(ctx context.Context, key string) (bool, error)       
 func (f *fakeRedis) SetNX(ctx context.Context, key string, v interface{}, ttl time.Duration) (bool, error) {
 	return true, nil
 }
-func (f *fakeRedis) Keys(ctx context.Context, pattern string) ([]string, error)  { return nil, nil }
-func (f *fakeRedis) Ping(ctx context.Context) error                              { return nil }
-func (f *fakeRedis) Close() error                                                { return nil }
-func (f *fakeRedis) Client() *redis.Client                                       { return nil }
+func (f *fakeRedis) Keys(ctx context.Context, pattern string) ([]string, error) { return nil, nil }
+func (f *fakeRedis) Ping(ctx context.Context) error                             { return nil }
+func (f *fakeRedis) Close() error                                               { return nil }
+func (f *fakeRedis) Client() *redis.Client                                      { return nil }
 
 func TestHandleUnmatchedWebhook(t *testing.T) {
 	ctx := context.Background()

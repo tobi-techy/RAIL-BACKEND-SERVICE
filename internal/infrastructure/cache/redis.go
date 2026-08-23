@@ -21,6 +21,7 @@ type RedisClient interface {
 	Exists(ctx context.Context, key string) (bool, error)
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
 	Incr(ctx context.Context, key string) (int64, error)
+	IncrBy(ctx context.Context, key string, value int64) (int64, error)
 	Expire(ctx context.Context, key string, expiration time.Duration) error
 	Keys(ctx context.Context, pattern string) ([]string, error)
 	Ping(ctx context.Context) error
@@ -144,6 +145,13 @@ func (r *redisClient) Exists(ctx context.Context, key string) (bool, error) {
 // Incr increments the integer value of a key by one. If the key does not exist, it is set to 0 before performing the operation.
 func (r *redisClient) Incr(ctx context.Context, key string) (int64, error) {
 	return r.client.Incr(ctx, key).Result()
+}
+
+// IncrBy atomically increments the integer value at key by value. Returns the
+// new value. Used by the usage service to track daily AI cost in cents without
+// races between concurrent requests.
+func (r *redisClient) IncrBy(ctx context.Context, key string, value int64) (int64, error) {
+	return r.client.IncrBy(ctx, key, value).Result()
 }
 
 // SetNX sets a key only if it does not already exist, returning true when the

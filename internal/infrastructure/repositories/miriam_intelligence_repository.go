@@ -473,6 +473,30 @@ func (r *MiriamIntelligenceRepository) BatchMarkPredictionOutcomes(ctx context.C
 	return tx.Commit()
 }
 
+// DeletePredictionsOlderThan removes prediction rows older than the given cutoff.
+// Intended for periodic data retention cleanup.
+func (r *MiriamIntelligenceRepository) DeletePredictionsOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM miriam_predictions WHERE created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old predictions: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
+// DeleteEvaluatedOutcomesOlderThan removes prediction outcomes that have been
+// evaluated (actual_outcome IS NOT NULL) and are older than the given cutoff.
+// Pending outcomes (actual_outcome IS NULL) are preserved so they can still be
+// evaluated when their horizon expires.
+func (r *MiriamIntelligenceRepository) DeleteEvaluatedOutcomesOlderThan(ctx context.Context, before time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM miriam_prediction_outcomes WHERE actual_outcome IS NOT NULL AND created_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("delete old evaluated outcomes: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
 func (r *MiriamIntelligenceRepository) GetPredictionHitRate(ctx context.Context, userID uuid.UUID, predictionType string, since time.Time) (float64, error) {
 	var result struct {
 		Total   int     `db:"total"`

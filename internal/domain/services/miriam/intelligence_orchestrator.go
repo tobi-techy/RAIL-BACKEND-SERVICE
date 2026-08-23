@@ -71,23 +71,23 @@ const (
 // IntelligenceOrchestrator is Miriam's unified brain — a single evaluation pass
 // that coordinates predictions, decisions, memory, learning, and actions.
 type IntelligenceOrchestrator struct {
-	service       *Service
-	decisions     *DecisionEngine
-	nudges        *ProactiveNudgeEngine
-	predictions   *PredictiveEngine
-	signals       *SignalDetector
-	suggestions   *MandateSuggestionEngine
-	obDetector    *ObligationAutoDetector
-	enricher      *TransactionEnricher
+	service         *Service
+	decisions       *DecisionEngine
+	nudges          *ProactiveNudgeEngine
+	predictions     *PredictiveEngine
+	signals         *SignalDetector
+	suggestions     *MandateSuggestionEngine
+	obDetector      *ObligationAutoDetector
+	enricher        *TransactionEnricher
 	patternAnalyzer *TransactionPatternAnalyzer
-	dispatcher    *NotificationDispatcher
-	memory        MemoryReader
-	notifier      Notifier
-	healthScore   *HealthScoreTracker
-	outcomeTrack  *OutcomeTracker
-	selfReview    *SelfReviewEngine
-	controlLevel  ControlLevelReader
-	logger        *zap.Logger
+	dispatcher      *NotificationDispatcher
+	memory          MemoryReader
+	notifier        Notifier
+	healthScore     *HealthScoreTracker
+	outcomeTrack    *OutcomeTracker
+	selfReview      *SelfReviewEngine
+	controlLevel    ControlLevelReader
+	logger          *zap.Logger
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -130,6 +130,27 @@ func (o *IntelligenceOrchestrator) SetEnricher(e *TransactionEnricher) {
 	o.enricher = e
 }
 
+// resolveSymbol returns the user's local currency symbol, defaulting to "$".
+func (o *IntelligenceOrchestrator) resolveSymbol(ctx context.Context, userID uuid.UUID) string {
+	if o.service == nil || o.service.profiles == nil {
+		return "$"
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	profile, err := o.service.profiles.GetByUserID(fetchCtx, userID)
+	if err != nil || profile == nil {
+		return "$"
+	}
+	country := profile.ResidenceCountry
+	if country == "" {
+		country = profile.TaxCountry
+	}
+	if country == "" {
+		return "$"
+	}
+	return entities.CurrencySymbol(country)
+}
+
 // SetPatternAnalyzer injects a TransactionPatternAnalyzer after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetPatternAnalyzer(a *TransactionPatternAnalyzer) {
 	o.patternAnalyzer = a
@@ -161,6 +182,11 @@ func (o *IntelligenceOrchestrator) RunSelfReview(ctx context.Context, userID uui
 // HealthScoreTracker returns the health score tracker for maintenance operations.
 func (o *IntelligenceOrchestrator) HealthScoreTracker() *HealthScoreTracker {
 	return o.healthScore
+}
+
+// OutcomeTracker returns the outcome tracker for maintenance operations.
+func (o *IntelligenceOrchestrator) OutcomeTracker() *OutcomeTracker {
+	return o.outcomeTrack
 }
 
 // IntelligenceResult is the output of a single evaluation pass.
@@ -335,7 +361,10 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	// the level, we do NOT execute.
 	decisionsMade := 0
 	actionsExecuted := 0
-	mandateEvent := eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual
+	// Autonomous (always-on) events are read-only. They may analyze, message,
+	// and stage pending actions, but they never execute mandates or move money.
+	isAutonomous := IsAutonomousEvent(eventType)
+	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual)
 	gateReason := ""
 	if mandateEvent {
 		gateReason = o.autonomyGateReason(ctx, userID)
@@ -551,7 +580,8 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 	case MiriamMandateBillReservation:
 		if err = o.recordBillReservation(ctx, userID, amount, mandate); err == nil {
 			if o.notifier != nil {
-				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("$%s noted for upcoming bills.", amount.StringFixed(2)))
+				symbol := o.resolveSymbol(ctx, userID)
+				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("%s%s noted for upcoming bills.", symbol, amount.StringFixed(2)))
 			}
 		}
 	case MiriamMandateSpendCooldown:

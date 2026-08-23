@@ -181,6 +181,8 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	symbol := entities.CurrencySymbol(country)
+
 	if w.brief != nil {
 		if brief, err := w.brief.GetMiriamBrief(fetchCtx, userID, country); err == nil {
 			if title, body, data := pulseFromBrief(brief); body != "" {
@@ -232,7 +234,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 
 	// Try AI-generated nudge first (fast model, ~1s)
 	if w.nudger != nil {
-		snapshot := buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining, hasBudget, streakDays, now)
+		snapshot := buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining, hasBudget, streakDays, now, symbol)
 		if nudge := w.nudger.GenerateNudge(fetchCtx, snapshot); nudge != "" {
 			return "Miriam checked the math", nudge, nil
 		}
@@ -250,7 +252,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 	if daySpend.IsPositive() {
 		candidates = append(candidates, pulse{
 			title: "Miriam spotted a move",
-			body:  fmt.Sprintf("$%s left Spend yesterday. Want the quick read on what changed?", daySpend.StringFixed(2)),
+			body:  fmt.Sprintf("%s%s left Spend yesterday. Want the quick read on what changed?", symbol, daySpend.StringFixed(2)),
 			score: 3,
 		})
 	}
@@ -261,14 +263,14 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 		daily := budgetRemaining.Div(decimal.NewFromInt(maxInt64(int64(daysLeft), 1)))
 		candidates = append(candidates, pulse{
 			title: "Miriam likes this pace",
-			body:  fmt.Sprintf("$%s left this month. That's about $%s/day if we keep it tidy.", budgetRemaining.StringFixed(2), daily.StringFixed(2)),
+			body:  fmt.Sprintf("%s%s left this month. That's about %s%s/day if we keep it tidy.", symbol, budgetRemaining.StringFixed(2), symbol, daily.StringFixed(2)),
 			score: 4,
 		})
 	}
 	if hasBudget && budgetRemaining.IsNegative() {
 		candidates = append(candidates, pulse{
 			title: "Tiny budget reset?",
-			body:  fmt.Sprintf("Budget is $%s over. Not a crisis, just a course correction.", budgetRemaining.Abs().StringFixed(2)),
+			body:  fmt.Sprintf("Budget is %s%s over. Not a crisis, just a course correction.", symbol, budgetRemaining.Abs().StringFixed(2)),
 			score: 5,
 		})
 	}
@@ -286,7 +288,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 	if stash.IsPositive() {
 		candidates = append(candidates, pulse{
 			title: "Stash check",
-			body:  fmt.Sprintf("$%s in Stash. Quiet money, doing useful things.", stash.StringFixed(2)),
+			body:  fmt.Sprintf("%s%s in Stash. Quiet money, doing useful things.", symbol, stash.StringFixed(2)),
 			score: 1,
 		})
 	}
@@ -295,7 +297,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 	if monthNet.IsPositive() {
 		candidates = append(candidates, pulse{
 			title: "Miriam did a small nod",
-			body:  fmt.Sprintf("You're up $%s this month. More in than out is the whole trick.", monthNet.StringFixed(2)),
+			body:  fmt.Sprintf("You're up %s%s this month. More in than out is the whole trick.", symbol, monthNet.StringFixed(2)),
 			score: 3,
 		})
 	}
@@ -303,7 +305,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 	// Fallback
 	if len(candidates) == 0 {
 		if total.IsPositive() {
-			return "Miriam checked in", fmt.Sprintf("$%s across Rail. Your money clocked in before you did.", total.StringFixed(2)), nil
+			return "Miriam checked in", fmt.Sprintf("%s%s across Rail. Your money clocked in before you did.", symbol, total.StringFixed(2)), nil
 		}
 		return "", "", nil // No data, skip this user
 	}
@@ -332,19 +334,19 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
-func buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining decimal.Decimal, hasBudget bool, streakDays int, now time.Time) string {
+func buildNudgeSnapshot(total, spend, stash, daySpend, monthNet, budgetRemaining decimal.Decimal, hasBudget bool, streakDays int, now time.Time, symbol string) string {
 	var parts []string
 	if total.IsPositive() {
-		parts = append(parts, fmt.Sprintf("Total: $%s (spend $%s, stash $%s)", total.StringFixed(2), spend.StringFixed(2), stash.StringFixed(2)))
+		parts = append(parts, fmt.Sprintf("Total: %s%s (spend %s%s, stash %s%s)", symbol, total.StringFixed(2), symbol, spend.StringFixed(2), symbol, stash.StringFixed(2)))
 	}
 	if daySpend.IsPositive() {
-		parts = append(parts, fmt.Sprintf("Yesterday spent: $%s", daySpend.StringFixed(2)))
+		parts = append(parts, fmt.Sprintf("Yesterday spent: %s%s", symbol, daySpend.StringFixed(2)))
 	}
 	if !monthNet.IsZero() {
-		parts = append(parts, fmt.Sprintf("Month net: $%s", monthNet.StringFixed(2)))
+		parts = append(parts, fmt.Sprintf("Month net: %s%s", symbol, monthNet.StringFixed(2)))
 	}
 	if hasBudget {
-		parts = append(parts, fmt.Sprintf("Budget remaining: $%s", budgetRemaining.StringFixed(2)))
+		parts = append(parts, fmt.Sprintf("Budget remaining: %s%s", symbol, budgetRemaining.StringFixed(2)))
 	}
 	if streakDays > 0 {
 		parts = append(parts, fmt.Sprintf("Saving streak: %d days", streakDays))

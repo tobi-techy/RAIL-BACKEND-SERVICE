@@ -28,6 +28,7 @@ const (
 	FactCategoryCurrencyContext = "currency_context"
 	FactCategoryRiskPreference  = "risk_preference"
 	FactCategoryStashBehavior   = "stash_behavior"
+	FactCategoryDebtDetail      = "debt_detail"
 )
 
 // Fact sources.

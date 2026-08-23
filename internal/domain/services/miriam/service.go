@@ -20,7 +20,51 @@ const (
 	EventSpendingSpike        = "spending_spike"
 	EventBillPressure         = "bill_pressure"
 	EventIncomeLowerThanUsual = "income_lower_than_usual"
+	// EventMoneyEvent is triggered by the ledger outbox publisher when a real
+	// money event (transaction completed, balance updated, etc.) occurs. It is
+	// intentionally read-only: the autonomous path may analyze/message, but it
+	// never executes mandate actions or moves money without confirmation.
+	EventMoneyEvent = "money_event"
+	// EventAutonomousTick is the adaptive loop's periodic wake-up. Like
+	// EventMoneyEvent, it is read-only in the autonomous path.
+	EventAutonomousTick = "autonomous_tick"
 )
+
+// MoneyEvent is an event published from the ledger outbox (or other money
+// sources) to wake Miriam's autonomous brain for a user. It is read-only
+// payload: the brain can inspect it but must never act on it by moving money.
+type MoneyEvent struct {
+	ID         string                 `json:"id"`
+	UserID     uuid.UUID              `json:"user_id"`
+	EventType  string                 `json:"event_type"` // e.g. transaction.completed
+	Payload    map[string]interface{} `json:"payload"`
+	OccurredAt time.Time              `json:"occurred_at"`
+}
+
+// IsAutonomousEvent returns true for event types that may run on the
+// always-on path. Autonomous events are read-only on money movement.
+func IsAutonomousEvent(eventType string) bool {
+	switch eventType {
+	case EventMoneyEvent, EventAutonomousTick:
+		return true
+	default:
+		return false
+	}
+}
+
+// MoneyEventPublisher sends MoneyEvents onto an event stream.
+type MoneyEventPublisher interface {
+	PublishMoneyEvent(ctx context.Context, evt MoneyEvent) error
+}
+
+// MoneyEventConsumer reads MoneyEvents from an event stream.
+type MoneyEventConsumer interface {
+	// Consume calls handler for each event. It blocks until ctx is cancelled.
+	// The handler should return nil to acknowledge the event, or an error to
+	// leave it for redelivery. Implementations must be safe to call from a
+	// single goroutine.
+	Consume(ctx context.Context, handler func(MoneyEvent) error) error
+}
 
 type Repository interface {
 	UpsertMoneyState(ctx context.Context, state *entities.MiriamMoneyState) error
@@ -41,6 +85,8 @@ type Repository interface {
 	MarkPredictionOutcome(ctx context.Context, id uuid.UUID, outcome bool, observedAt time.Time) error
 	BatchMarkPredictionOutcomes(ctx context.Context, outcomes []entities.MiriamPredictionOutcome) error
 	GetPredictionHitRate(ctx context.Context, userID uuid.UUID, predictionType string, since time.Time) (float64, error)
+	DeletePredictionsOlderThan(ctx context.Context, before time.Time) (int64, error)
+	DeleteEvaluatedOutcomesOlderThan(ctx context.Context, before time.Time) (int64, error)
 }
 
 type BalanceProvider interface {
@@ -482,7 +528,7 @@ func (s *Service) RefreshMoneyState(ctx context.Context, userID uuid.UUID) (*ent
 		MonthlySpend: monthlySpend.RoundBank(2), MonthlySavings: monthlySavings.RoundBank(2),
 		SpendBalance: spend.RoundBank(2), StashBalance: stash.RoundBank(2),
 		CalibrationScore: decimal.NewFromInt(int64(calibrationScore)),
-		ActiveMonths: activeMonths,
+		ActiveMonths:     activeMonths,
 	}
 	if err := s.repo.UpsertMoneyState(ctx, state); err != nil {
 		return nil, err

@@ -54,6 +54,10 @@ func (f *fakeRedis) Incr(_ context.Context, _ string) (int64, error) {
 	return 0, nil
 }
 
+func (f *fakeRedis) IncrBy(_ context.Context, _ string, _ int64) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeRedis) Expire(_ context.Context, _ string, _ time.Duration) error { return nil }
 
 func (f *fakeRedis) Keys(_ context.Context, _ string) ([]string, error) {

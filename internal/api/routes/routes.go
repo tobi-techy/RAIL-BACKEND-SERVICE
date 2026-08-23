@@ -857,10 +857,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					platformGroup.GET("/linked", container.PlatformHandler.ListLinked)
 					platformGroup.DELETE("/:platform", middleware.AuthRateLimit(5), container.PlatformHandler.Unlink)
 				}
+
+				// Bridge-to-backend inbound + action endpoints (HMAC-authenticated, not JWT).
+				// The Spectrum bridge POSTs inbound messages and action postbacks here.
+				bridgeHMACSecret := container.Config.Platform.BridgeHMACSecret
+				proc := container.GetPlatformProcessor()
+				if bridgeHMACSecret != "" && proc != nil {
+					bridgeGroup := v1.Group("/platform")
+					bridgeGroup.Use(middleware.BridgeHMAC(bridgeHMACSecret, container.ZapLog))
+					bridgeGroup.Use(middleware.RateLimit(100))
+					{
+						bridgeGroup.POST("/inbound", container.PlatformHandler.HandleInbound(proc))
+						bridgeGroup.POST("/action", container.PlatformHandler.HandleAction(proc))
+					}
+				}
 			}
 
-			// KYC status utilities (auth required but no KYC gate)
-			kycProtected := protected.Group("/kyc")
+		// KYC status utilities (auth required but no KYC gate)
+		kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
@@ -1934,6 +1948,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				graphWebhooks.Use(middleware.RateLimit(100))
 				graphWebhooks.POST("", container.GraphWebhookHandler.HandleWebhook)
 			}
+
+			// Mono (open-banking) webhooks for account status + payment events
+			if container.MonoWebhookHandler != nil {
+				monoWebhooks := webhooks.Group("/mono")
+				monoWebhooks.Use(middleware.RateLimit(100))
+				monoWebhooks.POST("", container.MonoWebhookHandler.HandleWebhook)
+			}
 		}
 
 		// Register Alpaca investment routes
@@ -1996,6 +2017,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Register collaborative savings goal routes (also created via Miriam)
 		if container.SharedGoalService != nil {
 			RegisterSharedGoalRoutes(protected, container.SharedGoalService, container.ZapLog)
+		}
+
+		// Register Mono open-banking routes (account linking, transactions, analysis, deposits)
+		if container.MonoService != nil {
+			RegisterMonoRoutes(protected, container.MonoService, container.ZapLog)
 		}
 
 		// Register opportunity routes
