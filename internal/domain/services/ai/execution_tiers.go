@@ -7,29 +7,10 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
 )
 
-// streamingStageOnlyTools are staged ONLY on the streaming chat path
-// (isExecutionActionTool); the core non-streaming path doesn't stage them yet.
-// They're unioned into the prompt's STAGE & CONFIRM list so the model treats
-// them as confirm-first everywhere.
-var streamingStageOnlyTools = map[string]bool{
-	// BRIJ flight bookings (book_flight is fund-moving, Face ID step-up).
-	"create_flight_intent":  true,
-	"book_flight":           true,
-	"save_travel_passenger": true,
-	"request_flight_refund": true,
-}
-
-// stageConfirmToolNames returns the full staged set (core + streaming extras),
-// sorted for deterministic prompt output.
+// stageConfirmToolNames returns the canonical staged set, sorted for
+// deterministic prompt output.
 func stageConfirmToolNames() []string {
-	merged := make(map[string]bool, len(core.StageConfirmTools)+len(streamingStageOnlyTools))
-	for name := range core.StageConfirmTools {
-		merged[name] = true
-	}
-	for name := range streamingStageOnlyTools {
-		merged[name] = true
-	}
-	return sortedToolNames(merged)
+	return sortedToolNames(core.StageConfirmTools)
 }
 
 func autoExecuteToolNames() []string {
@@ -64,7 +45,7 @@ func executionModelSection() string {
 
 // isExecutionActionTool reports whether an Execution Engine tool must go
 // through the pending-action confirm flow in chat. Derived from the canonical
-// core.StageConfirmTools plus streaming-only extras — do not hand-edit tiers here.
+// core.StageConfirmTools — do not hand-edit tiers here.
 func isExecutionActionTool(name string) bool {
-	return core.StageConfirmTools[name] || streamingStageOnlyTools[name]
+	return core.StageConfirmTools[name]
 }

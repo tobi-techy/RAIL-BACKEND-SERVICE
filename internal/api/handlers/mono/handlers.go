@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,6 +17,9 @@ type Handlers struct {
 	service *monosvc.Service
 	logger  *zap.Logger
 }
+
+// maxTransactionLimit caps page size on transaction listings.
+const maxTransactionLimit = 200
 
 func NewHandlers(service *monosvc.Service, logger *zap.Logger) *Handlers {
 	return &Handlers{service: service, logger: logger}
@@ -36,11 +38,11 @@ type completeLinkRequest struct {
 }
 
 type initiateDepositRequest struct {
-	AccountID    uuid.UUID `json:"account_id" binding:"required"`
-	AmountKobo   int64     `json:"amount_kobo" binding:"required,min=1"`
-	Description  string    `json:"description"`
-	Reference    string    `json:"reference"`
-	RedirectURL  string    `json:"redirect_url"`
+	AccountID   uuid.UUID `json:"account_id" binding:"required"`
+	AmountKobo  int64     `json:"amount_kobo" binding:"required,min=1"`
+	Description string    `json:"description"`
+	Reference   string    `json:"reference"`
+	RedirectURL string    `json:"redirect_url"`
 }
 
 // --- Account Linking ---
@@ -201,8 +203,21 @@ func (h *Handlers) GetTransactions(c *gin.Context) {
 		return
 	}
 
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if err != nil || limit <= 0 {
+		common.RespondError(c, http.StatusBadRequest, "BAD_REQUEST", "limit must be a positive integer", nil)
+		return
+	}
+	if limit > maxTransactionLimit {
+		common.RespondError(c, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("limit cannot exceed %d", maxTransactionLimit), nil)
+		return
+	}
+
+	offset, err := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 {
+		common.RespondError(c, http.StatusBadRequest, "BAD_REQUEST", "offset must be a non-negative integer", nil)
+		return
+	}
 
 	txns, err := h.service.GetTransactions(c.Request.Context(), userID, accountID, limit, offset)
 	if err != nil {
@@ -303,10 +318,11 @@ func (h *Handlers) InitiateDeposit(c *gin.Context) {
 		return
 	}
 
-	// Generate reference if not provided.
+	// Generate an unguessable reference if not provided. Never derive it from
+	// the user ID — references appear in URLs and webhook payloads.
 	reference := req.Reference
 	if reference == "" {
-		reference = fmt.Sprintf("rail-deposit-%s-%d", userID.String()[:8], time.Now().Unix())
+		reference = fmt.Sprintf("rail-deposit-%s", uuid.NewString())
 	}
 
 	// Extract customer details from context if available.
@@ -338,13 +354,19 @@ func (h *Handlers) InitiateDeposit(c *gin.Context) {
 // @Param reference path string true "Payment reference"
 // @Router /api/v1/mono/deposit/{reference}/verify [get]
 func (h *Handlers) VerifyDeposit(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated", nil)
+		return
+	}
+
 	reference := c.Param("reference")
 	if reference == "" {
 		common.RespondError(c, http.StatusBadRequest, "BAD_REQUEST", "reference is required", nil)
 		return
 	}
 
-	pmt, err := h.service.VerifyDeposit(c.Request.Context(), reference)
+	pmt, err := h.service.VerifyDeposit(c.Request.Context(), userID, reference)
 	if err != nil {
 		h.logger.Error("Mono verify deposit failed", zap.Error(err), zap.String("reference", reference))
 		common.RespondError(c, http.StatusBadGateway, "MONO_VERIFY_FAILED", "failed to verify deposit", nil)

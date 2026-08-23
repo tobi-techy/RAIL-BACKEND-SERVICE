@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,6 +87,10 @@ func (r *MonoRepository) UpdateLinkedAccountBalance(ctx context.Context, account
 
 // --- Imported Transactions ---
 
+// importTxnChunkSize bounds the number of transactions per multi-row INSERT
+// so parameter counts stay well within PostgreSQL's 65535-parameter limit.
+const importTxnChunkSize = 500
+
 func (r *MonoRepository) ImportTransactions(ctx context.Context, txns []*entities.MonoImportedTransaction) (int, error) {
 	if len(txns) == 0 {
 		return 0, nil
@@ -97,32 +102,55 @@ func (r *MonoRepository) ImportTransactions(ctx context.Context, txns []*entitie
 	}
 	defer tx.Rollback()
 
-	inserted := 0
+	now := time.Now().UTC()
 	for _, txn := range txns {
 		if txn.ID == uuid.Nil {
 			txn.ID = uuid.New()
 		}
-		txn.CreatedAt = time.Now().UTC()
+		txn.CreatedAt = now
+	}
 
-		// Insert with ON CONFLICT to deduplicate on (account_id, mono_txn_id).
-		var lastInsertID uuid.UUID
-		err := tx.QueryRowxContext(ctx, `
-			INSERT INTO mono_imported_transactions (id, user_id, account_id, mono_txn_id, amount, type, description, category, sub_category, transaction_date, reference, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-			ON CONFLICT (account_id, mono_txn_id) DO NOTHING
-			RETURNING id`,
-			txn.ID, txn.UserID, txn.AccountID, txn.MonoTxnID, txn.Amount, txn.Type,
-			txn.Description, txn.Category, txn.SubCategory, txn.TransactionDate,
-			txn.Reference, txn.CreatedAt).Scan(&lastInsertID)
+	const insertPrefix = `
+		INSERT INTO mono_imported_transactions (id, user_id, account_id, mono_txn_id, amount, type, description, category, sub_category, transaction_date, reference, created_at)`
 
-		if err != nil {
-			if err == sql.ErrNoRows {
-				// Conflict — transaction already exists, skip.
-				continue
-			}
-			return inserted, fmt.Errorf("insert transaction: %w", err)
+	inserted := 0
+	for start := 0; start < len(txns); start += importTxnChunkSize {
+		end := start + importTxnChunkSize
+		if end > len(txns) {
+			end = len(txns)
 		}
-		inserted++
+		chunk := txns[start:end]
+
+		// Build a single multi-row INSERT per chunk. Conflicts on
+		// (account_id, mono_txn_id) are skipped; RETURNING id tells us which
+		// rows were actually new.
+		var sb strings.Builder
+		sb.WriteString(insertPrefix)
+		sb.WriteString(" VALUES ")
+		args := make([]interface{}, 0, len(chunk)*12)
+		for i, txn := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			base := i * 12
+			sb.WriteString(fmt.Sprintf(
+				"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+				base+1, base+2, base+3, base+4, base+5, base+6,
+				base+7, base+8, base+9, base+10, base+11, base+12))
+			args = append(args,
+				txn.ID, txn.UserID, txn.AccountID, txn.MonoTxnID, txn.Amount, txn.Type,
+				txn.Description, txn.Category, txn.SubCategory, txn.TransactionDate,
+				txn.Reference, txn.CreatedAt)
+		}
+		sb.WriteString(`
+			ON CONFLICT (account_id, mono_txn_id) DO NOTHING
+			RETURNING id`)
+
+		var insertedIDs []uuid.UUID
+		if err := tx.SelectContext(ctx, &insertedIDs, sb.String(), args...); err != nil {
+			return inserted, fmt.Errorf("insert transactions: %w", err)
+		}
+		inserted += len(insertedIDs)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -184,9 +212,9 @@ func (r *MonoRepository) GetSpendingSummary(ctx context.Context, userID uuid.UUI
 // GetCategoryBreakdown returns per-category spending totals for debits.
 func (r *MonoRepository) GetCategoryBreakdown(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.MonoCategoryBreakdown, error) {
 	type catRow struct {
-		Category string       `db:"category"`
+		Category string        `db:"category"`
 		Amount   sql.NullInt64 `db:"amount"`
-		Count    int          `db:"count"`
+		Count    int           `db:"count"`
 	}
 	var rows []catRow
 	err := r.db.SelectContext(ctx, &rows, `
@@ -239,6 +267,18 @@ func (r *MonoRepository) GetPaymentByReference(ctx context.Context, reference st
 	var pmt entities.MonoPayment
 	err := r.db.GetContext(ctx, &pmt, `
 		SELECT * FROM mono_payments WHERE reference = $1`, reference)
+	if err != nil {
+		return nil, fmt.Errorf("get mono payment: %w", err)
+	}
+	return &pmt, nil
+}
+
+// GetPaymentByUserAndReference scopes the reference lookup to its owning user
+// so authenticated callers can only touch their own payments.
+func (r *MonoRepository) GetPaymentByUserAndReference(ctx context.Context, userID uuid.UUID, reference string) (*entities.MonoPayment, error) {
+	var pmt entities.MonoPayment
+	err := r.db.GetContext(ctx, &pmt, `
+		SELECT * FROM mono_payments WHERE reference = $1 AND user_id = $2`, reference, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get mono payment: %w", err)
 	}

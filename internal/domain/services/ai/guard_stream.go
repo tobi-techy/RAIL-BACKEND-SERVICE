@@ -29,29 +29,32 @@ func (o *AgentAdapter) applyResponseGuard(ctx context.Context, userID uuid.UUID,
 
 // logUngroundedAmounts is the observability-only counterpart used on content
 // that was already streamed token-by-token — repair is impossible there, but
-// violations are counted so drift shows up in logs and traces.
+// violations are counted so drift shows up in logs and traces. Logs carry only
+// redacted metadata (counts, sentence indexes, detected amounts) — never reply
+// text, so financial sentences and personal context stay out of logs.
 func (o *AgentAdapter) logUngroundedAmounts(userID uuid.UUID, content string, messages []infraai.Message, span interface {
 	SetAttributes(...attribute.KeyValue)
 }) {
 	if !o.responseGuardOn || strings.TrimSpace(content) == "" {
 		return
 	}
-	violations := UngroundedAmountSentences(content, groundingCorpusFromMessages(messages))
-	if len(violations) == 0 {
+	report := DetectUngroundedAmounts(content, groundingCorpusFromMessages(messages))
+	if len(report.Indexes) == 0 {
 		return
 	}
 	if span != nil {
-		span.SetAttributes(attribute.Int("guard.ungrounded_sentences", len(violations)))
+		span.SetAttributes(attribute.Int("guard.ungrounded_sentences", len(report.Indexes)))
 	}
 	if o.logger != nil {
-		samples := violations
-		if len(samples) > 3 {
-			samples = samples[:3]
+		amounts := report.Amounts
+		if len(amounts) > 10 {
+			amounts = amounts[:10]
 		}
 		o.logger.Warn("response guard: ungrounded amounts in streamed reply",
-			zap.Int("count", len(violations)),
+			zap.Int("count", len(report.Indexes)),
 			zap.String("user_id", userID.String()),
-			zap.Strings("samples", samples),
+			zap.Ints("sentence_indexes", report.Indexes),
+			zap.Strings("detected_amounts", amounts),
 		)
 	}
 }

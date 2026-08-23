@@ -490,6 +490,9 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       log.info({ text: text.slice(0, 60) }, "posted inbound message to backend");
     }
   } catch (err) {
+    // Release the dedup reservation so a redelivered copy of this message can
+    // still be processed — the backend never accepted it.
+    if (message.id) processedMessageIds.delete(message.id);
     log.error({ err, thread_id: threadID }, "inbound handling failed");
   } finally {
     space.stopTyping().catch(() => {});

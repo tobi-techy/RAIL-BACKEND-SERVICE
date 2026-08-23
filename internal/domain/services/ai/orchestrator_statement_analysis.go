@@ -112,7 +112,7 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 	}
 
 	// If no transactions at all, try Mono data before giving up.
-	if totalIncome == 0 && totalExpense == 0 {
+	if totalIncome.IsZero() && totalExpense.IsZero() {
 		if a.mono != nil {
 			return a.getMonoAnalysis(fetchCtx, userID, months)
 		}
@@ -141,18 +141,27 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 		categoryAverages = map[string]decimal.Decimal{}
 	}
 
-	// 6. Compute savings rate
+	// 6. Compute savings rate — kept in decimal end-to-end; converted to
+	// float64 only where the existing growth-plan API expects a rate.
 	savingsRate := 0.0
-	if totalIncome > 0 {
-		savingsRate = (totalIncome - totalExpense) / totalIncome * 100
+	if totalIncome.IsPositive() {
+		savingsRate = totalIncome.Sub(totalExpense).Div(totalIncome).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
 
-	// 7. Build sorted category breakdown with percentages
+	// 7. Build sorted category breakdown with percentages. The denominator is
+	// the sum of category totals over the SAME start-to-now window as
+	// spendingByCategory — not the unbounded all-time totalExpense from
+	// GetIncomeExpenseSummary — so percentages reflect the selected period and
+	// sum to ~100%.
 	var categories []categoryBreakdown
+	periodSpend := 0.0
+	for _, amount := range spendingByCategory {
+		periodSpend += amount
+	}
 	for cat, amount := range spendingByCategory {
 		pct := 0.0
-		if totalExpense > 0 {
-			pct = amount / totalExpense * 100
+		if periodSpend > 0 {
+			pct = amount / periodSpend * 100
 		}
 		monthlyAvg := 0.0
 		if avg, ok := categoryAverages[cat]; ok {
@@ -182,7 +191,7 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 	}
 
 	// 10. Generate growth plan based on savings rate and baby step
-	growthPlan := generateGrowthPlan(totalIncome, totalExpense, savingsRate, categories, recurring)
+	growthPlan := generateGrowthPlan(savingsRate, categories, recurring)
 
 	// 11. Top 3 spending categories summary for Miriam's text response
 	var topCats []string
@@ -200,8 +209,8 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 	return map[string]interface{}{
 		"has_data":           true,
 		"period":             periodStr,
-		"total_income":       fmt.Sprintf("%.0f", totalIncome),
-		"total_expense":      fmt.Sprintf("%.0f", totalExpense),
+		"total_income":       totalIncome.StringFixed(0),
+		"total_expense":      totalExpense.StringFixed(0),
 		"savings_rate":       fmt.Sprintf("%.1f%%", savingsRate),
 		"transaction_count":  totalTxns,
 		"banks":              banks,
@@ -210,8 +219,8 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 		"recurring_payments": recurring,
 		"growth_plan":        growthPlan,
 		"summary": fmt.Sprintf(
-			"Over the %s, you earned %.0f and spent %.0f. Your savings rate is %.1f%%. Top spending: %s.",
-			periodStr, totalIncome, totalExpense, savingsRate, topCatsStr,
+			"Over the %s, you earned %s and spent %s. Your savings rate is %.1f%%. Top spending: %s.",
+			periodStr, totalIncome.StringFixed(0), totalExpense.StringFixed(0), savingsRate, topCatsStr,
 		),
 	}, nil
 }
@@ -219,7 +228,7 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 // generateGrowthPlan creates actionable recommendations based on the user's
 // spending analysis, mapped to their Baby Step.
 func generateGrowthPlan(
-	totalIncome, totalExpense, savingsRate float64,
+	savingsRate float64,
 	categories []categoryBreakdown,
 	recurring []recurringItem,
 ) []string {
@@ -314,7 +323,7 @@ func (a *BankStatementAnalysisAdapter) getMonoAnalysis(ctx context.Context, user
 	}
 
 	periodStr := fmt.Sprintf("last %d months (Mono)", months)
-	growthPlan := generateGrowthPlan(totalIncome, totalExpense, savingsRate, categories, nil)
+	growthPlan := generateGrowthPlan(savingsRate, categories, nil)
 
 	return map[string]interface{}{
 		"has_data":           true,

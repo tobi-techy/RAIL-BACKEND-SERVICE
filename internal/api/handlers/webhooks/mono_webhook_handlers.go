@@ -1,6 +1,7 @@
 package webhooks
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,13 +25,13 @@ func NewMonoWebhookHandler(service *monosvc.Service, webhookSecret string, logge
 
 // monoWebhookPayload is the expected body from Mono webhook deliveries.
 type monoWebhookPayload struct {
-	Event         string `json:"event"`          // e.g. "account_reauthorized", "account_unlinked"
-	Account       string `json:"account"`        // Mono account ID
-	AccountID     string `json:"account_id"`     // alternative field name
-	Reference     string `json:"reference"`      // payment reference for payment events
-	Data          struct {
-		Account    string `json:"account"`
-		Reference  string `json:"reference"`
+	Event     string `json:"event"`      // e.g. "account_reauthorized", "account_unlinked"
+	Account   string `json:"account"`    // Mono account ID
+	AccountID string `json:"account_id"` // alternative field name
+	Reference string `json:"reference"`  // payment reference for payment events
+	Data      struct {
+		Account   string `json:"account"`
+		Reference string `json:"reference"`
 	} `json:"data"`
 }
 
@@ -43,17 +44,21 @@ func (h *MonoWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify webhook signature if a secret is configured.
-	if h.webhookSecret != "" {
-		signature := c.GetHeader("X-Mono-Signature")
-		if signature == "" {
-			signature = c.GetHeader("mono-webhook-signature")
-		}
-		if signature != h.webhookSecret {
-			h.logger.Warn("Invalid Mono webhook signature")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-			return
-		}
+	// Reject webhooks when no secret is configured — never process
+	// unauthenticated payloads.
+	if h.webhookSecret == "" {
+		h.logger.Error("Mono webhook secret not configured; rejecting webhook")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "webhook verification not configured"})
+		return
+	}
+
+	// Mono sends the dashboard-configured secret in the mono-webhook-secret
+	// header. Compare in constant time to prevent timing oracles.
+	provided := c.GetHeader("mono-webhook-secret")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(h.webhookSecret)) != 1 {
+		h.logger.Warn("Invalid Mono webhook signature")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
 	}
 
 	var payload monoWebhookPayload
@@ -108,7 +113,9 @@ func (h *MonoWebhookHandler) HandleWebhook(c *gin.Context) {
 
 	case "payment_success":
 		if paymentRef != "" {
-			if _, err := h.service.VerifyDeposit(ctx, paymentRef); err != nil {
+			// Webhook is the trusted system caller (secret-verified above), so
+			// use the reference-only variant — there is no user context here.
+			if _, err := h.service.VerifyDepositByReference(ctx, paymentRef); err != nil {
 				h.logger.Error("Failed to verify Mono payment on webhook", zap.Error(err), zap.String("reference", paymentRef))
 			}
 		}

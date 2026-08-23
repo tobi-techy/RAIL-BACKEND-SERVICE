@@ -33,5 +33,10 @@ var (
 		// engine; there is no Miriam-initiated create tool.)
 		"create_automation":         true,
 		"accept_mandate_suggestion": true,
+		// BRIJ flight bookings (book_flight is fund-moving, Face ID step-up).
+		"create_flight_intent":  true,
+		"book_flight":           true,
+		"save_travel_passenger": true,
+		"request_flight_refund": true,
 	}
 )

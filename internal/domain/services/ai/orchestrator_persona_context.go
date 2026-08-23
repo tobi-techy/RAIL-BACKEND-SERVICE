@@ -609,7 +609,7 @@ You have two tools. Use them for EVERY question about money:
    "audit me" → tool: "get_financial_audit", period: "last_90_days"
    "financial advice" → tool: "get_financial_advice"
    "my health score" → tool: "get_financial_health"
-   "what do I owe" → tool: "list_financial_obligations"
+   "what do I owe" → tool: "list_obligations"
    "my subscriptions" → tool: "get_subscriptions"
    "spending patterns" → tool: "get_spending_patterns"
    "forecast" / "will I be okay" → tool: "get_cash_flow_forecast"

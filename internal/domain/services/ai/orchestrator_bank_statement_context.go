@@ -16,7 +16,7 @@ type BankStatementSummaryProvider interface {
 	GetCompletedUploadSummary(ctx context.Context, userID uuid.UUID) (totalTxns int, banks []string, err error)
 	GetTopRecurringRecipients(ctx context.Context, userID uuid.UUID, limit int) ([]string, []int, error)
 	GetDailySpendingPace(ctx context.Context, userID uuid.UUID) (currentMonthSpend float64, historicalDailyAvg float64, err error)
-	GetIncomeExpenseSummary(ctx context.Context, userID uuid.UUID) (totalIncome, totalExpense float64, periodStart, periodEnd *time.Time, err error)
+	GetIncomeExpenseSummary(ctx context.Context, userID uuid.UUID) (totalIncome, totalExpense decimal.Decimal, periodStart, periodEnd *time.Time, err error)
 	GetCategoryMonthlyAverages(ctx context.Context, userID uuid.UUID) (map[string]decimal.Decimal, error)
 }
 

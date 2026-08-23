@@ -4,7 +4,7 @@
 // Usage:
 //   go run scripts/miriam_test_cli/main.go
 //
-// Requires KIMI_API_KEY in env (or .env file).
+// Requires CENCORI_API_KEY in env (or .env file).
 // Simulates the full orchestrator pipeline: system prompt, context assembly,
 // tool calls (mock data), quality gate, and bubble-break formatting.
 package main
@@ -83,37 +83,34 @@ func (m *mockSpending) GetDailyTrend(_ context.Context, _ uuid.UUID, _, _ time.T
 func main() {
 	logger := zap.NewNop() // silent — we show our own output
 
-	apiKey := os.Getenv("KIMI_API_KEY")
-	model := os.Getenv("KIMI_MODEL")
+	apiKey := os.Getenv("CENCORI_API_KEY")
+	model := os.Getenv("CENCORI_MODEL")
 	if model == "" {
-		model = "moonshot-v1-32k"
+		model = "gpt-4o"
 	}
 	if apiKey == "" {
 		if data, err := os.ReadFile(".env"); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "KIMI_API_KEY=") {
-					apiKey = strings.TrimPrefix(line, "KIMI_API_KEY=")
+				if strings.HasPrefix(line, "CENCORI_API_KEY=") {
+					apiKey = strings.TrimPrefix(line, "CENCORI_API_KEY=")
 					apiKey = strings.TrimSpace(apiKey)
 				}
-				if strings.HasPrefix(line, "KIMI_MODEL=") {
-					model = strings.TrimPrefix(line, "KIMI_MODEL=")
+				if strings.HasPrefix(line, "CENCORI_MODEL=") {
+					model = strings.TrimPrefix(line, "CENCORI_MODEL=")
 					model = strings.TrimSpace(model)
 				}
 			}
 		}
 	}
 	if apiKey == "" {
-		fmt.Println("ERROR: Set KIMI_API_KEY in env or .env file")
+		fmt.Println("ERROR: Set CENCORI_API_KEY in env or .env file")
 		os.Exit(1)
 	}
 
-	provider := infraai.NewOpenAIProvider(&infraai.ProviderConfig{
-		APIKey:       apiKey,
-		Model:        model,
-		BaseURL:      "https://api.moonshot.ai/v1",
-		MaxTokens:    2048,
-		Temperature:  1.0,
-		ProviderName: "kimi",
+	provider := infraai.NewCencoriProvider(&infraai.CencoriConfig{
+		APIKey:      apiKey,
+		ModelSmart:  model,
+		Temperature: 1.0,
 	}, logger)
 
 	orch := ai.NewAgentAdapter(nil, provider, nil, nil, nil, logger)
@@ -145,7 +142,7 @@ func main() {
 	}
 
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("  Miriam V2 Test Console (Kimi: " + model + ")")
+	fmt.Println("  Miriam V2 Test Console (model: " + model + ")")
 	fmt.Println("  Web search: " + searchStatus)
 	fmt.Println("  Type as user. Ctrl+C to exit.")
 	fmt.Println("  /reset  — clear history")

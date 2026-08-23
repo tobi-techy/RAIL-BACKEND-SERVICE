@@ -85,7 +85,7 @@ var FreedomSteps = []FreedomStepInfo{
 		Name:       "Kill Toxic Debt",
 		Tagline:    "Destroy any debt charging you > 10% interest. Sprint phase: 80/20.",
 		Criteria:   "Zero active debt with interest rate > 10%.",
-		CoachNudge: "User is in the debt sprint. 80/20 spend/debt — every extra naira kills the target debt. Don't suggest investing beyond the starter safety net. Ask about interest rates when they add debts. Celebrate every payoff — the final toxic debt is BIG. Offer avalanche (highest rate first) or snowball (smallest balance first) based on their personality. Say 'sprint phase', never 'beans and rice'.",
+		CoachNudge: "User is in the debt sprint. 80% of discretionary income goes to debt, 20% to spending — every extra naira kills the target debt. Don't suggest investing beyond the starter safety net. Ask about interest rates when they add debts. Celebrate every payoff — the final toxic debt is BIG. Offer avalanche (highest rate first) or snowball (smallest balance first) based on their personality. Say 'sprint phase', never 'beans and rice'.",
 	},
 	{
 		Step:       StepFullSafetyNet,
@@ -138,9 +138,32 @@ func FreedomStepNudge(step int) string {
 // (Money Guys principle).
 const toxicDebtThreshold = 10.0
 
-// starterSafetyNetMin is the absolute minimum for the starter safety net,
-// used when monthly fixed costs are unknown or very low.
-var starterSafetyNetMin = decimal.NewFromInt(1000) // $1,000 USD
+// Documented starter safety-net minimums per currency: ₦150,000 for NGN,
+// $1,000 otherwise (USD and unset currencies).
+const (
+	starterSafetyNetMinNGN = 150_000
+	starterSafetyNetMinUSD = 1_000
+)
+
+// starterSafetyNetMin returns the currency-aware absolute minimum for the
+// starter safety net. The result is in the SAME currency as the user's
+// financial profile figures (monthly fixed costs, balances), so comparisons
+// never mix units.
+func starterSafetyNetMin(currency string) decimal.Decimal {
+	if strings.EqualFold(strings.TrimSpace(currency), "NGN") {
+		return decimal.NewFromInt(starterSafetyNetMinNGN)
+	}
+	return decimal.NewFromInt(starterSafetyNetMinUSD)
+}
+
+// userCurrency resolves the currency the profile's money figures are denominated
+// in. Defaults to USD when unknown.
+func userCurrency(financialProfile *entities.FinancialProfile) string {
+	if financialProfile != nil && strings.TrimSpace(financialProfile.PrimaryCurrency) != "" {
+		return strings.TrimSpace(financialProfile.PrimaryCurrency)
+	}
+	return "USD"
+}
 
 // fullSafetyNetMultiplier is how many months of fixed costs the full safety
 // net must cover.
@@ -199,11 +222,14 @@ func ClassifyFreedomStep(
 	}
 
 	// Step 1: Starter Safety Net — does stash cover 1 month of fixed costs?
-	starterTarget := starterSafetyNetMin
+	// The minimum is resolved in the user's currency so stashBalance (Spend/
+	// Stash ledger units) and monthlyFixedCosts are compared in the same unit.
+	starterSafetyNetFloor := starterSafetyNetMin(userCurrency(financialProfile))
+	starterTarget := starterSafetyNetFloor
 	if monthlyFixedCosts.IsPositive() {
 		starterTarget = monthlyFixedCosts
-		if starterTarget.LessThan(starterSafetyNetMin) {
-			starterTarget = starterSafetyNetMin
+		if starterTarget.LessThan(starterSafetyNetFloor) {
+			starterTarget = starterSafetyNetFloor
 		}
 	}
 	if stashBalance.LessThan(starterTarget) {
@@ -284,7 +310,7 @@ func estimateRateFromObligation(d entities.FinancialObligation) decimal.Decimal 
 	// Default estimates by name keywords — returned as percentages
 	name := strings.ToLower(d.Name + " " + stringPtrValue(d.Counterparty))
 	switch {
-	case strings.Contains(name, "credit card") || strings.Contains(name, "cc"):
+	case strings.Contains(name, "credit card") || containsWholeToken(name, "cc"):
 		return decimal.NewFromInt(25)
 	case strings.Contains(name, "payday"):
 		return decimal.NewFromInt(400)
@@ -299,6 +325,20 @@ func estimateRateFromObligation(d entities.FinancialObligation) decimal.Decimal 
 	default:
 		return decimal.NewFromInt(12)
 	}
+}
+
+// containsWholeToken reports whether token appears in s as a standalone word
+// (letters/digits only, non-word chars act as separators). Substring matching
+// would false-positive on words like "account".
+func containsWholeToken(s, token string) bool {
+	for _, field := range strings.FieldsFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	}) {
+		if field == token {
+			return true
+		}
+	}
+	return false
 }
 
 func pctComplete(current, target decimal.Decimal) float64 {

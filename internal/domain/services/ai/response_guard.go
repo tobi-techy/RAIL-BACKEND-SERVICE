@@ -73,23 +73,40 @@ func stripFabricatedAmounts(content, grounding string) string {
 	return strings.Join(kept, "")
 }
 
-// UngroundedAmountSentences reports sentences stating currency figures that
-// cannot be traced to (or trivially derived from) the grounding corpus. This is
-// the read-only counterpart of stripFabricatedAmounts — used on content that
-// was already streamed to the client where repair is impossible and detection
-// exists purely for observability.
-func UngroundedAmountSentences(content, grounding string) []string {
+// UngroundedAmountReport is privacy-safe detection metadata: which sentences
+// violated the grounding rule (by index) and which currency figures triggered
+// it. It deliberately carries NO reply text so violations can be logged
+// without exposing financial details or personal context.
+type UngroundedAmountReport struct {
+	// Indexes are positions of violating sentences in split order.
+	Indexes []int
+	// Amounts are the ungrounded currency tokens detected (e.g. "$5,000").
+	Amounts []string
+}
+
+// DetectUngroundedAmounts reports currency figures that cannot be traced to
+// (or trivially derived from) the grounding corpus. This is the read-only
+// counterpart of stripFabricatedAmounts — used on content that was already
+// streamed to the client where repair is impossible and detection exists
+// purely for observability. Returns redacted metadata only, never sentence text.
+func DetectUngroundedAmounts(content, grounding string) UngroundedAmountReport {
 	grounded := groundedNumberSet(grounding)
 	if len(grounded) == 0 {
-		return nil
+		return UngroundedAmountReport{}
 	}
-	var out []string
-	for _, s := range sentenceSplitRe.FindAllString(content, -1) {
-		if sentenceHasUngroundedAmount(s, grounded) {
-			out = append(out, strings.TrimSpace(s))
+	var report UngroundedAmountReport
+	for i, s := range sentenceSplitRe.FindAllString(content, -1) {
+		if !sentenceHasUngroundedAmount(s, grounded) {
+			continue
+		}
+		report.Indexes = append(report.Indexes, i)
+		for _, m := range guardCurrencyRe.FindAllString(s, -1) {
+			if _, ok := parseCurrencyAmount(m); ok {
+				report.Amounts = append(report.Amounts, m)
+			}
 		}
 	}
-	return out
+	return report
 }
 
 func sentenceHasUngroundedAmount(s string, grounded []decimal.Decimal) bool {
