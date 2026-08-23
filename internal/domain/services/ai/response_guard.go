@@ -101,9 +101,16 @@ func DetectUngroundedAmounts(content, grounding string) UngroundedAmountReport {
 		}
 		report.Indexes = append(report.Indexes, i)
 		for _, m := range guardCurrencyRe.FindAllString(s, -1) {
-			if _, ok := parseCurrencyAmount(m); ok {
-				report.Amounts = append(report.Amounts, m)
+			val, ok := parseCurrencyAmount(m)
+			if !ok {
+				continue
 			}
+			// A violating sentence can mix grounded and fabricated figures —
+			// only report the amounts that are themselves ungrounded.
+			if amountGrounded(val, grounded) {
+				continue
+			}
+			report.Amounts = append(report.Amounts, m)
 		}
 	}
 	return report

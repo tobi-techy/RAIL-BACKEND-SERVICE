@@ -78,3 +78,26 @@ func guardContains(haystack, needle string) bool {
 func countSubstr(s, sub string) int {
 	return strings.Count(s, sub)
 }
+
+func TestDetectUngroundedAmounts_ReportsOnlyUngroundedFigures(t *testing.T) {
+	grounding := `{"spend_balance":"2600.00","stash_balance":"1200.00"}`
+	// One sentence mixing a grounded figure with a fabricated one, plus a
+	// clean sentence that must not appear at all.
+	in := "You've got $2,600 in spend but claim $9,999 went missing. Want me to check?"
+	report := DetectUngroundedAmounts(in, grounding)
+
+	if len(report.Indexes) != 1 || report.Indexes[0] != 0 {
+		t.Fatalf("expected exactly sentence 0 flagged, got %v", report.Indexes)
+	}
+	if len(report.Amounts) != 1 || report.Amounts[0] != "$9,999" {
+		t.Fatalf("expected only the ungrounded amount reported, got %v", report.Amounts)
+	}
+}
+
+func TestDetectUngroundedAmounts_SkipsGroundedSentences(t *testing.T) {
+	grounding := `{"spend_balance":"2600.00"}`
+	report := DetectUngroundedAmounts("Your spend balance is $2,600.", grounding)
+	if len(report.Indexes) != 0 || len(report.Amounts) != 0 {
+		t.Fatalf("fully grounded content must produce an empty report, got %+v", report)
+	}
+}
