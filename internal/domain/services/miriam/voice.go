@@ -11,10 +11,10 @@ import (
 type Phase int
 
 const (
-	PhaseObserver   Phase = iota // months 0-2: quiet, watchful, earning trust
-	PhaseReader                  // months 3-5: sees patterns, hedges predictions
-	PhaseConfidant               // months 6+, hit rate > 70%: earned authority, blunt
-	PhaseHumbleVet               // months 6+, hit rate <= 70%: experienced but self-aware
+	PhaseObserver  Phase = iota // months 0-2: quiet, watchful, earning trust
+	PhaseReader                 // months 3-5: sees patterns, hedges predictions
+	PhaseConfidant              // months 6+, hit rate > 70%: earned authority, blunt
+	PhaseHumbleVet              // months 6+, hit rate <= 70%: experienced but self-aware
 )
 
 func (p Phase) String() string {
