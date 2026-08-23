@@ -85,6 +85,8 @@ type Repository interface {
 	MarkPredictionOutcome(ctx context.Context, id uuid.UUID, outcome bool, observedAt time.Time) error
 	BatchMarkPredictionOutcomes(ctx context.Context, outcomes []entities.MiriamPredictionOutcome) error
 	GetPredictionHitRate(ctx context.Context, userID uuid.UUID, predictionType string, since time.Time) (float64, error)
+	DeletePredictionsOlderThan(ctx context.Context, before time.Time) (int64, error)
+	DeleteEvaluatedOutcomesOlderThan(ctx context.Context, before time.Time) (int64, error)
 }
 
 type BalanceProvider interface {

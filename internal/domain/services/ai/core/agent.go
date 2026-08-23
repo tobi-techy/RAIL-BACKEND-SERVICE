@@ -917,6 +917,8 @@ var alwaysOnTools = map[string]bool{
 	"celebrate": true, "send_poll": true,
 	// Debt coaching
 	"get_baby_steps": true,
+	// Bank statement analysis
+	"get_bank_statement_analysis": true,
 }
 
 // selectTools returns the subset of tools relevant to the user's intents.
@@ -986,34 +988,16 @@ func stripConfirm(args map[string]interface{}) map[string]interface{} {
 }
 
 // isActionTool reports whether a tool mutates state and therefore must be staged
-// for explicit user confirmation instead of executing inline. This mirrors the
-// streaming path's isExecutionActionTool set plus raw fund moves.
+// for explicit user confirmation instead of executing inline. The canonical set
+// lives in StageConfirmTools (execution_tools.go) so the prompt tier list is
+// derived from the same source this enforcement check uses.
 //
 // MVP: stage high-stakes writes (money + automations + mandate acceptance).
 // Low-risk record-keeping (set_budget, set_savings_goal, create_obligation_reminder,
 // mark_obligation_paid, protect_subscription) still auto-execute — they don't move
 // money at call time.
 func (a *Agent) isActionTool(name string) bool {
-	actionTools := map[string]bool{
-		"transfer_funds": true, "initiate_withdrawal": true,
-		// Execution Engine (spec 5.2) — mutating tools, gated by Monitor mode
-		// here and staged for confirmation on the non-streaming path.
-		"setup_bill_autopay": true, "cancel_subscription": true,
-		"execute_investment": true, "optimize_yield": true,
-		"block_merchant": true, "unblock_merchant": true,
-		"copy_trader": true, "pause_trade_copying": true,
-		"resume_trade_copying": true, "stop_trade_copying": true,
-		// Nigerian bill payments (Airbills). pay_bill/automate_bill move money;
-		// save_bill_beneficiary is a confirmed write.
-		"pay_bill": true, "automate_bill": true, "save_bill_beneficiary": true,
-		// P2P + receipt splits move real Spend balance (or reserve for claim links).
-		"send_money": true, "split_receipt": true,
-		// Automations and mandate acceptance create lasting autonomous behavior.
-		"create_automation":         true,
-		"accept_mandate_suggestion": true,
-		"create_miriam_mandate":     true,
-	}
-	return actionTools[name]
+	return StageConfirmTools[name]
 }
 
 // executeActionTool handles action tools that require confirmation.

@@ -231,13 +231,13 @@ func ComputeHealthScore(
 	return
 }
 
-// CleanupOldScores removes health scores older than the retention period (default 90 days).
+// CleanupOldScores removes health scores older than the retention period (default 30 days).
 func (t *HealthScoreTracker) CleanupOldScores(ctx context.Context, retentionDays int) (int64, error) {
 	if t.repo == nil {
 		return 0, nil
 	}
 	if retentionDays <= 0 {
-		retentionDays = 90
+		retentionDays = 30
 	}
 	before := time.Now().UTC().AddDate(0, 0, -retentionDays)
 	return t.repo.DeleteScoresOlderThan(ctx, before)

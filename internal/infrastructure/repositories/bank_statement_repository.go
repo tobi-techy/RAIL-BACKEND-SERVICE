@@ -402,3 +402,34 @@ func (r *BankStatementRepository) FindMatchingTransaction(ctx context.Context, u
 	}
 	return &txn, nil
 }
+
+// GetIncomeExpenseSummary returns total credits (income), total debits (expenses),
+// and the period covered by the user's uploaded bank statement transactions.
+func (r *BankStatementRepository) GetIncomeExpenseSummary(ctx context.Context, userID uuid.UUID) (totalIncome, totalExpense float64, periodStart, periodEnd *time.Time, err error) {
+	type summary struct {
+		TotalIncome  *float64   `db:"total_income"`
+		TotalExpense *float64   `db:"total_expense"`
+		MinDate      *time.Time `db:"min_date"`
+		MaxDate      *time.Time `db:"max_date"`
+	}
+	var s summary
+	err = r.db.GetContext(ctx, &s, `
+		SELECT
+			SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END) AS total_income,
+			SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END) AS total_expense,
+			MIN(transaction_date) AS min_date,
+			MAX(transaction_date) AS max_date
+		FROM bank_statement_transactions WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, 0, nil, nil, err
+	}
+	if s.TotalIncome != nil {
+		totalIncome = *s.TotalIncome
+	}
+	if s.TotalExpense != nil {
+		totalExpense = *s.TotalExpense
+	}
+	periodStart = s.MinDate
+	periodEnd = s.MaxDate
+	return totalIncome, totalExpense, periodStart, periodEnd, nil
+}

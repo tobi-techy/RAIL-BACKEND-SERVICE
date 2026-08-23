@@ -20,7 +20,7 @@ const (
 )
 
 // RouteTools classifies the user's message and returns only the tools relevant
-// to that category. Falls back to the full set for ambiguous queries.
+// to that category. Falls back to the full set for ambiguous or compound queries.
 func (o *AgentAdapter) RouteTools(message string) []ai.Tool {
 	category := classifyMessage(message)
 	allTools := o.GetTools()
@@ -34,40 +34,68 @@ func (o *AgentAdapter) RouteTools(message string) []ai.Tool {
 
 // classifyMessage uses keyword matching to determine tool category.
 // Fast (no LLM call), runs in <1ms. Errs on the side of CategoryFull for ambiguity.
+//
+// Compound messages ("how much did I spend this month? move 20k to stash") match
+// multiple groups; routing them to a single category would starve half the
+// request of its tools, so they escalate to CategoryFull. The known
+// automation-over-action overlap ("every friday move $50") is handled by
+// precedence, not escalation — it's one intent, not two.
 func classifyMessage(msg string) ToolCategory {
 	lower := strings.ToLower(msg)
 
-	// Automation-specific (check before action since "move every friday" is automation not one-off)
+	// Automation wins over action by precedence: "every friday move $50" is an
+	// automation, not a one-off transfer.
 	if matchesAny(lower, automationPatterns) {
 		return CategoryAutomation
 	}
 
+	matched := 0
+	category := CategoryFull
+
 	// Action intents — user wants to DO something right now
 	if matchesAny(lower, actionPatterns) {
-		return CategoryAction
+		category = CategoryAction
+		matched++
 	}
 
 	// Planning/advice/audit
 	if matchesAny(lower, planningPatterns) {
-		return CategoryPlanning
+		category = firstCategory(category, matched, CategoryPlanning)
+		matched++
 	}
 
 	// Transaction history (check before spending — "deposits" is history not spending)
 	if matchesAny(lower, historyPatterns) {
-		return CategoryHistory
+		category = firstCategory(category, matched, CategoryHistory)
+		matched++
 	}
 
 	// Spending analysis
 	if matchesAny(lower, spendingPatterns) {
-		return CategorySpending
+		category = firstCategory(category, matched, CategorySpending)
+		matched++
 	}
 
 	// Overview/general
 	if matchesAny(lower, overviewPatterns) {
-		return CategoryOverview
+		category = firstCategory(category, matched, CategoryOverview)
+		matched++
 	}
 
-	return CategoryFull
+	if matched > 1 {
+		return CategoryFull // compound intent — don't starve either half
+	}
+	return category
+}
+
+// firstCategory records the winning category under single-match precedence:
+// the FIRST group that matched in evaluation order wins, matching the original
+// early-return behavior for single-intent messages.
+func firstCategory(current ToolCategory, matchesSoFar int, candidate ToolCategory) ToolCategory {
+	if matchesSoFar == 0 {
+		return candidate
+	}
+	return current
 }
 
 var actionPatterns = []string{
@@ -76,9 +104,13 @@ var actionPatterns = []string{
 	"to stash", "lock", "set up", "set goal", "savings goal",
 	"remind me", "protect", "cancel subscription",
 	"withdraw $", "withdraw from", "withdraw to",
-	"block", "unblock", "pay my bill", "autopay", "auto-pay",
+	"block", "unblock", "pay my bill", "pay bill", "autopay", "auto-pay",
 	"buy $", "sell $", "invest $", "copy trad", "copy trade", "stop copying",
 	"pause copying", "cancel my",
+	// Nigerian bills + P2P intents — pay_bill/automate_bill/lookup_recipient/
+	// send_money must be in scope for these turns.
+	"airtime", "buy data", "data plan", "nepa", "electricity", "cable tv",
+	"dstv", "gotv", "startimes", "meter", "betting", "top up",
 }
 
 var automationPatterns = []string{
@@ -105,7 +137,9 @@ var spendingPatterns = []string{
 
 var historyPatterns = []string{
 	"transactions", "show me my", "deposit", "withdrawal",
-	"card transactions", "receipt", "income trend", "yield", "interest",
+	"card transactions", "receipt", "income trend", "yield",
+	// Phrases only — bare "interest" substring-matched "interesting".
+	"interest earned", "how much interest",
 }
 
 var overviewPatterns = []string{
@@ -136,7 +170,6 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolAuditSubscriptions:    true,
 		ToolListBlockedMerchants:  true,
 		ToolGetSpendingSummary:    true,
-		ToolGetSpendingChart:      true,
 		ToolGetRecentTransactions: true,
 		ToolGetSpendingPatterns:   true,
 		ToolGetRecurringExpenses:  true,
@@ -174,31 +207,44 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolMarkObligationPaid:       true,
 		ToolProtectSubscription:      true,
 		ToolSplitReceipt:             true,
+		// Nigerian bill payment flow — "buy airtime" / "pay NEPA" previously
+		// routed here WITHOUT these, leaving Miriam unable to act.
+		ToolPayBill:             true,
+		ToolAutomateBill:        true,
+		ToolSaveBillBeneficiary: true,
+		"list_bill_providers":   true,
+		"get_data_plans":        true,
+		"get_cable_packages":    true,
+		"validate_meter":        true,
+		// P2P sends — "send 5k to @tobi" previously had no send path in scope.
+		"lookup_recipient": true,
+		"send_money":       true,
+		// Obligations — "what do I owe / mark it paid" context.
+		ToolListFinancialObligations: true,
+		ToolFindObligationPayments:   true,
 	},
 	CategoryPlanning: {
-		ToolGetFinancialAdvice:     true,
-		ToolGetUpcomingBills:       true,
-		ToolAuditSubscriptions:     true,
-		ToolGetYieldStatus:         true,
-		ToolGetInvestmentOptions:   true,
-		ToolListTradeConductors:    true,
-		ToolResearchTrader:         true,
-		ToolGetFinancialAudit:      true,
-		ToolGetFinancialHealth:     true,
-		ToolGetFinancialPlan:       true,
-		ToolGetCashFlowForecast:    true,
-		ToolGetMoneyOperatingPlan:  true,
-		ToolGetFinancialProfile:    true,
-		ToolGetPersonaMoneyContext: true,
-		ToolGetSavingsSuggestions:  true,
-		ToolGetRunway:              true,
-		ToolGetTaxSummary:          true,
-		ToolGetAccountSummary:      true,
-		ToolGetMiriamBrief:         true,
-		ToolSearchKnowledge:        true,
-		ToolGetInvestmentProducts:  true,
-		ToolWebSearch:              true,
-		ToolGetBabySteps:           true,
+		ToolGetUpcomingBills:      true,
+		ToolAuditSubscriptions:    true,
+		ToolGetYieldStatus:        true,
+		ToolGetInvestmentOptions:  true,
+		ToolListTradeConductors:   true,
+		ToolResearchTrader:        true,
+		ToolGetFinancialAudit:     true,
+		ToolGetFinancialHealth:    true,
+		ToolGetFinancialPlan:      true,
+		ToolGetCashFlowForecast:   true,
+		ToolGetMoneyOperatingPlan: true,
+		ToolGetFinancialProfile:   true,
+		ToolGetSavingsSuggestions: true,
+		ToolGetTaxSummary:         true,
+		ToolGetAccountSummary:     true,
+		ToolGetMiriamBrief:        true,
+		ToolSearchKnowledge:       true,
+		ToolGetInvestmentProducts: true,
+		ToolWebSearch:             true,
+		ToolGetBabySteps:              true,
+		ToolGetBankStatementAnalysis:  true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,
@@ -213,13 +259,22 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolSearchKnowledge:       true,
 	},
 	CategoryAutomation: {
-		ToolListAutomations:       true,
-		ToolCreateAutomation:      true,
-		ToolSuggestSmartTiming:    true,
-		ToolSuggestAdaptiveAmount: true,
-		ToolGetAccountSummary:     true,
-		ToolGetBudget:             true,
+		ToolListAutomations:   true,
+		ToolCreateAutomation:  true,
+		ToolGetAccountSummary: true,
+		ToolGetBudget:         true,
 	},
+}
+
+// alwaysAllowedTools bypass category filtering: expressive/engagement/settings
+// tools are intent-agnostic, so Miriam can use them in any conversation.
+var alwaysAllowedTools = map[string]bool{
+	ToolSendMeme:           true,
+	ToolSendVoiceMessage:   true,
+	ToolCelebrate:          true,
+	ToolSendPoll:           true,
+	ToolSetPersonalityMode: true,
+	ToolSetControlLevel:    true,
 }
 
 // filterToolsByCategory returns only tools that belong to the given category.
@@ -233,11 +288,7 @@ func filterToolsByCategory(tools []ai.Tool, category ToolCategory) []ai.Tool {
 	}
 	filtered := make([]ai.Tool, 0, len(allowed)+1)
 	for _, t := range tools {
-		// Expressive/engagement/settings tools are intent-agnostic: Miriam can use them
-		// in any conversation, so they bypass category filtering.
-		if allowed[t.Name] || t.Name == ToolSendMeme || t.Name == ToolSendVoiceMessage ||
-			t.Name == ToolCelebrate || t.Name == ToolSendPoll ||
-			t.Name == ToolSetPersonalityMode || t.Name == ToolSetControlLevel {
+		if allowed[t.Name] || alwaysAllowedTools[t.Name] {
 			filtered = append(filtered, t)
 		}
 	}

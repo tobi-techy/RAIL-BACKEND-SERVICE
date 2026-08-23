@@ -45,6 +45,13 @@ type NewsDataProvider interface {
 	GetWeeklyNews(ctx context.Context, userID uuid.UUID) ([]*entities.UserNews, error)
 }
 
+// MonoAnalysisProvider gives Miriam access to spending analysis derived from
+// Mono-linked bank accounts. When a user has linked their bank through Mono,
+// this replaces/supplements uploaded bank statement data for spending insights.
+type MonoAnalysisProvider interface {
+	GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, days int) (*entities.MonoSpendingAnalysis, error)
+}
+
 // ContextSignalProvider reads active behavioral signals for ambient Miriam nudges.
 type ContextSignalProvider interface {
 	GetActiveByUser(ctx context.Context, userID uuid.UUID) ([]entities.UserContextSignal, error)

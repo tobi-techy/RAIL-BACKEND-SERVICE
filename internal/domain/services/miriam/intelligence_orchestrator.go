@@ -184,6 +184,11 @@ func (o *IntelligenceOrchestrator) HealthScoreTracker() *HealthScoreTracker {
 	return o.healthScore
 }
 
+// OutcomeTracker returns the outcome tracker for maintenance operations.
+func (o *IntelligenceOrchestrator) OutcomeTracker() *OutcomeTracker {
+	return o.outcomeTrack
+}
+
 // IntelligenceResult is the output of a single evaluation pass.
 type IntelligenceResult struct {
 	UserID          uuid.UUID                        `json:"user_id"`

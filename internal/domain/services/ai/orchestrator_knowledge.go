@@ -12,7 +12,7 @@ import (
 )
 
 // ToolSearchKnowledge is the tool name for RAG knowledge base search.
-const ToolSearchKnowledge = "search_knowledge_base"
+const ToolSearchKnowledge = "search_knowledge"
 
 // KnowledgeSearcher is the subset of knowledge.Service the orchestrator needs.
 type KnowledgeSearcher interface {

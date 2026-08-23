@@ -101,8 +101,13 @@ func TestAdaptiveFastTickEvaluatesHotUsers(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	go w.Start(ctx)
+	done := make(chan struct{})
+	go func() {
+		w.Start(ctx)
+		close(done)
+	}()
 	<-ctx.Done()
+	<-done
 
 	var found bool
 	for _, ev := range brain.evaluated {
@@ -125,8 +130,13 @@ func TestAdaptiveSlowTickEvaluatesAllUsers(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	go w.Start(ctx)
+	done := make(chan struct{})
+	go func() {
+		w.Start(ctx)
+		close(done)
+	}()
 	<-ctx.Done()
+	<-done
 
 	var found bool
 	for _, ev := range brain.evaluated {
@@ -148,8 +158,13 @@ func TestClassicModeUsesWorkerSweep(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	go w.Start(ctx)
+	done := make(chan struct{})
+	go func() {
+		w.Start(ctx)
+		close(done)
+	}()
 	<-ctx.Done()
+	<-done
 
 	var found bool
 	for _, ev := range brain.evaluated {

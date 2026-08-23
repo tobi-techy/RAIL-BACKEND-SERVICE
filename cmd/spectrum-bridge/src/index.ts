@@ -81,11 +81,24 @@ const HMAC_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 const MAX_SEEN_NONCES = 10_000;
 const seenNonces = new Map<string, number>(); // nonce -> expiration timestamp
 
-// Periodically evict expired nonces used for replay protection.
+// Inbound message deduplication. The bridge registers both a webhook handler
+// (app.webhook) and the streaming async iterator (app.messages). Per the
+// Spectrum docs, app.webhook() does NOT feed app.messages — they are
+// independent delivery paths. If the Spectrum dashboard is configured for
+// webhooks, the same message arrives through both. We dedupe by message.id
+// so the backend only processes each message once.
+const MSG_DEDUP_TTL_MS = 60_000;
+const MAX_DEDUP_IDS = 5_000;
+const processedMessageIds = new Map<string, number>(); // msgId -> expiration
+
+// Periodically evict expired nonces and dedup ids.
 setInterval(() => {
   const now = Date.now();
   for (const [nonce, expiresAt] of seenNonces) {
     if (expiresAt < now) seenNonces.delete(nonce);
+  }
+  for (const [msgId, expiresAt] of processedMessageIds) {
+    if (expiresAt < now) processedMessageIds.delete(msgId);
   }
 }, 60_000);
 
@@ -158,11 +171,16 @@ function signPayload(payload: string, timestamp: string, nonce: string): string 
 function verifyHMAC(payload: string, signature: string, timestamp: string, nonce: string): boolean {
   try {
     const ts = parseInt(timestamp, 10);
-    if (!Number.isFinite(ts) || !isFreshTimestamp(ts) || !isNonceUnique(nonce, ts)) {
+    if (!Number.isFinite(ts) || !isFreshTimestamp(ts)) {
       return false;
     }
     const expected = signPayload(payload, timestamp, nonce);
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+      return false;
+    }
+    // Replay rejection runs only after the HMAC signature is verified so
+    // that unauthenticated requests cannot exhaust the nonce store.
+    return isNonceUnique(nonce, ts);
   } catch {
     return false;
   }
@@ -321,6 +339,25 @@ app.get(["/", "/health"], (_req, res) => {
 });
 
 async function handleInbound(space: Space, message: Message): Promise<void> {
+  // Deduplicate by message.id — the webhook handler and the streaming iterator
+  // are independent delivery paths and may both deliver the same message.
+  if (message.id) {
+    if (processedMessageIds.has(message.id)) {
+      getLogger().debug({ msg_id: message.id }, "deduplicated inbound message");
+      return;
+    }
+    // Bounded: if at capacity, evict oldest entries by expiration time.
+    if (processedMessageIds.size >= MAX_DEDUP_IDS) {
+      const entries = Array.from(processedMessageIds.entries());
+      entries.sort((a, b) => a[1] - b[1]);
+      const dropCount = Math.floor(MAX_DEDUP_IDS * 0.2);
+      for (let i = 0; i < dropCount; i++) {
+        processedMessageIds.delete(entries[i][0]);
+      }
+    }
+    processedMessageIds.set(message.id, Date.now() + MSG_DEDUP_TTL_MS);
+  }
+
   const threadID = space.id;
   const platform = normalizePlatform(message.platform);
   spaces.set(threadID, space);
@@ -489,10 +526,22 @@ async function start() {
     log.info("WhatsApp Business enabled");
   }
 
+  // Map our LOG_LEVEL to the SDK's accepted levels. The SDK doesn't accept
+  // "trace" or "fatal", so we fold them to the nearest supported level.
+  const sdkLogLevel: Record<string, string> = {
+    trace: "debug",
+    debug: "debug",
+    info: "info",
+    warn: "warn",
+    error: "error",
+    fatal: "error",
+  };
+
   const agent = await Spectrum({
     projectId: config.SPECTRUM_PROJECT_ID,
     projectSecret: config.SPECTRUM_PROJECT_SECRET,
     providers,
+    options: { logLevel: sdkLogLevel[config.LOG_LEVEL] ?? "info" } as never,
     ...(config.SPECTRUM_WEBHOOK_SECRET ? { webhookSecret: config.SPECTRUM_WEBHOOK_SECRET } : {}),
   });
 

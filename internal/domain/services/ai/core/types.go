@@ -461,6 +461,9 @@ type Dependencies struct {
 
 	// BankStatementCtx returns bank statement context as a system prompt.
 	BankStatementCtx BankStatementContextProvider
+	// BankStatementAnalysis provides detailed bank statement analysis data
+	// for the get_bank_statement_analysis tool.
+	BankStatementAnalysis BankStatementAnalysisProvider
 
 	// MemoryStore provides persistence for long-term memory (tone profiles).
 	MemoryStore MemoryStore
@@ -984,6 +987,13 @@ type WithdrawalHistoryProvider interface {
 // BankStatementContextProvider returns bank statement context as a system prompt.
 type BankStatementContextProvider interface {
 	GetContext(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// BankStatementAnalysisProvider returns detailed bank statement analysis data
+// (income vs expense, spending by category, savings rate, recurring payments)
+// for the get_bank_statement_analysis tool.
+type BankStatementAnalysisProvider interface {
+	GetAnalysis(ctx context.Context, userID uuid.UUID, months int) (map[string]interface{}, error)
 }
 
 // VoiceDailyLimiterer enforces daily voice transfer caps.

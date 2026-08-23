@@ -548,6 +548,48 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
 	}
 
+	// Miriam event-driven pipeline: ledger outbox publisher + event worker.
+	// This is independent of KYC initialization so KYC-disabled deployments
+	// still get always-on money-event evaluation.
+	app.ledgerOutboxPublisher = ledger_outbox_publisher.NewWorker(
+		app.container.LedgerRepo,
+		app.log.Zap(),
+	)
+	// Wire Miriam's always-on event stream when enabled. The stream publishes
+	// money events from the ledger outbox; a separate worker consumes them and
+	// triggers a read-only evaluation within seconds.
+	var miriamEventStream *miriamevents.RedisStream
+	if app.cfg.Workers.MiriamEventDriven && app.container.RedisClient != nil {
+		miriamEventStream = miriamevents.NewRedisStreamWithLogger(app.container.RedisClient, "", app.log.Zap())
+		if miriamEventStream != nil {
+			app.ledgerOutboxPublisher.SetMiriamPublisher(miriamEventStream)
+			app.log.Info("Ledger outbox publisher wired to Miriam event stream")
+		}
+	}
+	go app.ledgerOutboxPublisher.Start(context.Background())
+	app.log.Info("Ledger outbox publisher started")
+
+	// Miriam event-driven worker: consumes money events and evaluates users.
+	// Read-only on money — EventMoneyEvent skips mandate execution.
+	if app.cfg.Workers.MiriamEventDriven && miriamEventStream != nil && app.container.MiriamIntelligenceOrchestrator != nil {
+		app.miriamEventWorker = miriam_event_worker.NewWorker(
+			miriamEventStream,
+			app.container.MiriamIntelligenceOrchestrator,
+			app.log.Zap(),
+		)
+		// If the adaptive loop is running, money events also flag the user as hot
+		// so the fast ticker re-evaluates them within ~1 minute.
+		if app.cfg.Workers.MiriamAdaptiveLoop && app.miriamWorker != nil {
+			app.miriamEventWorker.SetWakeup(app.miriamWorker)
+		}
+		eventCtx, eventCancel := context.WithCancel(context.Background())
+		app.miriamEventWorkerCancel = eventCancel
+		go app.miriamEventWorker.Start(eventCtx)
+		app.log.Info("Miriam event worker started")
+	} else if app.cfg.Workers.MiriamEventDriven {
+		app.log.Info("Miriam event worker not started — requires Redis + MiriamIntelligenceOrchestrator")
+	}
+
 	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks
 	if app.container.OpportunityService != nil && app.container.UserRepo != nil {
 		app.opportunitySyncWorker = opportunity_sync.NewWorker(
@@ -907,46 +949,6 @@ func (app *Application) initializeKYCSyncWorker() error {
 	)
 	go app.balanceReconciliationWorker.Start(context.Background())
 	app.log.Info("Balance reconciliation worker started")
-
-	// Initialize ledger outbox publisher (polls unpublished events every 5s)
-	app.ledgerOutboxPublisher = ledger_outbox_publisher.NewWorker(
-		app.container.LedgerRepo,
-		app.log.Zap(),
-	)
-	// Wire Miriam's always-on event stream when enabled. The stream publishes
-	// money events from the ledger outbox; a separate worker consumes them and
-	// triggers a read-only evaluation within seconds.
-	var miriamEventStream *miriamevents.RedisStream
-	if app.cfg.Workers.MiriamEventDriven && app.container.RedisClient != nil {
-		miriamEventStream = miriamevents.NewRedisStream(app.container.RedisClient, "")
-		if miriamEventStream != nil {
-			app.ledgerOutboxPublisher.SetMiriamPublisher(miriamEventStream)
-			app.log.Info("Ledger outbox publisher wired to Miriam event stream")
-		}
-	}
-	go app.ledgerOutboxPublisher.Start(context.Background())
-	app.log.Info("Ledger outbox publisher started")
-
-	// Miriam event-driven worker: consumes money events and evaluates users.
-	// Read-only on money — EventMoneyEvent skips mandate execution.
-	if app.cfg.Workers.MiriamEventDriven && miriamEventStream != nil && app.container.MiriamIntelligenceOrchestrator != nil {
-		app.miriamEventWorker = miriam_event_worker.NewWorker(
-			miriamEventStream,
-			app.container.MiriamIntelligenceOrchestrator,
-			app.log.Zap(),
-		)
-		// If the adaptive loop is running, money events also flag the user as hot
-		// so the fast ticker re-evaluates them within ~1 minute.
-		if app.cfg.Workers.MiriamAdaptiveLoop && app.miriamWorker != nil {
-			app.miriamEventWorker.SetWakeup(app.miriamWorker)
-		}
-		eventCtx, eventCancel := context.WithCancel(context.Background())
-		app.miriamEventWorkerCancel = eventCancel
-		go app.miriamEventWorker.Start(eventCtx)
-		app.log.Info("Miriam event worker started")
-	} else if app.cfg.Workers.MiriamEventDriven {
-		app.log.Info("Miriam event worker not started — requires Redis + MiriamIntelligenceOrchestrator")
-	}
 
 	// Initialize ledger maintenance worker (daily snapshots + integrity checks)
 	app.ledgerMaintenance = ledger_maintenance.NewWorker(

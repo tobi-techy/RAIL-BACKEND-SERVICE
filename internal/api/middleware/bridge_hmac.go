@@ -152,11 +152,6 @@ func BridgeHMAC(secret string, logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 
-		if !bridgeNonceStore.isUnique(nonceHeader) {
-			abortBridgeHMAC(c, logger, "nonce reused")
-			return
-		}
-
 		body, err := io.ReadAll(io.LimitReader(c.Request.Body, bridgeHMACMaxBody+1))
 		if err != nil {
 			abortBridgeHMAC(c, logger, "failed to read body")
@@ -175,6 +170,13 @@ func BridgeHMAC(secret string, logger *zap.Logger) gin.HandlerFunc {
 
 		if subtle.ConstantTimeCompare([]byte(expected), []byte(sigHeader)) != 1 {
 			abortBridgeHMAC(c, logger, "signature mismatch")
+			return
+		}
+
+		// Replay rejection runs only after the HMAC signature is verified so
+		// that unauthenticated requests cannot exhaust the nonce store.
+		if !bridgeNonceStore.isUnique(nonceHeader) {
+			abortBridgeHMAC(c, logger, "nonce reused")
 			return
 		}
 

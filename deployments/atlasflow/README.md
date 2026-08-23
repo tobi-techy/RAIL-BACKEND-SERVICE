@@ -18,10 +18,10 @@ and OCR sidecars.
 │  │  public      │   │  :3000       │                          │
 │  └──────┬───────┘   └──────┬───────┘                          │
 │         │                  │                                   │
-│         │ calls            │ AMQP                              │
+│         │  HTTP + HMAC     │ HTTP + HMAC                       │
 │         ▼                  ▼                                   │
 │  ┌──────────────┐   ┌──────────────┐                          │
-│  │ enrichment   │   │ RabbitMQ     │ ← external (CloudAMQP)   │
+│  │ enrichment   │   │  (bidirectional)                        │
 │  │ (Python)     │   └──────────────┘                          │
 │  │  :8090       │                                              │
 │  └──────────────┘                                              │
@@ -35,7 +35,6 @@ and OCR sidecars.
 External managed services (NOT on AtlasFlow):
   • PostgreSQL  — AWS RDS / Supabase / Neon
   • Redis       — Upstash / AWS ElastiCache
-  • RabbitMQ    — CloudAMQP / AWS MQ
 ```
 
 ## Prerequisites
@@ -90,7 +89,7 @@ GitHub repo but with different root directories and Dockerfiles:
 | # | Project slug | Root | Dockerfile | Port | Health | Runtime Tier | Status |
 |---|---|---|---|---|---|---|---|
 | 1 | `rail-backend-service` | `/` | `Dockerfile` | 8080 | `/` and `/health` | medium | **Live** |
-| 2 | `spectrum-bridge` | `cmd/spectrum-bridge/` | `cmd/spectrum-bridge/Dockerfile` | 3000 | `/` and `/health` | small | Create + set Spectrum/AMQP/HMAC **before** first deploy |
+| 2 | `spectrum-bridge` | `cmd/spectrum-bridge/` | `cmd/spectrum-bridge/Dockerfile` | 3000 | `/` and `/health` | small | Create + set Spectrum/HMAC **before** first deploy |
 | 3 | `rail-enrichment` | `/services/enrichment` | `Dockerfile` | 3000 (AtlasFlow) / 8090 local | `/` and `/health` | small | Create; no secrets |
 | 4 | `rail-ocr` | `/services/ocr` | `Dockerfile` | 3000 (AtlasFlow) / 8091 local | `/` and `/health` | large | Create; no secrets |
 
@@ -166,9 +165,11 @@ CIRCLE_ENVIRONMENT=production
 BRIDGE_API_KEY=your-bridge-api-key
 BRIDGE_ENVIRONMENT=production
 PLATFORM_ENABLED=true
-PLATFORM_AMQP_URL=amqps://user:pass@your-rabbitmq-host/vhost
 PLATFORM_BRIDGE_HMAC_SECRET=your-hmac-secret
 PLATFORM_BRIDGE_BASE_URL=https://spectrum-bridge-tobi-omotade-2cd167ac.atlasflow.dev
+PLATFORM_BRIDGE_MESSAGING_ADDRESS=+15555550100
+PLATFORM_APP_DEEP_LINK_BASE_URL=rail://
+PLATFORM_ONBOARDING_ENABLED=true
 ENRICHMENT_SERVICE_URL=https://rail-enrichment-tobi-omotade-2cd167ac.atlasflow.dev
 DOCUMENT_OCR_SERVICE_URL=https://rail-ocr-tobi-omotade-2cd167ac.atlasflow.dev
 DOCUMENT_ENABLE_PYTHON_OCR=true
@@ -182,8 +183,7 @@ See `env-vars-reference.md` for the full list.
 ```
 SPECTRUM_PROJECT_ID=your-spectrum-project-id
 SPECTRUM_PROJECT_SECRET=your-spectrum-project-secret
-AMQP_URL=amqps://user:pass@your-rabbitmq-host/vhost
-AMQP_EXCHANGE=miriam
+RAIL_BACKEND_URL=https://api.userail.money
 RAIL_HMAC_SECRET=your-hmac-secret  # must match rail-api's PLATFORM_BRIDGE_HMAC_SECRET
 BRIDGE_PORT=3000
 NODE_ENV=production
@@ -260,12 +260,6 @@ atlasflow deployments list --project rail-backend-service
 
 1. Create a managed Redis 7+ instance
 2. Set `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_TLS=true` in rail-api env vars
-
-### RabbitMQ (CloudAMQP / AWS MQ)
-
-1. Create a managed RabbitMQ instance
-2. Set `PLATFORM_AMQP_URL` in both rail-api and spectrum-bridge env vars
-3. Set `AMQP_URL` in spectrum-bridge (same connection string)
 
 ## Custom Domains
 

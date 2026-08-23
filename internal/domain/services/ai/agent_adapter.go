@@ -69,6 +69,7 @@ type AgentAdapter struct {
 	memory              *MemoryService
 	miriamIntelligence  MiriamIntelligenceReader
 	bankStatementCtx    *BankStatementContextProvider
+	monoAnalysis        MonoAnalysisProvider
 	nairaCtx            *nairaCtx
 	supermemory         SupermemoryClient
 	webSearcher         WebSearcher
@@ -83,6 +84,7 @@ type AgentAdapter struct {
 	eventStore          *memory.EventStore
 	stepUpVerifier      StepUpVerifier
 	travel              core.TravelProvider
+	responseGuardOn     bool
 	logger              *zap.Logger
 }
 
@@ -268,6 +270,13 @@ func (a *AgentAdapter) SetEventStore(es *memory.EventStore) {
 // refuses all fund moves (fail-closed).
 func (a *AgentAdapter) SetStepUpVerifier(v StepUpVerifier) {
 	a.stepUpVerifier = v
+}
+
+// SetResponseGuardEnabled toggles the deterministic pre-delivery guard
+// (ungrounded-figure strip + anomaly surface + mechanics sanitize) on the
+// streaming orchestrator path, mirroring core.Agent's ResponseGuard flag.
+func (a *AgentAdapter) SetResponseGuardEnabled(on bool) {
+	a.responseGuardOn = on
 }
 
 // SetEnrichmentSummaryFn wires the enrichment summary function for context assembly.

@@ -450,3 +450,12 @@ document:
   enable_python_ocr: false  # gate the new document pipeline
   min_ocr_confidence: 0.5   # 0-1 floor for trusting OCR output
   max_file_size_mb: 20
+
+# Data retention for non-critical AI tracking data.
+# Financial ledger, audit, and compliance records are never affected.
+data_retention:
+  health_score_days: 30       # miriam_financial_health_scores
+  prediction_days: 30          # miriam_predictions
+  outcome_days: 30             # miriam_prediction_outcomes (evaluated only; pending preserved)
+  notification_days: 30        # notifications
+  campaign_delivery_days: 30   # campaign_deliveries

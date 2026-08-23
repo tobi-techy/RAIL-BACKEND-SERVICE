@@ -14,14 +14,22 @@ import (
 
 // ContextAssemblyOpts controls what gets assembled.
 type ContextAssemblyOpts struct {
-	ToneMode string // per-request tone (gentle/hard)
-	Message  string // user message (used for supermemory relevance)
+	ToneMode string    // per-request tone (gentle/hard)
+	Message  string    // user message (used for supermemory relevance)
+	ConvID   uuid.UUID // conversation — used to look up staged pending actions
 }
 
 // assembleContext runs all context lookups in parallel and returns system messages
 // to prepend to the conversation. Used by both streaming and non-streaming chat paths.
-// All lookups have a 3s hard ceiling so total assembly never exceeds ~3s.
+// Total assembly is capped at ~1.5s.
 func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, opts ContextAssemblyOpts) []ai.Message {
+	// Pending staged action outranks the short-message bypass below:
+	// confirmation turns are usually two words ("yeah do it") and this is
+	// exactly the context they need — which tool to confirm, not re-stage.
+	if pa := o.pendingActionContext(ctx, opts.ConvID); pa != "" {
+		return []ai.Message{{Role: "system", Content: pa}}
+	}
+
 	// Short/casual messages (greetings, acks, "ok", "yeah") don't need context.
 	// Saves ~10k tokens and ~1.5s latency on trivial turns.
 	msgLen := len([]rune(strings.TrimSpace(opts.Message)))
@@ -32,9 +40,9 @@ func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, op
 	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 
-	// 14 parallel slots — one per context source.
+	// 16 parallel slots — one per context source.
 	// Results are indexed to maintain consistent ordering.
-	const numSlots = 14
+	const numSlots = 16
 	results := make([]string, numSlots)
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -43,7 +51,7 @@ func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, op
 		"balance", "stash_lock", "financial_profile", "user_profile",
 		"bank_statement", "memory", "personality", "user_time", "naira_context",
 		"personal_memory", "anomalies", "working_memory", "financial_events",
-		"enrichment_summary",
+		"enrichment_summary", "onboarding", "coaching_state",
 	}
 
 	buildSlot := func(slot int, name string, fn func() string) func() error {
@@ -84,6 +92,8 @@ func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, op
 	g.Go(buildSlot(11, slotNames[11], func() string { return o.buildWorkingMemoryContext(gCtx, userID) }))
 	g.Go(buildSlot(12, slotNames[12], func() string { return o.buildFinancialEventsContext(gCtx, userID) }))
 	g.Go(buildSlot(13, slotNames[13], func() string { return o.buildEnrichmentSummaryContext(gCtx, userID) }))
+	g.Go(buildSlot(14, slotNames[14], func() string { return o.buildOnboardingContext(gCtx, userID) }))
+	g.Go(buildSlot(15, slotNames[15], func() string { return o.buildCoachingContext(gCtx, userID) }))
 
 	_ = g.Wait()
 
@@ -114,6 +124,31 @@ func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, op
 	}
 
 	return messages
+}
+
+// pendingActionContext returns guidance about a staged-but-unconfirmed action
+// for this conversation, so an affirmative reply ("yeah do it") resolves to
+// confirm_action instead of re-calling the original tool and double-staging.
+// Returns "" when nothing is staged.
+func (o *AgentAdapter) pendingActionContext(ctx context.Context, convID uuid.UUID) string {
+	if o.pending == nil || convID == uuid.Nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	action := o.pending.Get(fetchCtx, convID)
+	if action == nil || action.IsExpired() {
+		return ""
+	}
+	label := action.Description
+	if label == "" {
+		label = action.Action
+	}
+	return fmt.Sprintf(
+		"[PENDING ACTION — %q (%s) is already staged and awaiting in-app confirmation. If the user affirms (\"yeah\", \"do it\", \"confirm\"), call confirm_action — do NOT call %s again or you will double-stage it. If they decline or change their mind, call cancel_action. Never claim it executed until confirm_action succeeds.]",
+		label, action.Action, action.Action,
+	)
 }
 
 // buildPersonalMemoryContext recalls the user's personal memory most relevant to
@@ -167,7 +202,7 @@ func (o *AgentAdapter) buildAnomalyContext(ctx context.Context, userID uuid.UUID
 	if err != nil || len(results) == 0 {
 		return ""
 	}
-	text := "[ANOMALIES DETECTED — YOU MUST MENTION THESE PROACTIVELY. The user may not know about them yet. Lead with the most severe one, be specific about amounts and merchants.]"
+	text := "[ANOMALIES DETECTED — surface these proactively, leading with the most severe, when the conversation touches their money or they ask what's new. Be specific about amounts and merchants from the list. Don't derail unrelated or casual messages; never invent details beyond what's listed here.]"
 	for _, r := range results {
 		text += fmt.Sprintf("\n[%s] %s — %s", strings.ToUpper(string(r.Severity)), r.Title, r.Description)
 	}

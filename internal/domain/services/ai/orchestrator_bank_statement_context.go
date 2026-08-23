@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // BankStatementSummaryProvider abstracts the bank statement repository to avoid import cycles.
@@ -15,6 +16,8 @@ type BankStatementSummaryProvider interface {
 	GetCompletedUploadSummary(ctx context.Context, userID uuid.UUID) (totalTxns int, banks []string, err error)
 	GetTopRecurringRecipients(ctx context.Context, userID uuid.UUID, limit int) ([]string, []int, error)
 	GetDailySpendingPace(ctx context.Context, userID uuid.UUID) (currentMonthSpend float64, historicalDailyAvg float64, err error)
+	GetIncomeExpenseSummary(ctx context.Context, userID uuid.UUID) (totalIncome, totalExpense float64, periodStart, periodEnd *time.Time, err error)
+	GetCategoryMonthlyAverages(ctx context.Context, userID uuid.UUID) (map[string]decimal.Decimal, error)
 }
 
 // BankStatementContextProvider supplies external bank statement data to the orchestrator.
@@ -25,6 +28,13 @@ type BankStatementContextProvider struct {
 // SetBankStatementContext wires the bank statement context provider into the orchestrator.
 func (o *AgentAdapter) SetBankStatementContext(p *BankStatementContextProvider) {
 	o.bankStatementCtx = p
+}
+
+// SetMonoAnalysis wires the Mono spending analysis provider into the orchestrator.
+// When set, Miriam can access spending data from Mono-linked bank accounts in
+// addition to (or instead of) uploaded bank statements.
+func (o *AgentAdapter) SetMonoAnalysis(p MonoAnalysisProvider) {
+	o.monoAnalysis = p
 }
 
 func NewBankStatementContextProvider(provider BankStatementSummaryProvider) *BankStatementContextProvider {

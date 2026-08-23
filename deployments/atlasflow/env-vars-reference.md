@@ -58,16 +58,15 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 
 | Variable | Notes |
 |---|---|
-| `CENCORI_API_KEY` | **SECRET.** Miriam’s LLM gateway. Without this she cannot think. |
+| `CENCORI_API_KEY` | **SECRET.** Miriam's LLM gateway. Without this she cannot think. |
 | `CENCORI_MODEL` | `gpt-4o` (or your chosen quality model) |
 | `CENCORI_FAST_MODEL` | `gpt-4o-mini` |
 | `CENCORI_VISION_MODEL` | `gpt-4o` |
 | `PLATFORM_ENABLED` | `true` |
-| `PLATFORM_AMQP_URL` | **SECRET.** CloudAMQP URL. Must match spectrum-bridge `AMQP_URL`. |
-| `PLATFORM_AMQP_EXCHANGE` | `miriam` |
 | `PLATFORM_BRIDGE_HMAC_SECRET` | **SECRET.** Must match spectrum-bridge `RAIL_HMAC_SECRET`. |
 | `PLATFORM_BRIDGE_BASE_URL` | `https://spectrum-bridge-tobi-omotade-2cd167ac.atlasflow.dev` (after that project is up) |
-| `PLATFORM_APP_DEEP_LINK_BASE_URL` | `rail://` |
+| `PLATFORM_BRIDGE_MESSAGING_ADDRESS` | The bridge's iMessage handle (e.g. `+15555550100`). Users text the link token here. Required for account linking deep links. |
+| `PLATFORM_APP_DEEP_LINK_BASE_URL` | `rail://` (defaults to `rail://` if unset) |
 | `PLATFORM_ONBOARDING_ENABLED` | `true` |
 
 ### Sidecar URLs (set after those projects are running)

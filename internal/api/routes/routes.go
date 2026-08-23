@@ -1948,6 +1948,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				graphWebhooks.Use(middleware.RateLimit(100))
 				graphWebhooks.POST("", container.GraphWebhookHandler.HandleWebhook)
 			}
+
+			// Mono (open-banking) webhooks for account status + payment events
+			if container.MonoWebhookHandler != nil {
+				monoWebhooks := webhooks.Group("/mono")
+				monoWebhooks.Use(middleware.RateLimit(100))
+				monoWebhooks.POST("", container.MonoWebhookHandler.HandleWebhook)
+			}
 		}
 
 		// Register Alpaca investment routes
@@ -2010,6 +2017,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Register collaborative savings goal routes (also created via Miriam)
 		if container.SharedGoalService != nil {
 			RegisterSharedGoalRoutes(protected, container.SharedGoalService, container.ZapLog)
+		}
+
+		// Register Mono open-banking routes (account linking, transactions, analysis, deposits)
+		if container.MonoService != nil {
+			RegisterMonoRoutes(protected, container.MonoService, container.ZapLog)
 		}
 
 		// Register opportunity routes

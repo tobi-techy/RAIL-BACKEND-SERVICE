@@ -18,7 +18,7 @@ func BabyStepsTools() []infraai.Tool {
 	return []infraai.Tool{
 		{
 			Name:        ToolGetBabySteps,
-			Description: "Get the user's Baby Steps debt-free coaching plan: current step, debt snowball order, interest costs, payoff timeline, and sprint phase status. Use when the user asks about debt, debt payoff, debt snowball, baby steps, sprint phase, or becoming debt-free. Always-on — available in every conversation.",
+			Description: "Get the user's Financial Freedom Steps plan: current step (0-6), debt payoff order (snowball or avalanche), interest costs, payoff timeline, sprint phase status, and coaching nudge. Use when the user asks about debt, debt payoff, snowball, avalanche, baby steps, freedom steps, sprint phase, financial freedom, or becoming debt-free. Always-on — available in every conversation.",
 			Parameters:  map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "required": []string{}, "additionalProperties": false},
 		},
 	}

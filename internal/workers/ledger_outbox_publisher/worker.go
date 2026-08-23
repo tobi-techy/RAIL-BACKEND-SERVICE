@@ -203,7 +203,9 @@ func (w *Worker) dispatch(evt repositories.OutboxRecord) error {
 	if w.publisher != nil {
 		var payload map[string]interface{}
 		if len(evt.Payload) > 0 {
-			_ = json.Unmarshal(evt.Payload, &payload)
+			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+				return fmt.Errorf("decode outbox payload for miriam event: %w", err)
+			}
 		}
 		publishErr := w.publisher.PublishMoneyEvent(context.Background(), miriam.MoneyEvent{
 			ID:         evt.ID.String(),

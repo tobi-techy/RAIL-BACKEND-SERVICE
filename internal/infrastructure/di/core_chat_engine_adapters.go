@@ -378,6 +378,16 @@ func (a *coreBankStatementContextAdapter) GetContext(ctx context.Context, userID
 	return a.inner.BuildContext(ctx, userID), nil
 }
 
+// --- BankStatementAnalysisProvider adapter ---
+
+type coreBankStatementAnalysisAdapter struct {
+	inner *aiservice.BankStatementAnalysisAdapter
+}
+
+func (a *coreBankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID uuid.UUID, months int) (map[string]interface{}, error) {
+	return a.inner.GetAnalysis(ctx, userID, months)
+}
+
 // --- helpers ---
 
 func getStringField(m map[string]interface{}, key string) string {

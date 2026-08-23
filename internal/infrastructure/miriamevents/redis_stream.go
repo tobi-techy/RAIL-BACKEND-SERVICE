@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"go.uber.org/zap"
 )
 
 const (
@@ -26,11 +27,18 @@ type RedisStream struct {
 	stream   string
 	group    string
 	consumer string
+	logger   *zap.Logger
 }
 
 // NewRedisStream creates a stream consumer/publisher backed by Redis. consumer
 // may be empty, in which case a per-process name is generated.
 func NewRedisStream(redis cache.RedisClient, consumer string) *RedisStream {
+	return NewRedisStreamWithLogger(redis, consumer, zap.NewNop())
+}
+
+// NewRedisStreamWithLogger is like NewRedisStream but accepts a logger for
+// surfacing XAck failures and pending-entry recovery diagnostics.
+func NewRedisStreamWithLogger(redis cache.RedisClient, consumer string, logger *zap.Logger) *RedisStream {
 	if redis == nil || redis.Client() == nil {
 		return nil
 	}
@@ -38,11 +46,15 @@ func NewRedisStream(redis cache.RedisClient, consumer string) *RedisStream {
 		host, _ := os.Hostname()
 		consumer = fmt.Sprintf("%s-%d", host, os.Getpid())
 	}
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &RedisStream{
 		client:   redis.Client(),
 		stream:   defaultStreamKey,
 		group:    defaultGroup,
 		consumer: consumer,
+		logger:   logger,
 	}
 }
 
@@ -79,7 +91,8 @@ func (s *RedisStream) PublishMoneyEvent(ctx context.Context, evt miriam.MoneyEve
 
 // Consume reads events from the Redis stream and calls handler for each.
 // It blocks until ctx is cancelled. Errors from handler leave the event
-// unacknowledged for redelivery.
+// unacknowledged for redelivery. Pending entries from crashed consumers are
+// recovered via XAUTOCLAIM before reading new messages.
 func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEvent) error) error {
 	if s == nil {
 		return fmt.Errorf("miriamevents: nil stream")
@@ -88,6 +101,8 @@ func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEven
 		return fmt.Errorf("miriamevents: ensure group: %w", err)
 	}
 
+	pendingMinIdle := 30 * time.Second
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -95,6 +110,31 @@ func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEven
 		default:
 		}
 
+		// First, try to reclaim pending entries from other consumers that have
+		// been idle for a while (e.g., crashed mid-processing). This ensures
+		// failed money events are redelivered as the MoneyEventConsumer contract
+		// requires.
+		msgs, _, err := s.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+			Stream:   s.stream,
+			Group:    s.group,
+			Consumer: s.consumer,
+			MinIdle:  pendingMinIdle,
+			Start:    "0-0",
+			Count:    10,
+		}).Result()
+		if err != nil && err != redis.Nil {
+			if err == context.Canceled || err == context.DeadlineExceeded {
+				return err
+			}
+			s.logger.Warn("miriamevents: XAUTOCLAIM failed, will retry", zap.Error(err))
+		}
+		if len(msgs) > 0 {
+			s.processMessages(ctx, msgs, handler)
+			// Loop immediately to claim more pending before reading new messages.
+			continue
+		}
+
+		// No pending entries — read new messages from the stream.
 		streams, err := s.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    s.group,
 			Consumer: s.consumer,
@@ -119,25 +159,45 @@ func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEven
 		}
 
 		for _, stream := range streams {
-			for _, msg := range stream.Messages {
-				evt, parseErr := s.parseMessage(msg)
-				if parseErr != nil {
-					// Bad message: ack it so it doesn't poison the stream forever.
-					_ = s.client.XAck(ctx, s.stream, s.group, msg.ID).Err()
-					continue
-				}
-				if handleErr := handler(evt); handleErr != nil {
-					// Leave unacknowledged for redelivery.
-					continue
-				}
-				_ = s.client.XAck(ctx, s.stream, s.group, msg.ID).Err()
+			s.processMessages(ctx, stream.Messages, handler)
+		}
+	}
+}
+
+// processMessages parses, handles, and acknowledges a batch of stream messages.
+func (s *RedisStream) processMessages(ctx context.Context, msgs []redis.XMessage, handler func(miriam.MoneyEvent) error) {
+	for _, msg := range msgs {
+		evt, parseErr := s.parseMessage(msg)
+		if parseErr != nil {
+			// Bad message: ack it so it doesn't poison the stream forever,
+			// but log the failure instead of silently discarding.
+			if ackErr := s.client.XAck(ctx, s.stream, s.group, msg.ID).Err(); ackErr != nil {
+				s.logger.Warn("miriamevents: XAck failed for unparseable message",
+					zap.String("msg_id", msg.ID), zap.Error(ackErr))
 			}
+			s.logger.Warn("miriamevents: unparseable message, acknowledging to skip",
+				zap.String("msg_id", msg.ID), zap.Error(parseErr))
+			continue
+		}
+		if handleErr := handler(evt); handleErr != nil {
+			// Leave unacknowledged for redelivery on the next XAUTOCLAIM cycle.
+			s.logger.Debug("miriamevents: handler returned error, leaving for redelivery",
+				zap.String("msg_id", msg.ID), zap.Error(handleErr))
+			continue
+		}
+		if ackErr := s.client.XAck(ctx, s.stream, s.group, msg.ID).Err(); ackErr != nil {
+			// XAck failure means the message stays in the pending list and
+			// will be redelivered via XAUTOCLAIM — not silently dropped.
+			s.logger.Warn("miriamevents: XAck failed, message will be redelivered",
+				zap.String("msg_id", msg.ID), zap.Error(ackErr))
 		}
 	}
 }
 
 func (s *RedisStream) ensureGroup(ctx context.Context) error {
-	err := s.client.XGroupCreateMkStream(ctx, s.stream, s.group, "$").Err()
+	// Start at "0" so existing backlog entries are consumed by the group,
+	// not just messages published after group creation.
+	err := s.client.XGroupCreateMkStream(ctx, s.stream, s.group, "0").Err()
 	if err != nil && err != redis.Nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
 		return err
 	}

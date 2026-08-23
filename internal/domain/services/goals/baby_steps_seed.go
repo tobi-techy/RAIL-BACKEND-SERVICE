@@ -94,18 +94,18 @@ func (s *BabyStepsSeed) Seed(ctx context.Context, userID uuid.UUID) (int, error)
 		}
 	}
 	if err := s.createStepGoal(ctx, userID, 1, entities.GoalCategoryStarterEmergency,
-		"Starter emergency fund", starterTarget, nil); err == nil {
+		"Starter Safety Net", starterTarget, nil); err == nil {
 		created++
 	}
 
-	// Step 2 — Debt snowball. One goal per active debt (smallest first).
+	// Step 2 — Kill Toxic Debt. One goal per active debt (smallest first).
 	for i, d := range debts {
 		if !d.Amount.IsPositive() {
 			continue
 		}
-		name := fmt.Sprintf("Pay off %s", d.Name)
+		name := fmt.Sprintf("Kill Toxic Debt: %s", d.Name)
 		if i == 0 {
-			name = fmt.Sprintf("Snowball: %s (smallest first)", d.Name)
+			name = fmt.Sprintf("Kill Toxic Debt: %s (smallest first)", d.Name)
 		}
 		if err := s.createStepGoal(ctx, userID, 2, entities.GoalCategoryDebtPayoff,
 			name, d.Amount, nil); err == nil {
@@ -113,13 +113,13 @@ func (s *BabyStepsSeed) Seed(ctx context.Context, userID uuid.UUID) (int, error)
 		}
 	}
 
-	// Step 3 — Full Emergency Fund (3 × monthly expenses).
+	// Step 3 — Full Safety Net (3 × monthly expenses).
 	fullEmergency := decimal.NewFromInt(3000)
 	if profile != nil && profile.MonthlyFixedCosts.IsPositive() {
 		fullEmergency = profile.MonthlyFixedCosts.Mul(decimal.NewFromInt(3))
 	}
 	if err := s.createStepGoal(ctx, userID, 3, entities.GoalCategoryFullEmergency,
-		"Full emergency fund (3 months)", fullEmergency, nil); err == nil {
+		"Full Safety Net (3 months)", fullEmergency, nil); err == nil {
 		created++
 	}
 
@@ -132,7 +132,7 @@ func (s *BabyStepsSeed) Seed(ctx context.Context, userID uuid.UUID) (int, error)
 		retirementTarget = profile.MonthlyIncome.Mul(decimal.NewFromFloat(0.15)).Mul(decimal.NewFromInt(12))
 	}
 	if err := s.createStepGoal(ctx, userID, 4, entities.GoalCategoryRetirement,
-		"Retirement (15% of income)", retirementTarget, nil); err == nil {
+		"Build the Muscle: Retirement (15% of income)", retirementTarget, nil); err == nil {
 		created++
 	}
 
@@ -158,7 +158,7 @@ func (s *BabyStepsSeed) Seed(ctx context.Context, userID uuid.UUID) (int, error)
 	// Step 7 — Wealth building (open-ended). The target is intentionally
 	// generous so the chat path can refine it with the user.
 	if err := s.createStepGoal(ctx, userID, 7, entities.GoalCategoryWealth,
-		"Wealth building", decimal.NewFromInt(50000), nil); err == nil {
+		"Rich Life: Wealth Building", decimal.NewFromInt(50000), nil); err == nil {
 		created++
 	}
 

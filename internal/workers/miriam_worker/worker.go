@@ -118,7 +118,13 @@ func (w *Worker) Notify(ctx context.Context, userID uuid.UUID) error {
 
 	if w.redis != nil {
 		key := "miriam:hot_user:" + userID.String()
-		_ = w.redis.Set(ctx, key, time.Now().UTC().Format(time.RFC3339Nano), w.hotTTL)
+		if err := w.redis.Set(ctx, key, time.Now().UTC().Format(time.RFC3339Nano), w.hotTTL); err != nil {
+			// Redis is best-effort here: the in-memory hot-user entry stays
+			// active regardless, so the fast ticker still re-evaluates this
+			// user on the leader replica. Log for visibility.
+			w.logger.Warn("miriam worker: failed to mirror hot user to Redis",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
 	}
 	return nil
 }
@@ -178,11 +184,19 @@ func (w *Worker) run(ctx context.Context, eventType string) {
 	}
 	w.runUsers(ctx, users, eventType)
 
-	// Run health score cleanup once per day (unified brain only).
+	// Run data retention cleanup once per day (unified brain only).
 	if br, ok := w.runner.(*brainRunner); ok && time.Since(w.lastCleanup) > 24*time.Hour {
 		if hs := br.b.HealthScoreTracker(); hs != nil {
-			if deleted, err := hs.CleanupOldScores(ctx, 90); err == nil && deleted > 0 {
+			if deleted, err := hs.CleanupOldScores(ctx, 30); err == nil && deleted > 0 {
 				w.logger.Info("miriam worker: cleaned old health scores", zap.Int64("deleted", deleted))
+			}
+		}
+		if ot := br.b.OutcomeTracker(); ot != nil {
+			if deleted, err := ot.CleanupOldPredictions(ctx, 30); err == nil && deleted > 0 {
+				w.logger.Info("miriam worker: cleaned old predictions", zap.Int64("deleted", deleted))
+			}
+			if deleted, err := ot.CleanupEvaluatedOutcomes(ctx, 30); err == nil && deleted > 0 {
+				w.logger.Info("miriam worker: cleaned old evaluated outcomes", zap.Int64("deleted", deleted))
 			}
 		}
 		w.lastCleanup = time.Now()

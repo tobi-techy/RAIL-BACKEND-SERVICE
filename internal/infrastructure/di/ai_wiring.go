@@ -226,6 +226,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetBankStatementContext(aiservice.NewBankStatementContextProvider(c.BankStatementRepo))
 	}
 
+	// Wire Mono spending analysis into Miriam (coaching context + bank statement tool)
+	if c.MonoService != nil {
+		c.AIOrchestrator.SetMonoAnalysis(c.MonoService)
+	}
+
 	// Initialize knowledge base (RAG)
 	// Embeddings route through Cencori gateway for provider failover + billing,
 	// or through Cloudflare Workers AI (BGE model) when that is configured.
@@ -669,10 +674,17 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			// Withdrawal history
 			agentDeps.WithdrawalHistory = &coreWithdrawalHistoryAdapter{withdrawalRepo: c.WithdrawalRepo}
 
-			// Bank statement context
+			// Bank statement context + analysis
 			if c.BankStatementRepo != nil {
 				inner := aiservice.NewBankStatementContextProvider(c.BankStatementRepo)
 				agentDeps.BankStatementCtx = &coreBankStatementContextAdapter{inner: inner}
+				analysisAdapter := aiservice.NewBankStatementAnalysisAdapter(c.BankStatementRepo)
+				if analysisAdapter != nil {
+					if c.MonoService != nil {
+						analysisAdapter.SetMonoAnalysis(c.MonoService)
+					}
+					agentDeps.BankStatementAnalysis = &coreBankStatementAnalysisAdapter{inner: analysisAdapter}
+				}
 			}
 
 			// Memory store (tone profiles) — repository implements GetToneProfile
@@ -779,6 +791,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 
 		if c.AIOrchestrator != nil {
 			c.AIOrchestrator.SetAgent(agent)
+			// Mirror core.Agent's response-guard flag onto the streaming
+			// orchestrator so both paths enforce grounded figures identically.
+			c.AIOrchestrator.SetResponseGuardEnabled(c.Config.AI.ResponseGuard)
 			// Wire receipt splitter so stream confirm path can run equal P2P splits.
 			if adapter, ok := agentDeps.Receipt.(*receiptP2PSplitAdapter); ok {
 				c.AIOrchestrator.SetReceiptSplitter(adapter)

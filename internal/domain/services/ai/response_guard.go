@@ -73,6 +73,25 @@ func stripFabricatedAmounts(content, grounding string) string {
 	return strings.Join(kept, "")
 }
 
+// UngroundedAmountSentences reports sentences stating currency figures that
+// cannot be traced to (or trivially derived from) the grounding corpus. This is
+// the read-only counterpart of stripFabricatedAmounts — used on content that
+// was already streamed to the client where repair is impossible and detection
+// exists purely for observability.
+func UngroundedAmountSentences(content, grounding string) []string {
+	grounded := groundedNumberSet(grounding)
+	if len(grounded) == 0 {
+		return nil
+	}
+	var out []string
+	for _, s := range sentenceSplitRe.FindAllString(content, -1) {
+		if sentenceHasUngroundedAmount(s, grounded) {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
+}
+
 func sentenceHasUngroundedAmount(s string, grounded []decimal.Decimal) bool {
 	for _, m := range guardCurrencyRe.FindAllString(s, -1) {
 		val, ok := parseCurrencyAmount(m)
