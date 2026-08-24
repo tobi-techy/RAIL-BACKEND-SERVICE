@@ -277,6 +277,44 @@ async function postToBackend(path: string, body: unknown): Promise<void> {
   }
 }
 
+// Per-thread typing keepers. iMessage's native indicator expires within
+// seconds, and backend processing (LLM think time, tool calls) regularly takes
+// longer than the old single startTyping() + immediate stopTyping-in-finally.
+// The keeper refreshes the indicator every TYPING_REFRESH_MS until an outbound
+// reply actually goes out or a safety deadline hits, so the user sees "..."
+// for the whole wait instead of a dead indicator.
+const TYPING_REFRESH_MS = 20_000;
+const TYPING_MAX_MS = 90_000;
+
+interface TypingKeeper {
+  refresh: NodeJS.Timeout;
+  deadline: NodeJS.Timeout;
+}
+
+const typingKeepers = new Map<string, TypingKeeper>();
+
+function startTypingKeeper(threadID: string, space: Space): void {
+  stopTypingKeeper(threadID);
+  space.startTyping().catch(() => {});
+  const refresh = setInterval(() => {
+    space.startTyping().catch(() => {});
+  }, TYPING_REFRESH_MS);
+  const deadline = setTimeout(() => {
+    log.warn({ thread_id: threadID }, "typing keeper hit safety deadline");
+    stopTypingKeeper(threadID);
+  }, TYPING_MAX_MS);
+  typingKeepers.set(threadID, { refresh, deadline });
+}
+
+function stopTypingKeeper(threadID: string): void {
+  const keeper = typingKeepers.get(threadID);
+  if (!keeper) return;
+  clearInterval(keeper.refresh);
+  clearTimeout(keeper.deadline);
+  typingKeepers.delete(threadID);
+  spaces.get(threadID)?.stopTyping().catch(() => {});
+}
+
 async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
   const space = spaces.get(msg.thread_id);
   if (!space) {
@@ -287,6 +325,9 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
     );
     return false;
   }
+  // A reply is going out now: end the processing indicator. The handler's own
+  // pacing (typeThenSend) re-triggers typing between multi-bubble replies.
+  stopTypingKeeper(msg.thread_id);
   try {
     await handler.handleOutbound(space, msg);
     // Mark inbound message as read after successful reply
@@ -427,8 +468,8 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     return;
   }
 
-  // Show typing indicator while we process
-  space.startTyping().catch(() => {});
+  // Keep the typing indicator alive for as long as backend processing takes.
+  startTypingKeeper(threadID, space);
 
   try {
     // Poll vote — the selected option title is posted as ordinary inbound text
@@ -572,8 +613,6 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     // still be processed — the backend never accepted it.
     if (message.id) processedMessageIds.delete(message.id);
     log.error({ err, thread_id: threadID }, "inbound handling failed");
-  } finally {
-    space.stopTyping().catch(() => {});
   }
 }
 

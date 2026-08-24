@@ -39,6 +39,24 @@ func TestSystemPromptV2_ConversationalCore(t *testing.T) {
 	}
 }
 
+// TestSystemPromptV2_NoDashes keeps typographic tells out of the prompt: the
+// model imitates the prompt's punctuation, and nobody texts with em dashes.
+// The OUTPUT section also carries an explicit ban; this pins the source too.
+func TestSystemPromptV2_NoDashes(t *testing.T) {
+	if !strings.Contains(SystemPromptV2, "NO EM DASHES") {
+		t.Errorf("SystemPromptV2 missing the NO EM DASHES output rule")
+	}
+	if idx := strings.IndexAny(SystemPromptTools, "\u2013\u2014"); idx >= 0 {
+		t.Errorf("SystemPromptTools contains a dash near %q", SystemPromptTools[max(0, idx-30):idx+30])
+	}
+	for _, prompt := range []string{SystemPromptV2, SystemPromptTools} {
+		if idx := strings.IndexAny(prompt, "\u2013\u2014"); idx >= 0 {
+			start, end := max(0, idx-30), min(len(prompt), idx+30)
+			t.Errorf("prompt contains an em/en dash near %q", prompt[start:end])
+		}
+	}
+}
+
 // TestSystemPromptV2_Tightness keeps the prompt from ballooning: the retune
 // restructured hierarchy instead of adding instructions. Bound is generous
 // (~10% over post-retune size) but catches wholesale appends.

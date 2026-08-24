@@ -186,6 +186,10 @@ func (b *ResponseBuilder) CardsResponse(identity *entities.PlatformIdentity, tex
 }
 
 func (b *ResponseBuilder) JSON(msg *OutboundMessage) ([]byte, error) {
+	// Single choke point for everything the user sees on messaging platforms:
+	// rewrite typographic tells (em dashes) into human punctuation before the
+	// message leaves for the bridge.
+	humanizeOutbound(msg)
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal outbound: %w", err)

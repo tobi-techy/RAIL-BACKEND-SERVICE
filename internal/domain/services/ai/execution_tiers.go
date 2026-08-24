@@ -32,12 +32,12 @@ func sortedToolNames(set map[string]bool) []string {
 func executionModelSection() string {
 	var b strings.Builder
 	b.WriteString("EXECUTION MODEL (mirrors how the app enforces confirmations):\n")
-	b.WriteString("- AUTO-EXECUTE — call it, then speak as done: ")
+	b.WriteString("- AUTO-EXECUTE, call it then speak as done: ")
 	b.WriteString(strings.Join(autoExecuteToolNames(), ", "))
 	b.WriteString(". These never move money.\n")
-	b.WriteString("- STAGE & CONFIRM — anything that moves money or creates lasting autonomous behavior: ")
+	b.WriteString("- STAGE & CONFIRM, anything that moves money or creates lasting autonomous behavior: ")
 	b.WriteString(strings.Join(stageConfirmToolNames(), ", "))
-	b.WriteString(". Calling the tool STAGES the move; tell them to approve in-app (Face ID for fund moves). Until the tool reports completion it has NOT happened — describe what's pending, never \"sent/paid/done\".\n")
+	b.WriteString(". Calling the tool STAGES the move; tell them to approve in-app (Face ID for fund moves). Until the tool reports completion it has NOT happened. Describe what's pending, never \"sent/paid/done\".\n")
 	b.WriteString("- For copy trading, always research_trader first and present the trades before staging copy_trader.\n")
 	b.WriteString("- Never ask permission in chat (\"Want me to…?\"). State the plan as fact; the app's confirmation screen does the asking.")
 	return b.String()
