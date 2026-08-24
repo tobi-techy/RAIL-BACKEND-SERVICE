@@ -1302,8 +1302,31 @@ type Embedder interface {
 // gate silently failed and unlinked senders always got the legacy
 // "Please link your account first" fallback instead of onboarding.
 func (c *Container) wireChatOnboarding() {
-	if !c.Config.Platform.OnboardingEnabled || c.platformProcessor == nil || c.platformLinking == nil ||
-		c.RedisClient == nil || c.VerificationService == nil || c.UserRepo == nil {
+	if !c.Config.Platform.OnboardingEnabled {
+		return
+	}
+	// Missing deps are logged individually: the original bug was a silent
+	// nil VerificationService here, and a combined guard would hide any
+	// future init-order regression the same way.
+	var missing []string
+	if c.platformProcessor == nil {
+		missing = append(missing, "platformProcessor (initializePlatformMessaging)")
+	}
+	if c.platformLinking == nil {
+		missing = append(missing, "platformLinking (initializePlatformMessaging)")
+	}
+	if c.RedisClient == nil {
+		missing = append(missing, "RedisClient")
+	}
+	if c.VerificationService == nil {
+		missing = append(missing, "VerificationService")
+	}
+	if c.UserRepo == nil {
+		missing = append(missing, "UserRepo")
+	}
+	if len(missing) > 0 {
+		c.ZapLog.Warn("chat onboarding disabled: missing dependencies — unlinked senders will get the legacy link-first fallback",
+			zap.Strings("missing", missing))
 		return
 	}
 	onboarder := platform.NewChatOnboarder(
