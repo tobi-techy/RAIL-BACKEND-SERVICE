@@ -79,7 +79,7 @@ func formatReceiptSummary(res *document.Result) string {
 
 	b.WriteString("Got it")
 	if f != nil && f.Merchant != "" {
-		fmt.Fprintf(&b, " — %s", f.Merchant)
+		fmt.Fprintf(&b, ", %s", f.Merchant)
 	}
 	b.WriteString(".")
 

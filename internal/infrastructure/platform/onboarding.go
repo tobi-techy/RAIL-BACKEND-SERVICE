@@ -309,7 +309,7 @@ func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply("Got it — whose number should I text the code to? Include the country code, like +2348012345678."), nil
+		return textReply("Got it. Whose number should I text the code to? Include the country code, like +2348012345678."), nil
 	}
 	if text != "" && !isAffirmative(text) && !looksLikeOTP(text) {
 		// They typed something else — treat as a correction of the name.
@@ -371,7 +371,7 @@ func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboa
 			if err := c.save(ctx, key, *st); err != nil {
 				return nil, err
 			}
-			return textReply("Where's home — Nigeria, Ghana, the US? Name or code is fine."), nil
+			return textReply("Where's home? Nigeria, Ghana, the US? Name or code is fine."), nil
 		}
 	}
 	st.Country = country
@@ -656,14 +656,14 @@ func (c *ChatOnboarder) emailPrompt() string {
 }
 
 func (c *ChatOnboarder) phonePrompt() string {
-	return "What's a number I can text a code to? Include the country code — like +2348012345678."
+	return "What's a number I can text a code to? Include the country code, like +2348012345678."
 }
 
 func (c *ChatOnboarder) countryPrompt(name string) string {
 	if strings.TrimSpace(name) != "" {
-		return fmt.Sprintf("Nice to meet you, %s. Where's home — Nigeria, Ghana, the US, somewhere else?", name)
+		return fmt.Sprintf("Nice to meet you, %s. Where's home? Nigeria, Ghana, the US, somewhere else?", name)
 	}
-	return "Where's home — Nigeria, Ghana, the US, somewhere else?"
+	return "Where's home? Nigeria, Ghana, the US, somewhere else?"
 }
 
 func (c *ChatOnboarder) contactConfirmMessage(name, phone string) string {
@@ -671,18 +671,18 @@ func (c *ChatOnboarder) contactConfirmMessage(name, phone string) string {
 	if who == "" {
 		who = "Okay"
 	}
-	return fmt.Sprintf("%s. Nice. I'll text a code to %s to make sure it's you — then we're in. Sound right?", who, maskPhone(phone))
+	return fmt.Sprintf("%s. Nice. I'll text a code to %s to make sure it's you. Then we're in. Sound right?", who, maskPhone(phone))
 }
 
 func (c *ChatOnboarder) introMessage(plat entities.Platform) string {
 	if plat == entities.PlatformIMessage {
-		return "Hey — I'm Miriam. I help people actually keep money, not just stare at it.\n\nEasiest start: share your contact (tap +, then Share Contact). Or just tell me your first name."
+		return "Hey! I'm Miriam. I help people actually keep money, not just stare at it.\n\nEasiest way to start: share your contact. Tap the + button, then Share Contact. Or just tell me your first name."
 	}
-	return "Hey — I'm Miriam. I help people actually keep money, not just stare at it.\n\nWhat should I call you?"
+	return "Hey! I'm Miriam. I help people actually keep money, not just stare at it.\n\nWhat should I call you?"
 }
 
 func (c *ChatOnboarder) consentMessage() string {
-	return "Last thing — RAIL's terms and privacy policy. Tap I agree and I'll finish setting you up."
+	return "Last thing: RAIL's terms and privacy policy. Tap I agree and I'll finish setting you up."
 }
 
 func (c *ChatOnboarder) consentReply() *PlatformReply {
@@ -713,7 +713,7 @@ func (c *ChatOnboarder) completionMessage(name, country string) string {
 	if c.appURL != "" {
 		app = " " + c.appURL
 	}
-	return fmt.Sprintf("%s. %s%s\n\nWhat's money actually for, for you, right now? A trip, breathing room, something you want — anything.", who, countryLine, app)
+	return fmt.Sprintf("%s. %s%s\n\nWhat's money actually for, for you, right now? A trip, breathing room, something you want, anything.", who, countryLine, app)
 }
 
 func textReply(s string) *PlatformReply {
@@ -851,7 +851,7 @@ func isAffirmative(text string) bool {
 
 func otpSendErrorMessage(err error) string {
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "too many") {
-		return "You've asked for a few codes already — give it a minute, then text me to try again."
+		return "You've asked for a few codes already. Give it a minute, then text me to try again."
 	}
 	return "I couldn't send the code just now. Mind trying again in a moment?"
 }
