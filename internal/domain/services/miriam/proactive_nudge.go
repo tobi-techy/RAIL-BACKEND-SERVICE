@@ -287,7 +287,7 @@ func (e *ProactiveNudgeEngine) nudgeFromMemory(ctx context.Context, userID uuid.
 
 			msg := PhaseMessage(phase, MsgGoalProgress, vars)
 			if msg == "" {
-				msg = fmt.Sprintf("You're %d%% of the way to your $%s goal. Add more?", pct, state.StashTarget.StringFixed(0))
+				msg = fmt.Sprintf("You're %d%% of the way to your %s%s goal. Add more?", pct, symbol, state.StashTarget.StringFixed(0))
 			}
 
 			return &entities.ProactiveNudge{

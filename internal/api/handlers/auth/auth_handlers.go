@@ -150,6 +150,19 @@ func NewAuthHandlers(
 	}
 }
 
+// enrichUserInfo sets HasPasscode on a UserInfo based on the user's passcode status.
+func (h *AuthHandlers) enrichUserInfo(ctx context.Context, info *entities.UserInfo, userID uuid.UUID) {
+	if h.passcodeService == nil {
+		return
+	}
+	status, err := h.passcodeService.GetStatus(ctx, userID)
+	if err != nil {
+		h.logger.Warn("Failed to get passcode status for user info enrichment", zap.Error(err))
+		return
+	}
+	info.HasPasscode = status.Enabled
+}
+
 // Register handles user registration and queues verification
 // @Summary Register a new user and prepare verification
 // @Description Create a new user account request and store pending registration data (email or phone only, no password)
@@ -471,6 +484,7 @@ func (h *AuthHandlers) completeNewUserVerification(c *gin.Context, ctx context.C
 	if onboardingResp != nil {
 		response["onboarding"] = onboardingResp
 	}
+	h.enrichUserInfo(ctx, response["user"].(*entities.UserInfo), user.ID)
 	c.JSON(http.StatusOK, response)
 }
 
@@ -911,6 +925,7 @@ func (h *AuthHandlers) Login(c *gin.Context) {
 		ExpiresAt:        tokens.ExpiresAt,
 		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
 	}
+	h.enrichUserInfo(ctx, response.User, user.ID)
 
 	analytics.TrackEvent(ctx, user.ID.String(), analytics.EventSessionStarted, map[string]any{
 		"login_method": "password",
@@ -1068,13 +1083,15 @@ func (h *AuthHandlers) PhoneOTPLogin(c *gin.Context) {
 	})
 
 	h.logger.Info("User logged in via phone OTP", zap.String("user_id", user.ID.String()))
-	c.JSON(http.StatusOK, entities.AuthResponse{
+	phoneResp := &entities.AuthResponse{
 		User:             user.ToUserInfo(),
 		AccessToken:      tokens.AccessToken,
 		RefreshToken:     tokens.RefreshToken,
 		ExpiresAt:        tokens.ExpiresAt,
 		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
-	})
+	}
+	h.enrichUserInfo(ctx, phoneResp.User, user.ID)
+	c.JSON(http.StatusOK, phoneResp)
 }
 
 type EmailOTPStartRequest struct {
@@ -1204,13 +1221,15 @@ func (h *AuthHandlers) EmailOTPLogin(c *gin.Context) {
 	})
 
 	h.logger.Info("User logged in via email OTP", zap.String("user_id", user.ID.String()))
-	c.JSON(http.StatusOK, entities.AuthResponse{
+	emailResp := &entities.AuthResponse{
 		User:             user.ToUserInfo(),
 		AccessToken:      tokens.AccessToken,
 		RefreshToken:     tokens.RefreshToken,
 		ExpiresAt:        tokens.ExpiresAt,
 		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
-	})
+	}
+	h.enrichUserInfo(ctx, emailResp.User, user.ID)
+	c.JSON(http.StatusOK, emailResp)
 }
 
 type PasscodeLoginRequest struct {
@@ -1677,12 +1696,16 @@ func (h *AuthHandlers) GetProfile(c *gin.Context) {
 	// Check for include param
 	includeParam := c.Query("include")
 	if includeParam == "" {
-		c.JSON(http.StatusOK, user.ToUserInfo())
+		ui := user.ToUserInfo()
+		h.enrichUserInfo(ctx, ui, user.ID)
+		c.JSON(http.StatusOK, ui)
 		return
 	}
 
 	includes := strings.Split(includeParam, ",")
-	response := gin.H{"user": user.ToUserInfo()}
+	ui := user.ToUserInfo()
+	h.enrichUserInfo(ctx, ui, user.ID)
+	response := gin.H{"user": ui}
 
 	if h.onboardingService == nil {
 		c.JSON(http.StatusOK, response)
