@@ -150,3 +150,7 @@ cmd/spectrum-bridge/data/
 
 # Foglamp local review metadata
 .foglamp/
+
+# Node.js dependency directories
+node_modules/
+cmd/spectrum-bridge/node_modules/
