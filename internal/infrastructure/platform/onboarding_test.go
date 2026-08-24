@@ -48,16 +48,17 @@ func (s *fakeStore) Exists(_ context.Context, key string) (bool, error) {
 type fakeVerifier struct {
 	sentTo    []string
 	sendErr   error
+	simulated bool
 	validCode string
 	verifyErr error
 }
 
-func (v *fakeVerifier) GenerateAndSendCode(_ context.Context, _, identifier string) (string, error) {
+func (v *fakeVerifier) GenerateAndSendCodeSync(_ context.Context, _, identifier string) (string, bool, error) {
 	if v.sendErr != nil {
-		return "", v.sendErr
+		return "", false, v.sendErr
 	}
 	v.sentTo = append(v.sentTo, identifier)
-	return "sent", nil
+	return "123456", v.simulated, nil
 }
 
 func (v *fakeVerifier) VerifyCode(_ context.Context, _, _, code string) (bool, error) {
@@ -621,6 +622,56 @@ func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
 	// Verify it was sent to both email and phone
 	if len(ver.sentTo) < 2 {
 		t.Fatalf("expected OTPs to both email and phone, got: %v", ver.sentTo)
+	}
+}
+
+// TestOnboarding_SimulatedOTPDisclosesNoSend pins the honest-delivery contract:
+// when the verifier runs in simulated mode (dev, no provider), Miriam must say
+// nothing was actually sent instead of claiming an email/SMS went out.
+func TestOnboarding_SimulatedOTPDisclosesNoSend(t *testing.T) {
+	ob, _, ver, users, _, _ := newTestOnboarder()
+	sender := "+15550010"
+	existingID := uuid.New()
+	users.byEmail["dev@example.com"] = &entities.UserProfile{ID: existingID, Email: "dev@example.com", IsActive: true}
+	ver.simulated = true
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Zara")
+	step(t, ob, sender, "NG")
+	reply := step(t, ob, sender, "dev@example.com")
+	if !strings.Contains(strings.ToLower(reply), "nothing was actually sent") {
+		t.Fatalf("simulated email OTP must disclose no send, got: %q", reply)
+	}
+
+	// Confirm the email code, then the SMS path discloses too.
+	askPhone := step(t, ob, sender, ver.validCode)
+	if !strings.Contains(strings.ToLower(askPhone), "number") {
+		t.Fatalf("expected phone prompt after email code, got: %q", askPhone)
+	}
+	reply = step(t, ob, sender, "+2348099999998")
+	if !strings.Contains(strings.ToLower(reply), "nothing was actually texted") {
+		t.Fatalf("simulated SMS OTP must disclose no send, got: %q", reply)
+	}
+}
+
+// TestOnboarding_OTPSendFailureTellsUser pins that a real send error surfaces
+// as a failure message, never as a success claim.
+func TestOnboarding_OTPSendFailureTellsUser(t *testing.T) {
+	ob, _, ver, users, _, _ := newTestOnboarder()
+	sender := "+15550011"
+	users.byEmail["fail@example.com"] = &entities.UserProfile{ID: uuid.New(), Email: "fail@example.com", IsActive: true}
+	ver.sendErr = fmt.Errorf("resend: status 500")
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Zara")
+	step(t, ob, sender, "NG")
+	reply := step(t, ob, sender, "fail@example.com")
+	lower := strings.ToLower(reply)
+	if strings.Contains(lower, "emailed") || strings.Contains(lower, "just sent") {
+		t.Fatalf("failed OTP send must not claim success, got: %q", reply)
+	}
+	if !strings.Contains(lower, "couldn't") && !strings.Contains(lower, "try again") {
+		t.Fatalf("failed OTP send should ask the user to retry, got: %q", reply)
 	}
 }
 
