@@ -100,6 +100,21 @@ func (s *Service) CompleteLinking(ctx context.Context, userID uuid.UUID, code st
 
 // --- Account Sync ---
 
+// TriggerIncomeAnalysis starts the async income analysis for a linked account.
+// Results arrive via the mono.events.account_income webhook and include income
+// streams, monthly averages, stability scores, employer, and regular vs
+// irregular income split — valuable data for Miriam's coaching.
+func (s *Service) TriggerIncomeAnalysis(ctx context.Context, userID, accountID uuid.UUID) error {
+	acct, err := s.repo.GetLinkedAccountByID(ctx, userID, accountID)
+	if err != nil {
+		return fmt.Errorf("get linked account: %w", err)
+	}
+	if acct.Status == entities.MonoAccountStatusUnlinked {
+		return fmt.Errorf("account is unlinked")
+	}
+	return s.client.InitiateIncomeAnalysis(ctx, acct.MonoAccountID, 12)
+}
+
 // SyncAccount fetches the latest account details and transactions from Mono
 // and updates the stored records. Returns the number of new transactions imported.
 func (s *Service) SyncAccount(ctx context.Context, userID, accountID uuid.UUID) (int, error) {

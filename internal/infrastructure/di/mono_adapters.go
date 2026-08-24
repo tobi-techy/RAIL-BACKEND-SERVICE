@@ -67,7 +67,7 @@ func (a *monoClientAdapter) InitiateLinking(ctx context.Context, req *monosvc.Li
 	if err != nil {
 		return "", err
 	}
-	return resp.RedirectURL, nil
+	return resp.MonoURL, nil
 }
 
 func (a *monoClientAdapter) ExchangeCode(ctx context.Context, code string) (*monosvc.AccountInfo, error) {
@@ -148,8 +148,8 @@ func (a *monoClientAdapter) InitiatePayment(ctx context.Context, req *monosvc.Pa
 	}
 	return &monosvc.PaymentInitiationResult{
 		Status:      resp.Status,
-		PaymentID:   resp.PaymentID,
-		ApprovalURL: resp.ApprovalURL,
+		PaymentID:   resp.ID,
+		ApprovalURL: resp.MonoURL,
 	}, nil
 }
 
@@ -164,15 +164,23 @@ func (a *monoClientAdapter) VerifyPayment(ctx context.Context, reference string)
 	}, nil
 }
 
+func (a *monoClientAdapter) InitiateIncomeAnalysis(ctx context.Context, monoAccountID string, periodMonths int) error {
+	return a.inner.InitiateIncomeAnalysis(ctx, monoAccountID, periodMonths)
+}
+
 func (a *monoClientAdapter) UnlinkAccount(ctx context.Context, monoAccountID string) error {
 	return a.inner.UnlinkAccount(ctx, monoAccountID)
 }
 
 func accountInfoFromAdapter(acct *monoadapter.Account) *monosvc.AccountInfo {
+	bankName := ""
+	if acct.Institution != nil {
+		bankName = acct.Institution.Name
+	}
 	return &monosvc.AccountInfo{
 		ID:            acct.ID,
 		Name:          acct.Name,
-		BankName:      acct.BankName,
+		BankName:      bankName,
 		AccountNumber: acct.AccountNumber,
 		Type:          acct.Type,
 		Currency:      acct.Currency,

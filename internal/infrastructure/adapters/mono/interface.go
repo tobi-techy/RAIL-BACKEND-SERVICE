@@ -23,7 +23,14 @@ type Client interface {
 	GetTransactions(ctx context.Context, accountID string, query *TransactionListQuery) ([]Transaction, error)
 
 	// GetIncome retrieves income analysis for a linked account.
+	// Note: The first call triggers a background analysis; results arrive
+	// via the mono.events.account_income webhook.
 	GetIncome(ctx context.Context, accountID string) (*IncomeAnalysis, error)
+
+	// InitiateIncomeAnalysis triggers the async income analysis for a linked
+	// account. Results come via the mono.events.account_income webhook.
+	// periodMonths limits analysis to N months (0 = all available history).
+	InitiateIncomeAnalysis(ctx context.Context, accountID string, periodMonths int) error
 
 	// GetIdentity retrieves identity verification data for a linked account.
 	GetIdentity(ctx context.Context, accountID string) (*Identity, error)

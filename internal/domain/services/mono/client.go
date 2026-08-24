@@ -33,6 +33,11 @@ type Client interface {
 	// VerifyPayment checks the status of a DirectPay transaction by reference.
 	VerifyPayment(ctx context.Context, reference string) (*PaymentVerification, error)
 
+	// InitiateIncomeAnalysis triggers the async income analysis for a linked
+	// account. Results arrive via the mono.events.account_income webhook.
+	// periodMonths limits analysis to N months (0 = all history).
+	InitiateIncomeAnalysis(ctx context.Context, monoAccountID string, periodMonths int) error
+
 	// UnlinkAccount disconnects a linked account.
 	UnlinkAccount(ctx context.Context, monoAccountID string) error
 }
