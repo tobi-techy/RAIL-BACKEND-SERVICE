@@ -50,6 +50,7 @@ type UserInfo struct {
 	AddressCountry    *string          `json:"addressCountry,omitempty"`
 	EmailVerified     bool             `json:"emailVerified"`
 	PhoneVerified     bool             `json:"phoneVerified"`
+	HasPasscode       bool             `json:"hasPasscode"`
 	OnboardingStatus  OnboardingStatus `json:"onboardingStatus"`
 	KYCStatus         string           `json:"kycStatus"`
 	CreatedAt         time.Time        `json:"createdAt"`
