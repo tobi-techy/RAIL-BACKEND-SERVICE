@@ -1006,6 +1006,11 @@ type ChatResponse struct {
 	TokensUsed    int                     `json:"tokens_used"`
 	Provider      string                  `json:"provider"`
 	PendingAction *entities.PendingAction `json:"pending_action,omitempty"`
+	PollQuestion  string                  `json:"poll_question,omitempty"`
+	PollOptions   []string                `json:"poll_options,omitempty"`
+	OpenURL       string                  `json:"open_url,omitempty"`
+	OpenTitle     string                  `json:"open_title,omitempty"`
+	Effect        string                  `json:"effect,omitempty"`
 }
 
 // ToolResult represents the result of a tool execution

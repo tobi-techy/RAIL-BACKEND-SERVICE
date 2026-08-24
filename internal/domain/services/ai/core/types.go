@@ -56,6 +56,7 @@ type Tool struct {
 
 // ToolResult wraps the output of a tool execution.
 type ToolResult struct {
+	Name   string
 	Data   map[string]interface{}
 	Action *PendingAction
 	Error  string
@@ -317,17 +318,19 @@ type Dependencies struct {
 	Notifier      MoneyMoveNotifier
 	NairaCtx      ContextProvider
 	BankStatement ContextProvider
-	Signals       SignalProvider
-	MiriamIntell  MiriamIntelligenceProvider
-	Investment    InvestmentProvider
-	Receipt       ReceiptProvider
-	P2P           P2PProvider
-	Warranty      WarrantyProvider
-	PriceTracker  PriceTrackerProvider
-	Merchant      MerchantProvider
-	Cache         CacheClient
-	Logger        *zap.Logger
-	Config        *Config
+	// BankLinker starts a Mono Connect session and returns the widget URL.
+	BankLinker   BankLinker
+	Signals      SignalProvider
+	MiriamIntell MiriamIntelligenceProvider
+	Investment   InvestmentProvider
+	Receipt      ReceiptProvider
+	P2P          P2PProvider
+	Warranty     WarrantyProvider
+	PriceTracker PriceTrackerProvider
+	Merchant     MerchantProvider
+	Cache        CacheClient
+	Logger       *zap.Logger
+	Config       *Config
 
 	// QualityGate checks a response and returns (pass, correctionHint). Injected by
 	// the adapter so core reuses the same quality gate as the streaming path instead
@@ -994,6 +997,12 @@ type BankStatementContextProvider interface {
 // for the get_bank_statement_analysis tool.
 type BankStatementAnalysisProvider interface {
 	GetAnalysis(ctx context.Context, userID uuid.UUID, months int) (map[string]interface{}, error)
+}
+
+// BankLinker starts an external-bank Connect session and returns the widget URL
+// the user should open (Mono Connect for Nigeria).
+type BankLinker interface {
+	InitiateLinking(ctx context.Context, userID uuid.UUID, customerName, customerEmail, redirectURL string) (string, error)
 }
 
 // VoiceDailyLimiterer enforces daily voice transfer caps.

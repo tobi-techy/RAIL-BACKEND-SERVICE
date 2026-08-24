@@ -9,6 +9,7 @@ import { MessageHandler, OutboundMessage } from "./handler";
 import { getLogger, childLogger } from "./logger";
 import { SpaceStore } from "./space-store";
 import { PersistentOutboundQueue, type QueuedMessage } from "./outbound-queue";
+import { contactFromSpectrum, isVCardMime } from "./contact";
 
 const config = loadConfig();
 const log = getLogger();
@@ -386,19 +387,41 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   space.startTyping().catch(() => {});
 
   try {
-    // Poll vote — confirm/cancel action
+    // Poll vote — the selected option title is posted as ordinary inbound text
+    // so onboarding, send_poll, and Confirm/Cancel all go through one path.
+    // The Go processor maps Confirm/Cancel to pending actions when one exists.
     if (content.type === "poll_option") {
       if (!content.selected) return;
-      const choice = content.option.title.trim().toLowerCase();
-      const event = {
-        action: choice === "confirm" ? "confirm" : "cancel",
-        poll_title: content.poll.title,
-        user_id: senderId,
-        space_id: space.id,
+      const text = content.option?.title?.trim();
+      if (!text) return;
+      const inbound = {
         platform,
+        user_id: senderId,
+        thread_id: space.id,
+        text,
+        space_id: space.id,
+        msg_id: message.id,
+        is_poll_vote: true,
       };
-      await postToBackend("/api/v1/platform/action", event);
-      log.info({ action: event.action }, "posted poll vote to backend");
+      await postToBackend("/api/v1/platform/inbound", inbound);
+      log.info({ text: text.slice(0, 60) }, "posted poll vote as inbound");
+      return;
+    }
+
+    // Shared contact card (iMessage Share Contact)
+    if (content.type === "contact") {
+      const inbound = {
+        platform,
+        user_id: senderId,
+        thread_id: space.id,
+        text: "",
+        space_id: space.id,
+        msg_id: message.id,
+        is_contact: true,
+        contact: contactFromSpectrum(content),
+      };
+      await postToBackend("/api/v1/platform/inbound", inbound);
+      log.info("posted shared contact to backend");
       return;
     }
 
@@ -428,8 +451,33 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       return;
     }
 
-    // Image attachment
+    // Image or vCard attachment
     if (content.type === "attachment") {
+      const filename = (content as { filename?: string; name?: string }).filename
+        || (content as { filename?: string; name?: string }).name;
+      if (isVCardMime(content.mimeType, filename)) {
+        let vcardText = "";
+        try {
+          const buf = await content.read();
+          vcardText = Buffer.from(buf).toString("utf8");
+        } catch (err) {
+          log.error({ err }, "failed to read vcard attachment");
+          return;
+        }
+        const inbound = {
+          platform,
+          user_id: senderId,
+          thread_id: space.id,
+          text: "",
+          space_id: space.id,
+          msg_id: message.id,
+          is_contact: true,
+          vcard_text: vcardText,
+        };
+        await postToBackend("/api/v1/platform/inbound", inbound);
+        log.info({ bytes: vcardText.length }, "posted vcard attachment to backend");
+        return;
+      }
       if (!content.mimeType?.startsWith("image/")) {
         log.debug({ mime: content.mimeType }, "ignoring non-image attachment");
         return;
@@ -458,25 +506,11 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       return;
     }
 
-    // Text message
+    // Text message. Bare YES/NO is handled by the backend when a pending
+    // action exists, so onboarding consent is not swallowed here.
     if (content.type === "text") {
       const text = content.text?.trim();
       if (!text) return;
-
-      // Check for YES/NO confirmation replies (for platforms without poll support)
-      const normalized = text.toLowerCase();
-      if (normalized === "yes" || normalized === "confirm" || normalized === "no" || normalized === "cancel") {
-        const event = {
-          action: normalized === "yes" || normalized === "confirm" ? "confirm" : "cancel",
-          poll_title: "",
-          user_id: senderId,
-          space_id: space.id,
-          platform,
-        };
-        await postToBackend("/api/v1/platform/action", event);
-        log.info({ action: event.action, text }, "posted YES/NO confirmation to backend");
-        return;
-      }
 
       const inbound = {
         platform,

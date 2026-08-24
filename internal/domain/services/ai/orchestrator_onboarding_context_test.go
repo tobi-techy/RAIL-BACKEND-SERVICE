@@ -195,13 +195,13 @@ func TestFormatOnboardingContextBlock(t *testing.T) {
 		if !strings.Contains(block, "Tobi") {
 			t.Error("expected user name in block")
 		}
-		if !strings.Contains(block, "discovery") {
-			t.Error("expected discovery guidance in first conversation block")
+		if !strings.Contains(block, "connect_bank") {
+			t.Error("expected connect_bank in first conversation block")
 		}
-		if !strings.Contains(block, "What are you saving for?") {
-			t.Error("expected first discovery question in guidance")
+		if !strings.Contains(block, "HUMAN QUESTION FIRST") {
+			t.Error("expected human question beat in first conversation block")
 		}
-		if !strings.Contains(block, "ONE question at a time") {
+		if !strings.Contains(strings.ToLower(block), "one question at a time") {
 			t.Error("expected one-question-at-a-time rule in guidance")
 		}
 	})
@@ -269,88 +269,44 @@ func TestFormatOnboardingContextBlock(t *testing.T) {
 func TestFirstConversationGuidance(t *testing.T) {
 	t.Run("with name", func(t *testing.T) {
 		guidance := firstConversationGuidance("Ada")
-		if !strings.Contains(guidance, "Welcome Ada warmly") {
-			t.Error("expected personalized greeting with name")
+		if !strings.Contains(guidance, "Ada") {
+			t.Error("expected name in first-conversation guidance")
 		}
 	})
 
-	t.Run("without name", func(t *testing.T) {
-		guidance := firstConversationGuidance("")
-		if !strings.Contains(guidance, "Welcome this user warmly") {
-			t.Error("expected generic greeting without name")
-		}
-	})
-
-	t.Run("contains all four discovery questions", func(t *testing.T) {
+	t.Run("human question before bank", func(t *testing.T) {
 		guidance := firstConversationGuidance("Test")
-		questions := []string{
-			"What are you saving for?",
-			"Do you have any debts?",
-			"What's your income like?",
-			"How much do you have saved right now?",
-		}
-		for _, q := range questions {
-			if !strings.Contains(guidance, q) {
-				t.Errorf("expected discovery question %q in guidance", q)
-			}
+		human := strings.Index(guidance, "HUMAN QUESTION FIRST")
+		bank := strings.Index(guidance, "connect_bank")
+		if human < 0 || bank < 0 || human > bank {
+			t.Error("expected human question beat before connect_bank")
 		}
 	})
 
-	t.Run("contains freedom step mapping", func(t *testing.T) {
+	t.Run("contains aha + tools", func(t *testing.T) {
 		guidance := firstConversationGuidance("Test")
-		steps := []string{"Step 0", "Step 1", "Step 2", "Step 3", "Step 4"}
-		for _, s := range steps {
-			if !strings.Contains(guidance, s) {
-				t.Errorf("expected %s in guidance", s)
-			}
-		}
-	})
-
-	t.Run("contains bank link hook", func(t *testing.T) {
-		guidance := firstConversationGuidance("Test")
-		if !strings.Contains(guidance, "connect to your bank") {
-			t.Error("expected bank linking reference in guidance")
-		}
-		if !strings.Contains(guidance, "get_bank_statement_analysis") {
-			t.Error("expected bank statement analysis tool reference")
-		}
-		if !strings.Contains(guidance, "LINK-FIRST") {
-			t.Error("expected LINK-FIRST FLOW reference in guidance")
-		}
-		if !strings.Contains(guidance, "AHA MOMENT") {
-			t.Error("expected AHA MOMENT reference in guidance")
-		}
-		if !strings.Contains(guidance, "data-informed") {
-			t.Error("expected data-informed discovery reference in guidance")
-		}
-	})
-
-	t.Run("contains Ramit Sethi style elements", func(t *testing.T) {
-		guidance := firstConversationGuidance("Test")
-		if !strings.Contains(guidance, "ASK WHY") {
-			t.Error("expected ASK WHY rule in guidance")
-		}
-		if !strings.Contains(guidance, "RICH LIFE") {
-			t.Error("expected RICH LIFE question in guidance")
-		}
-		if !strings.Contains(guidance, "NORMALIZE") {
-			t.Error("expected NORMALIZE rule in guidance")
-		}
-	})
-
-	t.Run("contains conversation rules", func(t *testing.T) {
-		guidance := firstConversationGuidance("Test")
-		rules := []string{
-			"ONE question at a time",
-			"REACT before moving on",
-			"Save as you go",
+		for _, s := range []string{
+			"connect_bank",
+			"get_bank_statement_analysis",
+			"AHA MOMENT",
+			"send_poll",
+			"get_baby_steps",
+			"just_provisioned",
 			"THE ASK",
 			"Never invent numbers",
-		}
-		for _, r := range rules {
-			if !strings.Contains(guidance, r) {
-				t.Errorf("expected conversation rule %q in guidance", r)
+			"ASK WHY",
+			"NORMALIZE",
+		} {
+			if !strings.Contains(guidance, s) {
+				t.Errorf("expected %q in guidance", s)
 			}
+		}
+	})
+
+	t.Run("does not dump a four-question intake", func(t *testing.T) {
+		guidance := firstConversationGuidance("Test")
+		if strings.Contains(guidance, "What's your income like?") {
+			t.Error("first conversation should not interrogate income up front")
 		}
 	})
 }

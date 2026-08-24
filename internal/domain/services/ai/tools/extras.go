@@ -553,19 +553,18 @@ func RegisterEngagementTools(r *Registry) {
 		"Create and send a poll to the user about their finances",
 		SimpleArgs(map[string]map[string]interface{}{
 			"question": {"type": "string", "description": "Poll question"},
-			"options":  {"type": "string", "description": "Comma-separated poll options"},
+			"options":  {"type": "string", "description": "Comma-separated poll options, or pass an array of 2–4 short options"},
 		}, []string{"question", "options"}),
 		core.CategoryEngagement,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
 			question, _ := args["question"].(string)
-			options, _ := args["options"].(string)
 			if question == "" {
 				return &core.ToolResult{Error: "question is required"}, nil
 			}
 			return &core.ToolResult{
 				Data: map[string]interface{}{
 					"question": question,
-					"options":  splitComma(options),
+					"options":  pollOptions(args["options"]),
 					"status":   "created",
 				},
 			}, nil
@@ -987,6 +986,32 @@ func splitComma(s string) []string {
 		}
 	}
 	return result
+}
+
+func pollOptions(v interface{}) []string {
+	switch t := v.(type) {
+	case string:
+		return splitComma(t)
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, s := range t {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func RegisterAllRemainingTools(r *Registry) {

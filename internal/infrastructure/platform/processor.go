@@ -64,6 +64,12 @@ type InboundMessage struct {
 	IsImage   bool   `json:"is_image,omitempty"`
 	ImageB64  string `json:"image_b64,omitempty"`
 	ImageMime string `json:"image_mime,omitempty"`
+
+	// iMessage contact card / vCard. Used during chat-first onboarding so the
+	// user can skip typing name/phone/email.
+	IsContact bool           `json:"is_contact,omitempty"`
+	VCardText string         `json:"vcard_text,omitempty"`
+	Contact   *SharedContact `json:"contact,omitempty"`
 }
 
 // ActionPostback is a poll vote — how a user confirms/cancels an action, since
@@ -84,6 +90,7 @@ type PlatformReply struct {
 	Text    string                 // markdown body
 	Effect  string                 // optional iMessage effect id (e.g. "celebration")
 	Confirm *ConfirmRequest        // if set, render a Confirm/Cancel poll
+	Poll    *PollRequest           // if set, render a custom-option poll (onboarding, send_poll)
 	OpenApp *OpenAppRequest        // if set, action must be authorized in-app (fund moves)
 	Cards   []entities.InsightCard // structured insight cards to render after the text
 }
@@ -91,6 +98,13 @@ type PlatformReply struct {
 // ConfirmRequest describes a Confirm/Cancel prompt rendered as a poll.
 type ConfirmRequest struct {
 	Summary string // the question shown as the poll title
+}
+
+// PollRequest is a tappable multi-choice prompt whose selected option is posted
+// back as ordinary inbound text (the option title).
+type PollRequest struct {
+	Title   string
+	Options []string
 }
 
 // OpenAppRequest describes an action that needs in-app authorization.
@@ -260,11 +274,17 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 // handleOnboarding drives one step of chat-first account creation and delivers
 // the reply as a plain message (the sender has no linked identity yet).
 func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) error {
+	contact := msg.Contact
+	if contact == nil && strings.TrimSpace(msg.VCardText) != "" {
+		parsed := ParseVCard(msg.VCardText)
+		contact = &parsed
+	}
 	reply, err := p.onboarder.Handle(ctx, OnboardInput{
 		Platform: msg.Platform,
 		SenderID: msg.UserID,
 		ThreadID: msg.ThreadID,
 		Text:     msg.Text,
+		Contact:  contact,
 	})
 	if err != nil {
 		if IsRetryable(err) {
@@ -276,7 +296,7 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 	if reply == nil {
 		return nil
 	}
-	return p.sendToSender(ctx, msg, reply.Text)
+	return p.sendOnboardingReply(ctx, msg, reply)
 }
 
 func (p *Processor) ProcessAction(ctx context.Context, raw []byte) error {
@@ -413,6 +433,12 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		return p.send(ctx, p.responseBuilder.PollResponse(identity, title, threadID, []string{"Confirm", "Cancel"}))
 	case reply.OpenApp != nil:
 		return p.send(ctx, p.responseBuilder.AppCardResponse(identity, reply.Text, threadID, replyTo, reply.OpenApp.Title, reply.OpenApp.URL))
+	case reply.Poll != nil && len(reply.Poll.Options) > 0:
+		title := reply.Poll.Title
+		if title == "" {
+			title = reply.Text
+		}
+		return p.send(ctx, p.responseBuilder.PollResponse(identity, title, threadID, reply.Poll.Options))
 	}
 
 	// Mirror modality: a voice note in gets a voice note back when TTS is available.
@@ -508,15 +534,52 @@ func (p *Processor) sendErrorMessage(ctx context.Context, msg InboundMessage, te
 // before a linked identity exists (errors and onboarding prompts).
 func (p *Processor) sendToSender(ctx context.Context, msg InboundMessage, text string) error {
 	out := &OutboundMessage{
-		Platform: msg.Platform,
-		UserID:   msg.UserID,
-		ThreadID: msg.ThreadID,
-		Text:     text,
+		Platform:    msg.Platform,
+		UserID:      msg.UserID,
+		ThreadID:    msg.ThreadID,
+		Text:        text,
+		ContentType: ContentTypeText,
 	}
 	if err := p.sendFunc(ctx, out); err != nil {
 		return Retryable(fmt.Errorf("send message: %w", err))
 	}
 	return nil
+}
+
+// sendOnboardingReply delivers a structured onboarder reply (text, poll, effect)
+// to an unlinked sender.
+func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage, reply *PlatformReply) error {
+	if reply == nil {
+		return nil
+	}
+	if reply.Poll != nil && len(reply.Poll.Options) > 0 {
+		title := reply.Poll.Title
+		if title == "" {
+			title = reply.Text
+		}
+		out := &OutboundMessage{
+			Platform:    msg.Platform,
+			UserID:      msg.UserID,
+			ThreadID:    msg.ThreadID,
+			Text:        reply.Text,
+			ContentType: ContentTypePoll,
+			PollTitle:   title,
+			PollOptions: reply.Poll.Options,
+		}
+		return p.send(ctx, out)
+	}
+	if reply.Effect != "" {
+		out := &OutboundMessage{
+			Platform:    msg.Platform,
+			UserID:      msg.UserID,
+			ThreadID:    msg.ThreadID,
+			Text:        reply.Text,
+			ContentType: ContentTypeEffect,
+			Effect:      reply.Effect,
+		}
+		return p.send(ctx, out)
+	}
+	return p.sendToSender(ctx, msg, reply.Text)
 }
 
 // friendlyActionError converts an execution error into user-facing copy without

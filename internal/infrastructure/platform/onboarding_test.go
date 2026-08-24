@@ -171,22 +171,107 @@ func step(t *testing.T, ob *ChatOnboarder, sender, text string) string {
 	return reply.Text
 }
 
+func stepContact(t *testing.T, ob *ChatOnboarder, sender string, contact SharedContact) string {
+	t.Helper()
+	reply, err := ob.Handle(context.Background(), OnboardInput{
+		Platform: entities.PlatformIMessage,
+		SenderID: sender,
+		Contact:  &contact,
+	})
+	if err != nil {
+		t.Fatalf("Handle(contact) error: %v", err)
+	}
+	if reply == nil {
+		return ""
+	}
+	return reply.Text
+}
+
+func TestOnboarding_ContactCardShortcut(t *testing.T) {
+	ob, _, ver, users, prov, linker := newTestOnboarder()
+	sender := "+15551111"
+
+	confirm := stepContact(t, ob, sender, SharedContact{
+		FirstName: "Ada",
+		Phones:    []string{"+2348012345678"},
+		Emails:    []string{"ada-card@example.com"},
+		Country:   "Nigeria",
+	})
+	if !strings.Contains(confirm, "Ada") {
+		t.Fatalf("expected name in confirm, got: %q", confirm)
+	}
+	if !strings.Contains(confirm, "…") {
+		t.Fatalf("expected masked phone in confirm, got: %q", confirm)
+	}
+
+	otpPrompt := step(t, ob, sender, "yes")
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
+		t.Fatalf("expected OTP to card phone, got: %v", ver.sentTo)
+	}
+	if !strings.Contains(strings.ToLower(otpPrompt), "code") && !strings.Contains(strings.ToLower(otpPrompt), "texted") {
+		t.Fatalf("expected OTP prompt, got: %q", otpPrompt)
+	}
+
+	consent := step(t, ob, sender, "123456")
+	if !strings.Contains(consent, "I agree") {
+		t.Fatalf("expected consent after OTP, got: %q", consent)
+	}
+	done := step(t, ob, sender, "I agree")
+	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
+		t.Fatalf("provision mismatch: %+v %+v", prov, linker)
+	}
+	if linker.calls != 1 {
+		t.Fatalf("expected auto-link, got %d", linker.calls)
+	}
+	if len(users.created) != 1 || users.created[0].Email != "ada-card@example.com" {
+		t.Fatalf("expected user created from card email, got %+v", users.created)
+	}
+	if !strings.Contains(strings.ToLower(done), "you're in") {
+		t.Fatalf("expected completion, got: %q", done)
+	}
+}
+
+func TestOnboarding_ContactNameOnlyStillAsksPhone(t *testing.T) {
+	ob, _, _, _, _, _ := newTestOnboarder()
+	sender := "+15551112"
+
+	reply := stepContact(t, ob, sender, SharedContact{FirstName: "Bola"})
+	if !strings.Contains(strings.ToLower(reply), "home") && !strings.Contains(strings.ToLower(reply), "phone") {
+		t.Fatalf("expected country or phone follow-up after name-only card, got: %q", reply)
+	}
+}
+
+func TestOnboarding_ContactRejectFallsBackToTyping(t *testing.T) {
+	ob, _, _, _, _, _ := newTestOnboarder()
+	sender := "+15551113"
+
+	stepContact(t, ob, sender, SharedContact{
+		FirstName: "Chidi",
+		Phones:    []string{"+2348099999999"},
+		Country:   "NG",
+	})
+	reply := step(t, ob, sender, "that's not me")
+	if !strings.Contains(strings.ToLower(reply), "number") {
+		t.Fatalf("expected phone fallback after rejecting card, got: %q", reply)
+	}
+}
+
 func TestOnboarding_HappyPath(t *testing.T) {
 	ob, _, ver, users, prov, linker := newTestOnboarder()
 	sender := "+15550001"
 
 	intro := step(t, ob, sender, "hi")
-	if !strings.Contains(intro, "https://app.example/join") {
-		t.Fatalf("intro should include app link, got: %q", intro)
+	if !strings.Contains(strings.ToLower(intro), "share your contact") {
+		t.Fatalf("intro should invite sharing a contact, got: %q", intro)
 	}
 	if !strings.Contains(strings.ToLower(intro), "first name") {
-		t.Fatalf("intro should ask for name, got: %q", intro)
+		t.Fatalf("intro should offer typing a name, got: %q", intro)
 	}
 
 	step(t, ob, sender, "Ada")
 	step(t, ob, sender, "Nigeria")
 	askPhone := step(t, ob, sender, "ada@example.com")
-	if !strings.Contains(askPhone, "phone number") {
+	if !strings.Contains(strings.ToLower(askPhone), "number") {
 		t.Fatalf("expected phone prompt after email, got: %q", askPhone)
 	}
 	askOTP := step(t, ob, sender, "+2348012345678")
@@ -198,7 +283,7 @@ func TestOnboarding_HappyPath(t *testing.T) {
 	}
 
 	consent := step(t, ob, sender, "123456")
-	if !strings.Contains(strings.ToUpper(consent), "YES") {
+	if !strings.Contains(consent, "I agree") {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
 	if len(users.created) != 1 || users.created[0].Email != "ada@example.com" {
@@ -300,7 +385,7 @@ func TestOnboarding_ProvisionFailureKeepsSession(t *testing.T) {
 	step(t, ob, sender, "123456")
 	reply := step(t, ob, sender, "yes")
 
-	if !strings.Contains(strings.ToUpper(reply), "YES") {
+	if !strings.Contains(reply, "I agree") {
 		t.Fatalf("expected retry prompt on provision failure, got: %q", reply)
 	}
 	if !ob.HasSession(context.Background(), entities.PlatformIMessage, sender) {
@@ -384,8 +469,8 @@ func TestProcessor_RoutesUnlinkedSenderToOnboarding(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("expected 1 outbound message, got %d", len(*sent))
 	}
-	if !strings.Contains((*sent)[0].Text, "https://app.example/join") {
-		t.Fatalf("expected onboarding intro with app link, got: %q", (*sent)[0].Text)
+	if !strings.Contains(strings.ToLower((*sent)[0].Text), "share your contact") {
+		t.Fatalf("expected onboarding intro inviting a contact card, got: %q", (*sent)[0].Text)
 	}
 }
 
@@ -421,30 +506,30 @@ func TestCompletionMessage_PersonalizedFirstInsight(t *testing.T) {
 	ob, _, _, _, _, _ := newTestOnboarder()
 
 	msg := ob.completionMessage("Ada", "NG")
-	if !strings.Contains(msg, "You're all set, Ada!") {
+	if !strings.Contains(msg, "You're in, Ada") {
 		t.Fatalf("expected personalized greeting, got: %q", msg)
 	}
-	if !strings.Contains(msg, "stable dollars and convert to naira") {
+	if !strings.Contains(msg, "naira") {
 		t.Fatalf("expected country-aware naira line, got: %q", msg)
 	}
-	if !strings.Contains(msg, "what are you saving for?") {
-		t.Fatalf("expected first-savings prompt, got: %q", msg)
+	if !strings.Contains(strings.ToLower(msg), "what's money actually for") {
+		t.Fatalf("expected first-session question, got: %q", msg)
 	}
 	if !strings.Contains(msg, "https://app.example/join") {
-		t.Fatalf("completion should re-share app link, got: %q", msg)
+		t.Fatalf("completion should quietly include app link, got: %q", msg)
 	}
 }
 
 func TestCompletionMessage_CountryVariants(t *testing.T) {
 	ob, _, _, _, _, _ := newTestOnboarder()
 
-	if msg := ob.completionMessage("Kofi", "GH"); !strings.Contains(msg, "convert to cedis") {
+	if msg := ob.completionMessage("Kofi", "GH"); !strings.Contains(msg, "cedis") {
 		t.Fatalf("expected cedi line for GH, got: %q", msg)
 	}
-	if msg := ob.completionMessage("John", "US"); strings.Contains(msg, "convert to") {
+	if msg := ob.completionMessage("John", "US"); strings.Contains(msg, "naira") || strings.Contains(msg, "cedis") {
 		t.Fatalf("expected generic line for US, got: %q", msg)
 	}
-	if msg := ob.completionMessage("", ""); !strings.Contains(msg, "You're all set!") {
+	if msg := ob.completionMessage("", ""); !strings.Contains(msg, "You're in.") {
 		t.Fatalf("expected fallback greeting for empty name, got: %q", msg)
 	}
 }
@@ -459,12 +544,12 @@ func TestCompletionMessage_EndToEndPrompt(t *testing.T) {
 	step(t, ob, sender, "ada2@example.com")
 	step(t, ob, sender, "+2348012345678")
 	done := step(t, ob, sender, "123456")
-	if !strings.Contains(strings.ToUpper(done), "YES") {
+	if !strings.Contains(done, "I agree") {
 		t.Fatalf("expected consent prompt, got: %q", done)
 	}
-	done = step(t, ob, sender, "YES")
-	if !strings.Contains(done, "what are you saving for?") {
-		t.Fatalf("expected first-savings prompt at completion, got: %q", done)
+	done = step(t, ob, sender, "I agree")
+	if !strings.Contains(strings.ToLower(done), "what's money actually for") {
+		t.Fatalf("expected first-session question at completion, got: %q", done)
 	}
 	if prov.lastCC != "NG" || linker.calls != 1 {
 		t.Fatalf("expected provision/link on completion, got prov=%d link=%d", prov.calls, linker.calls)
@@ -486,13 +571,13 @@ func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
 	}
 
 	askPhone := step(t, ob, sender, "123456")
-	if !strings.Contains(askPhone, "phone number") {
+	if !strings.Contains(strings.ToLower(askPhone), "number") {
 		t.Fatalf("expected phone prompt after email OTP, got: %q", askPhone)
 	}
 
 	step(t, ob, sender, "+2348099999999")
 	consent := step(t, ob, sender, "123456")
-	if !strings.Contains(strings.ToUpper(consent), "YES") {
+	if !strings.Contains(consent, "I agree") {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
 
@@ -606,7 +691,7 @@ func TestOnboarding_SkipEmailUsesNoEmail(t *testing.T) {
 	step(t, ob, sender, "Kemi")
 	step(t, ob, sender, "NG")
 	askPhone := step(t, ob, sender, "skip")
-	if !strings.Contains(askPhone, "phone number") {
+	if !strings.Contains(strings.ToLower(askPhone), "number") {
 		t.Fatalf("expected phone prompt after skipping email, got: %q", askPhone)
 	}
 	step(t, ob, sender, "+2348099999999")
@@ -638,6 +723,70 @@ func TestOnboarding_NewUserCreatedWithEmail(t *testing.T) {
 	step(t, ob, sender, "yes")
 	if len(users.created) != 1 || users.created[0].Email != "lola@example.com" {
 		t.Fatalf("expected new user with email, got %d", len(users.created))
+	}
+}
+
+func TestProcessor_ContactInboundStartsOnboarding(t *testing.T) {
+	repo := newFakeRepo()
+	proc, sent, _ := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	proc.SetOnboarder(ob)
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform:  entities.PlatformIMessage,
+		UserID:    "+15551212",
+		IsContact: true,
+		Contact: &SharedContact{
+			FirstName: "Ada",
+			Phones:    []string{"+2348012345678"},
+			Country:   "NG",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(*sent) != 1 {
+		t.Fatalf("expected 1 outbound, got %d", len(*sent))
+	}
+	if !strings.Contains((*sent)[0].Text, "Ada") {
+		t.Fatalf("expected contact confirm, got: %q", (*sent)[0].Text)
+	}
+}
+
+func TestProcessor_UnlinkedYesGoesToOnboarder(t *testing.T) {
+	repo := newFakeRepo()
+	proc, sent, _ := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	proc.SetOnboarder(ob)
+
+	sender := "+15551313"
+	process := func(text string) {
+		t.Helper()
+		raw, err := json.Marshal(InboundMessage{
+			Platform: entities.PlatformIMessage,
+			UserID:   sender,
+			Text:     text,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := proc.Process(context.Background(), raw); err != nil {
+			t.Fatalf("Process(%q): %v", text, err)
+		}
+	}
+	process("hi")
+	process("Ada")
+	process("NG")
+	process("ada-yes@example.com")
+	process("+2348012345678")
+	process("123456")
+	process("yes")
+	last := (*sent)[len(*sent)-1]
+	if !strings.Contains(strings.ToLower(last.Text), "you're in") {
+		t.Fatalf("expected onboarding completion from unlinked yes, got: %q", last.Text)
 	}
 }
 

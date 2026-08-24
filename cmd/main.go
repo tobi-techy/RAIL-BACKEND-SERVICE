@@ -4,11 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/app"
+	blendadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
@@ -61,6 +64,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "diagnose-yield":
+			if err := runDiagnoseYield(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "diagnose-yield failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 
@@ -76,6 +85,10 @@ func main() {
 	// shell. No-op unless BLEND_RECOVER_* are set. Runs in the background so it never blocks
 	// startup/health checks.
 	go maybeRunBootRecovery()
+
+	// One-off read-only yield diagnostic, activated by BLEND_DIAGNOSE_USER, for deployments
+	// without a shell. Output lands in the runtime logs.
+	go maybeRunBootDiagnose()
 
 	if err := application.Start(); err != nil {
 		sendFatalAlert("Failed to start application", err)
@@ -291,4 +304,114 @@ func maybeRunBootRecovery() {
 		return
 	}
 	fmt.Println("========== BLEND BOOT RECOVERY COMPLETE ==========")
+}
+
+// runDiagnoseYield prints a comprehensive diagnostic of where a user's yield (stash)
+// funds are across Blend, Circle wallets, DB state, and in-flight withdrawals/redemptions.
+// It is read-only — no funds move, no state changes.
+//
+//	rail_service diagnose-yield -user <uuid>
+func runDiagnoseYield(args []string) error {
+	fs := flag.NewFlagSet("diagnose-yield", flag.ContinueOnError)
+	userID := fs.String("user", "", "user UUID to diagnose")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+	if *userID == "" {
+		fs.Usage()
+		return fmt.Errorf("-user is required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return diagnoseYield(ctx, *userID, os.Stdout)
+}
+
+// diagnoseYield loads config, opens the DB, builds the Circle + Blend clients and runs the
+// read-only diagnostic. Shared by the `diagnose-yield` subcommand and the boot-time trigger
+// so both behave identically. Missing Circle/Blend credentials degrade to partial output
+// rather than failing — the DB half of the picture is still worth printing.
+func diagnoseYield(ctx context.Context, userID string, out io.Writer) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return fmt.Errorf("create logger: %w", err)
+	}
+
+	// Connect to the database
+	db, err := database.NewConnection(cfg.Database)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer db.Close()
+
+	dbx := sqlx.NewDb(db, "postgres")
+
+	// Build Circle client (for on-chain balance reads)
+	var circleClient *circleadapter.HTTPClient
+	if strings.TrimSpace(cfg.Circle.APIKey) != "" {
+		circleClient, err = circleadapter.NewHTTPClient(circleadapter.Config{
+			APIKey:       cfg.Circle.APIKey,
+			BaseURL:      cfg.Circle.BaseURL,
+			Environment:  cfg.Circle.Environment,
+			EntitySecret: cfg.Circle.EntitySecret,
+			PublicKeyPEM: cfg.Circle.PublicKeyPEM,
+		}, logger)
+		if err != nil {
+			logger.Warn("diagnose-yield: Circle client init failed, will skip on-chain balances", zap.Error(err))
+			circleClient = nil
+		}
+	} else {
+		logger.Warn("diagnose-yield: CIRCLE_API_KEY not set, will skip on-chain balances")
+	}
+
+	// Build Blend client (for balance/returns/positions)
+	var blendClient *blendadapter.Client
+	if cfg.Blend.Enabled && strings.TrimSpace(cfg.Blend.APIKey) != "" {
+		blendClient, err = blendadapter.NewClient(blendadapter.Config{
+			BaseURL:       cfg.Blend.BaseURL,
+			APIKey:        cfg.Blend.APIKey,
+			AccountTypeID: cfg.Blend.AccountTypeID,
+		}, logger)
+		if err != nil {
+			logger.Warn("diagnose-yield: Blend client init failed, will skip Blend API calls", zap.Error(err))
+			blendClient = nil
+		}
+	} else {
+		logger.Warn("diagnose-yield: Blend not enabled or API key not set, will skip Blend API calls")
+	}
+
+	return recovery.DiagnoseYield(ctx, dbx, blendClient, circleClient, recovery.DiagnoseParams{
+		UserID: userID,
+	}, out)
+}
+
+// maybeRunBootDiagnose runs the read-only yield diagnostic on startup when activated by an
+// env var, for deployments (AtlasFlow) where there is no shell to run `diagnose-yield`
+// manually. No-op unless BLEND_DIAGNOSE_USER is set. Output goes to stdout so it lands in the
+// deployment's Runtime Logs. Read-only: it moves no funds and changes no state, so it is safe
+// to leave configured across restarts (it simply reprints on each boot).
+//
+//	BLEND_DIAGNOSE_USER = user UUID to diagnose
+func maybeRunBootDiagnose() {
+	userID := strings.TrimSpace(os.Getenv("BLEND_DIAGNOSE_USER"))
+	if userID == "" {
+		return // not activated
+	}
+
+	fmt.Printf("\n========== BLEND BOOT DIAGNOSTIC (user=%s) ==========\n", userID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if err := diagnoseYield(ctx, userID, os.Stdout); err != nil {
+		fmt.Printf("========== BLEND BOOT DIAGNOSTIC FAILED: %v ==========\n", err)
+		return
+	}
+	fmt.Println("========== BLEND BOOT DIAGNOSTIC COMPLETE ==========")
 }

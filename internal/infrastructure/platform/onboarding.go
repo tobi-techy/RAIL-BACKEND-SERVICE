@@ -66,13 +66,14 @@ type OnboardingLinker interface {
 type onboardingStep string
 
 const (
-	stepName     onboardingStep = "awaiting_name"
-	stepCountry  onboardingStep = "awaiting_country"
-	stepEmail    onboardingStep = "awaiting_email"
-	stepEmailOTP onboardingStep = "awaiting_email_otp"
-	stepPhone    onboardingStep = "awaiting_phone"
-	stepOTP      onboardingStep = "awaiting_otp"
-	stepConsent  onboardingStep = "awaiting_consent"
+	stepName           onboardingStep = "awaiting_name"
+	stepConfirmContact onboardingStep = "awaiting_contact_confirm"
+	stepCountry        onboardingStep = "awaiting_country"
+	stepEmail          onboardingStep = "awaiting_email"
+	stepEmailOTP       onboardingStep = "awaiting_email_otp"
+	stepPhone          onboardingStep = "awaiting_phone"
+	stepOTP            onboardingStep = "awaiting_otp"
+	stepConsent        onboardingStep = "awaiting_consent"
 )
 
 // onboardingState is the per-sender progress persisted in Redis.
@@ -95,6 +96,7 @@ type OnboardInput struct {
 	SenderID string
 	ThreadID string
 	Text     string
+	Contact  *SharedContact
 }
 
 // ChatOnboarder walks an unknown messaging sender through account creation:
@@ -179,20 +181,39 @@ func (c *ChatOnboarder) clear(ctx context.Context, key string) {
 func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformReply, error) {
 	key := onboardingKey(in.Platform, in.SenderID)
 	text := strings.TrimSpace(in.Text)
+	contact := in.Contact
 
 	var st onboardingState
 	if err := c.store.Get(ctx, key, &st); err != nil || st.Step == "" {
-		// New sender — greet, share the app link, and ask for their name.
 		st = onboardingState{Step: stepName}
+		if contact != nil {
+			c.mergeContact(&st, contact)
+			if reply, err := c.afterContact(ctx, key, &st); err != nil {
+				return nil, err
+			} else if reply != nil {
+				return reply, nil
+			}
+		}
 		if err := c.save(ctx, key, st); err != nil {
 			return nil, err
 		}
-		return textReply(c.introMessage()), nil
+		return textReply(c.introMessage(in.Platform)), nil
+	}
+
+	if contact != nil {
+		c.mergeContact(&st, contact)
+		if reply, err := c.afterContact(ctx, key, &st); err != nil {
+			return nil, err
+		} else if reply != nil {
+			return reply, nil
+		}
 	}
 
 	switch st.Step {
 	case stepName:
 		return c.handleName(ctx, key, &st, text)
+	case stepConfirmContact:
+		return c.handleConfirmContact(ctx, key, &st, text)
 	case stepCountry:
 		return c.handleCountry(ctx, key, &st, text)
 	case stepEmail:
@@ -206,23 +227,133 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 	case stepConsent:
 		return c.handleConsent(ctx, key, &st, in, text)
 	default:
-		// Unknown state — reset and greet fresh.
 		c.clear(ctx, key)
-		return textReply(c.introMessage()), nil
+		return textReply(c.introMessage(in.Platform)), nil
 	}
+}
+
+func (c *ChatOnboarder) mergeContact(st *onboardingState, contact *SharedContact) {
+	if st == nil || contact == nil {
+		return
+	}
+	if st.FirstName == "" {
+		if n := contact.FirstNameResolved(); n != "" {
+			st.FirstName = n
+		}
+	}
+	if st.Email == "" {
+		st.Email = contact.PrimaryEmail()
+	}
+	if st.Country == "" {
+		if cc := normalizeCountry(contact.Country); cc != "" {
+			st.Country = cc
+		}
+	}
+	if st.Phone == "" {
+		raw := contact.PrimaryPhone()
+		if st.Country == "" {
+			if inferred := inferCountryFromPhone(raw); inferred != "" {
+				st.Country = inferred
+			}
+		}
+		if phone, ok := normalizePhone(raw, st.Country); ok {
+			st.Phone = phone
+			if st.Country == "" {
+				st.Country = inferCountryFromPhone(phone)
+			}
+		}
+	}
+}
+
+// afterContact jumps the state machine when a shared card filled enough fields.
+// Returns a non-nil reply when the card advanced the conversation on its own.
+func (c *ChatOnboarder) afterContact(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+	if st.FirstName == "" {
+		return nil, nil
+	}
+
+	// Existing RAIL account on the card email — prove ownership before linking.
+	if st.Email != "" && st.UserID == "" && st.Step != stepEmailOTP {
+		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
+			return c.handleEmail(ctx, key, st, st.Email)
+		}
+	}
+
+	if st.Phone != "" && st.FirstName != "" && st.Step != stepOTP && st.Step != stepConsent && st.Step != stepEmailOTP {
+		st.Step = stepConfirmContact
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+	}
+
+	if st.Country == "" {
+		st.Step = stepCountry
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.countryPrompt(st.FirstName)), nil
+	}
+
+	if st.Phone == "" {
+		st.Step = stepPhone
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.phonePrompt()), nil
+	}
+
+	return nil, nil
+}
+
+func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+	if isContactReject(text) {
+		st.Phone = ""
+		st.Email = ""
+		st.Step = stepPhone
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply("Got it — whose number should I text the code to? Include the country code, like +2348012345678."), nil
+	}
+	if text != "" && !isAffirmative(text) && !looksLikeOTP(text) {
+		// They typed something else — treat as a correction of the name.
+		if name := parseFirstName(text); name != "" && !strings.Contains(strings.ToLower(text), "yes") {
+			// If it's clearly a short name correction, keep the phone and re-confirm.
+			if len(strings.Fields(text)) == 1 {
+				st.FirstName = name
+				if err := c.save(ctx, key, *st); err != nil {
+					return nil, err
+				}
+				return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+			}
+		}
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+	}
+	if looksLikeOTP(text) {
+		return c.handleOTP(ctx, key, st, text)
+	}
+	return c.sendPhoneOTP(ctx, key, st)
+}
+
+func looksLikeOTP(text string) bool {
+	return len(digitsOnly(text)) == 6
 }
 
 func (c *ChatOnboarder) handleName(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
 	name := parseFirstName(text)
 	if name == "" {
-		return textReply("What should I call you? Just your first name is fine."), nil
+		return textReply("What should I call you? First name is plenty."), nil
 	}
 	st.FirstName = name
-	st.Step = stepCountry
-	if err := c.save(ctx, key, *st); err != nil {
-		return nil, err
+	if st.Country == "" {
+		st.Step = stepCountry
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.countryPrompt(name)), nil
 	}
-	return textReply(fmt.Sprintf("Nice to meet you, %s. Which country are you in? You can say the name (like Nigeria) or its code (like NG).", name)), nil
+	return c.advancePastCountry(ctx, key, st)
 }
 
 func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
@@ -236,10 +367,27 @@ func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboa
 			if err := c.save(ctx, key, *st); err != nil {
 				return nil, err
 			}
-			return textReply("Which country are you in? You can say the name (like Nigeria) or its code (like NG)."), nil
+			return textReply("Where's home — Nigeria, Ghana, the US? Name or code is fine."), nil
 		}
 	}
 	st.Country = country
+	return c.advancePastCountry(ctx, key, st)
+}
+
+func (c *ChatOnboarder) advancePastCountry(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+	// Contact already gave us an email — run the existing-account check.
+	if st.Email != "" {
+		return c.handleEmail(ctx, key, st, st.Email)
+	}
+	// Keep the optional email beat for typing-path users so we can link an
+	// existing account. Contact-share users without an email skip it.
+	if st.Phone != "" {
+		st.Step = stepConfirmContact
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+	}
 	st.Step = stepEmail
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
@@ -255,7 +403,7 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply("Got it. What's your phone number? Include your country code, like +2348012345678 — I'll text you a code to confirm it."), nil
+		return textReply(c.phonePrompt()), nil
 	}
 	if email == "" {
 		return textReply(c.emailPrompt()), nil
@@ -293,11 +441,18 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 		return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", email)), nil
 	}
 
+	if st.Phone != "" {
+		st.Step = stepConfirmContact
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+	}
 	st.Step = stepPhone
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply("Got it. What's your phone number? Include your country code, like +2348012345678 — I'll text you a code to confirm it."), nil
+	return textReply(c.phonePrompt()), nil
 }
 
 func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
@@ -329,29 +484,40 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onbo
 		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 	}
 	st.UserID = existing.ID.String()
+	if st.Phone != "" {
+		st.Step = stepConfirmContact
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+	}
 	st.Step = stepPhone
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply("Verified. What's your phone number? Include your country code, like +2348012345678 — I'll text a code to confirm it."), nil
+	return textReply(c.phonePrompt()), nil
 }
 
 func (c *ChatOnboarder) handlePhone(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
 	phone, ok := normalizePhone(text, st.Country)
 	if !ok {
-		return textReply("Hmm, that number doesn't look right. Send it with your country code, like +2348012345678."), nil
+		return textReply("That number doesn't look right. Send it with the country code, like +2348012345678."), nil
 	}
-	if _, err := c.verifier.GenerateAndSendCode(ctx, "phone", phone); err != nil {
+	st.Phone = phone
+	return c.sendPhoneOTP(ctx, key, st)
+}
+
+func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+	if _, err := c.verifier.GenerateAndSendCode(ctx, "phone", st.Phone); err != nil {
 		c.logger.Warn("onboarding OTP send failed", zap.Error(err))
 		return textReply(otpSendErrorMessage(err)), nil
 	}
-	st.Phone = phone
 	st.Step = stepOTP
 	st.OTPAttempts = 0
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply(fmt.Sprintf("I just texted a 6-digit code to %s. Reply with it here to confirm.", phone)), nil
+	return textReply(fmt.Sprintf("Just texted a code to %s. Drop it here.", maskPhone(st.Phone))), nil
 }
 
 func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
@@ -384,12 +550,12 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardin
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply(c.consentMessage()), nil
+	return c.consentReply(), nil
 }
 
 func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	if !isAffirmative(text) {
-		return textReply("No rush — reply YES to agree to RAIL's Terms of Service and Privacy Policy, and I'll finish setting up your account."), nil
+		return c.consentReply(), nil
 	}
 	uid, err := uuid.Parse(st.UserID)
 	if err != nil {
@@ -398,18 +564,21 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 	}
 	if err := c.provisioner.ProvisionPhoneFirstUser(ctx, uid, st.FirstName, st.Country, st.Phone); err != nil {
 		c.logger.Error("phone-first provisioning failed", zap.Error(err), zap.String("user_id", st.UserID))
-		return textReply("I couldn't finish setting up your account just now. Reply YES to try again."), nil
+		return textReply("I couldn't finish setting up your account just now. Tap I agree to try again."), nil
 	}
 	if _, err := c.linker.LinkVerified(ctx, uid, in.Platform, in.SenderID); err != nil {
 		c.logger.Error("phone-first auto-link failed", zap.Error(err), zap.String("user_id", st.UserID))
-		return textReply("I couldn't finish linking this chat to your account just now. Reply YES to try again."), nil
+		return textReply("I couldn't finish linking this chat just now. Tap I agree to try again."), nil
 	}
 	// Fire the first-login goal seeder for the new user so the goal_progress
 	// worker has a 7-step ladder to track on its next tick. Async + recover
 	// so a failure here can't fail the onboarding completion.
 	SeedBabyStepsOnLink(c.babySteps, uid, c.logger)
 	c.clear(ctx, key)
-	return textReply(c.completionMessage(st.FirstName, st.Country)), nil
+	return &PlatformReply{
+		Text:   c.completionMessage(st.FirstName, st.Country),
+		Effect: EffectCelebration,
+	}, nil
 }
 
 // ensureUser finds an existing user by the verified email (already proven) or
@@ -479,34 +648,68 @@ func (c *ChatOnboarder) appLink() string {
 }
 
 func (c *ChatOnboarder) emailPrompt() string {
-	return "What's your email address? If you already have a RAIL account, use the same email — I'll check and link this chat. Reply 'skip' if you'd rather not say."
+	return "Got an email I can use? Same one as a RAIL account if you already have one. Or say skip."
 }
 
-func (c *ChatOnboarder) introMessage() string {
-	return fmt.Sprintf("Hey! I'm Miriam, your money assistant at RAIL. I can set you up with an account right here in a couple of messages.\n\nFirst, grab the RAIL app: %s. That's where you'll approve any money moves with Face ID, so it's worth downloading now.\n\nTo get started, what's your first name?", c.appLink())
+func (c *ChatOnboarder) phonePrompt() string {
+	return "What's a number I can text a code to? Include the country code — like +2348012345678."
+}
+
+func (c *ChatOnboarder) countryPrompt(name string) string {
+	if strings.TrimSpace(name) != "" {
+		return fmt.Sprintf("Nice to meet you, %s. Where's home — Nigeria, Ghana, the US, somewhere else?", name)
+	}
+	return "Where's home — Nigeria, Ghana, the US, somewhere else?"
+}
+
+func (c *ChatOnboarder) contactConfirmMessage(name, phone string) string {
+	who := strings.TrimSpace(name)
+	if who == "" {
+		who = "Okay"
+	}
+	return fmt.Sprintf("%s. Nice. I'll text a code to %s to make sure it's you — then we're in. Sound right?", who, maskPhone(phone))
+}
+
+func (c *ChatOnboarder) introMessage(plat entities.Platform) string {
+	if plat == entities.PlatformIMessage {
+		return "Hey — I'm Miriam. I help people actually keep money, not just stare at it.\n\nEasiest start: share your contact (tap +, then Share Contact). Or just tell me your first name."
+	}
+	return "Hey — I'm Miriam. I help people actually keep money, not just stare at it.\n\nWhat should I call you?"
 }
 
 func (c *ChatOnboarder) consentMessage() string {
-	return "Almost done. Do you agree to RAIL's Terms of Service and Privacy Policy? Reply YES to continue."
+	return "Last thing — RAIL's terms and privacy policy. Tap I agree and I'll finish setting you up."
+}
+
+func (c *ChatOnboarder) consentReply() *PlatformReply {
+	title := c.consentMessage()
+	return &PlatformReply{
+		Text: title,
+		Poll: &PollRequest{Title: title, Options: []string{"I agree", "Not yet"}},
+	}
 }
 
 func (c *ChatOnboarder) completionMessage(name, country string) string {
-	greeting := "You're all set"
+	who := "You're in"
 	if strings.TrimSpace(name) != "" {
-		greeting = fmt.Sprintf("You're all set, %s", name)
+		who = fmt.Sprintf("You're in, %s", name)
 	}
 
-	countryLine := "Your money will be kept safe in stable dollars, ready to spend or invest whenever you are."
+	countryLine := "Wallet's spinning up."
 	switch strings.ToUpper(strings.TrimSpace(country)) {
 	case "NG":
-		countryLine = "I'll keep your money safe in stable dollars and convert to naira the moment you need it."
+		countryLine = "Wallet's spinning up. I'll keep it in stable dollars until you need naira."
 	case "GH":
-		countryLine = "I'll keep your money safe in stable dollars and convert to cedis the moment you need it."
+		countryLine = "Wallet's spinning up. I'll keep it in stable dollars until you need cedis."
 	case "KE":
-		countryLine = "I'll keep your money safe in stable dollars and convert to shillings the moment you need it."
+		countryLine = "Wallet's spinning up. I'll keep it in stable dollars until you need shillings."
 	}
 
-	return fmt.Sprintf("%s! Your RAIL account is ready and your wallet is being created now.\n\n%s\n\nOpen the app to approve money moves, add money, and unlock USD accounts, cards and investing: %s\n\nOne last thing — what are you saving for? Text me a goal (like an emergency fund or a new phone) and I'll set up a plan and track it for you. Ask me anything any time.", greeting, countryLine, c.appLink())
+	app := ""
+	if c.appURL != "" {
+		app = " " + c.appURL
+	}
+	return fmt.Sprintf("%s. %s%s\n\nWhat's money actually for, for you, right now? A trip, breathing room, something you want — anything.", who, countryLine, app)
 }
 
 func textReply(s string) *PlatformReply {
@@ -636,7 +839,7 @@ func isAffirmative(text string) bool {
 	s := strings.ToLower(strings.TrimSpace(text))
 	s = strings.Trim(s, ".!")
 	switch s {
-	case "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "agree", "i agree", "yes i agree", "confirm", "accept", "i accept":
+	case "yes", "y", "yeah", "yep", "yup", "sure", "ok", "okay", "agree", "i agree", "yes i agree", "confirm", "accept", "i accept", "sound right", "that's me", "thats me", "it's me", "its me":
 		return true
 	}
 	return strings.HasPrefix(s, "yes")
