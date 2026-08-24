@@ -94,6 +94,15 @@ type ChatResponse struct {
 	// enforcement that keeps money from moving on a model-supplied confirm flag.
 	PendingAction *PendingAction
 
+	// Messaging UX sidecars populated from engagement tools (send_poll,
+	// connect_bank, celebrate). The platform adapter turns these into polls,
+	// app cards, and iMessage effects.
+	PollQuestion string
+	PollOptions  []string
+	OpenURL      string
+	OpenTitle    string
+	Effect       string
+
 	// grounding accumulates tool-result JSON produced while answering, so the
 	// response guard can tell which figures are real. Internal; not surfaced to
 	// callers.
@@ -431,13 +440,59 @@ func (a *Agent) planExecuteObserve(
 		}
 	}
 
-	return &ChatResponse{
+	out := &ChatResponse{
 		Content:    resp.Content,
 		TokensUsed: totalTokens,
 		Provider:   resp.Provider,
 		Model:      resp.Model,
 		grounding:  toolResultCorpus(allToolResults),
-	}, nil
+	}
+	applyUXFromTools(out, allToolResults)
+	return out, nil
+}
+
+func applyUXFromTools(resp *ChatResponse, results []ToolResult) {
+	if resp == nil {
+		return
+	}
+	for _, tr := range results {
+		if tr.Error != "" || tr.Data == nil {
+			continue
+		}
+		switch tr.Name {
+		case "send_poll":
+			if q, _ := tr.Data["question"].(string); q != "" {
+				resp.PollQuestion = q
+			}
+			resp.PollOptions = stringSlice(tr.Data["options"])
+		case "connect_bank":
+			if u, _ := tr.Data["url"].(string); u != "" {
+				resp.OpenURL = u
+				resp.OpenTitle = "Connect your bank"
+				if t, _ := tr.Data["title"].(string); t != "" {
+					resp.OpenTitle = t
+				}
+			}
+		case "celebrate":
+			resp.Effect = "celebration"
+		}
+	}
+}
+
+func stringSlice(v interface{}) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // toolResultCorpus flattens every tool result into a single string so the
@@ -914,7 +969,7 @@ var alwaysOnTools = map[string]bool{
 	"list_bill_providers": true, "get_data_plans": true, "get_cable_packages": true,
 	"validate_meter": true, "detect_network": true,
 	// Engagement
-	"celebrate": true, "send_poll": true,
+	"celebrate": true, "send_poll": true, "connect_bank": true,
 	// Debt coaching
 	"get_baby_steps": true,
 	// Bank statement analysis
@@ -1019,8 +1074,12 @@ func (a *Agent) executeReadOnlyTool(ctx context.Context, userID uuid.UUID, tc ai
 	}
 	result, err := a.deps.ToolRegistry.Execute(ctx, userID, tc.Name, tc.Arguments, a.deps)
 	if err != nil {
-		return &ToolResult{Error: err.Error(), Data: map[string]interface{}{"error": err.Error()}}
+		return &ToolResult{Name: tc.Name, Error: err.Error(), Data: map[string]interface{}{"error": err.Error()}}
 	}
+	if result == nil {
+		return &ToolResult{Name: tc.Name}
+	}
+	result.Name = tc.Name
 	return result
 }
 

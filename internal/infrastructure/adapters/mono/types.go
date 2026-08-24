@@ -3,6 +3,8 @@ package mono
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // --- API response wrapper ---
@@ -335,15 +337,23 @@ func (d *WebhookData) AccountIDStr() string {
 // WebhookAccount is the account object in webhook payloads (uses camelCase
 // for accountNumber and authMethod, unlike the REST API which uses snake_case).
 type WebhookAccount struct {
-	ID            string       `json:"_id"`
-	Name          string       `json:"name"`
-	AccountNumber string       `json:"accountNumber"`
-	Currency      string       `json:"currency"`
-	Balance       int64        `json:"balance"`
-	Type          string       `json:"type"`
-	BVN           string       `json:"bvn"`
-	AuthMethod    string       `json:"authMethod"`
-	Institution   *Institution `json:"institution"`
+	ID            string              `json:"_id"`
+	Name          string              `json:"name"`
+	AccountNumber string              `json:"accountNumber"`
+	Currency      string              `json:"currency"`
+	Balance       int64               `json:"balance"`
+	Type          string              `json:"type"`
+	BVN           string              `json:"bvn"`
+	AuthMethod    string              `json:"authMethod"`
+	Institution   *WebhookInstitution `json:"institution"`
+}
+
+// WebhookInstitution is the institution object in webhook payloads.
+// Mono webhooks use camelCase bankCode; the REST Institution type keeps bank_code.
+type WebhookInstitution struct {
+	Name     string `json:"name"`
+	BankCode string `json:"bankCode"`
+	Type     string `json:"type"`
 }
 
 // IncomeSummary is the summary in the income webhook.
@@ -356,8 +366,8 @@ type IncomeSummary struct {
 type IncomeStream struct {
 	IncomeType            string  `json:"income_type"`            // SALARY, WAGES
 	Frequency             string  `json:"frequency"`              // MONTHLY, VARIABLE
-	MonthlyAverage        int64   `json:"monthly_average"`
-	AverageIncomeAmount   int64   `json:"average_income_amount"`
+	MonthlyAverage        int64           `json:"monthly_average"`
+	AverageIncomeAmount   decimal.Decimal `json:"average_income_amount"`
 	Stability             float64 `json:"stability"`              // 0-1
 	FirstIncomeDate       string  `json:"first_income_date"`
 	LastIncomeDate        string  `json:"last_income_date"`

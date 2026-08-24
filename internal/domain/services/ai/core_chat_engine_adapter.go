@@ -206,6 +206,11 @@ func convertChatEngineResponse(resp *core.ChatEngineResponse) *ChatResponse {
 		TokensUsed:    resp.TokensUsed,
 		Provider:      resp.Provider,
 		PendingAction: resp.PendingAction,
+		PollQuestion:  resp.PollQuestion,
+		PollOptions:   resp.PollOptions,
+		OpenURL:       resp.OpenURL,
+		OpenTitle:     resp.OpenTitle,
+		Effect:        resp.Effect,
 	}
 }
 

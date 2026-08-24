@@ -94,36 +94,26 @@ func (h *MonoWebhookHandler) HandleWebhook(c *gin.Context) {
 			zap.String("data_status", dataStatus))
 
 	case "mono.events.account_updated":
-		// Data is now available — log the account details and data status.
+		// Data is now available. Log only event id + data status — no account
+		// IDs, institution names, or balances.
 		acct := event.Data.AccountObject()
 		if acct != nil {
 			dataStatus := "unknown"
 			if event.Data.Meta != nil {
 				dataStatus = event.Data.Meta.DataStatus
 			}
-			institutionName := ""
-			if acct.Institution != nil {
-				institutionName = acct.Institution.Name
-			}
 			h.logger.Info("Mono account data ready",
-				zap.String("mono_account_id", acct.ID),
-				zap.String("data_status", dataStatus),
-				zap.String("institution", institutionName),
-				zap.Int64("balance", acct.Balance))
+				zap.String("event_id", event.EventID),
+				zap.String("data_status", dataStatus))
 		}
 
 	case "mono.events.account_income":
-		// Income analysis completed — log the summary for now.
+		// Income analysis completed. Log event id + stream count only — no
+		// account names or income amounts.
 		// Future: persist income streams for Miriam's coaching context.
-		accountName := event.Data.AccountName
-		annualIncome := event.Data.AnnualIncome
-		monthlyIncome := event.Data.MonthlyIncome
-		streamCount := len(event.Data.IncomeStreams)
 		h.logger.Info("Mono income analysis received",
-			zap.String("account_name", accountName),
-			zap.Int64("annual_income", annualIncome),
-			zap.Int64("monthly_income", monthlyIncome),
-			zap.Int("income_streams", streamCount))
+			zap.String("event_id", event.EventID),
+			zap.Int("income_streams", len(event.Data.IncomeStreams)))
 
 	case "mono.events.account_reauthorized":
 		monoAccountID := ""

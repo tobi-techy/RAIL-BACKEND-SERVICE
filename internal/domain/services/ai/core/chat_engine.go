@@ -21,6 +21,11 @@ type ChatEngineResponse struct {
 	TokensUsed    int                     `json:"tokens_used"`
 	Provider      string                  `json:"provider"`
 	PendingAction *entities.PendingAction `json:"pending_action,omitempty"`
+	PollQuestion  string                  `json:"poll_question,omitempty"`
+	PollOptions   []string                `json:"poll_options,omitempty"`
+	OpenURL       string                  `json:"open_url,omitempty"`
+	OpenTitle     string                  `json:"open_title,omitempty"`
+	Effect        string                  `json:"effect,omitempty"`
 }
 
 // ProactiveOpener is a proactive message opener for ChatEngine consumers.
@@ -80,6 +85,11 @@ func (a *Agent) chatViaCore(ctx context.Context, userID, convID uuid.UUID, messa
 		TokensUsed:    coreResp.TokensUsed,
 		Provider:      coreResp.Provider,
 		PendingAction: convertPendingAction(coreResp.PendingAction),
+		PollQuestion:  coreResp.PollQuestion,
+		PollOptions:   coreResp.PollOptions,
+		OpenURL:       coreResp.OpenURL,
+		OpenTitle:     coreResp.OpenTitle,
+		Effect:        coreResp.Effect,
 	}
 
 	if len(coreResp.Cards) > 0 {

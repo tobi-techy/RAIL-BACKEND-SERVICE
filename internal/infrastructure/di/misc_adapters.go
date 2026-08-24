@@ -316,6 +316,23 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 		// canvas; carry them through so messaging can render them as cards too.
 		reply.Cards = resp.Cards
 	}
+	if resp.Effect != "" {
+		reply.Effect = resp.Effect
+	}
+	if resp.OpenURL != "" {
+		title := resp.OpenTitle
+		if title == "" {
+			title = "Open in RAIL"
+		}
+		reply.OpenApp = &platform.OpenAppRequest{Title: title, URL: resp.OpenURL}
+	}
+	if len(resp.PollOptions) > 0 {
+		q := resp.PollQuestion
+		if q == "" {
+			q = resp.Content
+		}
+		reply.Poll = &platform.PollRequest{Title: q, Options: resp.PollOptions}
+	}
 	if resp.PendingAction == nil {
 		return reply, nil
 	}

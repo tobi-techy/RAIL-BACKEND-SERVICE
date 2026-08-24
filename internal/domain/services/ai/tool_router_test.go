@@ -138,7 +138,7 @@ func TestSystemPromptToolsReferencesResolve(t *testing.T) {
 	toolNameRe := regexp.MustCompile(`ToolName\("([a-z_]+)"\)`)
 	// Verb-first snake_case tokens are tool mentions in practice; parameter
 	// names (amount_ngn, prod_id) never start with these verbs.
-	textRe := regexp.MustCompile(`\b(?:get|set|list|create|search|send|pay|move|transfer|book|find|validate|lookup|mark|audit|optimize|protect|block|unblock|pause|resume|stop|start|save|split|initiate|execute|research|copy|suggest|simulate|forget|archive|dismiss|accept|detect|request|update)_[a-z0-9_]+\b`)
+	textRe := regexp.MustCompile(`\b(?:get|set|list|create|search|send|pay|move|transfer|book|find|validate|lookup|mark|audit|optimize|protect|block|unblock|pause|resume|stop|start|save|split|initiate|execute|research|copy|suggest|simulate|forget|archive|dismiss|accept|detect|request|update|connect)_[a-z0-9_]+\b`)
 
 	for _, prompt := range []string{SystemPromptTools, SystemPromptV2} {
 		for _, re := range []*regexp.Regexp{toolNameRe, textRe} {
