@@ -433,3 +433,30 @@ func TestProcess_OrchestratorCardsRenderedInOutbound(t *testing.T) {
 		t.Fatalf("wire contract broken: %+v", decoded)
 	}
 }
+
+func TestProcess_LinkedSenderContactCardNotForwarded(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform:  entities.PlatformIMessage,
+		UserID:    "+15551234",
+		ThreadID:  "space-1",
+		IsContact: true,
+		Contact:   &SharedContact{FirstName: "Ada", Phones: []string{"+2348012345678"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal contact: %v", err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.lastMessage != "" {
+		t.Fatalf("orchestrator must not receive empty contact payload, got %q", orch.lastMessage)
+	}
+	if len(*sent) == 0 {
+		t.Fatal("expected an ack to the linked sender")
+	}
+}

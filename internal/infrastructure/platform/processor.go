@@ -239,6 +239,10 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
 	if err == nil {
+		if isContactPayload(msg) && strings.TrimSpace(msg.Text) == "" {
+			p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, "You're already linked — I don't need the card. What do you want to look at?")
+			return nil
+		}
 		return p.handleNormalMessage(ctx, msg, resolved)
 	}
 
@@ -273,6 +277,10 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 
 // handleOnboarding drives one step of chat-first account creation and delivers
 // the reply as a plain message (the sender has no linked identity yet).
+func isContactPayload(msg InboundMessage) bool {
+	return msg.IsContact || strings.TrimSpace(msg.VCardText) != "" || msg.Contact != nil
+}
+
 func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) error {
 	contact := msg.Contact
 	if contact == nil && strings.TrimSpace(msg.VCardText) != "" {

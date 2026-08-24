@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 func TestInitiateLinkingResponseJSON(t *testing.T) {
@@ -298,6 +300,9 @@ func TestWebhookAccountUpdatedJSON(t *testing.T) {
 	if acct.Institution.Name != "ALAT by WEMA" {
 		t.Errorf("expected institution.name, got %q", acct.Institution.Name)
 	}
+	if acct.Institution.BankCode != "035" {
+		t.Errorf("expected institution bankCode 035, got %q", acct.Institution.BankCode)
+	}
 	if event.Data.Meta == nil {
 		t.Fatal("expected meta to be parsed")
 	}
@@ -368,6 +373,33 @@ func TestWebhookIncomeJSON(t *testing.T) {
 	}
 	if stream.MonthlyAverage != 6532000 {
 		t.Errorf("expected monthly_average, got %d", stream.MonthlyAverage)
+	}
+}
+
+func TestWebhookIncomeJSON_FractionalAverageIncome(t *testing.T) {
+	raw := `{
+		"event": "mono.events.account_income",
+		"data": {
+			"account": "66605869b806c997c5d21234",
+			"income_streams": [
+				{
+					"income_type": "WAGES",
+					"average_income_amount": 4450666.67
+				}
+			]
+		}
+	}`
+
+	var event WebhookEvent
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(event.Data.IncomeStreams) != 1 {
+		t.Fatalf("expected 1 income stream, got %d", len(event.Data.IncomeStreams))
+	}
+	want := decimal.RequireFromString("4450666.67")
+	if !event.Data.IncomeStreams[0].AverageIncomeAmount.Equal(want) {
+		t.Errorf("average_income_amount = %s, want %s", event.Data.IncomeStreams[0].AverageIncomeAmount, want)
 	}
 }
 

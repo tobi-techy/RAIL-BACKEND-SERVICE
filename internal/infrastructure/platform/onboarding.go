@@ -83,6 +83,7 @@ type onboardingState struct {
 	Country          string         `json:"country,omitempty"`
 	CountryAttempts  int            `json:"country_attempts,omitempty"`
 	Email            string         `json:"email,omitempty"`
+	PendingEmail     string         `json:"pending_email,omitempty"`
 	EmailOTPAttempts int            `json:"email_otp_attempts,omitempty"`
 	EmailVerified    bool           `json:"email_verified,omitempty"`
 	Phone            string         `json:"phone,omitempty"`
@@ -241,8 +242,8 @@ func (c *ChatOnboarder) mergeContact(st *onboardingState, contact *SharedContact
 			st.FirstName = n
 		}
 	}
-	if st.Email == "" {
-		st.Email = contact.PrimaryEmail()
+	if st.Email == "" && st.PendingEmail == "" {
+		st.PendingEmail = contact.PrimaryEmail()
 	}
 	if st.Country == "" {
 		if cc := normalizeCountry(contact.Country); cc != "" {
@@ -270,13 +271,6 @@ func (c *ChatOnboarder) mergeContact(st *onboardingState, contact *SharedContact
 func (c *ChatOnboarder) afterContact(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
 	if st.FirstName == "" {
 		return nil, nil
-	}
-
-	// Existing RAIL account on the card email — prove ownership before linking.
-	if st.Email != "" && st.UserID == "" && st.Step != stepEmailOTP {
-		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
-			return c.handleEmail(ctx, key, st, st.Email)
-		}
 	}
 
 	if st.Phone != "" && st.FirstName != "" && st.Step != stepOTP && st.Step != stepConsent && st.Step != stepEmailOTP {
@@ -310,6 +304,7 @@ func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st
 	if isContactReject(text) {
 		st.Phone = ""
 		st.Email = ""
+		st.PendingEmail = ""
 		st.Step = stepPhone
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
@@ -332,6 +327,15 @@ func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st
 	}
 	if looksLikeOTP(text) {
 		return c.handleOTP(ctx, key, st, text)
+	}
+	if st.PendingEmail != "" {
+		st.Email = st.PendingEmail
+		st.PendingEmail = ""
+	}
+	if st.Email != "" {
+		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
+			return c.handleEmail(ctx, key, st, st.Email)
+		}
 	}
 	return c.sendPhoneOTP(ctx, key, st)
 }

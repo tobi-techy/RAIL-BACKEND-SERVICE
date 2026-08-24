@@ -332,7 +332,12 @@ func DiagnoseYield(ctx context.Context, db *sqlx.DB, blendClient *blend.Client, 
 		hasUSDC := false
 		for _, b := range balances {
 			if strings.EqualFold(b.Token.Symbol, "USDC") {
-				amt, _ := decimal.NewFromString(b.Amount)
+				amt, err := decimal.NewFromString(b.Amount)
+				if err != nil {
+					fmt.Fprintf(out, "  chain=%-6s  addr=%s  USDC=malformed amount %q\n",
+						w.Chain, truncateStr(w.Address, 20), b.Amount)
+					continue
+				}
 				totalOnChain = totalOnChain.Add(amt)
 				hasUSDC = true
 				fmt.Fprintf(out, "  chain=%-6s  addr=%s  USDC=%s  tokenId=%s\n",

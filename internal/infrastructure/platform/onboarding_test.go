@@ -231,6 +231,35 @@ func TestOnboarding_ContactCardShortcut(t *testing.T) {
 	}
 }
 
+func TestOnboarding_ContactEmailWaitsForConfirm(t *testing.T) {
+	ob, _, ver, users, _, _ := newTestOnboarder()
+	sender := "+15551114"
+	users.byEmail["existing-card@example.com"] = &entities.UserProfile{
+		ID: uuid.New(), Email: "existing-card@example.com", IsActive: true,
+	}
+
+	confirm := stepContact(t, ob, sender, SharedContact{
+		FirstName: "Ada",
+		Phones:    []string{"+2348012345678"},
+		Emails:    []string{"existing-card@example.com"},
+		Country:   "NG",
+	})
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("must not look up/OTP the card email before confirm, sent to %v", ver.sentTo)
+	}
+	if !strings.Contains(confirm, "Ada") {
+		t.Fatalf("expected phone confirm first, got: %q", confirm)
+	}
+
+	askEmailOTP := step(t, ob, sender, "yes")
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "existing-card@example.com" {
+		t.Fatalf("expected email OTP after confirm, got: %v", ver.sentTo)
+	}
+	if !strings.Contains(askEmailOTP, "emailed") {
+		t.Fatalf("expected email OTP prompt after confirm, got: %q", askEmailOTP)
+	}
+}
+
 func TestOnboarding_ContactNameOnlyStillAsksPhone(t *testing.T) {
 	ob, _, _, _, _, _ := newTestOnboarder()
 	sender := "+15551112"

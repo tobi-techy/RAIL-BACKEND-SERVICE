@@ -551,10 +551,29 @@ func RegisterEngagementTools(r *Registry) {
 	r.Register(NewTool(
 		"send_poll",
 		"Create and send a poll to the user about their finances",
-		SimpleArgs(map[string]map[string]interface{}{
-			"question": {"type": "string", "description": "Poll question"},
-			"options":  {"type": "string", "description": "Comma-separated poll options, or pass an array of 2–4 short options"},
-		}, []string{"question", "options"}),
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"question": map[string]interface{}{
+					"type":        "string",
+					"description": "Poll question",
+				},
+				"options": map[string]interface{}{
+					"description": "Comma-separated poll options, or an array of 2–4 short options",
+					"anyOf": []interface{}{
+						map[string]interface{}{"type": "string"},
+						map[string]interface{}{
+							"type":     "array",
+							"items":    map[string]interface{}{"type": "string"},
+							"minItems": 2,
+							"maxItems": 4,
+						},
+					},
+				},
+			},
+			"required":             []string{"question", "options"},
+			"additionalProperties": false,
+		},
 		core.CategoryEngagement,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
 			question, _ := args["question"].(string)
