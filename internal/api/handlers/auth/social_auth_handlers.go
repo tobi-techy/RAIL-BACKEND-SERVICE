@@ -104,6 +104,19 @@ func NewSocialAuthHandlers(
 	}
 }
 
+// enrichUserInfo sets HasPasscode on a UserInfo based on the user's passcode status.
+func (h *SocialAuthHandlers) enrichUserInfo(ctx context.Context, info *entities.UserInfo, userID uuid.UUID) {
+	if h.passcodeService == nil {
+		return
+	}
+	status, err := h.passcodeService.GetStatus(ctx, userID)
+	if err != nil {
+		h.logger.Warn("Failed to get passcode status for user info enrichment", zap.Error(err))
+		return
+	}
+	info.HasPasscode = status.Enabled
+}
+
 // GetSocialAuthURL returns OAuth authorization URL
 func (h *SocialAuthHandlers) GetSocialAuthURL(c *gin.Context) {
 	var req entities.SocialAuthURLRequest
@@ -309,14 +322,16 @@ func (h *SocialAuthHandlers) SocialLogin(c *gin.Context) {
 		zap.String("provider", string(req.Provider)),
 		zap.Bool("is_new_user", isNewUser))
 
-	c.JSON(http.StatusOK, entities.SocialLoginResponse{
+	socialResp := entities.SocialLoginResponse{
 		User:             user.ToUserInfo(),
 		AccessToken:      tokens.AccessToken,
 		RefreshToken:     tokens.RefreshToken,
 		ExpiresAt:        tokens.ExpiresAt,
 		SessionExpiresAt: h.sessionExpiryFromRefreshTTL(),
 		IsNewUser:        isNewUser,
-	})
+	}
+	h.enrichUserInfo(ctx, socialResp.User, user.ID)
+	c.JSON(http.StatusOK, socialResp)
 }
 
 // GetLinkedAccounts returns user's linked social accounts
@@ -770,7 +785,7 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, entities.AuthResponse{
+	webauthnResp := entities.AuthResponse{
 		User:                     user.ToUserInfo(),
 		AccessToken:              tokens.AccessToken,
 		RefreshToken:             tokens.RefreshToken,
@@ -778,7 +793,9 @@ func (h *SocialAuthHandlers) FinishWebAuthnLogin(c *gin.Context) {
 		SessionExpiresAt:         h.sessionExpiryFromRefreshTTL(),
 		PasscodeSessionToken:     passcodeSessionToken,
 		PasscodeSessionExpiresAt: passcodeSessionExpiresAt,
-	})
+	}
+	h.enrichUserInfo(ctx, webauthnResp.User, user.ID)
+	c.JSON(http.StatusOK, webauthnResp)
 }
 
 func (h *SocialAuthHandlers) storeWebAuthnRegistrationSession(ctx context.Context, sessionID string, session *webAuthnRegistrationSession) error {
