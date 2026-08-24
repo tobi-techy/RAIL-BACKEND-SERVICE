@@ -210,25 +210,69 @@ function makeHMACHeaders(payload: string): Record<string, string> {
   };
 }
 
-async function postToBackend(path: string, body: unknown): Promise<void> {
+// Backend POST retry policy: a transient backend failure (5xx, network blip,
+// timeout) previously meant the message was silently lost — the inbound handler
+// has no redelivery guarantee, so the user's text just vanished. We now retry
+// with backoff before giving up. 4xx (except 429) are permanent failures —
+// e.g. HMAC mismatches — and fail immediately.
+const BACKEND_MAX_ATTEMPTS = 3;
+const BACKEND_RETRY_DELAY_MS = 1500;
+const BACKEND_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+class BackendPostError extends Error {
+  status?: number;
+  constructor(path: string, status?: number) {
+    super(`backend ${path}: ${status ?? "network error"}`);
+    this.status = status;
+  }
+}
+
+async function postToBackendOnce(path: string, body: unknown): Promise<void> {
   const url = `${config.RAIL_BACKEND_URL}${path}`;
   const payload = JSON.stringify(body);
+  // Fresh timestamp+nonce per attempt: each attempt is an independent signed
+  // request; reusing a nonce would trip the bridge/backend replay guards.
   const hmacHeaders = makeHMACHeaders(payload);
 
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...hmacHeaders,
-    },
-    body: payload,
-    signal: AbortSignal.timeout(15_000),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...hmacHeaders,
+      },
+      body: payload,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new BackendPostError(path);
+  }
 
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     log.error({ url, status: resp.status, body: text.slice(0, 200) }, "backend POST failed");
-    throw new Error(`backend ${path}: ${resp.status}`);
+    throw new BackendPostError(path, resp.status);
+  }
+}
+
+async function postToBackend(path: string, body: unknown): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await postToBackendOnce(path, body);
+      return;
+    } catch (err) {
+      const status = err instanceof BackendPostError ? err.status : undefined;
+      const retryable =
+        attempt < BACKEND_MAX_ATTEMPTS &&
+        (status === undefined || BACKEND_RETRYABLE_STATUS.has(status));
+      if (!retryable) throw err;
+      log.warn(
+        { path, attempt, status: status ?? "network", retry_in_ms: BACKEND_RETRY_DELAY_MS },
+        "backend POST failed, retrying",
+      );
+      await new Promise((resolve) => setTimeout(resolve, BACKEND_RETRY_DELAY_MS * attempt));
+    }
   }
 }
 

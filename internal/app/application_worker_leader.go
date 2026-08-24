@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
@@ -9,15 +10,34 @@ import (
 )
 
 const (
-	workerLeaderTTL    = 30 * time.Second
-	workerLeaderRenew  = 10 * time.Second
-	workerLeaderRetry  = 5 * time.Second
+	workerLeaderTTL   = 30 * time.Second
+	workerLeaderRenew = 10 * time.Second
+	workerLeaderRetry = 5 * time.Second
 )
+
+// shouldStandDownAfterRenewFailure decides whether a failed lease renewal must
+// stop the worker fleet. A single transient failure (Redis pool timeout,
+// network blip) must NOT tear down ~30 workers — the teardown/restart storm
+// then re-saturates Redis and Postgres and the system flap-loops (observed in
+// production 2026-08-24: five full fleet restarts in 3.5 minutes). We stand
+// down only when leadership has DEFINITIVELY lapsed: another owner holds the
+// lease (ErrNotLeader), or failures have spanned a full TTL since the last
+// successful renewal — past that point we cannot be sure we are still leader,
+// so stopping is the safe move.
+func shouldStandDownAfterRenewFailure(err error, lastRenewed, now time.Time) bool {
+	if errors.Is(err, cache.ErrNotLeader) {
+		return true
+	}
+	return now.Sub(lastRenewed) >= workerLeaderTTL
+}
 
 func (app *Application) startRedisMonitor() {
 	if app.container == nil || app.container.RedisClient == nil {
 		return
 	}
+	// Leadership flap cycles call this repeatedly (every stopJobWorkers);
+	// stop any previous monitor first so they don't stack.
+	app.stopRedisMonitor()
 	alerter := alerting.NewTelegramAlerter(app.cfg.TelegramAlerts.BotToken, app.cfg.TelegramAlerts.ChatID)
 	monitor := cache.NewHealthMonitor(app.container.RedisClient, app.log.Zap(), 60*time.Second, func(up bool, err error) {
 		if up {
@@ -88,6 +108,11 @@ func (app *Application) maintainWorkerLeadership(ctx context.Context) {
 	defer renew.Stop()
 	defer retry.Stop()
 
+	// Last time a renewal succeeded. We just acquired leadership, so start the
+	// clock now; transient renewal failures are tolerated until this lapses a
+	// full TTL (see shouldStandDownAfterRenewFailure).
+	lastRenewed := time.Now()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -103,9 +128,17 @@ func (app *Application) maintainWorkerLeadership(ctx context.Context) {
 				continue
 			}
 			if err := app.leaderLock.Renew(ctx); err != nil {
-				app.log.Error("lost worker leadership", "error", err)
-				app.stopJobWorkers()
+				if shouldStandDownAfterRenewFailure(err, lastRenewed, time.Now()) {
+					app.log.Error("lost worker leadership — standing down", "error", err)
+					app.stopJobWorkers()
+					continue
+				}
+				app.log.Warn("leader renewal failed — tolerating while lease is still fresh",
+					"error", err,
+					"since_last_renewal", time.Since(lastRenewed).Round(time.Second).String())
+				continue
 			}
+			lastRenewed = time.Now()
 		case <-retry.C:
 			app.workerMu.Lock()
 			isLeader := app.workersStarted
