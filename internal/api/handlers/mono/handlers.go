@@ -82,7 +82,7 @@ func (h *Handlers) InitiateLink(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"redirect_url": redirectURL,
+		"mono_url": redirectURL,
 	})
 }
 
@@ -340,8 +340,8 @@ func (h *Handlers) InitiateDeposit(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"payment":      pmt,
-		"approval_url": pmt.ApprovalURL,
+		"payment":   pmt,
+		"mono_url":  pmt.ApprovalURL,
 	})
 }
 

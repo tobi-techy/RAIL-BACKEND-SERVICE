@@ -314,6 +314,15 @@ func TestFirstConversationGuidance(t *testing.T) {
 		if !strings.Contains(guidance, "get_bank_statement_analysis") {
 			t.Error("expected bank statement analysis tool reference")
 		}
+		if !strings.Contains(guidance, "LINK-FIRST") {
+			t.Error("expected LINK-FIRST FLOW reference in guidance")
+		}
+		if !strings.Contains(guidance, "AHA MOMENT") {
+			t.Error("expected AHA MOMENT reference in guidance")
+		}
+		if !strings.Contains(guidance, "data-informed") {
+			t.Error("expected data-informed discovery reference in guidance")
+		}
 	})
 
 	t.Run("contains Ramit Sethi style elements", func(t *testing.T) {

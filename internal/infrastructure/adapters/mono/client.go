@@ -187,11 +187,12 @@ func (c *HTTPClient) GetAccount(ctx context.Context, accountID string) (*Account
 
 func (c *HTTPClient) GetTransactions(ctx context.Context, accountID string, query *TransactionListQuery) ([]Transaction, error) {
 	path := buildTransactionsPath(accountID, query)
-	var resp monoResponse[TransactionsResponse]
+	// The Mono API returns data as a bare JSON array, not wrapped in an object.
+	var resp monoResponse[[]Transaction]
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
-	return resp.Data.Transactions, nil
+	return resp.Data, nil
 }
 
 func (c *HTTPClient) GetIncome(ctx context.Context, accountID string) (*IncomeAnalysis, error) {
@@ -200,6 +201,19 @@ func (c *HTTPClient) GetIncome(ctx context.Context, accountID string) (*IncomeAn
 		return nil, err
 	}
 	return &resp.Data.Income, nil
+}
+
+// InitiateIncomeAnalysis triggers the async income analysis. The response
+// body is empty (data: null) — results come via the mono.events.account_income
+// webhook. periodMonths limits analysis to N months (0 = all history).
+func (c *HTTPClient) InitiateIncomeAnalysis(ctx context.Context, accountID string, periodMonths int) error {
+	path := "/v2/accounts/" + accountID + "/income"
+	if periodMonths > 0 {
+		path += "?period=" + strconv.Itoa(periodMonths)
+	}
+	// The income endpoint returns a 200 with data: null when initiating.
+	var resp monoResponse[json.RawMessage]
+	return c.doRequest(ctx, http.MethodGet, path, nil, &resp)
 }
 
 func (c *HTTPClient) GetIdentity(ctx context.Context, accountID string) (*Identity, error) {
