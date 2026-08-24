@@ -37,6 +37,11 @@ const (
 // VerificationService defines the interface for managing verification codes
 type VerificationService interface {
 	GenerateAndSendCode(ctx context.Context, identifierType, identifier string) (string, error)
+	// GenerateAndSendCodeSync sends inline and reports the real delivery
+	// outcome instead of "queued". simulated=true means the code was stored
+	// but deliberately NOT delivered (dev environment without a sender);
+	// callers must disclose that to the user rather than claim a send.
+	GenerateAndSendCodeSync(ctx context.Context, identifierType, identifier string) (code string, simulated bool, err error)
 	VerifyCode(ctx context.Context, identifierType, identifier, code string) (bool, error)
 	CanResendCode(ctx context.Context, identifierType, identifier string) (bool, error)
 	RecordSendAttempt(ctx context.Context, identifierType, identifier string) error
@@ -87,6 +92,15 @@ func NewVerificationService(
 		go svc.sendWorker(i)
 	}
 
+	// Make delivery capability visible at startup: a nil sender with a
+	// dev-classified environment silently simulates sends, which is exactly
+	// the misconfiguration that looks like "OTP claimed sent, nothing arrived".
+	logger.Info("verification delivery config",
+		zap.Bool("email_configured", emailSender != nil),
+		zap.Bool("sms_configured", smsSender != nil),
+		zap.String("environment", cfg.Environment),
+	)
+
 	return svc
 }
 
@@ -115,17 +129,8 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 			zap.String("code", code))
 	}
 
-	verificationData := entities.VerificationCodeData{
-		Code:      code,
-		Attempts:  0,
-		ExpiresAt: time.Now().Add(verificationCodeTTL),
-		CreatedAt: time.Now(),
-	}
-
-	key := fmt.Sprintf("verification:%s:%s", identifierType, identifier)
-	if err := s.redisClient.Set(opCtx, key, verificationData, verificationCodeTTL); err != nil {
-		s.logger.Error("Failed to store verification code in Redis", zap.Error(err), zap.String("key", key))
-		return "", fmt.Errorf("failed to store verification code: %w", err)
+	if err := s.storeCode(opCtx, identifierType, identifier, code); err != nil {
+		return "", err
 	}
 
 	// Fail fast if delivery infrastructure is not configured for this identifier type.
@@ -164,6 +169,88 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 
 	s.logger.Info("Verification code generated and queued", zap.String("identifier", identifier))
 	return code, nil
+}
+
+// GenerateAndSendCodeSync is the honest variant used by conversational
+// onboarding: the send happens inline before the caller replies "sent", so a
+// provider failure reaches the user instead of dying in the background worker.
+// simulated=true means no sender exists for this environment (dev bypass) and
+// nothing was delivered; callers must disclose that rather than claim a send.
+func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, identifierType, identifier string) (string, bool, error) {
+	opCtx, cancel := withTimeout(ctx, sendOperationTimeout)
+	defer cancel()
+
+	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+
+	if err := s.checkSendRateLimits(opCtx, identifierType, identifier); err != nil {
+		return "", false, err
+	}
+
+	code, err := generateNumericCode(verificationCodeLength)
+	if err != nil {
+		s.logger.Error("Failed to generate verification code", zap.Error(err))
+		return "", false, fmt.Errorf("failed to generate verification code: %w", err)
+	}
+
+	if err := s.storeCode(opCtx, identifierType, identifier, code); err != nil {
+		return "", false, err
+	}
+
+	if err := s.validateDelivery(identifierType); err != nil {
+		return "", false, err
+	}
+
+	// Dev without a configured sender: validateDelivery let it through, but
+	// nothing would actually go out. Surface that as simulated instead of
+	// pretending the message was delivered.
+	simulated := s.deliverySimulated(identifierType)
+	if simulated {
+		s.logger.Info("DEV MODE: verification code simulated (no sender configured)",
+			zap.String("identifier_type", identifierType),
+			zap.String("identifier", identifier))
+		return code, true, nil
+	}
+
+	req := sendRequest{identifierType: identifierType, identifier: identifier, code: code}
+	sendCtx, cancel2 := withTimeout(opCtx, sendOperationTimeout)
+	defer cancel2()
+	if err := s.sendCode(sendCtx, req); err != nil {
+		s.logger.Error("Failed to send verification code",
+			zap.Error(err),
+			zap.String("identifier_type", identifierType),
+			zap.String("identifier", identifier))
+		return "", false, fmt.Errorf("failed to send verification code: %w", err)
+	}
+	return code, false, nil
+}
+
+func (s *verificationService) storeCode(ctx context.Context, identifierType, identifier, code string) error {
+	verificationData := entities.VerificationCodeData{
+		Code:      code,
+		Attempts:  0,
+		ExpiresAt: time.Now().Add(verificationCodeTTL),
+		CreatedAt: time.Now(),
+	}
+	key := fmt.Sprintf("verification:%s:%s", identifierType, identifier)
+	if err := s.redisClient.Set(ctx, key, verificationData, verificationCodeTTL); err != nil {
+		s.logger.Error("Failed to store verification code in Redis", zap.Error(err), zap.String("key", key))
+		return fmt.Errorf("failed to store verification code: %w", err)
+	}
+	return nil
+}
+
+// deliverySimulated reports whether a send for this identifier type would be a
+// no-op simulation (dev environment, sender absent). Only call after
+// validateDelivery has passed.
+func (s *verificationService) deliverySimulated(identifierType string) bool {
+	switch identifierType {
+	case "email":
+		return s.emailSender == nil && isDevEnvironment(s.config.Environment)
+	case "phone":
+		return s.smsSender == nil && isDevEnvironment(s.config.Environment)
+	default:
+		return false
+	}
 }
 
 func isDevEnvironment(env string) bool {

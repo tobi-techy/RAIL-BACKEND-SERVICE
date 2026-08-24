@@ -295,9 +295,13 @@ const typingKeepers = new Map<string, TypingKeeper>();
 
 function startTypingKeeper(threadID: string, space: Space): void {
   stopTypingKeeper(threadID);
-  space.startTyping().catch(() => {});
+  space.startTyping().catch((err) => {
+    log.warn({ err, thread_id: threadID }, "startTyping failed (provider may not support typing indicators)");
+  });
   const refresh = setInterval(() => {
-    space.startTyping().catch(() => {});
+    space.startTyping().catch((err) => {
+      log.warn({ err, thread_id: threadID }, "startTyping refresh failed");
+    });
   }, TYPING_REFRESH_MS);
   const deadline = setTimeout(() => {
     log.warn({ thread_id: threadID }, "typing keeper hit safety deadline");
@@ -312,7 +316,9 @@ function stopTypingKeeper(threadID: string): void {
   clearInterval(keeper.refresh);
   clearTimeout(keeper.deadline);
   typingKeepers.delete(threadID);
-  spaces.get(threadID)?.stopTyping().catch(() => {});
+  spaces.get(threadID)?.stopTyping().catch((err) => {
+    log.warn({ err, thread_id: threadID }, "stopTyping failed");
+  });
 }
 
 async function sendToSpace(msg: OutboundMessage): Promise<boolean> {

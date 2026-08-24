@@ -32,10 +32,12 @@ type OnboardingStateStore interface {
 	Exists(ctx context.Context, key string) (bool, error)
 }
 
-// OnboardingOTPVerifier sends and checks SMS one-time codes. Satisfied by the
-// domain VerificationService.
+// OnboardingOTPVerifier sends and checks one-time codes. GenerateAndSendCodeSync
+// is synchronous and reports real delivery: err means the send failed (tell the
+// user), simulated=true means dev mode stored the code without a sender
+// (disclose it, never claim a send). Satisfied by the domain VerificationService.
 type OnboardingOTPVerifier interface {
-	GenerateAndSendCode(ctx context.Context, identifierType, identifier string) (string, error)
+	GenerateAndSendCodeSync(ctx context.Context, identifierType, identifier string) (code string, simulated bool, err error)
 	VerifyCode(ctx context.Context, identifierType, identifier, code string) (bool, error)
 }
 
@@ -420,8 +422,11 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 		}
 		// Found an existing account. Prove ownership by sending an OTP to the
-		// registered email before we link this chat to it.
-		if _, err := c.verifier.GenerateAndSendCode(ctx, "email", email); err != nil {
+		// registered email before we link this chat to it. Synchronous send:
+		// a provider failure reaches the user instead of dying in the
+		// background worker after we already claimed success.
+		code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "email", email)
+		if err != nil {
 			c.logger.Warn("onboarding email OTP send failed", zap.Error(err))
 			return textReply(otpSendErrorMessage(err)), nil
 		}
@@ -441,6 +446,9 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 		st.EmailOTPAttempts = 0
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
+		}
+		if simulated {
+			return textReply(fmt.Sprintf("No email provider is configured here, so nothing was actually sent. Test code: %s.", code)), nil
 		}
 		return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", email)), nil
 	}
@@ -512,7 +520,8 @@ func (c *ChatOnboarder) handlePhone(ctx context.Context, key string, st *onboard
 }
 
 func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
-	if _, err := c.verifier.GenerateAndSendCode(ctx, "phone", st.Phone); err != nil {
+	code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "phone", st.Phone)
+	if err != nil {
 		c.logger.Warn("onboarding OTP send failed", zap.Error(err))
 		return textReply(otpSendErrorMessage(err)), nil
 	}
@@ -520,6 +529,9 @@ func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboar
 	st.OTPAttempts = 0
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
+	}
+	if simulated {
+		return textReply(fmt.Sprintf("No SMS provider is configured here, so nothing was actually texted. Test code: %s.", code)), nil
 	}
 	return textReply(fmt.Sprintf("Just texted a code to %s. Drop it here.", maskPhone(st.Phone))), nil
 }
