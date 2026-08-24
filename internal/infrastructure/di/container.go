@@ -729,6 +729,11 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
 	container.initializePlatformMessaging()
 
+	// Chat-first onboarding for unlinked senders — must run after
+	// initializePlatformMessaging (processor/linking) and after
+	// VerificationService + OnboardingService exist.
+	container.wireChatOnboarding()
+
 	// Initialize Mono open-banking adapter + service (gated on API key)
 	if err := container.initializeMono(); err != nil {
 		zapLog.Warn("Mono initialization failed, open-banking features degraded", zap.Error(err))

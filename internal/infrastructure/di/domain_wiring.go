@@ -1292,6 +1292,64 @@ type Embedder interface {
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
 }
 
+// wireChatOnboarding enables chat-first account creation for unlinked
+// messaging senders (name → country → email+OTP → phone+OTP → consent →
+// Tier-1 user + wallet + auto-link). MUST be called after every dependency
+// exists: OnboardingService + BabyStepsSeeder (set in initializeDomainServices),
+// VerificationService (container.go), and platformProcessor/platformLinking
+// (initializePlatformMessaging). It previously ran inside
+// initializeDomainServices, where VerificationService is still nil, so the
+// gate silently failed and unlinked senders always got the legacy
+// "Please link your account first" fallback instead of onboarding.
+func (c *Container) wireChatOnboarding() {
+	if !c.Config.Platform.OnboardingEnabled {
+		return
+	}
+	// Missing deps are logged individually: the original bug was a silent
+	// nil VerificationService here, and a combined guard would hide any
+	// future init-order regression the same way.
+	var missing []string
+	if c.platformProcessor == nil {
+		missing = append(missing, "platformProcessor (initializePlatformMessaging)")
+	}
+	if c.platformLinking == nil {
+		missing = append(missing, "platformLinking (initializePlatformMessaging)")
+	}
+	if c.RedisClient == nil {
+		missing = append(missing, "RedisClient")
+	}
+	if c.VerificationService == nil {
+		missing = append(missing, "VerificationService")
+	}
+	if c.UserRepo == nil {
+		missing = append(missing, "UserRepo")
+	}
+	if len(missing) > 0 {
+		c.ZapLog.Warn("chat onboarding disabled: missing dependencies — unlinked senders will get the legacy link-first fallback",
+			zap.Strings("missing", missing))
+		return
+	}
+	onboarder := platform.NewChatOnboarder(
+		c.RedisClient,
+		c.VerificationService,
+		c.UserRepo,
+		c.OnboardingService,
+		c.platformLinking,
+		c.Config.Platform.AppDownloadURL,
+		c.ZapLog,
+	)
+	c.platformProcessor.SetOnboarder(onboarder)
+	// Fire the first-login Baby Steps seeder from both paths: iMessage
+	// handshake (processor.tryCompleteHandshake) and chat-first onboarding
+	// completion (onboarder.handleConsent). The seeder is idempotent —
+	// HasAnyGoal gates the inserts — so racing both paths is safe.
+	if c.BabyStepsSeeder != nil {
+		c.platformProcessor.SetBabyStepsSeeder(c.BabyStepsSeeder)
+		onboarder.SetBabyStepsSeeder(c.BabyStepsSeeder)
+	}
+	c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
+}
+
 func (c *Container) initializeDomainServices() error {
 	// Use Circle supported chains when Circle is the wallet provider, fall back to Bridge chains.
 	walletChainSource := c.Config.Bridge.SupportedChains
@@ -1342,31 +1400,6 @@ func (c *Container) initializeDomainServices() error {
 
 	// Inject onboarding service back into wallet service to complete circular dependency
 	c.WalletService.SetOnboardingService(c.OnboardingService)
-
-	// Enable chat-first onboarding for unlinked messaging senders now that the
-	// onboarding service (Tier 1 provisioning) exists.
-	if c.Config.Platform.OnboardingEnabled && c.platformProcessor != nil && c.platformLinking != nil &&
-		c.RedisClient != nil && c.VerificationService != nil && c.UserRepo != nil {
-		onboarder := platform.NewChatOnboarder(
-			c.RedisClient,
-			c.VerificationService,
-			c.UserRepo,
-			c.OnboardingService,
-			c.platformLinking,
-			c.Config.Platform.AppDownloadURL,
-			c.ZapLog,
-		)
-		c.platformProcessor.SetOnboarder(onboarder)
-		// Fire the first-login Baby Steps seeder from both paths: iMessage
-		// handshake (processor.tryCompleteHandshake) and chat-first onboarding
-		// completion (onboarder.handleConsent). The seeder is idempotent —
-		// HasAnyGoal gates the inserts — so racing both paths is safe.
-		if c.BabyStepsSeeder != nil {
-			c.platformProcessor.SetBabyStepsSeeder(c.BabyStepsSeeder)
-			onboarder.SetBabyStepsSeeder(c.BabyStepsSeeder)
-		}
-		c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
-	}
 
 	// Initialize passcode service for transaction security
 	c.PasscodeService = passcode.NewService(
