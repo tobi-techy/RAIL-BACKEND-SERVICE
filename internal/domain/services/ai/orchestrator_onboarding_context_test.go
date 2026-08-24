@@ -198,7 +198,7 @@ func TestFormatOnboardingContextBlock(t *testing.T) {
 		if !strings.Contains(block, "connect_bank") {
 			t.Error("expected connect_bank in first conversation block")
 		}
-		if !strings.Contains(block, "HUMAN QUESTION FIRST") {
+		if !strings.Contains(block, "ONE HUMAN QUESTION BEFORE MECHANICS") {
 			t.Error("expected human question beat in first conversation block")
 		}
 		if !strings.Contains(strings.ToLower(block), "one question at a time") {
@@ -276,7 +276,7 @@ func TestFirstConversationGuidance(t *testing.T) {
 
 	t.Run("human question before bank", func(t *testing.T) {
 		guidance := firstConversationGuidance("Test")
-		human := strings.Index(guidance, "HUMAN QUESTION FIRST")
+		human := strings.Index(guidance, "ONE HUMAN QUESTION BEFORE MECHANICS")
 		bank := strings.Index(guidance, "connect_bank")
 		if human < 0 || bank < 0 || human > bank {
 			t.Error("expected human question beat before connect_bank")
