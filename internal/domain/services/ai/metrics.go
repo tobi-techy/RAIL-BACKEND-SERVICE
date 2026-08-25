@@ -47,6 +47,22 @@ var (
 			Help: "Number of requests blocked by cost ceiling",
 		},
 	)
+
+	journeyMilestones = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rail_ai_journey_milestones_total",
+			Help: "Onboarding journey milestones reached (goal_captured, bank_linked, statement_analyzed, first_deposit, ...)",
+		},
+		[]string{"milestone"},
+	)
+
+	journeyObjectives = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rail_ai_journey_objective_transitions_total",
+			Help: "Times a user's journey objective advanced to each stage",
+		},
+		[]string{"objective"},
+	)
 )
 
 // observeChat records metrics for a completed chat request.
@@ -74,4 +90,14 @@ func observeToolCall(tool string, err error) {
 // observeCostCeilingHit records a cost ceiling block.
 func observeCostCeilingHit() {
 	aiCostCeilingHits.Inc()
+}
+
+// observeJourneyMilestone fires once per newly reached journey milestone.
+func observeJourneyMilestone(milestone string) {
+	journeyMilestones.WithLabelValues(milestone).Inc()
+}
+
+// observeJourneyObjective fires when a user's active objective advances.
+func observeJourneyObjective(objective string) {
+	journeyObjectives.WithLabelValues(objective).Inc()
 }

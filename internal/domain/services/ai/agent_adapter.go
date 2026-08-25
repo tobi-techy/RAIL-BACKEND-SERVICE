@@ -67,6 +67,7 @@ type AgentAdapter struct {
 	voiceLimiter        *VoiceDailyLimiter
 	contextSignals      ContextSignalProvider
 	memory              *MemoryService
+	journey             JourneyStore
 	miriamIntelligence  MiriamIntelligenceReader
 	bankStatementCtx    *BankStatementContextProvider
 	monoAnalysis        MonoAnalysisProvider

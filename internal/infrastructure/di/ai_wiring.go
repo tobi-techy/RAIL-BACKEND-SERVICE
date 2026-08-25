@@ -393,6 +393,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
 		// Redis-backed savings goal store (persists user goals across sessions)
 		c.AIOrchestrator.SetSavingsGoalStore(aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
+		// Journey state: cross-session onboarding objectives + discovered facts,
+		// so Miriam never re-asks what she already knows.
+		c.AIOrchestrator.SetJourneyStore(aiservice.NewRedisJourneyStore(c.RedisClient, c.ZapLog))
 	}
 	if c.SharedGoalService != nil {
 		c.AIOrchestrator.SetSharedGoalCreator(&sharedGoalCreatorAdapter{svc: c.SharedGoalService})

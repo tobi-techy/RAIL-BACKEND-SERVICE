@@ -45,55 +45,29 @@ const fundedNewbieDepositThreshold = 3
 // buildOnboardingContext detects the user's onboarding phase and returns a
 // context block that tells Miriam how to steer the conversation. Returns ""
 // for established users (no special treatment needed).
+//
+// The journey engine drives guidance when wired: live signals are merged into
+// durable journey state, and Miriam gets a dynamic block that knows which
+// beats are already done (so she never re-asks or re-runs them). Without the
+// store, behaviour falls back to the static phase guidance.
 func (o *AgentAdapter) buildOnboardingContext(ctx context.Context, userID uuid.UUID) string {
-	provider, ok := o.userProfile.(FullUserProfileProvider)
-	if !ok || provider == nil {
+	sigs, ok := o.gatherJourneySignals(ctx, userID)
+	if !ok {
 		return ""
 	}
-
-	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	user, err := provider.GetProfile(fetchCtx, userID)
-	if err != nil || user == nil {
-		return ""
-	}
-
-	// Determine message count from working memory (0 = first conversation).
-	messageCount := 0
-	if o.workingMemory != nil {
-		if wm := o.workingMemory.Get(fetchCtx, userID); wm != nil {
-			messageCount = wm.MessageCount
-		}
-	}
-
-	// Determine if the user has funded their account.
-	hasFunded := o.realtimeHasBalanceContext(fetchCtx, userID)
-
-	// Check if the user has linked their bank through Mono.
-	monoLinked := false
-	if o.monoAnalysis != nil {
-		if analysis, err := o.monoAnalysis.GetSpendingAnalysis(fetchCtx, userID, 1); err == nil && analysis != nil && analysis.TransactionCount > 0 {
-			monoLinked = true
-		}
-	}
-
-	// Count deposits to distinguish funded newbie from established.
-	depositCount := 0
-	if hasFunded && o.depositHistory != nil {
-		if deps, err := o.depositHistory.GetByUserID(fetchCtx, userID, 50, 0); err == nil {
-			depositCount = len(deps)
-		}
-	}
-
-	phase := classifyOnboardingPhase(user, messageCount, hasFunded, depositCount)
 
 	// Established users get no special context — Miriam behaves normally.
-	if phase == PhaseEstablished {
+	if sigs.phase == PhaseEstablished {
 		return ""
 	}
 
-	return formatOnboardingContextBlock(user, phase, messageCount, hasFunded, depositCount, monoLinked)
+	if o.journey != nil {
+		if block := o.buildJourneyBlock(ctx, userID, sigs); block != "" {
+			return block
+		}
+	}
+
+	return formatOnboardingContextBlock(sigs.user, sigs.phase, sigs.messageCount, sigs.hasFunded, sigs.depositCount, sigs.monoLinked)
 }
 
 // classifyOnboardingPhase maps the user's state to an onboarding phase.
@@ -149,6 +123,39 @@ func formatOnboardingContextBlock(
 		name = strings.TrimSpace(*user.FirstName)
 	}
 
+	header := buildOnboardingHeader(user, phase, messageCount, hasFunded, depositCount, monoLinked)
+
+	var guidance string
+	switch phase {
+	case PhaseFirstConversation:
+		guidance = firstConversationGuidance(name)
+	case PhaseOnboardingIncomplete:
+		guidance = onboardingIncompleteGuidance(user, name)
+	case PhaseOnboardedNotFunded:
+		guidance = onboardedNotFundedGuidance(name, monoLinked)
+	case PhaseFundedNewbie:
+		guidance = fundedNewbieGuidance(name, depositCount)
+	default:
+		return ""
+	}
+
+	return header + ".\n" + guidance + "]"
+}
+
+// buildOnboardingHeader renders the shared status header used by both the
+// static phase guidance and the dynamic journey block.
+func buildOnboardingHeader(
+	user *entities.UserProfile,
+	phase OnboardingPhase,
+	messageCount int,
+	hasFunded bool,
+	depositCount int,
+	monoLinked bool,
+) string {
+	name := ""
+	if user.FirstName != nil && strings.TrimSpace(*user.FirstName) != "" {
+		name = strings.TrimSpace(*user.FirstName)
+	}
 	daysSinceSignup := int(time.Since(user.CreatedAt).Hours() / 24)
 
 	var parts []string
@@ -170,23 +177,7 @@ func formatOnboardingContextBlock(
 		parts = append(parts, "just_provisioned: true")
 	}
 
-	header := "[ONBOARDING STATUS — " + strings.Join(parts, " | ")
-
-	var guidance string
-	switch phase {
-	case PhaseFirstConversation:
-		guidance = firstConversationGuidance(name)
-	case PhaseOnboardingIncomplete:
-		guidance = onboardingIncompleteGuidance(user, name)
-	case PhaseOnboardedNotFunded:
-		guidance = onboardedNotFundedGuidance(name, monoLinked)
-	case PhaseFundedNewbie:
-		guidance = fundedNewbieGuidance(name, depositCount)
-	default:
-		return ""
-	}
-
-	return header + ".\n" + guidance + "]"
+	return "[ONBOARDING STATUS — " + strings.Join(parts, " | ")
 }
 
 // firstConversationGuidance is the beat sheet for Miriam's first real session.

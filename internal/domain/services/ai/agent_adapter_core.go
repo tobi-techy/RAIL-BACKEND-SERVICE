@@ -228,6 +228,12 @@ func (o *AgentAdapter) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 		o.enrichWithMemory(ctx, userID, tc, result)
 	}
 
+	// Record journey milestones only observable through tool execution
+	// (statement-analysis aha moment, freedom-step diagnosis).
+	if err == nil && result != nil {
+		o.noteJourneyToolSuccess(ctx, userID, tc.Name)
+	}
+
 	return result, err
 }
 
