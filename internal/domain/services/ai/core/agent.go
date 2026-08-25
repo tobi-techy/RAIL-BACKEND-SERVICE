@@ -1126,19 +1126,20 @@ func (a *Agent) qualityRetry(ctx context.Context, messages []*ai.Message, previo
 	}, nil
 }
 
-// trivialReply returns a canned response for greetings/acks, or empty string.
+// trivialReply returns a canned response for pure acknowledgments, or empty
+// string. Deliberately EXCLUDES greetings ("hi/hey/hello") and thread-tracking
+// acks ("ok/sure/got it"): those must flow through the full pipeline so the
+// system prompt, memory, and conversation history apply — a canned greeting is
+// the same every time and contradicts TRACK THE THREAD when something was just
+// proposed. Everything here is safe to answer without context.
 func (a *Agent) trivialReply(message string) string {
 	msg := strings.TrimSpace(strings.ToLower(message))
 	if len(msg) > 50 || strings.Contains(msg, " ") && len(strings.Split(msg, " ")) > 3 {
 		return ""
 	}
 	switch msg {
-	case "hi", "hey", "hello", "sup", "yo", "hiya":
-		return "Hey! What's up?"
 	case "thanks", "thank you", "ty", "thx", "appreciate it":
-		return "Anytime! Anything else?"
-	case "ok", "okay", "k", "kk", "got it", "sure":
-		return "Got it. Anything else?"
+		return "Anytime!"
 	case "bye", "goodbye", "cya", "see ya", "later":
 		return "Catch you later!"
 	case "lol", "haha":

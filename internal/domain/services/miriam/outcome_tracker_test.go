@@ -21,6 +21,7 @@ type fakeOutcomeRepo struct {
 	Repository
 
 	pending   []entities.MiriamPredictionOutcome
+	saved     []entities.MiriamPredictionOutcome
 	marked    []entities.MiriamPredictionOutcome
 	markErr   error
 	markCalls int
@@ -336,4 +337,53 @@ func TestEvaluateOutcomes_ReturnsNilWhenPersistFailsUnderExpiredParent(t *testin
 	assert.Nil(t, tracker.EvaluateOutcomes(ctx, uuid.New()))
 	assert.Equal(t, 1, repo.markCalls, "the detached write must still be attempted")
 	assert.True(t, repo.markCtxOK, "write context must not inherit parent cancellation")
+}
+
+func (f *fakeOutcomeRepo) SavePredictionOutcomes(_ context.Context, outcomes []entities.MiriamPredictionOutcome) error {
+	f.saved = append(f.saved, outcomes...)
+	// Mirror the database: saved rows are pending until marked.
+	f.pending = append(f.pending, outcomes...)
+	return nil
+}
+
+func TestRecordPredictions_SkipsTypesAlreadyPending(t *testing.T) {
+	userID := uuid.New()
+	repo := &fakeOutcomeRepo{
+		pending: []entities.MiriamPredictionOutcome{
+			{ID: uuid.New(), UserID: userID, PredictionType: "income_gap", HorizonDays: 7},
+		},
+	}
+	tracker := newTracker(repo, nil, nil)
+
+	tracker.RecordPredictions(context.Background(), userID, []entities.MiriamPrediction{
+		{ID: uuid.New(), PredictionType: "income_gap", Horizon: "7d"},
+		{ID: uuid.New(), PredictionType: "spending_anomaly", Horizon: "7d"},
+	})
+
+	require.Len(t, repo.saved, 1, "income_gap already pending — only spending_anomaly should be recorded")
+	assert.Equal(t, "spending_anomaly", repo.saved[0].PredictionType)
+
+	// A second sweep with the same predictions records nothing: both types now
+	// have a pending row.
+	tracker.RecordPredictions(context.Background(), userID, []entities.MiriamPrediction{
+		{ID: uuid.New(), PredictionType: "income_gap", Horizon: "7d"},
+		{ID: uuid.New(), PredictionType: "spending_anomaly", Horizon: "7d"},
+	})
+	require.Len(t, repo.saved, 1, "duplicate pending rows must not accumulate across sweeps")
+}
+
+func TestLoopClosingNotification_DailyCap(t *testing.T) {
+	o := &IntelligenceOrchestrator{}
+	user := uuid.New()
+
+	for i := 0; i < maxLoopClosingsPerDay; i++ {
+		assert.True(t, o.allowDailyNotice(user, "loop_close", maxLoopClosingsPerDay), "attempt %d within cap must be allowed", i+1)
+	}
+	assert.False(t, o.allowDailyNotice(user, "loop_close", maxLoopClosingsPerDay), "beyond the daily cap must be denied")
+
+	// Kinds are independent: a spent loop_close budget never blocks the CTA.
+	assert.True(t, o.allowDailyNotice(user, "mandate_cta", maxSuggestionCTAsPerDay))
+
+	other := uuid.New()
+	assert.True(t, o.allowDailyNotice(other, "loop_close", maxLoopClosingsPerDay), "cap is per-user")
 }

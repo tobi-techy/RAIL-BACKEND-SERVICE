@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,25 @@ type IntelligenceOrchestrator struct {
 	selfReview      *SelfReviewEngine
 	controlLevel    ControlLevelReader
 	logger          *zap.Logger
+
+	// Daily cap state for proactive notifications, keyed "userID:kind". The
+	// worker runs on a single leader replica, so in-memory is sufficient;
+	// entries are one per user per kind and reset when the UTC date rolls over.
+	loopMu         sync.Mutex
+	loopCloseState map[string]*loopCloseTally
+}
+
+// Daily caps for proactive notification kinds. These bound how often Miriam
+// may ping a user per UTC day regardless of how many sweeps fire or outcomes
+// resolve — she's discreet, not chatty.
+const (
+	maxLoopClosingsPerDay   = 1
+	maxSuggestionCTAsPerDay = 1
+)
+
+type loopCloseTally struct {
+	day string
+	n   int
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -154,6 +174,29 @@ func (o *IntelligenceOrchestrator) resolveSymbol(ctx context.Context, userID uui
 // SetPatternAnalyzer injects a TransactionPatternAnalyzer after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetPatternAnalyzer(a *TransactionPatternAnalyzer) {
 	o.patternAnalyzer = a
+}
+
+// allowDailyNotice reports whether the user is still under the per-kind daily
+// notification cap, tallying this attempt when allowed. Kinds are independent:
+// hitting the cap on one kind never blocks another.
+func (o *IntelligenceOrchestrator) allowDailyNotice(userID uuid.UUID, kind string, max int) bool {
+	day := time.Now().UTC().Format("2006-01-02")
+	key := userID.String() + ":" + kind
+	o.loopMu.Lock()
+	defer o.loopMu.Unlock()
+	if o.loopCloseState == nil {
+		o.loopCloseState = make(map[string]*loopCloseTally)
+	}
+	tally := o.loopCloseState[key]
+	if tally == nil || tally.day != day {
+		tally = &loopCloseTally{day: day}
+		o.loopCloseState[key] = tally
+	}
+	if tally.n >= max {
+		return false
+	}
+	tally.n++
+	return true
 }
 
 // SetSelfReview injects the self-review engine after construction (deferred wiring).
@@ -317,8 +360,11 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		if o.notifier != nil {
 			for _, out := range resolved {
 				if msg := LoopClosingMessage(out); msg != "" {
+					if !o.allowDailyNotice(userID, "loop_close", maxLoopClosingsPerDay) {
+						break // daily cap reached
+					}
 					_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
-					break // one loop-closing line per sweep — she's discreet, not chatty
+					break // one loop-closing line per sweep
 				}
 			}
 		}
@@ -422,10 +468,11 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	suggestions, err := o.suggestions.GenerateSuggestions(ctx, userID, state, memoryFacts)
 	if err == nil {
 		result.SuggestionsMade = len(suggestions)
-		// One CTA per evaluate when we have something new to propose — discreet,
-		// high-signal onboarding into silent wins. Users on guided can accept via
-		// chat tool accept_mandate_suggestion, then switch to Act (full).
-		if len(suggestions) > 0 && o.notifier != nil {
+		// One CTA per day at most when we have something new to propose —
+		// discreet, high-signal onboarding into silent wins. Users on guided can
+		// accept via chat tool accept_mandate_suggestion, then switch to Act
+		// (full). Without this cap the same pitch would re-send every sweep.
+		if len(suggestions) > 0 && o.notifier != nil && o.allowDailyNotice(userID, "mandate_cta", maxSuggestionCTAsPerDay) {
 			s0 := suggestions[0]
 			msg := strings.TrimSpace(s0.Reasoning)
 			if msg == "" {
