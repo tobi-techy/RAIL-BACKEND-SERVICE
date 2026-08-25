@@ -310,12 +310,20 @@ function startTypingKeeper(threadID: string, space: Space): void {
   typingKeepers.set(threadID, { refresh, deadline });
 }
 
-function stopTypingKeeper(threadID: string): void {
+function clearTypingKeeper(threadID: string): void {
   const keeper = typingKeepers.get(threadID);
   if (!keeper) return;
   clearInterval(keeper.refresh);
   clearTimeout(keeper.deadline);
   typingKeepers.delete(threadID);
+}
+
+/**
+ * Tear down the keeper AND signal stop-typing. Used when nothing will be sent
+ * (safety deadline, send failure) so no dead "..." dangles in the thread.
+ */
+function stopTypingKeeper(threadID: string): void {
+  clearTypingKeeper(threadID);
   spaces.get(threadID)?.stopTyping().catch((err) => {
     log.warn({ err, thread_id: threadID }, "stopTyping failed");
   });
@@ -331,11 +339,19 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
     );
     return false;
   }
-  // A reply is going out now: end the processing indicator. The handler's own
-  // pacing (typeThenSend) re-triggers typing between multi-bubble replies.
-  stopTypingKeeper(msg.thread_id);
+  // A reply is going out now: retire the keeper's refresh timers but do NOT
+  // signal stop-typing — handleOutbound asserts typing before every bubble,
+  // and an explicit stop here would blank the indicator for a beat right
+  // before the reply lands. If nothing ends up going out, we stop below.
+  clearTypingKeeper(msg.thread_id);
   try {
-    await handler.handleOutbound(space, msg);
+    const sent = await handler.handleOutbound(space, msg);
+    if (!sent) {
+      // Deduped or empty payload — nothing will arrive, so end the indicator.
+      space.stopTyping().catch((err) => {
+        log.warn({ err, thread_id: msg.thread_id }, "stopTyping failed");
+      });
+    }
     // Mark inbound message as read after successful reply
     const lastInbound = handler.getLastInboundMessage(msg.thread_id);
     if (lastInbound) {
@@ -344,6 +360,7 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
     return true;
   } catch (err) {
     log.error({ err, thread_id: msg.thread_id }, "failed to send to space");
+    space.stopTyping().catch(() => {});
     return false;
   }
 }

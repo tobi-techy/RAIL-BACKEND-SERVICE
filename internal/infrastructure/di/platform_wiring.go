@@ -143,6 +143,11 @@ func (c *Container) initializePlatformMessaging() {
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
 			proc.SetLogger(c.ZapLog)
+			// Effectively-once inbound processing keyed on the bridge's message
+			// id — bridge retries must not make Miriam answer twice.
+			if c.RedisClient != nil {
+				proc.SetInboundDeduper(c.RedisClient)
+			}
 
 			// Receipt photos texted to Miriam: build a lightweight vision pipeline
 			// (OCR -> classify -> extract) so she can summarize and offer to log or

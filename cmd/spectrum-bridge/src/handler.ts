@@ -135,20 +135,35 @@ export class MessageHandler {
     return result;
   }
 
-  async handleOutbound(space: Space, msg: OutboundMessage): Promise<void> {
+  /**
+   * Sends one outbound message. Returns true when user-visible content (or a
+   * typing signal, for content_type "typing") actually went out; false when
+   * nothing was emitted (deduplicated, empty payload) so the caller knows it
+   * must end the typing indicator itself.
+   *
+   * RULE: no Miriam message goes out without a typing indicator first. The
+   * inbound keeper usually holds one live already, but proactive pushes and
+   * queue flushes arrive with no inbound message behind them, so every path
+   * re-asserts typing at this single choke point before emitting anything.
+   */
+  async handleOutbound(space: Space, msg: OutboundMessage): Promise<boolean> {
     const contentType = msg.content_type || "text";
 
     if (contentType === "typing") {
       await space.send(typing());
-      return;
+      return true;
     }
 
     // Voice notes are always distinct audio — send before the text dedup guard.
     if (contentType === "voice") {
       if (!msg.audio_b64) {
         log.warn({ thread_id: msg.thread_id }, "voice message with no audio data");
-        return;
+        return false;
       }
+      // Voice has no typed beat of its own — hold the indicator so it is
+      // actually visible before the audio bubble lands.
+      await this.assertTyping(space, msg.thread_id);
+      await this.delay(this.typingDurationMs("voice note"));
       const buf = Buffer.from(msg.audio_b64, "base64");
       await space.send(
         voice(buf, {
@@ -157,7 +172,7 @@ export class MessageHandler {
           duration: msg.duration_sec,
         }),
       );
-      return;
+      return true;
     }
 
     const dedupKey = `${msg.user_id}:${contentType}:${msg.text}:${msg.reply_to || ""}`;
@@ -165,7 +180,7 @@ export class MessageHandler {
     const last = this.seen.get(dedupKey);
     if (last && now - last < this.dedupWindowMs) {
       log.debug({ dedupKey }, "deduplicated outbound message");
-      return;
+      return false;
     }
     this.seen.set(dedupKey, now);
 
@@ -174,79 +189,128 @@ export class MessageHandler {
     // backend matches against the same pending action.
     const supportsPoll = msg.platform === "imessage";
 
+    // Branches that pace themselves (typing + beat per bubble via
+    // typeThenSend) only need the re-assertion below; bare emits — native
+    // polls and card-only sends — also get a hold so the indicator does not
+    // vanish before the payload appears.
+    const hasRenderable =
+      contentType === "poll" ||
+      (contentType === "appcard" || contentType === "richlink"
+        ? !!msg.text || !!msg.card_url
+        : contentType === "cards"
+          ? !!msg.text || (msg.cards ?? []).length > 0
+          : !!msg.text);
+    if (!hasRenderable) {
+      log.debug(
+        { thread_id: msg.thread_id, content_type: contentType },
+        "outbound message had no renderable content",
+      );
+      return false;
+    }
+
+    const pacedByBranch =
+      contentType === "markdown" ||
+      contentType === "reply" ||
+      contentType === "effect" ||
+      (contentType === "poll" && !supportsPoll) ||
+      ((contentType === "cards" || contentType === "appcard" || contentType === "richlink") &&
+        !!msg.text);
+    await this.assertTyping(space, msg.thread_id);
+    if (!pacedByBranch) {
+      await this.delay(this.typingDurationMs(msg.poll_title || msg.text || ""));
+    }
+
     switch (contentType) {
       case "poll": {
         if (!supportsPoll) {
           const prompt = `${msg.poll_title || msg.text}\n\nReply YES to confirm or NO to cancel.`;
-          await this.sendWithPacing(space, prompt, "text");
-          return;
+          return this.sendWithPacing(space, prompt, "text");
         }
         const options = msg.poll_options?.length ? msg.poll_options : ["Confirm", "Cancel"];
         await space.send(poll(msg.poll_title || msg.text, options));
-        return;
+        return true;
       }
 
       case "reply": {
         if (msg.reply_to) {
           const parent = await this.resolveParentMessage(space, msg.reply_to);
           if (parent) {
-            await space.send(typing());
+            await this.assertTyping(space, msg.thread_id);
             await this.delay(this.typingDurationMs(msg.text));
             await space.send(reply(markdown(msg.text), parent));
-          } else {
-            log.warn({ reply_to: msg.reply_to }, "parent message not found, sending as markdown");
-            await this.sendWithPacing(space, msg.text, "markdown");
+            return true;
           }
-          return;
+          log.warn({ reply_to: msg.reply_to }, "parent message not found, sending as markdown");
+          return this.sendWithPacing(space, msg.text, "markdown");
         }
-        await this.sendWithPacing(space, msg.text, "markdown");
-        return;
+        return this.sendWithPacing(space, msg.text, "markdown");
       }
 
       case "effect": {
         // Effects are iMessage-only; degrade to a plain message elsewhere.
         const id = msg.platform === "imessage" && msg.effect ? EFFECTS[msg.effect] : undefined;
-        await space.send(typing());
+        await this.assertTyping(space, msg.thread_id);
         await this.delay(this.typingDurationMs(msg.text));
         await space.send(id ? effect(markdown(msg.text), id) : markdown(msg.text));
-        return;
+        return true;
       }
 
       case "appcard": {
-        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
-        if (msg.card_url) await space.send(app(msg.card_url));
-        return;
+        let sent = false;
+        if (msg.text) sent = (await this.sendWithPacing(space, msg.text, "markdown")) || sent;
+        if (msg.card_url) {
+          await space.send(app(msg.card_url));
+          sent = true;
+        }
+        return sent;
       }
 
       case "richlink": {
-        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
-        if (msg.card_url) await space.send(richlink(msg.card_url));
-        return;
+        let sent = false;
+        if (msg.text) sent = (await this.sendWithPacing(space, msg.text, "markdown")) || sent;
+        if (msg.card_url) {
+          await space.send(richlink(msg.card_url));
+          sent = true;
+        }
+        return sent;
       }
 
       case "cards": {
         // Narrative text first (paced), then each insight card as its own bubble.
-        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
+        let sent = false;
+        if (msg.text) sent = (await this.sendWithPacing(space, msg.text, "markdown")) || sent;
         for (const card of msg.cards ?? []) {
           const bubble = renderInsightCard(card);
-          if (bubble) await this.sendWithPacing(space, bubble, "markdown");
+          if (bubble) sent = (await this.sendWithPacing(space, bubble, "markdown")) || sent;
         }
-        return;
+        return sent;
       }
 
       case "markdown":
-        await this.sendWithPacing(space, msg.text, "markdown");
-        return;
+        return this.sendWithPacing(space, msg.text, "markdown");
 
       default:
-        await this.sendWithPacing(space, msg.text, "text");
+        return this.sendWithPacing(space, msg.text, "text");
     }
   }
 
-  private async sendWithPacing(space: Space, text: string, format: "markdown" | "text"): Promise<void> {
+  /**
+   * Fire-and-tolerate typing indicator. Typing is best-effort per the
+   * spectrum-ts contract (unsupported platforms silently no-op; remote
+   * setTyping can fail) — a failure here must never block the reply.
+   */
+  private async assertTyping(space: Space, threadID: string): Promise<void> {
+    try {
+      await space.startTyping();
+    } catch (err) {
+      log.warn({ err, thread_id: threadID }, "startTyping failed before outbound send");
+    }
+  }
+
+  private async sendWithPacing(space: Space, text: string, format: "markdown" | "text"): Promise<boolean> {
     const bubbles = text.split(/\n\s*\n/).map((s) => s.trim()).filter((s) => s.length > 0);
 
-    if (bubbles.length === 0) return;
+    if (bubbles.length === 0) return false;
 
     for (let i = 0; i < bubbles.length; i++) {
       await this.typeThenSend(space, bubbles[i], format);
@@ -255,10 +319,15 @@ export class MessageHandler {
         await this.delay(this.interBubbleDelayMs(bubbles[i + 1]));
       }
     }
+    return true;
   }
 
   private async typeThenSend(space: Space, bubble: string, format: "markdown" | "text"): Promise<void> {
-    await space.send(typing());
+    try {
+      await space.send(typing());
+    } catch (err) {
+      log.warn({ err }, "typing signal failed, sending bubble anyway");
+    }
     await this.delay(this.typingDurationMs(bubble));
 
     if (format === "markdown") {

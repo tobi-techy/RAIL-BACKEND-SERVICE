@@ -9,6 +9,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
@@ -23,6 +24,18 @@ type VoiceTranscoder interface {
 }
 
 var handshakeTokenPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// inboundDedupTTL bounds how long a processed message id stays marked as seen.
+// It must comfortably exceed the bridge's POST retry window (3 attempts over
+// ~7.5s) plus worst-case backend processing time.
+const inboundDedupTTL = 10 * time.Minute
+
+// InboundDeduper is the subset of the Redis client needed to make inbound
+// processing effectively-once: SetNX marks a message id as seen and reports
+// whether THIS caller was the first. Satisfied by cache.RedisClient.
+type InboundDeduper interface {
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
+}
 
 // retryableError marks a failure as transient (infrastructure) so the consumer
 // requeues the delivery. Anything not wrapped this way is treated as permanent
@@ -137,6 +150,7 @@ type Processor struct {
 	voice           VoiceTranscoder
 	vision          ReceiptVision
 	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
+	dedupe          InboundDeduper
 	logger          *zap.Logger
 }
 
@@ -173,6 +187,14 @@ func (p *Processor) SetReceiptVision(v ReceiptVision) {
 	p.vision = v
 }
 
+// SetInboundDeduper enables effectively-once processing keyed on the bridge's
+// message id. Without it, every bridge-side retry (backend 500, POST timeout
+// after a slow LLM turn, double delivery) reprocesses the same text and Miriam
+// answers twice. Nil-safe: without a deduper behavior is at-least-once as before.
+func (p *Processor) SetInboundDeduper(d InboundDeduper) {
+	p.dedupe = d
+}
+
 func (p *Processor) visionEnabled() bool {
 	return p.vision != nil && p.vision.Available()
 }
@@ -200,6 +222,21 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		log.Printf("drop unparseable inbound message: %v", err)
 		return nil
+	}
+
+	// Effectively-once processing: the bridge retries failed POSTs, and a POST
+	// that times out after processing succeeded server-side would otherwise run
+	// the orchestrator twice (double reply, double AI spend). Fail open — a
+	// dedup-store outage must not drop messages.
+	if p.dedupe != nil && strings.TrimSpace(msg.MsgID) != "" {
+		key := "platform:inbound:seen:" + msg.MsgID
+		fresh, dErr := p.dedupe.SetNX(ctx, key, 1, inboundDedupTTL)
+		if dErr != nil {
+			p.logger.Warn("inbound dedup check failed, processing anyway", zap.String("msg_id", msg.MsgID), zap.Error(dErr))
+		} else if !fresh {
+			p.logger.Info("duplicate inbound message dropped", zap.String("msg_id", msg.MsgID))
+			return nil
+		}
 	}
 
 	// Transcribe a voice note into text before anything else sees it. If we can't,
