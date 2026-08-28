@@ -196,7 +196,7 @@ export class MessageHandler {
     const hasRenderable =
       contentType === "poll" ||
       (contentType === "appcard" || contentType === "richlink"
-        ? !!msg.text || !!msg.card_url
+        ? !!msg.card_url
         : contentType === "cards"
           ? !!msg.text || (msg.cards ?? []).length > 0
           : !!msg.text);

@@ -27,6 +27,15 @@ func randIntn(n int) int {
 	return v
 }
 
+func hasTrigger(nudges []entities.ProactiveNudge, triggerType string) bool {
+	for _, n := range nudges {
+		if n.TriggerType == triggerType {
+			return true
+		}
+	}
+	return false
+}
+
 func randFloat64() float64 {
 	rngMu.Lock()
 	v := rng.Float64()
@@ -172,8 +181,10 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	}
 
 	// 4. Rich Life vision weaving — connect the user's stated goal to stash progress
-	if n := e.nudgeFromRichLife(ctx, userID, facts, state); n != nil {
-		nudges = append(nudges, *n)
+	if !hasTrigger(nudges, entities.NudgeTriggerMemory) {
+		if n := e.nudgeFromRichLife(ctx, userID, facts, state); n != nil {
+			nudges = append(nudges, *n)
+		}
 	}
 
 	// Select top nudges by priority, capped by voice phase frequency limit.
@@ -391,7 +402,7 @@ func (e *ProactiveNudgeEngine) nudgeFromRichLife(ctx context.Context, userID uui
 	}
 
 	// 2. Check if the stash is growing toward a target.
-	if !state.StashTarget.IsPositive() {
+	if !state.StashTarget.IsPositive() || state.StashTarget.IsZero() {
 		return nil
 	}
 

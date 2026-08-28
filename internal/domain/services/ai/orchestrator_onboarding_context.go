@@ -118,6 +118,9 @@ func formatOnboardingContextBlock(
 	depositCount int,
 	monoLinked bool,
 ) string {
+	if user == nil {
+		return ""
+	}
 	name := ""
 	if user.FirstName != nil && strings.TrimSpace(*user.FirstName) != "" {
 		name = strings.TrimSpace(*user.FirstName)
@@ -152,6 +155,9 @@ func buildOnboardingHeader(
 	depositCount int,
 	monoLinked bool,
 ) string {
+	if user == nil {
+		return ""
+	}
 	name := ""
 	if user.FirstName != nil && strings.TrimSpace(*user.FirstName) != "" {
 		name = strings.TrimSpace(*user.FirstName)

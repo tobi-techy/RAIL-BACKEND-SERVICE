@@ -251,7 +251,7 @@ func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.U
 		return
 	}
 
-	hookCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	hookCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 
 	state, err := o.journey.Get(hookCtx, userID)
@@ -282,6 +282,10 @@ func (o *AgentAdapter) buildJourneyBlock(ctx context.Context, userID uuid.UUID, 
 	objective := state.CurrentObjective
 	if objective == "" {
 		objective = resolveJourneyObjective(state, sigs.phase)
+	}
+
+	if sigs.user == nil {
+		return ""
 	}
 
 	header := buildOnboardingHeader(sigs.user, sigs.phase, sigs.messageCount, sigs.hasFunded, sigs.depositCount, sigs.monoLinked)

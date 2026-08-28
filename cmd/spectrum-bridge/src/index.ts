@@ -340,18 +340,13 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
     return false;
   }
   // A reply is going out now: retire the keeper's refresh timers but do NOT
-  // signal stop-typing — handleOutbound asserts typing before every bubble,
-  // and an explicit stop here would blank the indicator for a beat right
-  // before the reply lands. If nothing ends up going out, we stop below.
+  // signal stop-typing here — handleOutbound asserts typing before every
+  // bubble, and an explicit stop here would blank the indicator for a beat
+  // right before the reply lands. Retries or the next message's typing
+  // assertion will keep the indicator alive until a real message lands.
   clearTypingKeeper(msg.thread_id);
   try {
-    const sent = await handler.handleOutbound(space, msg);
-    if (!sent) {
-      // Deduped or empty payload — nothing will arrive, so end the indicator.
-      space.stopTyping().catch((err) => {
-        log.warn({ err, thread_id: msg.thread_id }, "stopTyping failed");
-      });
-    }
+    await handler.handleOutbound(space, msg);
     // Mark inbound message as read after successful reply
     const lastInbound = handler.getLastInboundMessage(msg.thread_id);
     if (lastInbound) {

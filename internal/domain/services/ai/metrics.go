@@ -92,12 +92,48 @@ func observeCostCeilingHit() {
 	aiCostCeilingHits.Inc()
 }
 
+// validJourneyMilestone is the allowlist for Prometheus labels so one bad
+// caller can't pollute the metric namespace with unbounded strings.
+func validJourneyMilestone(milestone string) bool {
+	switch milestone {
+	case MilestoneGoalCaptured,
+		MilestoneBankLinked,
+		MilestoneStatementAnalyzed,
+		MilestoneFirstDeposit,
+		MilestoneThirdDeposit,
+		MilestoneAutomationCreated,
+		"path_named":
+		return true
+	}
+	return false
+}
+
 // observeJourneyMilestone fires once per newly reached journey milestone.
 func observeJourneyMilestone(milestone string) {
+	if !validJourneyMilestone(milestone) {
+		return
+	}
 	journeyMilestones.WithLabelValues(milestone).Inc()
+}
+
+// validJourneyObjective is the allowlist for objective transition labels.
+func validJourneyObjective(objective string) bool {
+	switch objective {
+	case JourneyObjectiveStory,
+		JourneyObjectivePicture,
+		JourneyObjectiveAha,
+		JourneyObjectivePath,
+		JourneyObjectiveDeposit,
+		JourneyObjectiveHabit:
+		return true
+	}
+	return false
 }
 
 // observeJourneyObjective fires when a user's active objective advances.
 func observeJourneyObjective(objective string) {
+	if !validJourneyObjective(objective) {
+		return
+	}
 	journeyObjectives.WithLabelValues(objective).Inc()
 }
