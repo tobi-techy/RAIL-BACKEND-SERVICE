@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,6 +249,45 @@ func TestExtractTopic_AllCases(t *testing.T) {
 	for _, tc := range tests {
 		got := extractTopic(tc.input)
 		assert.Equal(t, tc.want, got, "input: %s", tc.input)
+	}
+}
+
+func TestBuildActiveThread_PrefersProposalOrGoal(t *testing.T) {
+	tests := []struct {
+		name       string
+		userMsg    string
+		assistant  string
+		wantPrefix string
+	}{
+		{
+			name:       "proposal preserved",
+			userMsg:    "yeah",
+			assistant:  "I'll set up a $50 weekly transfer to your stash.",
+			wantPrefix: "I'll set up a $50 weekly transfer to your stash.",
+		},
+		{
+			name:       "goal preserved",
+			userMsg:    "maybe later",
+			assistant:  "no problem — we can keep your Europe trip goal as-is for now.",
+			wantPrefix: "no problem — we can keep your Europe trip goal as-is for now.",
+		},
+		{
+			name:       "short message fallback to assistant brief",
+			userMsg:    "ok",
+			assistant:  "Want me to automate the bill payment every month?",
+			wantPrefix: "Want me to automate the bill payment every month?",
+		},
+		{
+			name:       "long user message truncated",
+			userMsg:    strings.Repeat("a", 120),
+			assistant:  "Got it.",
+			wantPrefix: strings.Repeat("a", 88) + "...",
+		},
+	}
+
+	for _, tc := range tests {
+		got := buildActiveThread(tc.userMsg, tc.assistant)
+		assert.Equal(t, tc.wantPrefix, got, tc.name)
 	}
 }
 

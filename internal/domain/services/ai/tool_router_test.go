@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
+	prompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -140,9 +142,9 @@ func TestSystemPromptToolsReferencesResolve(t *testing.T) {
 	// names (amount_ngn, prod_id) never start with these verbs.
 	textRe := regexp.MustCompile(`\b(?:get|set|list|create|search|send|pay|move|transfer|book|find|validate|lookup|mark|audit|optimize|protect|block|unblock|pause|resume|stop|start|save|split|initiate|execute|research|copy|suggest|simulate|forget|archive|dismiss|accept|detect|request|update|connect)_[a-z0-9_]+\b`)
 
-	for _, prompt := range []string{SystemPromptTools, SystemPromptV2} {
+	for _, p := range []string{prompttools.SystemPromptTools, prompt.SystemPromptV2} {
 		for _, re := range []*regexp.Regexp{toolNameRe, textRe} {
-			for _, m := range re.FindAllStringSubmatch(prompt, -1) {
+			for _, m := range re.FindAllStringSubmatch(p, -1) {
 				name := m[len(m)-1]
 				if !registered[name] && !extra[name] {
 					t.Errorf("prompt references %q but it is not a registered tool", name)

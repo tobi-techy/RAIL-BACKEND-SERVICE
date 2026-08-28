@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/cards"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -160,12 +161,12 @@ func (o *AgentAdapter) executeWebSearch(ctx context.Context, userID uuid.UUID, a
 	}
 
 	// Build the card-ready display directive.
-	display := UIDirective{
+	display := cards.UIDirective{
 		Card:     cardForCategory(category),
 		Intent:   "choose",
 		Title:    titleForCategory(category),
 		Subtitle: query,
-		Data: DisplayData{
+		Data: cards.DisplayData{
 			Query: query,
 			Items: buildDisplayItems(resp, category),
 		},
@@ -196,7 +197,7 @@ func withBudget(cached map[string]interface{}, budget, budgetNote string) map[st
 	}
 	out["user_spend_balance"] = budget
 	out["budget_note"] = budgetNote
-	if d, ok := out["display"].(UIDirective); ok {
+	if d, ok := out["display"].(cards.UIDirective); ok {
 		d.Data.UserSpendBalance = budget
 		d.Data.BudgetNote = budgetNote
 		out["display"] = d
@@ -268,13 +269,13 @@ func titleForCategory(category string) string {
 
 // buildDisplayItems converts Tavily results into card items, matching images by
 // index order and doing best-effort extraction of price/rating/location.
-func buildDisplayItems(resp *infraai.TavilySearchResponse, category string) []DisplayItem {
+func buildDisplayItems(resp *infraai.TavilySearchResponse, category string) []cards.DisplayItem {
 	if resp == nil {
-		return []DisplayItem{}
+		return []cards.DisplayItem{}
 	}
-	items := make([]DisplayItem, 0, len(resp.Results))
+	items := make([]cards.DisplayItem, 0, len(resp.Results))
 	for i, r := range resp.Results {
-		item := DisplayItem{
+		item := cards.DisplayItem{
 			Title:       r.Title,
 			URL:         r.URL,
 			Description: trimDescription(r.Content),

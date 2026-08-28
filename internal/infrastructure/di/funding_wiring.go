@@ -15,6 +15,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	activitysvc "github.com/rail-service/rail_service/internal/domain/services/activity"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
+	aifx "github.com/rail-service/rail_service/internal/domain/services/ai/fx"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	"github.com/rail-service/rail_service/internal/domain/services/billpay"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
@@ -268,7 +269,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			return q.Rate, nil
 		}
 		if c.AIOrchestrator != nil {
-			c.AIOrchestrator.SetCurrencyRateProvider(aiservice.NewRampHubRateProvider(getQuote))
+			c.AIOrchestrator.SetCurrencyRateProvider(aifx.NewRampHubRateProvider(getQuote))
 		}
 	} else if c.Config.RampHub.APIKey != "" {
 		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is required when RampHub API key is configured — refusing to start with unauthenticated webhooks")

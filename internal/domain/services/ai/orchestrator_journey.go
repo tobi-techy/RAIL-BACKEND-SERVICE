@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/metrics"
 	"go.uber.org/zap"
 )
 
@@ -140,21 +141,21 @@ func (o *AgentAdapter) syncJourneyState(ctx context.Context, userID uuid.UUID, s
 		if state.Facts[JourneyFactMotivation] != before {
 			dirty = true
 			if state.ReachMilestone(MilestoneGoalCaptured) {
-				observeJourneyMilestone(MilestoneGoalCaptured)
+				metrics.ObserveJourneyMilestone(MilestoneGoalCaptured)
 			}
 		}
 	}
 
 	if sigs.monoLinked && state.ReachMilestone(MilestoneBankLinked) {
-		observeJourneyMilestone(MilestoneBankLinked)
+		metrics.ObserveJourneyMilestone(MilestoneBankLinked)
 		dirty = true
 	}
 	if sigs.depositCount >= 1 && state.ReachMilestone(MilestoneFirstDeposit) {
-		observeJourneyMilestone(MilestoneFirstDeposit)
+		metrics.ObserveJourneyMilestone(MilestoneFirstDeposit)
 		dirty = true
 	}
 	if sigs.depositCount >= 3 && state.ReachMilestone(MilestoneThirdDeposit) {
-		observeJourneyMilestone(MilestoneThirdDeposit)
+		metrics.ObserveJourneyMilestone(MilestoneThirdDeposit)
 		dirty = true
 	}
 
@@ -166,7 +167,7 @@ func (o *AgentAdapter) syncJourneyState(ctx context.Context, userID uuid.UUID, s
 	objective := resolveJourneyObjective(state, sigs.phase)
 	if objective != "" && objective != state.CurrentObjective {
 		state.CurrentObjective = objective
-		observeJourneyObjective(objective)
+		metrics.ObserveJourneyObjective(objective)
 		dirty = true
 	}
 
@@ -259,7 +260,7 @@ func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.U
 		state = &JourneyState{UserID: userID.String()}
 	}
 	if state.ReachMilestone(milestone) {
-		observeJourneyMilestone(milestone)
+		metrics.ObserveJourneyMilestone(milestone)
 		if err := o.journey.Save(hookCtx, state); err != nil && o.logger != nil {
 			o.logger.Warn("journey milestone save failed", zap.Error(err), zap.String("user_id", userID.String()))
 		}

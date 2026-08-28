@@ -693,6 +693,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 		}
 
+		// Email confirmation for fund-moving actions from chat platforms.
+		if container.ConfirmHandler != nil {
+			v1.GET("/confirm", gin.WrapH(container.ConfirmHandler))
+		}
+
 		// Dashboard auth (email-only for super_admins)
 		v1.POST("/dashboard/auth", middleware.RateLimit(5), func(c *gin.Context) {
 			var req struct {
@@ -869,12 +874,23 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					{
 						bridgeGroup.POST("/inbound", container.PlatformHandler.HandleInbound(proc))
 						bridgeGroup.POST("/action", container.PlatformHandler.HandleAction(proc))
+						bridgeGroup.GET("/status", func(c *gin.Context) {
+							userID, _ := c.Get("user_id")
+							if userID == nil {
+								c.Status(http.StatusUnauthorized)
+								return
+							}
+							c.JSON(http.StatusOK, gin.H{
+								"user_id": userID,
+								"status":  "ok",
+							})
+						})
 					}
 				}
 			}
 
-		// KYC status utilities (auth required but no KYC gate)
-		kycProtected := protected.Group("/kyc")
+			// KYC status utilities (auth required but no KYC gate)
+			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)

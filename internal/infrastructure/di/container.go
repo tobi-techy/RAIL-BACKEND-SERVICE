@@ -280,6 +280,7 @@ type Container struct {
 	MiriamPreferencesRepo    *repositories.MiriamPreferencesRepository
 	MiriamPreferencesService *miriamservice.PreferencesService
 	AnomalyStore             aiservice.AnomalyStore
+	AnomalyEngine            *aiservice.AnomalyEngine
 	proactiveGuard           *platform.ProactiveGuard // set during platform init; prefs wired later
 
 	// Additional Repositories
@@ -456,6 +457,7 @@ type Container struct {
 	PlatformHandler      *platformhandlers.PlatformHandler
 	platformProcessor    *platform.Processor
 	platformLinking      *platform.LinkingService
+	ConfirmHandler       *platform.ConfirmHandler
 	EvalHandler          *evalhandlers.Handler
 
 	// Mono (open-banking data + DirectPay)
@@ -785,4 +787,9 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 // GetPlatformProcessor returns the platform message processor, or nil if platform messaging is disabled.
 func (c *Container) GetPlatformProcessor() *platform.Processor {
 	return c.platformProcessor
+}
+
+// GetConfirmHandler returns the email confirmation handler, or nil if platform messaging is disabled.
+func (c *Container) GetConfirmHandler() *platform.ConfirmHandler {
+	return c.ConfirmHandler
 }

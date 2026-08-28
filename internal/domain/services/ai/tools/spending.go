@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	aichannel "github.com/rail-service/rail_service/internal/domain/services/ai/channel"
 	"github.com/shopspring/decimal"
 )
 

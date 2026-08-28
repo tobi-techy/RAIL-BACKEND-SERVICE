@@ -9,14 +9,16 @@ import (
 
 // PendingAction represents an action awaiting user confirmation.
 type PendingAction struct {
-	ID             string                 `json:"id"`
-	ConversationID uuid.UUID              `json:"conversation_id"`
-	UserID         uuid.UUID              `json:"user_id"`
-	Action         string                 `json:"action"`          // "transfer_funds", "set_savings_goal"
-	Description    string                 `json:"description"`     // Human-readable summary
-	Params         map[string]interface{} `json:"params"`          // Action-specific parameters
-	ExpiresAt      time.Time              `json:"expires_at"`
-	CreatedAt      time.Time              `json:"created_at"`
+	ID                  string                 `json:"id"`
+	ConversationID      uuid.UUID              `json:"conversation_id"`
+	UserID              uuid.UUID              `json:"user_id"`
+	Action              string                 `json:"action"`          // "transfer_funds", "set_savings_goal"
+	Description         string                 `json:"description"`     // Human-readable summary
+	UserMessage         string                 `json:"user_message,omitempty"`
+	SuggestedFollowUp   string                 `json:"suggested_follow_up,omitempty"`
+	Params              map[string]interface{} `json:"params"`          // Action-specific parameters
+	ExpiresAt           time.Time              `json:"expires_at"`
+	CreatedAt           time.Time              `json:"created_at"`
 }
 
 // IsExpired returns true if the action has timed out.

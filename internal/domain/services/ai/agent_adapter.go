@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/memory"
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
+	promptcontext "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/context"
+	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"go.uber.org/zap"
@@ -64,7 +68,7 @@ type AgentAdapter struct {
 	emergencyWithdrawer EmergencyWithdrawer
 	automationProvider  AutomationProvider
 	goalProtection      GoalProtectionProvider
-	voiceLimiter        *VoiceDailyLimiter
+	voiceLimiter        VoiceDailyLimiterer
 	contextSignals      ContextSignalProvider
 	memory              *MemoryService
 	journey             JourneyStore
@@ -87,6 +91,7 @@ type AgentAdapter struct {
 	travel              core.TravelProvider
 	responseGuardOn     bool
 	logger              *zap.Logger
+	contextDeps         *aicontext.ContextDeps
 }
 
 var _ ChatEngine = (*AgentAdapter)(nil)
@@ -128,7 +133,45 @@ func (a *AgentAdapter) ChatInContextWithOptions(ctx context.Context, userID, con
 	// non-streaming path (iMessage bridge, eval) ran a leaner Miriam that ignored
 	// personality modes and, critically, did not enforce Monitor mode.
 	var systemContext []string
-	if pc := a.buildConsolidatedPersonalityContext(ctx, userID, opts.ToneMode); pc != "" {
+	if pc := promptcontext.BuildConsolidatedPersonalityContext(promptcontext.ConsolidatedPersonalityDeps{
+		BuildControlLevelContext: a.buildControlLevelContext,
+		BuildPersonalityModeContext: func(ctx context.Context, userID uuid.UUID) string {
+			return promptcontext.BuildPersonalityModeContext(promptcontext.PersonalityModeDeps{
+				GetToneProfile: func(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error) {
+					if a.memory == nil || a.memory.store == nil {
+						return nil, nil
+					}
+					profile, err := a.memory.store.GetToneProfile(ctx, userID)
+					if err != nil || profile == nil {
+						return nil, err
+					}
+					return profile, nil
+				},
+			}, ctx, userID)
+		},
+		GetMiriamMoneyState: func(ctx context.Context, userID uuid.UUID) (*entities.MiriamMoneyState, error) {
+			if a.miriamIntelligence == nil {
+				return nil, nil
+			}
+			return a.miriamIntelligence.GetMoneyState(ctx, userID)
+		},
+		GetToneProfile: func(ctx context.Context, userID uuid.UUID) (*entities.MiriamToneProfile, error) {
+			if a.memory == nil || a.memory.store == nil {
+				return nil, nil
+			}
+			profile, err := a.memory.store.GetToneProfile(ctx, userID)
+			if err != nil || profile == nil {
+				return nil, err
+			}
+			return profile, nil
+		},
+		GetRecentCallbacks: func(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
+			if a.memory == nil {
+				return nil, nil
+			}
+			return a.memory.GetRecentCallbacks(ctx, userID, limit)
+		},
+	}, ctx, userID, opts.ToneMode); pc != "" {
 		systemContext = append(systemContext, pc)
 	}
 	if rl := a.liveNairaRateLine(ctx); rl != "" {
@@ -283,6 +326,242 @@ func (a *AgentAdapter) SetResponseGuardEnabled(on bool) {
 // SetEnrichmentSummaryFn wires the enrichment summary function for context assembly.
 func (a *AgentAdapter) SetEnrichmentSummaryFn(fn func(ctx context.Context, userID uuid.UUID) (string, error)) {
 	a.enrichmentSummaryFn = fn
+}
+
+// BuildContextDeps assembles the ContextDeps struct from the adapter's wired
+// providers. Called once before context assembly; cached for the lifetime of
+// the adapter or until a setter changes a dependency.
+func (a *AgentAdapter) BuildContextDeps() *aicontext.ContextDeps {
+	if a.contextDeps != nil {
+		return a.contextDeps
+	}
+	deps := &aicontext.ContextDeps{
+		GetBalanceFn: func(ctx context.Context, userID uuid.UUID, t entities.AccountType) (decimal.Decimal, error) {
+			if a.aggregateStats == nil {
+				return decimal.Zero, nil
+			}
+			return a.aggregateStats.GetAccountBalance(ctx, userID, t)
+		},
+		GetUserCountryFn: func(ctx context.Context, userID uuid.UUID) (string, error) {
+			if a.userProfile == nil {
+				return "", nil
+			}
+			return a.userProfile.GetCountry(ctx, userID)
+		},
+		GetFinancialProfileFn: func(ctx context.Context, userID uuid.UUID) (*entities.FinancialProfile, error) {
+			if a.financialProfile == nil {
+				return nil, nil
+			}
+			return a.financialProfile.GetByUserID(ctx, userID)
+		},
+		ListActiveObligationsFn: func(ctx context.Context, userID uuid.UUID) ([]entities.FinancialObligation, error) {
+			if a.obligations == nil {
+				return nil, nil
+			}
+			return a.obligations.ListActive(ctx, userID)
+		},
+		GetPortfolioStatsFn: func(ctx context.Context, userID uuid.UUID) (*aicontext.PortfolioStats, error) {
+			if a.portfolioProvider == nil {
+				return nil, nil
+			}
+			stats, err := a.portfolioProvider.GetWeeklyStats(ctx, userID)
+			if err != nil || stats == nil {
+				return nil, err
+			}
+			return &aicontext.PortfolioStats{TotalValue: stats.TotalValue}, nil
+		},
+		GetLatestRateFn: func(ctx context.Context, from, to string) (decimal.Decimal, error) {
+			if a.currencyRates == nil {
+				return decimal.Zero, nil
+			}
+			return a.currencyRates.GetLatestRate(ctx, from, to)
+		},
+		GetMoneyStateFn: func(ctx context.Context, userID uuid.UUID) (*entities.MiriamMoneyState, error) {
+			if a.miriamIntelligence == nil {
+				return nil, nil
+			}
+			return a.miriamIntelligence.GetMoneyState(ctx, userID)
+		},
+		SearchMemoryRankedFn: func(ctx context.Context, userID, query string, limit int) ([]string, error) {
+			if a.supermemory == nil {
+				return nil, nil
+			}
+			results, err := a.supermemory.SearchMemoryRanked(ctx, userID, query, limit)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]string, len(results))
+			for i, r := range results {
+				out[i] = r.Memory
+			}
+			return out, nil
+		},
+		GetAnomaliesFn: func(ctx context.Context, userID uuid.UUID) ([]aicontext.AnomalyResult, error) {
+			if a.anomalyStore == nil {
+				return nil, nil
+			}
+			results, err := a.anomalyStore.Get(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]aicontext.AnomalyResult, len(results))
+			for i, r := range results {
+				out[i] = aicontext.AnomalyResult{
+					Severity:    string(r.Severity),
+					Title:       r.Title,
+					Description: r.Description,
+				}
+			}
+			return out, nil
+		},
+		GetWorkingMemoryFn: func(ctx context.Context, userID uuid.UUID) *memory.WorkingMemoryEntry {
+			if a.workingMemory == nil {
+				return nil
+			}
+			return a.workingMemory.Get(ctx, userID)
+		},
+		GetFinancialEventsFn: func(ctx context.Context, userID uuid.UUID) string {
+			if a.eventStore == nil {
+				return ""
+			}
+			return a.eventStore.BuildEventsContext(ctx, userID)
+		},
+		GetEnrichmentSummaryFn: a.enrichmentSummaryFn,
+		GetPendingActionFn: func(ctx context.Context, convID uuid.UUID) *entities.PendingAction {
+			if a.pending == nil {
+				return nil
+			}
+			return a.pending.Get(ctx, convID)
+		},
+		GetMonoSpendingFn: func(ctx context.Context, userID uuid.UUID, days int) (*aicontext.MonoSpendingAnalysis, error) {
+			if a.monoAnalysis == nil {
+				return nil, nil
+			}
+			analysis, err := a.monoAnalysis.GetSpendingAnalysis(ctx, userID, days)
+			if err != nil || analysis == nil {
+				return nil, err
+			}
+			return &aicontext.MonoSpendingAnalysis{
+				TotalDebits:      analysis.TotalDebits,
+				TotalCredits:     analysis.TotalCredits,
+				SavingsRate:      analysis.SavingsRate,
+				TransactionCount: analysis.TransactionCount,
+				Period:           struct{ Days int }{Days: analysis.Period.Days},
+			}, nil
+		},
+		GetBankUploadSummaryFn: func(ctx context.Context, userID uuid.UUID) (int, []string, error) {
+			if a.bankStatementCtx == nil || a.bankStatementCtx.provider == nil {
+				return 0, nil, nil
+			}
+			return a.bankStatementCtx.provider.GetCompletedUploadSummary(ctx, userID)
+		},
+		BuildMemoryContextFn: func(ctx context.Context, userID uuid.UUID, message string) string {
+			if a.memory == nil {
+				return ""
+			}
+			return a.memory.BuildMemoryContextWithSummary(ctx, userID, message)
+		},
+		ToneProfileFn: func(ctx context.Context, userID uuid.UUID) *aicontext.ToneProfile {
+			if a.memory == nil {
+				return nil
+			}
+			profile, err := a.memory.store.GetToneProfile(ctx, userID)
+			if err != nil || profile == nil {
+				return nil
+			}
+			return &aicontext.ToneProfile{
+				SampleCount:   profile.SampleCount,
+				PreferredName: profile.PreferredName,
+				Brevity:       profile.Brevity,
+				LanguageStyle: profile.LanguageStyle,
+				LocaleStyle:   profile.LocaleStyle,
+			}
+		},
+		MemoryCallbacksFn: func(ctx context.Context, userID uuid.UUID, limit int) ([]string, error) {
+			if a.memory == nil {
+				return nil, nil
+			}
+			return a.memory.GetRecentCallbacks(ctx, userID, limit)
+		},
+		ControlLevelFn: func(ctx context.Context, userID uuid.UUID) string {
+			if a.memory == nil {
+				return ""
+			}
+			lvl, err := a.memory.GetControlLevel(ctx, userID)
+			if err != nil {
+				return ""
+			}
+			return fmt.Sprintf("[CONTROL LEVEL: %s]", lvl)
+		},
+		BankStatementBuildFn: func(ctx context.Context, userID uuid.UUID) string {
+			if a.bankStatementCtx == nil {
+				return ""
+			}
+			return a.bankStatementCtx.BuildContext(ctx, userID)
+		},
+		GetActiveThreadFn: func(ctx context.Context, userID uuid.UUID) string {
+			if a.workingMemory == nil {
+				return ""
+			}
+			entry := a.workingMemory.Get(ctx, userID)
+			if entry == nil {
+				return ""
+			}
+			return strings.TrimSpace(entry.ActiveThread)
+		},
+		Cache:  aicontext.NewContextCache(),
+		Logger: a.logger,
+	}
+	if a.nairaCtx != nil && a.nairaCtx.provider != nil {
+		p := a.nairaCtx.provider
+		deps.GetNairaOrdersFn = func(ctx context.Context, userID uuid.UUID, limit int) ([]aicontext.NairaOrderSummary, error) {
+			orders, err := p.GetRecentOrders(ctx, userID, limit)
+			if err != nil {
+				return nil, err
+			}
+			result := make([]aicontext.NairaOrderSummary, len(orders))
+			for i, o := range orders {
+				result[i] = aicontext.NairaOrderSummary{
+					OrderType:   o.OrderType,
+					FiatAmount:  o.FiatAmount,
+					TokenAmount: o.TokenAmount,
+					Rate:        o.Rate,
+					Currency:    o.Currency,
+					CreatedAt:   o.CreatedAt,
+				}
+			}
+			return result, nil
+		}
+	}
+	if a.journey != nil {
+		deps.JourneySignalsFn = func(ctx context.Context, userID uuid.UUID) (aicontext.JourneySignals, bool) {
+			sigs, ok := a.gatherJourneySignals(ctx, userID)
+			if !ok {
+				return aicontext.JourneySignals{}, false
+			}
+			return aicontext.JourneySignals{
+				User:         sigs.user,
+				Phase:        aicontext.OnboardingPhase(sigs.phase),
+				MessageCount: sigs.messageCount,
+				HasFunded:    sigs.hasFunded,
+				DepositCount: sigs.depositCount,
+				MonoLinked:   sigs.monoLinked,
+			}, true
+		}
+		deps.JourneyBlockFn = func(ctx context.Context, userID uuid.UUID, sigs aicontext.JourneySignals) string {
+			rootSigs := journeySignals{
+				user:         sigs.User,
+				phase:        OnboardingPhase(sigs.Phase),
+				messageCount: sigs.MessageCount,
+				hasFunded:    sigs.HasFunded,
+				depositCount: sigs.DepositCount,
+				monoLinked:   sigs.MonoLinked,
+			}
+			return a.buildJourneyBlock(ctx, userID, rootSigs)
+		}
+	}
+	a.contextDeps = deps
+	return deps
 }
 
 // SetMerchantEnricher wires the merchant enrichment lookup for spending tools.

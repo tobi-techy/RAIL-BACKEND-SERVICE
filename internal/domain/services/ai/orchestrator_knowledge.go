@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -15,9 +15,8 @@ import (
 const ToolSearchKnowledge = "search_knowledge"
 
 // KnowledgeSearcher is the subset of knowledge.Service the orchestrator needs.
-type KnowledgeSearcher interface {
-	Search(ctx context.Context, query string, limit int) ([]entities.KnowledgeSearchResult, error)
-}
+// Deprecated: Use aiintelligence.KnowledgeSearcher instead.
+type KnowledgeSearcher = aiintelligence.KnowledgeSearcher
 
 // SetKnowledge sets the knowledge search provider (optional).
 // Deprecated: Use NewOrchestratorWithDeps instead.

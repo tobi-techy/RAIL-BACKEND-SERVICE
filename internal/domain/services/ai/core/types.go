@@ -1023,6 +1023,11 @@ type GameplayProvider interface {
 	GetUserAchievements(ctx context.Context, userID uuid.UUID) ([]*entities.Achievement, []*entities.UserAchievement, error)
 }
 
+// MerchantEnricher looks up enrichment data for merchants.
+type MerchantEnricher interface {
+	GetEnrichedByUser(ctx context.Context, userID uuid.UUID, limit int) ([]entities.EnrichedTransaction, error)
+}
+
 // ContributionSummary represents contribution totals.
 type ContributionSummary struct {
 	Deposits decimal.Decimal

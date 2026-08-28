@@ -345,7 +345,8 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
   // before the reply lands. If nothing ends up going out, we stop below.
   clearTypingKeeper(msg.thread_id);
   try {
-    const sent = await handler.handleOutbound(space, msg);
+    const rendered = msg.render_strategy ? await handler.renderOutbound(space, msg) : false;
+    const sent = rendered || (await handler.handleOutbound(space, msg));
     if (!sent) {
       // Deduped or empty payload — nothing will arrive, so end the indicator.
       space.stopTyping().catch((err) => {
