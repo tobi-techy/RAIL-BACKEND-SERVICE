@@ -177,10 +177,25 @@ func extractTopic(msg string) string {
 // proposal, and keeps the note short enough for prompt context.
 func buildActiveThread(userMsg, assistantBrief string) string {
 	thread := normalizeActiveThreadCandidate(userMsg)
+	// If user message is a simple acknowledgment, prefer the assistant's proposal
+	if thread != "" && isSimpleAcknowledgment(userMsg) {
+		if alt := normalizeActiveThreadCandidate(assistantBrief); alt != "" {
+			return alt
+		}
+	}
 	if thread == "" {
 		thread = normalizeActiveThreadCandidate(assistantBrief)
 	}
 	return thread
+}
+
+func isSimpleAcknowledgment(text string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(text))
+	switch trimmed {
+	case "yeah", "yes", "ok", "okay", "sure", "yep", "yup", "got it", "gotit", "cool", "nice", "fine", "maybe later", "maybe":
+		return true
+	}
+	return false
 }
 
 func normalizeActiveThreadCandidate(text string) string {
