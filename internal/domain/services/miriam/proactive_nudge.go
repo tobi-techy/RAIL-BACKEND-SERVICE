@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,8 +155,10 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	}
 
 	// 2. Memory-triggered nudges
+	var facts []*entities.MiriamUserFact
 	if e.memory != nil {
-		facts, err := e.memory.GetActiveFacts(ctx, userID)
+		var err error
+		facts, err = e.memory.GetActiveFacts(ctx, userID)
 		if err == nil {
 			if n := e.nudgeFromMemory(ctx, userID, facts, state); n != nil {
 				nudges = append(nudges, *n)
@@ -165,6 +168,11 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 
 	// 3. Bill warning nudges
 	if n := e.nudgeFromBills(ctx, userID, state); n != nil {
+		nudges = append(nudges, *n)
+	}
+
+	// 4. Rich Life vision weaving — connect the user's stated goal to stash progress
+	if n := e.nudgeFromRichLife(ctx, userID, facts, state); n != nil {
 		nudges = append(nudges, *n)
 	}
 
@@ -339,7 +347,7 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 
 		msg := PhaseMessage(phase, MsgBillWarning, vars)
 		if msg == "" {
-			msg = fmt.Sprintf("Bills (%s) exceed Spend (%s). Stash has %s — tap to cover the %s gap.",
+			msg = fmt.Sprintf("Bills (%s) exceed Spend (%s). Stash has %s. tap to cover the %s gap.",
 				symbol+state.UpcomingObligations.StringFixed(0), symbol+spend.StringFixed(0), symbol+stash.StringFixed(0), symbol+gap.StringFixed(0))
 		}
 
@@ -360,6 +368,80 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 	}
 
 	return nil
+}
+
+// nudgeFromRichLife weaves the user's stated life goal/vision into a financial
+// observation, making proactive nudges feel personal rather than transactional.
+// It only fires when there is a high-confidence goal fact AND the stash is
+// making measurable progress toward a target.
+func (e *ProactiveNudgeEngine) nudgeFromRichLife(ctx context.Context, userID uuid.UUID, facts []*entities.MiriamUserFact, state *entities.MiriamMoneyState) *entities.ProactiveNudge {
+	// 1. Find a high-confidence goal fact.
+	var goalFact *entities.MiriamUserFact
+	for _, f := range facts {
+		if f == nil {
+			continue
+		}
+		if f.Category == entities.FactCategoryGoal && f.Confidence.GreaterThanOrEqual(decimal.NewFromFloat(0.7)) {
+			goalFact = f
+			break
+		}
+	}
+	if goalFact == nil {
+		return nil
+	}
+
+	// 2. Check if the stash is growing toward a target.
+	if !state.StashTarget.IsPositive() {
+		return nil
+	}
+
+	stash, err := e.balances.GetAccountBalance(ctx, userID, entities.AccountTypeStashBalance)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.Warn("nudgeFromRichLife: stash balance fetch failed", zap.Error(err))
+		}
+		return nil
+	}
+
+	// Only fire when the stash is making progress.
+	if stash.LessThanOrEqual(decimal.Zero) {
+		return nil
+	}
+
+	symbol := e.resolveSymbol(ctx, userID)
+	goalText := strings.ToLower(strings.TrimSpace(goalFact.Fact))
+	if goalText == "" {
+		return nil
+	}
+
+	pctInt := int(stash.Div(state.StashTarget).Mul(decimal.NewFromFloat(100)).InexactFloat64())
+	stashStr := symbol + stash.StringFixed(0)
+
+	// 3. Generate a conversational, lowercase nudge that weaves the goal
+	//    into a financial observation. No em dashes.
+	var msg string
+	switch {
+	case pctInt >= 80:
+		msg = fmt.Sprintf("stash hit %s. that's getting close to your %s. how's it going?", stashStr, goalText)
+	case pctInt >= 50:
+		msg = fmt.Sprintf("stash is at %s. halfway to your %s. keep going.", stashStr, goalText)
+	default:
+		msg = fmt.Sprintf("stash is at %s now. every bit moves you toward %s.", stashStr, goalText)
+	}
+
+	return &entities.ProactiveNudge{
+		ID:          uuid.New(),
+		UserID:      userID,
+		TriggerType: entities.NudgeTriggerRichLife,
+		Priority:    4,
+		Message:     msg,
+		ActionSuggestion: mustJSON(map[string]interface{}{
+			"type":  "view_stash",
+			"label": "View Stash",
+		}),
+		ExpiresAt: time.Now().UTC().Add(7 * 24 * time.Hour),
+		CreatedAt: time.Now().UTC(),
+	}
 }
 
 func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userID uuid.UUID, p entities.MiriamPrediction, state *entities.MiriamMoneyState) string {

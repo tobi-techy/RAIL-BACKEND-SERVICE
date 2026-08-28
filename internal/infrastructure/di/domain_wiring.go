@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
@@ -59,10 +61,12 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
+	spending_coach "github.com/rail-service/rail_service/internal/workers/spending_coach"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -2346,6 +2350,37 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("AI services initialization failed, AI features disabled", zap.Error(err))
 	}
 
+	// Spending coach worker — weekly Baby-Step-aware proactive nudge.
+	// Constructed after AI services so the brief provider can reach the
+	// orchestrator. The push sender is late-bound in application.go because
+	// the bridge dispatcher is wired after the DI container returns.
+	if c.UserRepo != nil && c.GoalsService != nil && c.ProactiveCoordinator != nil {
+		var briefProvider spending_coach.BriefProvider
+		if c.AIOrchestrator != nil {
+			briefProvider = &spendingCoachBriefProvider{orch: c.AIOrchestrator}
+		}
+		var suggestionProvider spending_coach.SavingsSuggestionProvider
+		if c.ReceiptRepo != nil && c.LedgerSpendingRepo != nil {
+			suggestionProvider = &spendingCoachSuggestionProvider{
+				inner: aiservice.NewSavingsSuggestionProvider(c.ReceiptRepo, spendingsvc.NewService(c.LedgerSpendingRepo)),
+			}
+		}
+		c.SpendingCoachWorker = spending_coach.New(
+			c.UserRepo,                // UserLister
+			c.GoalsService,            // ActiveGoalProvider
+			briefProvider,             // BriefProvider
+			suggestionProvider,        // SavingsSuggestionProvider
+			nil,                       // PushSender — late-bound via SetPushSender
+			c.ProactiveCoordinator,    // coordinator
+			c.RedisClient,             // redis
+			&userProfileAdapter{userRepo: c.UserRepo}, // UserCountryResolver
+			c.ZapLog,
+		)
+		if c.AICostGuard != nil {
+			c.SpendingCoachWorker.SetCostGate(c.AICostGuard)
+		}
+	}
+
 	// Initialize Alpaca investment infrastructure
 	if err := c.initializeAlpacaInvestmentServices(sqlxDB); err != nil {
 		c.ZapLog.Warn("Alpaca investment services initialization failed", zap.Error(err))
@@ -2533,4 +2568,61 @@ func (c *Container) initializeDomainServices() error {
 	c.PanicButtonService = premium.NewPanicButtonService(c.EmergencyRepo, c.LedgerService, c.ZapLog)
 
 	return nil
+}
+
+// spendingCoachBriefProvider adapts the AI orchestrator's ExecuteToolPublic to
+// the spending coach worker's BriefProvider interface. Mirrors the
+// dailyPulseBriefProvider in application.go.
+type spendingCoachBriefProvider struct {
+	orch aiservice.ChatEngine
+}
+
+func (p *spendingCoachBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {
+	if p.orch == nil {
+		return nil, nil
+	}
+	result, err := p.orch.ExecuteToolPublic(ctx, userID, infraai.ToolCall{
+		ID:   "spending-coach-miriam-brief",
+		Name: aiservice.ToolGetMiriamBrief,
+		Arguments: map[string]interface{}{
+			"country": country,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Normalize typed internal slices into JSON-like maps for the worker.
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var normalized map[string]interface{}
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+// spendingCoachSuggestionProvider adapts the AI service's
+// SavingsSuggestionProvider to the spending coach worker's own
+// SavingsSuggestions type (which mirrors the AI service's type to avoid
+// an import cycle).
+type spendingCoachSuggestionProvider struct {
+	inner aiservice.SavingsSuggestionProvider
+}
+
+func (p *spendingCoachSuggestionProvider) GetSuggestions(ctx context.Context, userID uuid.UUID) (*spending_coach.SavingsSuggestions, error) {
+	if p.inner == nil {
+		return nil, nil
+	}
+	result, err := p.inner.GetSuggestions(ctx, userID)
+	if err != nil || result == nil {
+		return nil, err
+	}
+	return &spending_coach.SavingsSuggestions{
+		Suggestions:              result.Suggestions,
+		TotalPotentialMonthlySav: result.TotalPotentialMonthlySav,
+		AnnualStashGrowth:        result.AnnualStashGrowth,
+		Message:                  result.Message,
+	}, nil
 }

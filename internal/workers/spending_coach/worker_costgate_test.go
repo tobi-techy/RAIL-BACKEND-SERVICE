@@ -113,7 +113,7 @@ func TestStringField(t *testing.T) {
 
 // TestTryAcquireLeader_NilRedisAlwaysAllows ensures fail-open semantics.
 func TestTryAcquireLeader_NilRedisAlwaysAllows(t *testing.T) {
-	w := New(nil, nil, nil, nil, nil, nil, nil, zap.NewNop())
+	w := New(nil, nil, nil, nil, nil, nil, nil, nil, zap.NewNop())
 	assert.True(t, w.tryAcquireLeader(context.Background()))
 	_ = time.Now() // keep time import used
 }

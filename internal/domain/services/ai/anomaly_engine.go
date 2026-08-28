@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -465,6 +466,82 @@ func BuildAlertText(results []AnomalyResult) (title, body string) {
 	}
 	body += "\n\nReply to ask me about any of these."
 	return title, body
+}
+
+// BuildChatMessage converts anomaly results into a single conversational,
+// lowercase, Ramit-style chat message suitable for the messaging bridge.
+// Returns "" when there are no high/critical anomalies worth interrupting for.
+// This is distinct from BuildAlertText which formats a push notification body.
+func BuildChatMessage(results []AnomalyResult) string {
+	var urgent []AnomalyResult
+	for _, r := range results {
+		if r.Severity == SeverityHigh || r.Severity == SeverityCritical {
+			urgent = append(urgent, r)
+		}
+	}
+	if len(urgent) == 0 {
+		return ""
+	}
+
+	// Pick the most severe anomaly to lead with.
+	lead := urgent[0]
+	for _, r := range urgent[1:] {
+		if r.Severity == SeverityCritical && lead.Severity != SeverityCritical {
+			lead = r
+		}
+	}
+
+	switch lead.Type {
+	case AnomalyBillSpike:
+		cat, _ := lead.Details["category"].(string)
+		if cat == "" {
+			cat = "a category"
+		}
+		return fmt.Sprintf("heads up, your %s spending is running way above normal. want me to pull up the breakdown so we can see where it's going?", cat)
+
+	case AnomalyDuplicateCharge:
+		merchant, _ := lead.Details["merchant"].(string)
+		amount, _ := lead.Details["amount"].(string)
+		if merchant != "" && amount != "" {
+			return fmt.Sprintf("i'm seeing duplicate charges of %s at %s. that might be a mistake. want me to look into it?", amount, merchant)
+		}
+		return "i'm seeing what looks like a duplicate charge. want me to pull up the details?"
+
+	case AnomalyFraudSignal:
+		merchant, _ := lead.Details["merchant"].(string)
+		amount, _ := lead.Details["amount"].(string)
+		cat, _ := lead.Details["category"].(string)
+		if cat == "Gambling" || cat == "Casino" || cat == "Cash Advance" || cat == "Crypto Withdrawal" {
+			if merchant != "" && amount != "" {
+				return fmt.Sprintf("i see a %s transaction for %s at %s. did you authorize this?", strings.ToLower(cat), amount, merchant)
+			}
+			return fmt.Sprintf("i see a %s transaction i wasn't expecting. did you authorize this?", strings.ToLower(cat))
+		}
+		if merchant != "" && amount != "" {
+			return fmt.Sprintf("there's a charge of %s at %s that's bigger than your usual. did you make this one?", amount, merchant)
+		}
+		return "there's a large transaction i wasn't expecting. did you make this one?"
+
+	case AnomalySpendingAccel:
+		projected, _ := lead.Details["projected_monthly"].(string)
+		avg, _ := lead.Details["avg_monthly"].(string)
+		if projected != "" && avg != "" {
+			return fmt.Sprintf("your spending is accelerating, on pace for %s this month when your average is %s. want to look at where it's going?", projected, avg)
+		}
+		return "your spending is picking up pace faster than usual. want me to pull up the breakdown?"
+
+	case AnomalyMerchantPattern:
+		merchant, _ := lead.Details["merchant"].(string)
+		count, _ := lead.Details["visit_count"].(int)
+		total, _ := lead.Details["total_spent"].(string)
+		if merchant != "" && total != "" {
+			return fmt.Sprintf("you've hit %s %d times this week for %s total. just want to make sure that's intentional.", merchant, count, total)
+		}
+		return "i'm seeing a merchant pattern that's worth a look. want me to pull it up?"
+
+	default:
+		return lead.Description
+	}
 }
 
 // isWithdrawalOrP2P returns true for categories that represent non-merchant outflows

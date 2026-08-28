@@ -65,7 +65,7 @@ type MiriamNudgeBuilder struct{}
 func NewMiriamNudgeBuilder() *MiriamNudgeBuilder { return &MiriamNudgeBuilder{} }
 
 // SalaryArrived builds the salary-entry intervention.
-// "You receive ₦120k. If we save ₦15k now, your emergency fund reaches 40%. Save am?"
+// "you just received ₦120k. move ₦15k to Stash and your emergency fund reaches 40%. want to do it?"
 func (b *MiriamNudgeBuilder) SalaryArrived(ctx InterventionContext) MiriamIntervention {
 	cur := ctx.Currency
 	if cur == "" {
@@ -77,23 +77,23 @@ func (b *MiriamNudgeBuilder) SalaryArrived(ctx InterventionContext) MiriamInterv
 	var body string
 	if !ctx.SuggestedSaveAmt.IsZero() && ctx.EmergencyFundPct > 0 {
 		body = fmt.Sprintf(
-			"You receive %s%s. If we save %s%s now, your emergency fund reaches %d%%. Save am?",
+			"you just received %s%s. move %s%s to Stash and your emergency fund reaches %d%%. want to do it?",
 			cur, depositStr, cur, saveStr, ctx.EmergencyFundPct,
 		)
 	} else if !ctx.SuggestedSaveAmt.IsZero() {
 		body = fmt.Sprintf(
-			"You receive %s%s. Move %s%s to Stash now while it's fresh?",
+			"you just received %s%s. want to move %s%s to Stash while it's fresh?",
 			cur, depositStr, cur, saveStr,
 		)
 	} else {
-		body = fmt.Sprintf("Money just landed — %s%s. Want to put some to work?", cur, depositStr)
+		body = fmt.Sprintf("money just landed: %s%s. want to put some of it to work?", cur, depositStr)
 	}
 
 	return MiriamIntervention{
 		Trigger:    TriggerSalaryArrived,
-		Title:      "Money just landed",
+		Title:      "money just landed",
 		Body:       body,
-		VoiceHook:  fmt.Sprintf("Your %s%s just arrived. Should I move some to Stash before it disappears?", cur, depositStr),
+		VoiceHook:  fmt.Sprintf("your %s%s just arrived. want to move some to Stash before it gets spent?", cur, depositStr),
 		Priority:   9,
 		ActionType: "save_now",
 		ActionAmt:  ctx.SuggestedSaveAmt,
@@ -101,7 +101,7 @@ func (b *MiriamNudgeBuilder) SalaryArrived(ctx InterventionContext) MiriamInterv
 }
 
 // Overspend builds the overspend intervention.
-// "Food spending pass normal this month by ₦18k." → "At this pace your travel budget fit finish before month end."
+// "food spending is ₦18k over your usual pace this month. want to take a look?"
 func (b *MiriamNudgeBuilder) Overspend(ctx InterventionContext) MiriamIntervention {
 	cur := ctx.Currency
 	if cur == "" {
@@ -117,17 +117,23 @@ func (b *MiriamNudgeBuilder) Overspend(ctx InterventionContext) MiriamInterventi
 		period = "this month"
 	}
 
-	body := fmt.Sprintf("%s spending pass normal %s by %s%s.", titleCase(category), period, cur, overStr)
+	body := fmt.Sprintf(
+		"your %s spending is %s%s over your usual pace %s. want to take a look?",
+		strings.ToLower(category), cur, overStr, strings.ToLower(period),
+	)
 	voiceHook := body
 	if ctx.BudgetPace != "" {
-		voiceHook = ctx.BudgetPace
+		voiceHook = strings.ToLower(strings.ReplaceAll(ctx.BudgetPace, "—", ","))
 	} else {
-		voiceHook = fmt.Sprintf("At this pace your %s budget fit finish before month end.", category)
+		voiceHook = fmt.Sprintf(
+			"at this pace, your %s budget may run out before month end. want to see what's driving it?",
+			strings.ToLower(category),
+		)
 	}
 
 	return MiriamIntervention{
 		Trigger:    TriggerOverspend,
-		Title:      "Spending check",
+		Title:      "spending check",
 		Body:       body,
 		VoiceHook:  voiceHook,
 		Priority:   7,
@@ -136,7 +142,7 @@ func (b *MiriamNudgeBuilder) Overspend(ctx InterventionContext) MiriamInterventi
 }
 
 // IdleMoney builds the idle-money intervention.
-// "₦50k dey sit down for account. Should I move small?"
+// Body keeps a Pidgin variant; VoiceHook offers standard English.
 func (b *MiriamNudgeBuilder) IdleMoney(ctx InterventionContext) MiriamIntervention {
 	cur := ctx.Currency
 	if cur == "" {
@@ -144,13 +150,13 @@ func (b *MiriamNudgeBuilder) IdleMoney(ctx InterventionContext) MiriamInterventi
 	}
 	idleStr := formatAmount(ctx.IdleAmount)
 
-	body := fmt.Sprintf("%s%s dey sit down for account. Should I move small?", cur, idleStr)
+	body := fmt.Sprintf("%s%s dey sit down for account. make we move small to Stash?", cur, idleStr)
 
 	return MiriamIntervention{
 		Trigger:    TriggerIdleMoney,
-		Title:      "Idle money alert",
+		Title:      "idle money alert",
 		Body:       body,
-		VoiceHook:  fmt.Sprintf("You've got %s%s sitting idle. Want me to move some to Stash?", cur, idleStr),
+		VoiceHook:  fmt.Sprintf("you've got %s%s sitting idle. want to move some to Stash and give it a job?", cur, idleStr),
 		Priority:   6,
 		ActionType: "move_to_stash",
 		ActionAmt:  ctx.IdleAmount.Mul(decimal.NewFromFloat(0.3)), // suggest moving 30%
@@ -158,7 +164,7 @@ func (b *MiriamNudgeBuilder) IdleMoney(ctx InterventionContext) MiriamInterventi
 }
 
 // WinStreak builds the identity-reinforcing win message.
-// "You saved ₦50k without touching am this month."
+// "you saved ₦50k and left it alone this month. that's a real win."
 func (b *MiriamNudgeBuilder) WinStreak(ctx InterventionContext) MiriamIntervention {
 	cur := ctx.Currency
 	if cur == "" {
@@ -170,14 +176,20 @@ func (b *MiriamNudgeBuilder) WinStreak(ctx InterventionContext) MiriamInterventi
 		period = "this month"
 	}
 
-	body := fmt.Sprintf("You saved %s%s without touching am %s.", cur, savedStr, period)
+	body := fmt.Sprintf(
+		"you saved %s%s and left it alone %s. that's a real win.",
+		cur, savedStr, strings.ToLower(period),
+	)
 
 	return MiriamIntervention{
-		Trigger:   TriggerWinStreak,
-		Title:     "You're building something",
-		Body:      body,
-		VoiceHook: fmt.Sprintf("You saved %s%s %s without touching it. You're becoming someone who handles money well.", cur, savedStr, period),
-		Priority:  5,
+		Trigger: TriggerWinStreak,
+		Title:   "you're building something",
+		Body:    body,
+		VoiceHook: fmt.Sprintf(
+			"you saved %s%s %s and left it untouched. this is how good money habits compound.",
+			cur, savedStr, strings.ToLower(period),
+		),
+		Priority: 5,
 	}
 }
 
@@ -259,12 +271,4 @@ func formatAmount(amt decimal.Decimal) string {
 	default:
 		return amt.StringFixed(0)
 	}
-}
-
-// titleCase capitalises the first letter of a string (replaces deprecated strings.Title).
-func titleCase(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }

@@ -94,6 +94,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/vector"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
+	spending_coach "github.com/rail-service/rail_service/internal/workers/spending_coach"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	"github.com/rail-service/rail_service/pkg/jobqueue"
@@ -239,6 +240,8 @@ type Container struct {
 	// all proactive workers (autopilot, ai_insights, daily_pulse,
 	// scheduled_notifications, goal_progress, spending_coach).
 	ProactiveCoordinator *platform.ProactiveCoordinator
+	// SpendingCoachWorker is the weekly Baby-Step-aware proactive nudge worker.
+	SpendingCoachWorker *spending_coach.Worker
 	// AICostGuard is the fast Redis-backed per-user daily/monthly AI cost
 	// ceiling. Injected into both the Cencori provider (provider-level check)
 	// and core.Agent.Dependencies (agent-level pre-check). nil disables the

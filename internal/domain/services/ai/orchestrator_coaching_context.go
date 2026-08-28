@@ -116,6 +116,18 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 	}
 	parts = append(parts, fmt.Sprintf("mono_linked: %t", monoLinked))
 
+	// Rich Life goal — surface the user's stated life goal on every turn so
+	// Miriam can weave it into the conversation naturally.
+	if profile != nil && strings.TrimSpace(profile.FinancialGoal) != "" {
+		parts = append(parts, fmt.Sprintf("rich_life_goal: %s", profile.FinancialGoal))
+	}
+
+	// Portfolio value when the user has investments.
+	portfolioValue := o.getPortfolioValue(fetchCtx, userID)
+	if portfolioValue.GreaterThan(decimal.Zero) {
+		parts = append(parts, fmt.Sprintf("portfolio: $%s", portfolioValue.StringFixed(2)))
+	}
+
 	// Coaching nudge — the key instruction that makes every conversation context-aware
 	nudge := FreedomStepNudge(step)
 	if !monoLinked {

@@ -33,6 +33,11 @@ type CostGate interface {
 	DailyCapUSD() float64
 }
 
+// UserLister returns the users eligible for Miriam background workers.
+type UserLister interface {
+	ListMiriamWorkerUserIDs(ctx context.Context, limit int) ([]uuid.UUID, error)
+}
+
 // ActiveGoalProvider is the minimal surface for reading the user's current
 // Baby Step. Implemented by goals.Service.
 type ActiveGoalProvider interface {
@@ -73,6 +78,7 @@ type UserCountryResolver interface {
 
 // Worker is the weekly spending-coach worker.
 type Worker struct {
+	userLister   UserLister
 	goals        ActiveGoalProvider
 	brief        BriefProvider
 	suggestions  SavingsSuggestionProvider
@@ -88,6 +94,7 @@ type Worker struct {
 
 // New constructs the worker.
 func New(
+	userLister UserLister,
 	goals ActiveGoalProvider,
 	brief BriefProvider,
 	suggestions SavingsSuggestionProvider,
@@ -98,6 +105,7 @@ func New(
 	logger *zap.Logger,
 ) *Worker {
 	return &Worker{
+		userLister:   userLister,
 		goals:        goals,
 		brief:        brief,
 		suggestions:  suggestions,
@@ -117,6 +125,11 @@ func New(
 func (w *Worker) SetCostGate(g CostGate) {
 	w.costGate = g
 }
+
+// SetPushSender late-binds the push sender. The bridge dispatcher is wired
+// after the DI container is built, so the worker is constructed with a nil
+// sender and the real one is installed before Start.
+func (w *Worker) SetPushSender(p PushSender) { w.push = p }
 
 // SetTickInterval overrides the hourly tick. Useful for tests.
 func (w *Worker) SetTickInterval(d time.Duration) { w.tickInterval = d }
@@ -150,19 +163,17 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	}
 	defer w.releaseLeader(ctx)
 
-	// Iterate users. In production this would be backed by a streaming scan;
-	// for now we use ListActiveByStep on step 1..7 and dedupe user IDs.
-	seen := map[uuid.UUID]bool{}
-	for step := 1; step <= 7; step++ {
-		// No efficient "list all active users" path on the goals service yet;
-		// until that's added, we lean on the brief provider's user scan via
-		// a sentinel approach: the user list is implicit in the brief cache.
-		// For now, return early — the worker is wired but disabled until the
-		// user-list plumbing lands.
-		list, _ := w.goals.ListActiveByStep(ctx, uuid.Nil, step) // unused; placeholder
-		_ = list
+	users, err := w.userLister.ListMiriamWorkerUserIDs(ctx, 500)
+	if err != nil {
+		return fmt.Errorf("list Miriam worker users: %w", err)
 	}
-	_ = seen
+
+	for _, userID := range users {
+		if err := w.processUser(ctx, userID); err != nil {
+			w.logger.Warn("spending_coach: user processing failed",
+				zap.Stringer("user_id", userID), zap.Error(err))
+		}
+	}
 	return nil
 }
 
@@ -276,7 +287,7 @@ func (w *Worker) composeCopy(ctx context.Context, userID uuid.UUID, step int, co
 		if cat == "" || tip == "" {
 			return "", "", ""
 		}
-		body := fmt.Sprintf("You could save %s/month on %s — %s.",
+		body := fmt.Sprintf("You could save %s/month on %s. %s.",
 			suggestion["potential_savings"], cat, tip)
 		return stepTitle(step), reframeForStep(step, body), "savings_suggestion:" + cat
 	}
