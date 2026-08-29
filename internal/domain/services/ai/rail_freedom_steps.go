@@ -113,7 +113,7 @@ var FreedomSteps = []FreedomStepInfo{
 		Name:       "Rich Life",
 		Tagline:    "Spend extravagantly on what you love. Cut mercilessly on what you don't. Give generously.",
 		Criteria:   "Ongoing — no terminal state.",
-		CoachNudge: "User has built wealth. The goal now is to spend it on what they love, guilt-free. Conscious spending: be extravagant on the 2–3 things that matter most, cut everything else. Give generously. Build legacy. The money works for them now, not the other way around. Ask: 'What does your Rich Life look like?'",
+		CoachNudge: "User has built wealth. The goal now is to spend it on what they love, guilt-free. Find their money dial: ask what they would spend on without guilt, then protect that category and cut what they do not value. Ask what they get for the work and saving they do. Give generously. Build legacy. The money works for them now, not the other way around. Return to: 'What would your rich life look like?' when they get stuck in the weeds.",
 	},
 }
 

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 )
 
 // ToolGetBankStatementAnalysis lets Miriam pull a detailed breakdown of the
@@ -23,7 +23,7 @@ const ToolGetBankStatementAnalysis = "get_bank_statement_analysis"
 func BankStatementAnalysisTool() infraai.Tool {
 	return infraai.Tool{
 		Name:        ToolGetBankStatementAnalysis,
-		Description: `Get a detailed analysis of the user's uploaded bank statements: spending by category with percentages, total income vs total expenses, savings rate, top recurring payments, and a personalized growth plan mapped to their Baby Step. Use this after the user uploads a bank statement and asks "what does it say?", "analyze my spending", "how am I doing", or when they want a spending breakdown from their external bank data. If no statements have been uploaded, tell them to upload one in the app.`,
+		Description: `Get a detailed analysis of transactions from the user's linked Mono bank account or uploaded bank statements: spending by category, income vs expenses, savings rate, recurring payments when available, and a growth plan. Use this after Mono linking or a statement upload when the user asks about external-bank spending. If no data exists, offer connect_bank or a statement upload.`,
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -326,16 +326,16 @@ func (a *BankStatementAnalysisAdapter) getMonoAnalysis(ctx context.Context, user
 	growthPlan := generateGrowthPlan(savingsRate, categories, nil)
 
 	return map[string]interface{}{
-		"has_data":           true,
-		"source":             "mono",
-		"period":             periodStr,
-		"total_income":       fmt.Sprintf("%.0f", totalIncome),
-		"total_expense":      fmt.Sprintf("%.0f", totalExpense),
-		"savings_rate":       fmt.Sprintf("%.1f%%", savingsRate),
-		"transaction_count":  analysis.TransactionCount,
-		"top_categories":     topCatsStr,
-		"categories":         categories,
-		"growth_plan":        growthPlan,
+		"has_data":          true,
+		"source":            "mono",
+		"period":            periodStr,
+		"total_income":      fmt.Sprintf("%.0f", totalIncome),
+		"total_expense":     fmt.Sprintf("%.0f", totalExpense),
+		"savings_rate":      fmt.Sprintf("%.1f%%", savingsRate),
+		"transaction_count": analysis.TransactionCount,
+		"top_categories":    topCatsStr,
+		"categories":        categories,
+		"growth_plan":       growthPlan,
 		"summary": fmt.Sprintf(
 			"Over the %s from your linked bank account, you earned %.0f and spent %.0f. Your savings rate is %.1f%%. Top spending: %s.",
 			periodStr, totalIncome, totalExpense, savingsRate, topCatsStr,

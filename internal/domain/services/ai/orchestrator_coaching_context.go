@@ -118,6 +118,9 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 
 	// Coaching nudge — the key instruction that makes every conversation context-aware
 	nudge := FreedomStepNudge(step)
+	if monoLinked && (step == int(StepStabilize) || step == int(StepStarterSafetyNet)) {
+		nudge += " Use the linked-bank numbers for one focused spending reveal: repeat the biggest category, compare it to income only when both figures are available, then ask one question. Do not dump the whole analysis."
+	}
 	if !monoLinked {
 		nudge += " If the conversation touches spending or budgets, suggest connecting their bank through Mono for real spending insights — but only if it fits naturally, never force it."
 	}

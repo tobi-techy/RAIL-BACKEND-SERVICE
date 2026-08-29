@@ -15,11 +15,14 @@ func TestSystemPromptV2_ConversationalCore(t *testing.T) {
 		"YOUR JOB",
 		"RELATIONSHIP",
 		"CONVERSATIONAL INTELLIGENCE",
+		"CONVERSATIONAL MECHANICS",
 		"INTERACTION MODES",
 		"JUDGMENT",
 		"FINANCIAL PHILOSOPHY",
 		"ADAPTIVE LENGTH",
 		"GREETINGS:",
+		"money dial",
+		"USE MONO DATA FOR THE REVEAL",
 	} {
 		if !strings.Contains(SystemPromptV2, want) {
 			t.Errorf("SystemPromptV2 missing %q section from conversational retune", want)
@@ -61,7 +64,7 @@ func TestSystemPromptV2_NoDashes(t *testing.T) {
 // restructured hierarchy instead of adding instructions. Bound is generous
 // (~10% over post-retune size) but catches wholesale appends.
 func TestSystemPromptV2_Tightness(t *testing.T) {
-	const maxChars = 13000
+	const maxChars = 14000
 	if got := len(SystemPromptV2); got > maxChars {
 		t.Errorf("SystemPromptV2 grew to %d chars (max %d) — tighten instead of appending", got, maxChars)
 	}

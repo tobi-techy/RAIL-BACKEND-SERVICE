@@ -12,15 +12,15 @@ import (
 
 func TestClassifyFreedomStep(t *testing.T) {
 	tests := []struct {
-		name               string
-		state              *entities.MiriamMoneyState
-		spendBalance       decimal.Decimal
-		stashBalance       decimal.Decimal
-		debts              []entities.FinancialObligation
-		profile            *entities.FinancialProfile
+		name                  string
+		state                 *entities.MiriamMoneyState
+		spendBalance          decimal.Decimal
+		stashBalance          decimal.Decimal
+		debts                 []entities.FinancialObligation
+		profile               *entities.FinancialProfile
 		hasInvestmentActivity bool
-		portfolioValue     decimal.Decimal
-		expectedStep       int
+		portfolioValue        decimal.Decimal
+		expectedStep          int
 	}{
 		{
 			name:         "brand new user — no data",
@@ -60,8 +60,8 @@ func TestClassifyFreedomStep(t *testing.T) {
 			profile: &entities.FinancialProfile{
 				MonthlyFixedCosts: decimal.NewFromInt(150000),
 			},
-			spendBalance:   decimal.Zero,
-			stashBalance:    decimal.NewFromInt(150000), // covers 1 month
+			spendBalance: decimal.Zero,
+			stashBalance: decimal.NewFromInt(150000), // covers 1 month
 			debts: []entities.FinancialObligation{
 				{Type: entities.ObligationTypeDebt, Status: entities.ObligationStatusActive, Name: "Credit Card", Amount: decimal.NewFromInt(50000), InterestRate: ptrDecimal(decimal.NewFromInt(25))},
 			},
@@ -92,7 +92,7 @@ func TestClassifyFreedomStep(t *testing.T) {
 			profile: &entities.FinancialProfile{
 				MonthlyFixedCosts: decimal.NewFromInt(150000),
 			},
-			spendBalance:         decimal.Zero,
+			spendBalance:          decimal.Zero,
 			stashBalance:          decimal.NewFromInt(450000), // 3 months
 			hasInvestmentActivity: false,
 			expectedStep:          4, // Build the Muscle
@@ -106,11 +106,11 @@ func TestClassifyFreedomStep(t *testing.T) {
 			profile: &entities.FinancialProfile{
 				MonthlyFixedCosts: decimal.NewFromInt(150000),
 			},
-			spendBalance:         decimal.Zero,
+			spendBalance:          decimal.Zero,
 			stashBalance:          decimal.NewFromInt(450000),
 			hasInvestmentActivity: true,
-			portfolioValue:       decimal.NewFromInt(1000000), // < 3.6M annual
-			expectedStep:         5, // Accelerate
+			portfolioValue:        decimal.NewFromInt(1000000), // < 3.6M annual
+			expectedStep:          5,                           // Accelerate
 		},
 		{
 			name: "portfolio >= 1x annual income — Step 6",
@@ -121,11 +121,11 @@ func TestClassifyFreedomStep(t *testing.T) {
 			profile: &entities.FinancialProfile{
 				MonthlyFixedCosts: decimal.NewFromInt(150000),
 			},
-			spendBalance:         decimal.Zero,
+			spendBalance:          decimal.Zero,
 			stashBalance:          decimal.NewFromInt(450000),
 			hasInvestmentActivity: true,
-			portfolioValue:       decimal.NewFromInt(4000000), // > 3.6M annual
-			expectedStep:         6, // Rich Life
+			portfolioValue:        decimal.NewFromInt(4000000), // > 3.6M annual
+			expectedStep:          6,                           // Rich Life
 		},
 	}
 
@@ -171,6 +171,15 @@ func TestFreedomStepNudge(t *testing.T) {
 	// Out of range returns empty
 	if nudge := FreedomStepNudge(-1); nudge != "" {
 		t.Errorf("FreedomStepNudge(-1) = %q, want empty", nudge)
+	}
+}
+
+func TestRichLifeNudgeIncludesMoneyDial(t *testing.T) {
+	nudge := FreedomStepNudge(int(StepRichLife))
+	for _, want := range []string{"money dial", "what they get", "rich life"} {
+		if !strings.Contains(strings.ToLower(nudge), want) {
+			t.Errorf("Rich Life nudge missing %q", want)
+		}
 	}
 }
 
