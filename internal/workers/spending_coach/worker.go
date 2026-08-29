@@ -1,19 +1,16 @@
-// Package spending_coach implements the weekly worker that turns Miriam's
-// canonical brief into a Baby-Step-aware proactive nudge. The worker is
-// leader-elected, fires once per user per week in their local 9am window, and
-// delivers a single insight + concrete next step through the global
-// proactive coordinator so the daily cap holds.
+// Package spending_coach implements committed Conscious Spending Plan check-ins.
 package spending_coach
 
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/domain/services/goals"
+	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/shopspring/decimal"
@@ -33,31 +30,12 @@ type CostGate interface {
 	DailyCapUSD() float64
 }
 
-// ActiveGoalProvider is the minimal surface for reading the user's current
-// Baby Step. Implemented by goals.Service.
-type ActiveGoalProvider interface {
-	ListActiveByStep(ctx context.Context, userID uuid.UUID, step int) ([]entities.UserGoal, error)
-	HasAnyGoal(ctx context.Context, userID uuid.UUID) (bool, error)
+type ConsciousSpendingPlanProvider interface {
+	ListCommittedCheckIns(ctx context.Context) ([]entities.ConsciousSpendingPlanCheckIn, error)
 }
 
-// BriefProvider returns the canonical Miriam brief. The worker reads only
-// the top insight + next action; deeper fields are chat-only.
-type BriefProvider interface {
-	GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error)
-}
-
-// SavingsSuggestionProvider surfaces concrete "what to do instead" tips.
-type SavingsSuggestionProvider interface {
-	GetSuggestions(ctx context.Context, userID uuid.UUID) (*SavingsSuggestions, error)
-}
-
-// SavingsSuggestions is the typed shape of the savings-suggestion tool result.
-// Mirrors domain/services/ai.SavingsSuggestions to avoid an import cycle.
-type SavingsSuggestions struct {
-	Suggestions              []map[string]interface{} `json:"suggestions"`
-	TotalPotentialMonthlySav string                   `json:"total_potential_monthly_savings"`
-	AnnualStashGrowth        string                   `json:"annual_stash_growth_if_saved"`
-	Message                  string                   `json:"message"`
+type ConsciousSpendingSnapshotProvider interface {
+	GetConsciousSpendingSnapshot(ctx context.Context, userID uuid.UUID) consciousspending.Snapshot
 }
 
 // PushSender is the same shape used by every other proactive worker.
@@ -65,46 +43,35 @@ type PushSender interface {
 	SendToUser(ctx context.Context, userID uuid.UUID, title, body string, data map[string]interface{}) error
 }
 
-// UserCountryResolver returns the user's ISO country code (for local 9am
-// window calculation). nil-safe — workers default to UTC when missing.
-type UserCountryResolver interface {
-	GetCountry(ctx context.Context, userID uuid.UUID) (string, error)
-}
-
 // Worker is the weekly spending-coach worker.
 type Worker struct {
-	goals        ActiveGoalProvider
-	brief        BriefProvider
-	suggestions  SavingsSuggestionProvider
 	push         PushSender
 	coordinator  *platform.ProactiveCoordinator
 	redis        cache.RedisClient
-	country      UserCountryResolver
 	costGate     CostGate
+	plans        ConsciousSpendingPlanProvider
+	snapshots    ConsciousSpendingSnapshotProvider
 	logger       *zap.Logger
 	tickInterval time.Duration
 	clock        func() time.Time
 }
 
+func (w *Worker) SetConsciousSpendingProviders(plans ConsciousSpendingPlanProvider, snapshots ConsciousSpendingSnapshotProvider) {
+	w.plans = plans
+	w.snapshots = snapshots
+}
+
 // New constructs the worker.
 func New(
-	goals ActiveGoalProvider,
-	brief BriefProvider,
-	suggestions SavingsSuggestionProvider,
 	push PushSender,
 	coordinator *platform.ProactiveCoordinator,
 	redis cache.RedisClient,
-	country UserCountryResolver,
 	logger *zap.Logger,
 ) *Worker {
 	return &Worker{
-		goals:        goals,
-		brief:        brief,
-		suggestions:  suggestions,
 		push:         push,
 		coordinator:  coordinator,
 		redis:        redis,
-		country:      country,
 		logger:       logger,
 		tickInterval: 1 * time.Hour,
 		clock:        func() time.Time { return time.Now().UTC() },
@@ -127,6 +94,9 @@ func (w *Worker) SetClock(fn func() time.Time) { w.clock = fn }
 // Start runs the worker loop until ctx is cancelled.
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("spending_coach worker started", zap.Duration("tick", w.tickInterval))
+	if err := w.RunOnce(ctx); err != nil {
+		w.logger.Warn("spending_coach initial tick failed", zap.Error(err))
+	}
 	ticker := time.NewTicker(w.tickInterval)
 	defer ticker.Stop()
 	for {
@@ -150,35 +120,43 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	}
 	defer w.releaseLeader(ctx)
 
-	// Iterate users. In production this would be backed by a streaming scan;
-	// for now we use ListActiveByStep on step 1..7 and dedupe user IDs.
-	seen := map[uuid.UUID]bool{}
-	for step := 1; step <= 7; step++ {
-		// No efficient "list all active users" path on the goals service yet;
-		// until that's added, we lean on the brief provider's user scan via
-		// a sentinel approach: the user list is implicit in the brief cache.
-		// For now, return early — the worker is wired but disabled until the
-		// user-list plumbing lands.
-		list, _ := w.goals.ListActiveByStep(ctx, uuid.Nil, step) // unused; placeholder
-		_ = list
+	if w.plans == nil || w.snapshots == nil {
+		return nil
 	}
-	_ = seen
+	now := w.clock()
+	if !couldAnyCheckInBeDue(now) {
+		return nil
+	}
+	checkIns, err := w.plans.ListCommittedCheckIns(ctx)
+	if err != nil {
+		return fmt.Errorf("list committed plan check-ins: %w", err)
+	}
+	for i := range checkIns {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		checkIn := checkIns[i]
+		if !dueForCadence(checkIn.Country, now, checkIn.Plan.CheckInCadence) {
+			continue
+		}
+		userCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		if err := w.processUser(userCtx, &checkIn.Plan); err != nil {
+			w.logger.Warn("spending_coach: process user failed",
+				zap.Stringer("user_id", checkIn.Plan.UserID), zap.Error(err))
+		}
+		cancel()
+	}
 	return nil
 }
 
 // processUser is the per-user scan. Kept as a method so the eval endpoint can
 // invoke it for a single user.
-func (w *Worker) processUser(ctx context.Context, userID uuid.UUID) error {
-	country := ""
-	if w.country != nil {
-		if c, err := w.country.GetCountry(ctx, userID); err == nil {
-			country = c
-		}
-	}
-	now := w.clock()
-	if !dueForWeeklyCoach(country, now, w.clock()) {
+func (w *Worker) processUser(ctx context.Context, plan *entities.ConsciousSpendingPlan) error {
+	if plan == nil || plan.Status != entities.ConsciousSpendingPlanStatusCommitted {
 		return nil
 	}
+	userID := plan.UserID
+	now := w.clock()
 
 	// Refuse to deliver a weekly insight when the user has already burned
 	// through their daily AI ceiling — they couldn't act on it anyway, and
@@ -209,8 +187,7 @@ func (w *Worker) processUser(ctx context.Context, userID uuid.UUID) error {
 	}
 
 	// Compose the copy.
-	step := w.findCurrentStep(ctx, userID)
-	title, body, insightID := w.composeCopy(ctx, userID, step, country)
+	title, body, insightID := w.composeCommittedPlanCopy(ctx, userID, plan)
 	if title == "" || body == "" {
 		return nil
 	}
@@ -220,8 +197,7 @@ func (w *Worker) processUser(ctx context.Context, userID uuid.UUID) error {
 	}
 
 	data := map[string]interface{}{
-		"type":      "spending_coach",
-		"step":      step,
+		"type":       "spending_coach",
 		"insight_id": insightID,
 	}
 	if err := w.push.SendToUser(ctx, userID, title, body, data); err != nil {
@@ -231,78 +207,91 @@ func (w *Worker) processUser(ctx context.Context, userID uuid.UUID) error {
 	}
 	if w.redis != nil {
 		_ = w.redis.Set(ctx, weekKey, "1", 7*24*time.Hour)
-		// Per-insight dedup so the same insight doesn't repeat week-over-week.
-		if insightID != "" {
-			_ = w.redis.Set(ctx,
-				"spending-coach:insight:"+userID.String()+":"+insightID,
-				"1", 14*24*time.Hour)
-		}
 	}
 	return nil
 }
 
-// composeCopy reads the brief + suggestions and produces a Baby-Step-aware
-// nudge. Returns ("", "", "") when there's nothing actionable.
-func (w *Worker) composeCopy(ctx context.Context, userID uuid.UUID, step int, country string) (string, string, string) {
-	var topInsight map[string]interface{}
-	if w.brief != nil {
-		raw, err := w.brief.GetMiriamBrief(ctx, userID, country)
-		if err == nil {
-			topInsight = topInsightFromBrief(raw)
+func (w *Worker) composeCommittedPlanCopy(ctx context.Context, userID uuid.UUID, plan *entities.ConsciousSpendingPlan) (string, string, string) {
+	if plan == nil || w.snapshots == nil {
+		return "", "", ""
+	}
+	actual := w.snapshots.GetConsciousSpendingSnapshot(ctx, userID)
+	if !actual.Complete {
+		return "Miriam: plan check", "I need one missing number before I can check your four-number plan honestly. Open Miriam and we'll fill it in.", "csp:missing_data"
+	}
+	variances := consciousspending.Compare(plan, actual, decimal.NewFromInt(5))
+	adverse := variances[:0]
+	for _, variance := range variances {
+		if isAdverseVariance(variance) {
+			adverse = append(adverse, variance)
 		}
 	}
-
-	// Suggestion-driven copy when no insight or insight is below threshold.
-	suggestion, suggestionAmount := topSuggestion(ctx, w.suggestions, userID)
-
-	if topInsight != nil {
-		title := stringField(topInsight["title"])
-		body := stringField(topInsight["body"])
-		insightID := stringField(topInsight["id"])
-		severity := strings.ToLower(stringField(topInsight["severity"]))
-		if title == "" || body == "" {
-			// fall through to suggestion
-		} else if severity == "info" && suggestionAmount.LessThan(decimal.NewFromInt(20)) {
-			return "", "", "" // nothing actionable this week
-		} else {
-			// Reframe the body via the current step's voice.
-			return stepTitle(step), reframeForStep(step, body), insightID
-		}
+	if len(adverse) == 0 {
+		return "Miriam: plan check", "You're holding the four numbers you committed to. Keep the system running; no new restriction needed.", "csp:on_track"
 	}
-
-	if !suggestionAmount.LessThan(decimal.NewFromInt(20)) && suggestion != nil {
-		cat := stringField(suggestion["category"])
-		tip := stringField(suggestion["tip"])
-		if cat == "" || tip == "" {
-			return "", "", ""
-		}
-		body := fmt.Sprintf("You could save %s/month on %s — %s.",
-			suggestion["potential_savings"], cat, tip)
-		return stepTitle(step), reframeForStep(step, body), "savings_suggestion:" + cat
-	}
-
-	return "", "", ""
+	sort.SliceStable(adverse, func(i, j int) bool {
+		return adverse[i].DeltaPct.Abs().GreaterThan(adverse[j].DeltaPct.Abs())
+	})
+	top := adverse[0]
+	return "Miriam: recommitment check",
+		fmt.Sprintf("%s is %s%%; your plan says %s%%. What changed? Open Miriam and we'll choose one recovery move, not rewrite the goal.",
+			bucketLabel(top.Bucket), top.ActualPct.StringFixed(1), top.TargetPct.StringFixed(1)),
+		"csp:variance:" + top.Bucket
 }
 
-// findCurrentStep mirrors goal_progress.findCurrentStep without exposing the
-// worker package's internals.
-func (w *Worker) findCurrentStep(ctx context.Context, userID uuid.UUID) int {
-	for step := 1; step <= 7; step++ {
-		list, err := w.goals.ListActiveByStep(ctx, userID, step)
-		if err != nil {
-			return step
-		}
-		if len(list) > 0 {
-			return step
-		}
+func isAdverseVariance(variance consciousspending.Variance) bool {
+	switch variance.Bucket {
+	case consciousspending.BucketFixedCosts, consciousspending.BucketGuiltFreeSpending:
+		return variance.DeltaPct.IsPositive()
+	case consciousspending.BucketInvestments, consciousspending.BucketSavings:
+		return variance.DeltaPct.IsNegative()
+	default:
+		return false
 	}
-	return 0
+}
+
+func bucketLabel(bucket string) string {
+	switch bucket {
+	case consciousspending.BucketFixedCosts:
+		return "Fixed costs"
+	case consciousspending.BucketInvestments:
+		return "Investments"
+	case consciousspending.BucketSavings:
+		return "Savings"
+	case consciousspending.BucketGuiltFreeSpending:
+		return "Guilt-free spending"
+	default:
+		return "That bucket"
+	}
+}
+
+func dueForCadence(country string, now time.Time, cadence string) bool {
+	if !dueForWeeklyCoach(country, now) {
+		return false
+	}
+	switch cadence {
+	case entities.CheckInCadenceBiweekly:
+		_, week := now.ISOWeek()
+		return week%2 == 0
+	case entities.CheckInCadenceMonthly:
+		loc := locationForCountry(country)
+		if loc == nil {
+			loc = time.UTC
+		}
+		return now.In(loc).Day() <= 7
+	default:
+		return true
+	}
+}
+
+func couldAnyCheckInBeDue(now time.Time) bool {
+	return now.Weekday() == time.Monday && now.Hour() >= 6 && now.Hour() <= 17
 }
 
 // dueForWeeklyCoach returns true when now is in the user's local Monday 9am
 // hour. Mirrors the daily_pulse worker pattern. Falls back to UTC Monday 9am
 // when country is missing.
-func dueForWeeklyCoach(country string, now, refTime time.Time) bool {
+func dueForWeeklyCoach(country string, now time.Time) bool {
 	loc := locationForCountry(country)
 	if loc == nil {
 		loc = time.UTC
@@ -314,7 +303,6 @@ func dueForWeeklyCoach(country string, now, refTime time.Time) bool {
 	if local.Hour() != 9 {
 		return false
 	}
-	_ = refTime
 	return true
 }
 
@@ -361,102 +349,6 @@ func isoWeek(t time.Time) string {
 	return fmt.Sprintf("%04d-W%02d", y, w)
 }
 
-// topInsightFromBrief reads the top insight by importance, matching the brief
-// response shape.
-func topInsightFromBrief(brief map[string]interface{}) map[string]interface{} {
-	raw, ok := brief["insights"]
-	if !ok {
-		return nil
-	}
-	arr, ok := raw.([]interface{})
-	if !ok {
-		return nil
-	}
-	for _, item := range arr {
-		m, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		severity := strings.ToLower(stringField(m["severity"]))
-		if severity == "warning" || severity == "critical" {
-			return m
-		}
-	}
-	return nil
-}
-
-// topSuggestion returns the highest-impact suggestion and its amount.
-func topSuggestion(ctx context.Context, p SavingsSuggestionProvider, userID uuid.UUID) (map[string]interface{}, decimal.Decimal) {
-	if p == nil {
-		return nil, decimal.Zero
-	}
-	s, err := p.GetSuggestions(ctx, userID)
-	if err != nil || s == nil {
-		return nil, decimal.Zero
-	}
-	var best map[string]interface{}
-	var bestAmt decimal.Decimal
-	for _, item := range s.Suggestions {
-		amt, err := decimal.NewFromString(stringField(item["potential_savings"]))
-		if err != nil {
-			continue
-		}
-		if amt.GreaterThan(bestAmt) {
-			best = item
-			bestAmt = amt
-		}
-	}
-	return best, bestAmt
-}
-
-func stringField(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return strings.TrimSpace(s)
-	}
-	return ""
-}
-
-// stepTitle returns a brief title shaped for the user's current Baby Step.
-func stepTitle(step int) string {
-	switch step {
-	case 1:
-		return "Miriam: starter fund check"
-	case 2:
-		return "Miriam: sprint phase update"
-	case 3:
-		return "Miriam: cushion update"
-	case 4, 5, 6, 7:
-		return "Miriam: long-game check"
-	default:
-		return "Miriam: weekly check"
-	}
-}
-
-// reframeForStep prefixes the brief body with a step-aware lead so the same
-// insight reads differently across the ladder. Pure text transform — no DB.
-func reframeForStep(step int, body string) string {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return body
-	}
-	switch step {
-	case 1:
-		return "Every dollar off Spend goes to your starter. " + body
-	case 2:
-		return "Sprint phase: " + body + " Throw it at the snowball instead."
-	case 3:
-		return "Hold the cushion: " + body
-	case 4, 5:
-		return "Long game: " + body
-	case 6:
-		return "Momentum check: " + body
-	case 7:
-		return "Wealth update: " + body
-	default:
-		return body
-	}
-}
-
 // tryAcquireLeader / releaseLeader mirror goal_progress.worker.
 func (w *Worker) tryAcquireLeader(ctx context.Context) bool {
 	if w.redis == nil {
@@ -477,6 +369,3 @@ func (w *Worker) releaseLeader(ctx context.Context) {
 	key := "spending-coach:leader:" + w.clock().Format("2006-01-02")
 	_ = w.redis.Del(ctx, key)
 }
-
-// keepGoals reference live for the goals.Service wiring (compile-time check).
-var _ = goals.PaceReport{}

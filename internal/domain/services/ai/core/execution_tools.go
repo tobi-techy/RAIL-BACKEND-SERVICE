@@ -33,6 +33,9 @@ var (
 		// engine; there is no Miriam-initiated create tool.)
 		"create_automation":         true,
 		"accept_mandate_suggestion": true,
+		// A committed CSP creates a durable coaching contract but never moves
+		// money. Confirmation ensures the four numbers are genuinely the user's.
+		"commit_conscious_spending_plan": true,
 		// BRIJ flight bookings (book_flight is fund-moving, Face ID step-up).
 		"create_flight_intent":  true,
 		"book_flight":           true,

@@ -11,6 +11,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type ConsciousSpendingPlanProvider interface {
+	Get(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)
+}
+
+func (o *AgentAdapter) SetConsciousSpendingPlanProvider(provider ConsciousSpendingPlanProvider) {
+	o.consciousSpendingPlans = provider
+}
+
 // buildCoachingContext injects a [COACHING STATE] block on EVERY conversation
 // turn (not just onboarding) so Miriam always knows which Financial Freedom
 // Step the user is on, their progress, debt situation, savings rate, and what
@@ -22,6 +30,18 @@ import (
 func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUID) string {
 	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+
+	var consciousPlanCh chan *entities.ConsciousSpendingPlan
+	if o.consciousSpendingPlans != nil {
+		consciousPlanCh = make(chan *entities.ConsciousSpendingPlan, 1)
+		go func() {
+			plan, err := o.consciousSpendingPlans.Get(fetchCtx, userID)
+			if err != nil {
+				plan = nil
+			}
+			consciousPlanCh <- plan
+		}()
+	}
 
 	// 1. Gather all the data we need in parallel-ish (sequential but fast,
 	//    each call is <500ms and we're inside the 1.5s assembly budget).
@@ -116,8 +136,32 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 	}
 	parts = append(parts, fmt.Sprintf("mono_linked: %t", monoLinked))
 
+	var consciousPlan *entities.ConsciousSpendingPlan
+	if consciousPlanCh != nil {
+		select {
+		case consciousPlan = <-consciousPlanCh:
+		case <-fetchCtx.Done():
+		}
+		if consciousPlan != nil {
+			plan := consciousPlan
+			parts = append(parts, fmt.Sprintf(
+				"csp: %s | income %s %s | fixed %s%% | investments %s%% | savings %s%% | guilt_free %s%% | check_in %s",
+				plan.Status, plan.Currency, plan.TakeHomeIncome.StringFixed(2),
+				plan.FixedCostsPct.StringFixed(1), plan.InvestmentsPct.StringFixed(1),
+				plan.SavingsPct.StringFixed(1), plan.GuiltFreeSpendingPct.StringFixed(1),
+				plan.CheckInCadence,
+			))
+			if plan.Status == entities.ConsciousSpendingPlanStatusCommitted {
+				parts = append(parts, "csp_coaching: committed")
+			}
+		}
+	}
+
 	// Coaching nudge — the key instruction that makes every conversation context-aware
 	nudge := FreedomStepNudge(step)
+	if consciousPlan != nil && consciousPlan.Status == entities.ConsciousSpendingPlanStatusCommitted {
+		nudge += " A committed four-number plan exists. Use it as the monthly allocation layer beneath this Freedom Step. Hold the user to their own numbers, ask what changed before revising them, and never silently lower a target."
+	}
 	if monoLinked && (step == int(StepStabilize) || step == int(StepStarterSafetyNet)) {
 		nudge += " Use the linked-bank numbers for one focused spending reveal: repeat the biggest category, compare it to income only when both figures are available, then ask one question. Do not dump the whole analysis."
 	}

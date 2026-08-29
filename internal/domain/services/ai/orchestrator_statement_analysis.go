@@ -237,12 +237,8 @@ func generateGrowthPlan(
 	// Savings rate assessment
 	if savingsRate < 0 {
 		plan = append(plan, "You're spending more than you earn. The #1 priority is closing that gap — look at your top 2 categories for immediate cuts.")
-	} else if savingsRate < 10 {
-		plan = append(plan, fmt.Sprintf("You're saving %.0f%% of your income — that's a start, but we want to push it to at least 20%%. Your biggest opportunity is your top spending category.", savingsRate))
-	} else if savingsRate < 20 {
-		plan = append(plan, fmt.Sprintf("You're saving %.0f%% — solid. If we can get this to 25%%, your emergency fund builds 2x faster.", savingsRate))
 	} else {
-		plan = append(plan, fmt.Sprintf("You're saving %.0f%% — that's strong. The focus shifts from cutting to growing: let's make sure that savings is working for you in your stash.", savingsRate))
+		plan = append(plan, fmt.Sprintf("Your net savings rate is %.0f%%. Separate that into the four numbers before choosing a target: fixed costs, investments, savings, and guilt-free spending.", savingsRate))
 	}
 
 	// Category-specific advice
@@ -260,13 +256,9 @@ func generateGrowthPlan(
 
 	// Baby Step mapping
 	if savingsRate < 0 {
-		plan = append(plan, "Baby Step: You're in crisis mode. Before anything else, cover your essentials and stop the bleeding. We'll build a starter emergency fund once income exceeds expenses.")
-	} else if savingsRate < 10 {
-		plan = append(plan, "Baby Step: Start with a starter emergency fund. At your current savings rate, that's achievable. Then we attack any debts with the snowball method.")
-	} else if savingsRate < 20 {
-		plan = append(plan, "Baby Step: You're ready to build the starter emergency fund and start the debt snowball if you have debts. Every extra naira goes to the smallest debt first.")
+		plan = append(plan, "Freedom Step: Cover essentials and close the income-spending gap before adding a savings or investing target.")
 	} else {
-		plan = append(plan, "Baby Step: With a 20%+ savings rate, you can fast-track through the emergency fund and move to investing 15% of your income for long-term wealth.")
+		plan = append(plan, "Freedom Step: Savings rate alone cannot choose the next step. Check the emergency fund and high-interest debt, then fit the four-number plan to that priority.")
 	}
 
 	return plan

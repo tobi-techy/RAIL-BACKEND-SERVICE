@@ -92,6 +92,7 @@ func newProductionToolRegistry() *aitools.Registry {
 	aitools.RegisterBillTools(reg)
 	aitools.RegisterTravelTools(reg)
 	aitools.RegisterSavingsGoalsV2Tools(reg)
+	aitools.RegisterConsciousSpendingPlanTools(reg)
 	return reg
 }
 

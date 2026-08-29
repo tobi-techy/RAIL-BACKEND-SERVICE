@@ -38,6 +38,12 @@ func TestTierSets_Disjoint(t *testing.T) {
 			t.Errorf("%q is in BOTH tiers — enforcement would be ambiguous", name)
 		}
 	}
+	if !core.StageConfirmTools["commit_conscious_spending_plan"] {
+		t.Error("committing a Conscious Spending Plan must require explicit confirmation")
+	}
+	if core.StageConfirmTools["build_conscious_spending_plan"] {
+		t.Error("building a read-only Conscious Spending Plan snapshot must not require confirmation")
+	}
 }
 
 // TestIsExecutionActionTool_CoversLegacySwitch pins every tool that was in the

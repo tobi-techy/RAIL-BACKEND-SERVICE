@@ -19,73 +19,74 @@ import (
 // *AgentAdapter receiver. Methods served by core.Agent shadow the
 // older implementations that route through the AI provider directly.
 type AgentAdapter struct {
-	agent               *core.Agent
-	aiProvider          infraai.AIProvider
-	portfolioProvider   PortfolioDataProvider
-	activityProvider    ActivityDataProvider
-	newsProvider        NewsDataProvider
-	conversations       ConversationPersister
-	usage               UsageTracker
-	knowledge           KnowledgeSearcher
-	spending            SpendingAnalyzer
-	balanceHistory      BalanceHistoryProvider
-	patterns            PatternAnalyzer
-	aggregateStats      AggregateStatsProvider
-	fundsTransferer     FundsTransferer
-	actionAuditor       ActionAuditor
-	actionHistory       ActionHistoryReader
-	cardTransactions    CardTransactionProvider
-	depositHistory      DepositHistoryProvider
-	yieldProvider       YieldProvider
-	withdrawalHistory   WithdrawalHistoryProvider
-	receiptHistory      ReceiptHistoryProvider
-	receiptSplitter     ReceiptSplitter
-	withdrawalInitiator WithdrawalInitiator
-	bankAccountProvider BankAccountProvider
-	budgetProvider      BudgetProvider
-	financialProfile    FinancialProfileProvider
-	obligations         FinancialObligationProvider
-	obligationManager   FinancialObligationManager
-	automationCreator   AutomationCreator
-	obligationCreator   ObligationCreator
-	currencyRates       CurrencyRateProvider
-	userProfile         UserProfileProvider
-	reportEmail         ReportEmailSender
-	savingsGoalStore    SavingsGoalStore
-	sharedGoalCreator   SharedGoalCreator
-	recurringDetector   RecurringExpenseDetector
-	warrantyTracker     WarrantyTracker
-	receiptChallenges   ReceiptChallengeProvider
-	savingsSuggestions  SavingsSuggestionProvider
-	priceTracker        PriceTracker
-	merchantAnalyzer    MerchantAnalyzer
-	pending             PendingActionStore
-	accountChecker      UserAccountChecker
-	emergencyWithdrawer EmergencyWithdrawer
-	automationProvider  AutomationProvider
-	goalProtection      GoalProtectionProvider
-	voiceLimiter        *VoiceDailyLimiter
-	contextSignals      ContextSignalProvider
-	memory              *MemoryService
-	miriamIntelligence  MiriamIntelligenceReader
-	bankStatementCtx    *BankStatementContextProvider
-	monoAnalysis        MonoAnalysisProvider
-	nairaCtx            *nairaCtx
-	supermemory         SupermemoryClient
-	webSearcher         WebSearcher
-	moneyMoveNotifier   MoneyMoveNotifier
-	anomalyStore        AnomalyStore
-	spendingEnricher    SpendingEnricher
-	merchantEnricher    MerchantEnricher
-	gameplayProvider    GameplayProvider
-	enrichmentSummaryFn func(ctx context.Context, userID uuid.UUID) (string, error)
-	redis               cache.RedisClient
-	workingMemory       *memory.WorkingMemoryStore
-	eventStore          *memory.EventStore
-	stepUpVerifier      StepUpVerifier
-	travel              core.TravelProvider
-	responseGuardOn     bool
-	logger              *zap.Logger
+	agent                  *core.Agent
+	aiProvider             infraai.AIProvider
+	portfolioProvider      PortfolioDataProvider
+	activityProvider       ActivityDataProvider
+	newsProvider           NewsDataProvider
+	conversations          ConversationPersister
+	usage                  UsageTracker
+	knowledge              KnowledgeSearcher
+	spending               SpendingAnalyzer
+	balanceHistory         BalanceHistoryProvider
+	patterns               PatternAnalyzer
+	aggregateStats         AggregateStatsProvider
+	fundsTransferer        FundsTransferer
+	actionAuditor          ActionAuditor
+	actionHistory          ActionHistoryReader
+	cardTransactions       CardTransactionProvider
+	depositHistory         DepositHistoryProvider
+	yieldProvider          YieldProvider
+	withdrawalHistory      WithdrawalHistoryProvider
+	receiptHistory         ReceiptHistoryProvider
+	receiptSplitter        ReceiptSplitter
+	withdrawalInitiator    WithdrawalInitiator
+	bankAccountProvider    BankAccountProvider
+	budgetProvider         BudgetProvider
+	financialProfile       FinancialProfileProvider
+	obligations            FinancialObligationProvider
+	obligationManager      FinancialObligationManager
+	automationCreator      AutomationCreator
+	obligationCreator      ObligationCreator
+	currencyRates          CurrencyRateProvider
+	userProfile            UserProfileProvider
+	reportEmail            ReportEmailSender
+	savingsGoalStore       SavingsGoalStore
+	sharedGoalCreator      SharedGoalCreator
+	recurringDetector      RecurringExpenseDetector
+	warrantyTracker        WarrantyTracker
+	receiptChallenges      ReceiptChallengeProvider
+	savingsSuggestions     SavingsSuggestionProvider
+	priceTracker           PriceTracker
+	merchantAnalyzer       MerchantAnalyzer
+	pending                PendingActionStore
+	accountChecker         UserAccountChecker
+	emergencyWithdrawer    EmergencyWithdrawer
+	automationProvider     AutomationProvider
+	goalProtection         GoalProtectionProvider
+	voiceLimiter           *VoiceDailyLimiter
+	contextSignals         ContextSignalProvider
+	memory                 *MemoryService
+	miriamIntelligence     MiriamIntelligenceReader
+	bankStatementCtx       *BankStatementContextProvider
+	monoAnalysis           MonoAnalysisProvider
+	consciousSpendingPlans ConsciousSpendingPlanProvider
+	nairaCtx               *nairaCtx
+	supermemory            SupermemoryClient
+	webSearcher            WebSearcher
+	moneyMoveNotifier      MoneyMoveNotifier
+	anomalyStore           AnomalyStore
+	spendingEnricher       SpendingEnricher
+	merchantEnricher       MerchantEnricher
+	gameplayProvider       GameplayProvider
+	enrichmentSummaryFn    func(ctx context.Context, userID uuid.UUID) (string, error)
+	redis                  cache.RedisClient
+	workingMemory          *memory.WorkingMemoryStore
+	eventStore             *memory.EventStore
+	stepUpVerifier         StepUpVerifier
+	travel                 core.TravelProvider
+	responseGuardOn        bool
+	logger                 *zap.Logger
 }
 
 var _ ChatEngine = (*AgentAdapter)(nil)
@@ -132,6 +133,9 @@ func (a *AgentAdapter) ChatInContextWithOptions(ctx context.Context, userID, con
 	}
 	if rl := a.liveNairaRateLine(ctx); rl != "" {
 		systemContext = append(systemContext, rl)
+	}
+	if coaching := a.buildCoachingContext(ctx, userID); coaching != "" {
+		systemContext = append(systemContext, coaching)
 	}
 	systemContext = append(systemContext, opts.SystemContext...)
 	coreOpts.SystemContext = systemContext

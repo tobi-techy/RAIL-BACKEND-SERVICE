@@ -426,6 +426,9 @@ type Dependencies struct {
 	// v2 savings-goal tools and the goal_progress worker.
 	UserGoals UserGoalStore
 
+	// ConsciousSpendingPlans stores the user's four-number monthly commitment.
+	ConsciousSpendingPlans ConsciousSpendingPlanStore
+
 	// ConversationsPersister builds context from and records exchanges to a conversation.
 	ConversationsPersister ConversationPersister
 
@@ -908,6 +911,22 @@ type UserGoalStore interface {
 	Archive(ctx context.Context, userID uuid.UUID, goalID string) error
 	UpdateProgress(ctx context.Context, userID uuid.UUID, goalID string, newAmount string) (*UserGoalData, error)
 	HasAny(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+type ConsciousSpendingPlanInput struct {
+	TakeHomeIncome    string
+	Currency          string
+	FixedCosts        string
+	Investments       string
+	Savings           string
+	GuiltFreeSpending string
+	CheckInCadence    string
+}
+
+type ConsciousSpendingPlanStore interface {
+	Get(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)
+	Commit(ctx context.Context, userID uuid.UUID, in ConsciousSpendingPlanInput) (*entities.ConsciousSpendingPlan, error)
+	Pause(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)
 }
 
 // CreateUserGoalInput is the create payload exposed to the LLM.

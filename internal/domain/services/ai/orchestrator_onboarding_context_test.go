@@ -313,3 +313,20 @@ func TestFirstConversationGuidance(t *testing.T) {
 		}
 	})
 }
+
+func TestOnboardingBuildsPersonalCommitmentBeforeCSPCommit(t *testing.T) {
+	guidance := firstConversationGuidance("")
+	for _, want := range []string{
+		"why it matters now",
+		"who benefits",
+		"build_conscious_spending_plan",
+		"biggest mismatch",
+		"protected money dial",
+		"commit_conscious_spending_plan",
+		"moves no money",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("first-conversation guidance missing %q", want)
+		}
+	}
+}

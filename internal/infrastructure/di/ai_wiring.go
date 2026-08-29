@@ -414,6 +414,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	c.AIOrchestrator.SetBudgetProvider(c.BudgetRepo)
 	c.AIOrchestrator.SetFinancialProfileProvider(c.FinancialProfileRepo)
 	c.AIOrchestrator.SetFinancialObligationProvider(c.FinancialObligationService)
+	c.AIOrchestrator.SetConsciousSpendingPlanProvider(c.ConsciousSpendingPlanService)
 	c.AIOrchestrator.SetAutomationCreator(&automationCreatorAdapter{service: c.AutomationService})
 	c.AIOrchestrator.SetAutomationProvider(&automationProviderAdapter{svc: c.AutomationService})
 	c.AIOrchestrator.SetMiriamIntelligenceProvider(c.MiriamIntelligenceService)
@@ -467,6 +468,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		aitools.RegisterBillTools(toolRegistry)
 		aitools.RegisterTravelTools(toolRegistry)
 		aitools.RegisterSavingsGoalsV2Tools(toolRegistry)
+		aitools.RegisterConsciousSpendingPlanTools(toolRegistry)
 
 		c.NewToolRegistry = toolRegistry
 
@@ -637,6 +639,9 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			// every chat turn once the registry is registered.
 			if c.UserGoalRepo != nil && c.GoalsService != nil {
 				agentDeps.UserGoals = &coreUserGoalStoreAdapter{svc: c.GoalsService}
+			}
+			if c.ConsciousSpendingPlanService != nil {
+				agentDeps.ConsciousSpendingPlans = &coreConsciousSpendingPlanAdapter{svc: c.ConsciousSpendingPlanService}
 			}
 
 			// Conversation persister

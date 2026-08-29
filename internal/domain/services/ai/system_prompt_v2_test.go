@@ -69,3 +69,18 @@ func TestSystemPromptV2_Tightness(t *testing.T) {
 		t.Errorf("SystemPromptV2 grew to %d chars (max %d) — tighten instead of appending", got, maxChars)
 	}
 }
+
+func TestSystemPromptV2_ConsciousSpendingCommitment(t *testing.T) {
+	for _, want := range []string{
+		"fixed costs, investments, savings, guilt-free spending",
+		"50-60%, about 10%, 5-10%, 20-35%",
+		"desired life → why now",
+		"Never silently lower a missed target",
+		"step sets the current safety priority",
+		"commit_conscious_spending_plan",
+	} {
+		if !strings.Contains(SystemPromptV2, want) {
+			t.Errorf("SystemPromptV2 missing Conscious Spending guidance %q", want)
+		}
+	}
+}
