@@ -499,6 +499,12 @@ func (a *AgentAdapter) BuildContextDeps() *aicontext.ContextDeps {
 			}
 			return a.bankStatementCtx.BuildContext(ctx, userID)
 		},
+		ListAutomationsFn: func(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutomation, error) {
+			if a.automationProvider == nil {
+				return nil, nil
+			}
+			return a.automationProvider.List(ctx, userID)
+		},
 		GetActiveThreadFn: func(ctx context.Context, userID uuid.UUID) string {
 			if a.workingMemory == nil {
 				return ""

@@ -472,6 +472,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		aitools.RegisterBillTools(toolRegistry)
 		aitools.RegisterTravelTools(toolRegistry)
 		aitools.RegisterSavingsGoalsV2Tools(toolRegistry)
+		aitools.RegisterBankTransferTools(toolRegistry)
 
 		c.NewToolRegistry = toolRegistry
 
@@ -548,6 +549,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		}
 		agentDeps.MerchantBlock = buildMerchantBlockProvider(c)
 		agentDeps.TradeCopy = buildTradeCopyProvider(c)
+		// Bank transfer + crypto send providers — wrap existing ramp/withdrawal
+		// services so Miriam can send to Nigerian bank accounts and external
+		// crypto wallets with Face ID confirmation.
+		agentDeps.BankTransfer = buildBankTransferProvider(c)
+		agentDeps.CryptoSend = buildCryptoSendProvider(c)
 		// agentDeps.Bills is wired later (after Airbills/billpay init) via
 		// c.AgentDeps, since Circle/ChainRails come up after AI services.
 

@@ -1,7 +1,9 @@
 package investing
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,14 +15,42 @@ import (
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"go.uber.org/zap"
 )
 
 // ConversationHandlers handles AI conversation endpoints.
 type ConversationHandlers struct {
-	orchestrator aiservice.ChatEngine
-	convService  *conversationsvc.Service
-	logger       *zap.Logger
+	orchestrator  aiservice.ChatEngine
+	convService   *conversationsvc.Service
+	confirmStore  ConfirmTokenCreator
+	confirmEmail  ConfirmEmailSender
+	userEmail     UserEmailResolver
+	confirmBase   string
+	logger        *zap.Logger
+}
+
+// ConfirmTokenCreator creates one-time email confirmation tokens.
+type ConfirmTokenCreator interface {
+	Create(ctx context.Context, payload *platform.ConfirmTokenPayload) (string, error)
+}
+
+// ConfirmEmailSender sends the email that carries a one-time confirmation link.
+type ConfirmEmailSender interface {
+	SendTransactionConfirmation(ctx context.Context, toEmail, description, confirmURL string) error
+}
+
+// UserEmailResolver looks up the email address for a user.
+type UserEmailResolver interface {
+	GetEmailByUserID(ctx context.Context, userID uuid.UUID) (string, error)
+}
+
+// SetConfirmLinkDeps wires the email-link confirmation dependencies.
+func (h *ConversationHandlers) SetConfirmLinkDeps(store ConfirmTokenCreator, email ConfirmEmailSender, resolver UserEmailResolver, confirmBase string) {
+	h.confirmStore = store
+	h.confirmEmail = email
+	h.userEmail = resolver
+	h.confirmBase = confirmBase
 }
 
 // NewConversationHandlers creates new conversation handlers.
@@ -271,6 +301,77 @@ func (h *ConversationHandlers) ConfirmAction(c *gin.Context) {
 	})
 }
 
+// ConfirmLink handles POST /api/v1/ai/conversations/:id/confirm-link
+// It sends a one-time confirmation link to the user's email for the pending
+// action. The user clicks the link to authorize the transfer without needing
+// Face ID / passcode — the email link itself is the step-up verification.
+func (h *ConversationHandlers) ConfirmLink(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	conv := h.getConversationForUser(c, userID)
+	if conv == nil {
+		return
+	}
+
+	if h.confirmStore == nil || h.confirmEmail == nil || h.userEmail == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "email_link_unavailable", "message": "Email link confirmation isn't set up. Use Face ID in the app to confirm."})
+		return
+	}
+
+	// Check for a pending action
+	pending, ok := h.orchestrator.PeekPendingAction(c.Request.Context(), userID, conv.ID)
+	if !ok || pending == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no_pending_action", "message": "I don't have a pending action for this conversation."})
+		return
+	}
+
+	if !aiservice.IsFundMovingAction(pending.Action) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "not_fund_moving", "message": "This action doesn't need email confirmation. Use the confirm button instead."})
+		return
+	}
+
+	// Resolve user email
+	email, err := h.userEmail.GetEmailByUserID(c.Request.Context(), userID)
+	if err != nil || email == "" {
+		h.logger.Error("resolve user email for confirm link", zap.Error(err), zap.String("user_id", userID.String()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no_email", "message": "I couldn't find your email address. Use Face ID in the app to confirm."})
+		return
+	}
+
+	// Create the one-time token
+	token, err := h.confirmStore.Create(c.Request.Context(), &platform.ConfirmTokenPayload{
+		UserID:   userID,
+		ConvID:   conv.ID,
+		ActionID: pending.ID,
+		Action:   pending.Action,
+		Params:   pending.Params,
+	})
+	if err != nil {
+		h.logger.Error("create confirm token", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "token_failed", "message": "Something went wrong. Try again or use Face ID in the app."})
+		return
+	}
+
+	confirmURL := fmt.Sprintf("%s/confirm?token=%s", h.confirmBase, token)
+	if err := h.confirmEmail.SendTransactionConfirmation(c.Request.Context(), email, pending.Description, confirmURL); err != nil {
+		h.logger.Error("send confirmation email", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "email_failed", "message": "I couldn't send the email. Try again or use Face ID in the app."})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data": gin.H{
+			"status":  "link_sent",
+			"email":   maskEmail(email),
+			"action":  pending.Action,
+		},
+	})
+}
+
 // CancelAction handles POST /api/v1/ai/conversations/:id/cancel
 func (h *ConversationHandlers) CancelAction(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
@@ -334,4 +435,13 @@ func (h *ConversationHandlers) GetPendingAction(c *gin.Context) {
 			"is_fund_moving":  aiservice.IsFundMovingAction(pending.Action),
 		},
 	}})
+}
+
+// maskEmail partially hides the email address for display, e.g. "j***@example.com".
+func maskEmail(email string) string {
+	at := strings.Index(email, "@")
+	if at <= 1 {
+		return email
+	}
+	return string(email[0]) + strings.Repeat("*", at-1) + email[at:]
 }

@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
-	aichannel "github.com/rail-service/rail_service/internal/domain/services/ai/channel"
 	"github.com/shopspring/decimal"
 )
 
@@ -505,6 +504,72 @@ func RegisterAutomationTools(r *Registry) {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
 			return &core.ToolResult{Data: map[string]interface{}{"status": "ok", "name": args["name"]}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"pause_automation",
+		"Pause an active automation so it stops running temporarily. Use list_automations to get the ID first. Does not delete it — use resume_automation to restart.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"automation_id": {"type": "string", "description": "UUID of the automation to pause (from list_automations)"},
+		}, []string{"automation_id"}),
+		core.CategoryAutomation,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.Automation == nil {
+				return &core.ToolResult{Error: "automation service not available"}, nil
+			}
+			id := GetArgString(args, "automation_id")
+			if id == "" {
+				return &core.ToolResult{Error: "automation_id is required"}, nil
+			}
+			if err := deps.Automation.Pause(ctx, userID, id); err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"status": "paused", "automation_id": id}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"resume_automation",
+		"Resume a paused automation so it starts running again. Use list_automations to get the ID first.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"automation_id": {"type": "string", "description": "UUID of the automation to resume (from list_automations)"},
+		}, []string{"automation_id"}),
+		core.CategoryAutomation,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.Automation == nil {
+				return &core.ToolResult{Error: "automation service not available"}, nil
+			}
+			id := GetArgString(args, "automation_id")
+			if id == "" {
+				return &core.ToolResult{Error: "automation_id is required"}, nil
+			}
+			if err := deps.Automation.Resume(ctx, userID, id); err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"status": "resumed", "automation_id": id}}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"delete_automation",
+		"Permanently delete an automation rule. Use list_automations to get the ID first. This cannot be undone — offer pause_automation if the user is unsure.",
+		SimpleArgs(map[string]map[string]interface{}{
+			"automation_id": {"type": "string", "description": "UUID of the automation to delete (from list_automations)"},
+		}, []string{"automation_id"}),
+		core.CategoryAutomation,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if deps.Automation == nil {
+				return &core.ToolResult{Error: "automation service not available"}, nil
+			}
+			id := GetArgString(args, "automation_id")
+			if id == "" {
+				return &core.ToolResult{Error: "automation_id is required"}, nil
+			}
+			if err := deps.Automation.Delete(ctx, userID, id); err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"status": "deleted", "automation_id": id}}, nil
 		},
 	))
 }

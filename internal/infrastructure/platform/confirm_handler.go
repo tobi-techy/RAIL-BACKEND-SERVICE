@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/execution"
 	"go.uber.org/zap"
 )
 
@@ -87,7 +88,10 @@ func (h *ConfirmHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.orchestrator.ConfirmAction(r.Context(), payload.UserID, payload.ConvID)
+	// The email link IS the step-up verification — inject it so ConfirmAction
+	// accepts fund-moving actions without a separate passcode session.
+	confirmCtx := execution.WithEmailLinkVerification(r.Context())
+	result, err := h.orchestrator.ConfirmAction(confirmCtx, payload.UserID, payload.ConvID)
 	if err != nil {
 		h.logger.Error("confirm action failed", zap.Error(err), zap.String("action", action.Action))
 		h.render(w, confirmPageData{Success: false, Message: "Something went wrong processing your transfer. Please try again from the app."}, http.StatusInternalServerError)

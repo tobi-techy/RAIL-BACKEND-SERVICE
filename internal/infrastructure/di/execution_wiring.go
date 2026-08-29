@@ -17,8 +17,11 @@ import (
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	p2pservice "github.com/rail-service/rail_service/internal/domain/services/p2p"
+	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
+	"github.com/rail-service/rail_service/internal/domain/services/withdrawal"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/airbills"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/publictrades"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
 )
 
@@ -957,4 +960,142 @@ func (a *tradeCopyAdapter) manageDraft(ctx context.Context, userID uuid.UUID, dr
 		return nil, err
 	}
 	return map[string]interface{}{"status": status, "draft_id": draftID}, nil
+}
+
+// --- BankTransferProvider (NGN bank transfers via RampHub offramp) ---
+
+func buildBankTransferProvider(c *Container) aicore.BankTransferProvider {
+	if c.RampService == nil {
+		return nil
+	}
+	return &bankTransferAdapter{ramp: c.RampService}
+}
+
+type bankTransferAdapter struct {
+	ramp *rampsvc.Service
+}
+
+func (a *bankTransferAdapter) ListBanks(ctx context.Context) ([]map[string]interface{}, error) {
+	banks, err := a.ramp.GetBanks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]interface{}, 0, len(banks))
+	for _, b := range banks {
+		out = append(out, map[string]interface{}{
+			"bank_code": b.BankCode,
+			"bank_name": b.BankName,
+		})
+	}
+	return out, nil
+}
+
+func (a *bankTransferAdapter) ResolveBankAccount(ctx context.Context, bankCode, accountNumber, bankName string) (map[string]interface{}, error) {
+	resolved, err := a.ramp.ResolveBankAccount(ctx, bankCode, accountNumber, bankName)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"account_name":   resolved.AccountName,
+		"account_number": resolved.AccountNumber,
+		"bank_code":      resolved.BankCode,
+	}, nil
+}
+
+func (a *bankTransferAdapter) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode, accountNumber, bankName, amount, currency, accountName string) (map[string]interface{}, error) {
+	fiatAmount, err := decimal.NewFromString(amount)
+	if err != nil {
+		return nil, fmt.Errorf("invalid amount: %s", amount)
+	}
+	if currency == "" {
+		currency = "NGN"
+	}
+	// expectedRate=0 tells the ramp service to fetch a live quote.
+	result, err := a.ramp.CreateOfframp(ctx, userID, bankCode, accountNumber, bankName, fiatAmount.InexactFloat64(), currency, 0)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"status":         result.Status,
+		"transaction_id": result.TransactionID,
+		"provider":      result.Provider,
+		"fiat_amount":   result.FiatAmount,
+		"rate":          result.Rate,
+		"rail_fee":      result.RailFee,
+	}, nil
+}
+
+// --- CryptoSendProvider (USDC to external wallet via withdrawal service) ---
+
+func buildCryptoSendProvider(c *Container) aicore.CryptoSendProvider {
+	if c.WithdrawalService == nil || c.WalletRepo == nil {
+		return nil
+	}
+	return &cryptoSendAdapter{
+		withdrawal: c.WithdrawalService,
+		walletRepo: c.WalletRepo,
+	}
+}
+
+type cryptoSendAdapter struct {
+	withdrawal *withdrawal.WithdrawalService
+	walletRepo *repositories.WalletRepository
+}
+
+func (a *cryptoSendAdapter) SendCrypto(ctx context.Context, userID uuid.UUID, destinationAddress, amount, chain string) (map[string]interface{}, error) {
+	amt, err := decimal.NewFromString(amount)
+	if err != nil {
+		return nil, fmt.Errorf("invalid amount: %s", amount)
+	}
+	if amt.LessThan(decimal.NewFromInt(1)) {
+		return nil, fmt.Errorf("minimum crypto send is $1.00")
+	}
+
+	// Determine destination chain (default to Solana). Accept "solana"/"sol"
+	// and "evm"/"eth"/"ethereum" as user-friendly aliases.
+	destChain := strings.ToLower(strings.TrimSpace(chain))
+	if destChain == "" || destChain == "solana" || destChain == "sol" {
+		destChain = string(entities.WalletChainSolana)
+	}
+	if destChain == "evm" || destChain == "eth" || destChain == "ethereum" {
+		destChain = string(entities.WalletChainEthereum)
+	}
+
+	// Look up the user's wallet — try the destination chain first, fall back to Solana.
+	wallet, err := a.walletRepo.GetByUserAndChain(ctx, userID, entities.WalletChain(destChain))
+	if err != nil {
+		wallet, err = a.walletRepo.GetByUserAndChain(ctx, userID, entities.WalletChainSolana)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("no wallet found for user: %w", err)
+	}
+	if wallet.CircleWalletID == "" && strings.TrimSpace(wallet.BridgeWalletID) == "" {
+		return nil, fmt.Errorf("withdrawal provider is not configured for this account")
+	}
+
+	req := &entities.InitiateCryptoWithdrawalRequest{
+		UserID:              userID,
+		Amount:              amt,
+		Currency:            entities.WithdrawalCurrencyUSDC,
+		DestinationAddress:  destinationAddress,
+		DestinationChain:    destChain,
+		SourceChain:         string(wallet.Chain),
+		SourceAccount:       entities.WithdrawalSourceSpendingBalance,
+		BridgeWalletID:      wallet.BridgeWalletID,
+		CircleWalletID:      wallet.CircleWalletID,
+		SourceWalletAddress: wallet.Address,
+		Category:            "miriam_send",
+		Narration:           "Sent via Miriam",
+		IdempotencyKey:      fmt.Sprintf("miriam-crypto-%s-%s-%s", userID.String(), destinationAddress, amount),
+	}
+
+	resp, err := a.withdrawal.InitiateCryptoWithdrawal(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"status":        string(resp.Status),
+		"withdrawal_id": resp.WithdrawalID.String(),
+		"message":       resp.Message,
+	}, nil
 }

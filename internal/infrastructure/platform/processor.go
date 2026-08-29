@@ -151,17 +151,18 @@ type Orchestrator interface {
 }
 
 type Processor struct {
-	resolver        *UserResolver
-	orchestrator    Orchestrator
-	responseBuilder *ResponseBuilder
-	linking         *LinkingService
-	onboarder       *ChatOnboarder
-	babyStepsSeeder BabyStepsSeeder
-	voice           VoiceTranscoder
-	vision          ReceiptVision
-	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
-	dedupe          InboundDeduper
-	logger          *zap.Logger
+	resolver         *UserResolver
+	orchestrator     Orchestrator
+	responseBuilder  *ResponseBuilder
+	linking          *LinkingService
+	onboarder        *ChatOnboarder
+	babyStepsSeeder  BabyStepsSeeder
+	voice            VoiceTranscoder
+	vision           ReceiptVision
+	bankDetailVision BankDetailVision
+	sendFunc         func(ctx context.Context, msg *OutboundMessage) error
+	dedupe           InboundDeduper
+	logger           *zap.Logger
 }
 
 func NewProcessor(
@@ -195,6 +196,13 @@ func (p *Processor) SetLogger(l *zap.Logger) {
 // a graceful "I can't look at photos yet" reply.
 func (p *Processor) SetReceiptVision(v ReceiptVision) {
 	p.vision = v
+}
+
+// SetBankDetailVision enables bank-detail image understanding. When set,
+// images that look like bank transfer details (account number, bank name)
+// are extracted and formatted so Miriam can pre-fill a transfer.
+func (p *Processor) SetBankDetailVision(v BankDetailVision) {
+	p.bankDetailVision = v
 }
 
 // SetInboundDeduper enables effectively-once processing keyed on the bridge's
@@ -269,19 +277,32 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	// OCR a receipt/photo attachment into a quick summary before anything else
 	// sees it. The summary becomes the message text so the resolver, onboarder,
 	// and orchestrator all handle it like a normal turn.
+	// Bank detail images (screenshots of transfer pages, QR codes) are
+	// extracted first — if they contain account numbers, they're formatted as
+	// bank details so Miriam can pre-fill a transfer.
 	if msg.IsImage {
-		if !p.visionEnabled() {
-			return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
+		// Try bank detail extraction first.
+		if p.bankDetailVision != nil && p.bankDetailVision.Available() {
+			ext, err := p.extractBankDetails(ctx, msg)
+			if err == nil && ext != nil {
+				msg.Text = FormatBankDetailSummary(ext)
+			}
 		}
-		summary, err := p.summarizeImage(ctx, msg)
-		if err != nil {
-			log.Printf("image OCR failed for %s: %v", msg.UserID, err)
-			return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
+		// Fall back to receipt vision if bank detail extraction didn't produce text.
+		if strings.TrimSpace(msg.Text) == "" {
+			if !p.visionEnabled() {
+				return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
+			}
+			summary, err := p.summarizeImage(ctx, msg)
+			if err != nil {
+				log.Printf("image OCR failed for %s: %v", msg.UserID, err)
+				return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
+			}
+			if strings.TrimSpace(summary) == "" {
+				return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
+			}
+			msg.Text = summary
 		}
-		if strings.TrimSpace(summary) == "" {
-			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
-		}
-		msg.Text = summary
 	}
 
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
@@ -584,6 +605,17 @@ func (p *Processor) summarizeImage(ctx context.Context, msg InboundMessage) (str
 		return "", fmt.Errorf("empty image")
 	}
 	return p.vision.SummarizeReceipt(ctx, image, msg.ImageMime)
+}
+
+func (p *Processor) extractBankDetails(ctx context.Context, msg InboundMessage) (*BankDetailExtraction, error) {
+	image, err := base64.StdEncoding.DecodeString(msg.ImageB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode image: %w", err)
+	}
+	if len(image) == 0 {
+		return nil, fmt.Errorf("empty image")
+	}
+	return p.bankDetailVision.ExtractBankDetails(ctx, image, msg.ImageMime)
 }
 
 func (p *Processor) synthesizeVoice(ctx context.Context, identity *entities.PlatformIdentity, threadID, text string) (*OutboundMessage, error) {

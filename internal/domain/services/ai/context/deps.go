@@ -92,6 +92,7 @@ type ContextDeps struct {
 	GetEnrichmentSummaryFn func(ctx context.Context, userID uuid.UUID) (string, error)
 	GetPendingActionFn     func(ctx context.Context, convID uuid.UUID) *entities.PendingAction
 	GetMonoSpendingFn      func(ctx context.Context, userID uuid.UUID, days int) (*MonoSpendingAnalysis, error)
+	ListAutomationsFn      func(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutomation, error)
 	GetBankUploadSummaryFn func(ctx context.Context, userID uuid.UUID) (int, []string, error)
 	GetNairaOrdersFn       func(ctx context.Context, userID uuid.UUID, limit int) ([]NairaOrderSummary, error)
 

@@ -49,6 +49,10 @@ const (
 	ToolBookFlight          = "book_flight"
 	ToolSaveTravelPassenger = "save_travel_passenger"
 	ToolRequestFlightRefund = "request_flight_refund"
+
+	// Bank transfers + crypto sends.
+	ToolSendToBank = "send_to_bank"
+	ToolSendCrypto = "send_crypto"
 )
 
 // isExecutionActionTool moved to execution_tiers.go — it is derived from the
@@ -74,6 +78,10 @@ func executionActionDescription(name string, args map[string]interface{}) string
 	case "accept_mandate_suggestion":
 		return "Activate this quiet-money mandate so Miriam can act within its limits"
 	case "send_money":
+		name := arg("recipient_name")
+		if name != "" {
+			return fmt.Sprintf("Send $%s to %s (%s)", arg("amount"), name, arg("identifier"))
+		}
 		return fmt.Sprintf("Send $%s to %s", arg("amount"), arg("identifier"))
 	case "split_receipt":
 		return fmt.Sprintf("Split receipt with %s", arg("participants"))
@@ -147,6 +155,22 @@ func executionActionDescription(name string, args map[string]interface{}) string
 		return fmt.Sprintf("Save traveler profile %q", arg("label"))
 	case ToolRequestFlightRefund:
 		return fmt.Sprintf("Request refund for flight %s: %s", arg("intent_id"), arg("reason"))
+	case ToolSendToBank:
+		acctName := arg("account_name")
+		bankName := arg("bank_name")
+		if bankName == "" {
+			bankName = arg("bank_code")
+		}
+		if acctName != "" {
+			return fmt.Sprintf("Send ₦%s to %s — %s %s", arg("amount"), acctName, bankName, arg("account_number"))
+		}
+		return fmt.Sprintf("Send ₦%s to %s %s", arg("amount"), bankName, arg("account_number"))
+	case ToolSendCrypto:
+		addr := arg("destination_address")
+		if len(addr) > 12 {
+			addr = addr[:6] + "..." + addr[len(addr)-4:]
+		}
+		return fmt.Sprintf("Send $%s USDC to %s", arg("amount"), addr)
 	default:
 		return "Execute " + name
 	}

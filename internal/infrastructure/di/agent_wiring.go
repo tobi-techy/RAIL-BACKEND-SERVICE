@@ -1707,6 +1707,43 @@ func (a *automationAdapter) Create(ctx context.Context, userID uuid.UUID, data m
 	return err
 }
 
+func (a *automationAdapter) Pause(ctx context.Context, userID uuid.UUID, automationID string) error {
+	if a.svc == nil {
+		return fmt.Errorf("automation service unavailable")
+	}
+	id, err := uuid.Parse(automationID)
+	if err != nil {
+		return fmt.Errorf("invalid automation id: %s", automationID)
+	}
+	inactive := false
+	_, err = a.svc.Update(ctx, userID, id, &automationsvc.UpdateAutomationRequest{IsActive: &inactive})
+	return err
+}
+
+func (a *automationAdapter) Resume(ctx context.Context, userID uuid.UUID, automationID string) error {
+	if a.svc == nil {
+		return fmt.Errorf("automation service unavailable")
+	}
+	id, err := uuid.Parse(automationID)
+	if err != nil {
+		return fmt.Errorf("invalid automation id: %s", automationID)
+	}
+	active := true
+	_, err = a.svc.Update(ctx, userID, id, &automationsvc.UpdateAutomationRequest{IsActive: &active})
+	return err
+}
+
+func (a *automationAdapter) Delete(ctx context.Context, userID uuid.UUID, automationID string) error {
+	if a.svc == nil {
+		return fmt.Errorf("automation service unavailable")
+	}
+	id, err := uuid.Parse(automationID)
+	if err != nil {
+		return fmt.Errorf("invalid automation id: %s", automationID)
+	}
+	return a.svc.Delete(ctx, userID, id)
+}
+
 type signalAdapter struct {
 	repo *repositories.ContextSignalRepository
 }
@@ -2619,6 +2656,16 @@ func (s *stubListCreate) FindPaymentMatches(ctx context.Context, userID uuid.UUI
 	return nil, nil
 }
 func (s *stubListCreate) MarkPaid(ctx context.Context, userID, obligationID uuid.UUID) error {
+	return nil
+}
+
+func (s *stubListCreate) Pause(ctx context.Context, userID uuid.UUID, automationID string) error {
+	return nil
+}
+func (s *stubListCreate) Resume(ctx context.Context, userID uuid.UUID, automationID string) error {
+	return nil
+}
+func (s *stubListCreate) Delete(ctx context.Context, userID uuid.UUID, automationID string) error {
 	return nil
 }
 

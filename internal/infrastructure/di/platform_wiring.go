@@ -176,6 +176,7 @@ func (c *Container) initializePlatformMessaging() {
 						Logger:           c.ZapLog,
 					})
 					proc.SetReceiptVision(platform.NewDocumentReceiptVision(visionPipeline))
+					proc.SetBankDetailVision(platform.NewOCRBankDetailVision(visionPipeline))
 					c.ZapLog.Info("Platform receipt vision enabled (PaddleOCR pipeline)")
 				}
 			}
@@ -188,8 +189,9 @@ func (c *Container) initializePlatformMessaging() {
 			c.platformLinking = linkingSvc
 
 			if c.EmailService != nil && c.UserRepo != nil {
+				c.ConfirmTokenStore = platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog)
 				c.ConfirmHandler = platform.NewConfirmHandler(
-					platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog),
+					c.ConfirmTokenStore,
 					c.AIOrchestrator,
 					c.ZapLog,
 				)

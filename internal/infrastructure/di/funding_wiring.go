@@ -257,6 +257,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			rampService.SetDepositLimits(c.LimitsService)
 		}
 		c.RampHandlers = fundinghandlers.NewRampHandlers(rampService, c.ZapLog)
+		c.RampService = rampService
 		c.ZapLog.Info("RampHub on/off ramp initialized (primary, Paj fallback)")
 
 		// Wire live FX rate from RampHub instead of the empty DB-backed repo.
