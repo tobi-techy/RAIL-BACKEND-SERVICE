@@ -164,6 +164,12 @@ type AIConfig struct {
 	// on. Env: AI_RESPONSE_GUARD.
 	ResponseGuard bool `mapstructure:"response_guard"`
 
+	// ProactiveVoice rewrites deterministic proactive drafts through Miriam's
+	// persona before delivery. The composer fails closed to the original draft
+	// whenever a rewrite changes any number or violates output constraints.
+	// Env: AI_PROACTIVE_VOICE.
+	ProactiveVoice bool `mapstructure:"proactive_voice"`
+
 	// CostGuard configures per-user daily cost ceilings enforced before each
 	// Cencori call. CostGuard.Enabled must be true to actually enforce; the
 	// DailyCeilingUSD and MonthlyCeilingUSD fields override the entity-level
@@ -1107,6 +1113,8 @@ func setDefaults() {
 	viper.SetDefault("ai.assemblyai.voice", "ivy")
 	viper.SetDefault("ai.response_guard", false)
 	viper.BindEnv("ai.response_guard", "AI_RESPONSE_GUARD")
+	viper.SetDefault("ai.proactive_voice", true)
+	viper.BindEnv("ai.proactive_voice", "AI_PROACTIVE_VOICE")
 
 	// Cost guard — per-user daily/monthly ceilings enforced before each
 	// Cencori call. Off by default for backwards compatibility; the AtlasFlow

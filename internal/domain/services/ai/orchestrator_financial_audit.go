@@ -13,7 +13,6 @@ import (
 	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 
-
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -300,7 +299,7 @@ func auditDeliveryContract(intensity string) map[string]interface{} {
 		contract["segment_labels"] = []string{"What happened", "The pattern", "The fix", "Do this today"}
 	case "hard":
 		contract["tone"] = "blunt accountability with dry humor; no cruelty, no name-calling"
-		contract["segment_labels"] = []string{"The Damage", "The Pattern", "The Excuse I'm Not Buying", "The Fix", "Do This Today"}
+		contract["segment_labels"] = []string{"The Damage", "The Pattern", "What The Numbers Say", "The Fix", "Do This Today"}
 	default:
 		contract["tone"] = "direct, warm, numbers-first accountability"
 		contract["segment_labels"] = []string{"The Damage", "The Pattern", "The Fix", "Do This Today"}

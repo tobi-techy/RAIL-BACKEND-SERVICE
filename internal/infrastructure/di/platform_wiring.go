@@ -109,6 +109,9 @@ func (c *Container) initializePlatformMessaging() {
 			}
 
 			bridgeDispatcher := platform.NewBridgeDispatcher(sendFunc, c.ConversationRepo, entities.PlatformIMessage, c.ZapLog)
+			if c.Config.AI.ProactiveVoice {
+				bridgeDispatcher.SetComposer(platform.NewProactiveComposer(c.AIProvider, c.ZapLog))
+			}
 
 			// Quiet-hours + daily-frequency guard so Miriam stays a discreet
 			// presence, not a notification machine. Timezone resolved per user

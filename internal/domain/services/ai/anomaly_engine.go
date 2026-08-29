@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,11 +17,11 @@ import (
 type AnomalyType string
 
 const (
-	AnomalyBillSpike        AnomalyType = "bill_spike"
-	AnomalyDuplicateCharge  AnomalyType = "duplicate_charge"
-	AnomalyFraudSignal      AnomalyType = "fraud_signal"
-	AnomalySpendingAccel    AnomalyType = "spending_acceleration"
-	AnomalyMerchantPattern  AnomalyType = "merchant_pattern"
+	AnomalyBillSpike       AnomalyType = "bill_spike"
+	AnomalyDuplicateCharge AnomalyType = "duplicate_charge"
+	AnomalyFraudSignal     AnomalyType = "fraud_signal"
+	AnomalySpendingAccel   AnomalyType = "spending_acceleration"
+	AnomalyMerchantPattern AnomalyType = "merchant_pattern"
 )
 
 type AnomalySeverity string
@@ -33,12 +34,12 @@ const (
 )
 
 type AnomalyResult struct {
-	Type        AnomalyType            `json:"type"`
-	Severity    AnomalySeverity        `json:"severity"`
-	Title       string                 `json:"title"`
-	Description string                 `json:"description"`
-	Details     map[string]any         `json:"details,omitempty"`
-	DetectedAt  time.Time              `json:"detected_at"`
+	Type        AnomalyType     `json:"type"`
+	Severity    AnomalySeverity `json:"severity"`
+	Title       string          `json:"title"`
+	Description string          `json:"description"`
+	Details     map[string]any  `json:"details,omitempty"`
+	DetectedAt  time.Time       `json:"detected_at"`
 }
 
 // AnomalyStore persists recent anomaly results for orchestrator reference.
@@ -79,11 +80,11 @@ var (
 // --- Engine ---
 
 type AnomalyEngine struct {
-	categories  AnomalyCategoryReader
-	merchants   AnomalyMerchantReader
-	outflows    AnomalyOutflowReader
-	flow        AnomalyFlowReader
-	logger      *zap.Logger
+	categories AnomalyCategoryReader
+	merchants  AnomalyMerchantReader
+	outflows   AnomalyOutflowReader
+	flow       AnomalyFlowReader
+	logger     *zap.Logger
 
 	BillSpikeThreshold     decimal.Decimal
 	SpendingAccelThreshold decimal.Decimal
@@ -361,10 +362,10 @@ func (e *AnomalyEngine) CheckSpendingAcceleration(ctx context.Context, userID uu
 				Title:       "Spending is accelerating",
 				Description: fmt.Sprintf("You're on pace to spend %s this month — your average is %s (%.0f%% increase). Let's keep an eye on this.", projected.StringFixed(2), trailingMonthlyAvg.StringFixed(2), ratio.InexactFloat64()),
 				Details: map[string]any{
-					"projected_monthly":   projected.StringFixed(2),
-					"avg_monthly":         trailingMonthlyAvg.StringFixed(2),
-					"ratio_pct":           ratio.InexactFloat64(),
-					"days_elapsed":        daysElapsed,
+					"projected_monthly": projected.StringFixed(2),
+					"avg_monthly":       trailingMonthlyAvg.StringFixed(2),
+					"ratio_pct":         ratio.InexactFloat64(),
+					"days_elapsed":      daysElapsed,
 				},
 				DetectedAt: now,
 			},
@@ -436,35 +437,21 @@ func (e *AnomalyEngine) CheckMerchantPatterns(ctx context.Context, userID uuid.U
 	return results
 }
 
-// BuildAlertText converts anomaly results into a human-readable push notification.
+// BuildAlertText converts anomaly results into a plain-text fallback notification.
+// The platform composer may make it more conversational, but this path remains
+// clear and truthful when AI is unavailable.
 func BuildAlertText(results []AnomalyResult) (title, body string) {
 	if len(results) == 0 {
 		return "", ""
 	}
 
-	highCount := 0
-	for _, r := range results {
-		if r.Severity == SeverityHigh || r.Severity == SeverityCritical {
-			highCount++
+	parts := make([]string, 0, len(results))
+	for _, result := range results {
+		if description := strings.TrimSpace(result.Description); description != "" {
+			parts = append(parts, description)
 		}
 	}
-
-	if highCount > 0 {
-		title = fmt.Sprintf("Miriam Alert: %d issue%s found", highCount, pluralSuffix(highCount))
-	} else {
-		title = "Miriam Morning Check"
-	}
-
-	body = "Here's what I found:"
-	for _, r := range results {
-		prefix := "• "
-		if r.Severity == SeverityHigh || r.Severity == SeverityCritical {
-			prefix = "⚠️ "
-		}
-		body += "\n" + prefix + r.Description
-	}
-	body += "\n\nReply to ask me about any of these."
-	return title, body
+	return "", strings.Join(parts, "\n\n")
 }
 
 // isWithdrawalOrP2P returns true for categories that represent non-merchant outflows

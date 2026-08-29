@@ -52,9 +52,11 @@ func CheckResponseQuality(response string) QualityVerdict {
 		failures = append(failures, "mono_bubble")
 	}
 
-	// 6. No hook: >150 chars with no question mark
-	if hasNoHook(response) {
-		failures = append(failures, "no_hook")
+	// 6. A substantial money answer should make the figure useful, either by
+	// grounding it in a comparison or giving one concrete next action. It must
+	// not force a follow-up question, because direct answers are valid replies.
+	if lacksSpecificity(response) {
+		failures = append(failures, "lacks_specificity")
 	}
 
 	// 7. Currency confusion: mixes $ and ₦ without labeling which is which
@@ -101,8 +103,8 @@ func QualityCorrectionHint(failures []string) string {
 			return "Rewrite. Label which amounts are USD and which are naira — don't mix $ and ₦ without saying which is which."
 		case "emotionally_flat":
 			return "Rewrite with more personality — a reaction, a comparison, or a question. Make it feel like a real person said it."
-		case "no_hook":
-			return "Add a question or follow-up at the end so the conversation keeps going."
+		case "lacks_specificity":
+			return "Rewrite so the money figure means something: add one honest comparison, annual view, or concrete next action. Do not add a question unless the answer genuinely depends on it."
 		case "has_markdown":
 			return "Rewrite in plain text only. No bold, no italics, no numbered lists, no markdown. You're texting, not writing a document."
 		case "too_verbose":
@@ -299,23 +301,33 @@ func isMonoBubble(response string) bool {
 	return !strings.Contains(response, "\n\n")
 }
 
-// hasNoHook detects responses >150 chars that don't end with a question or conversational hook.
-func hasNoHook(response string) bool {
+// lacksSpecificity detects substantial monetary replies that report a figure
+// without showing why it matters or what to do next. Direct short answers and
+// action receipts intentionally pass.
+func lacksSpecificity(response string) bool {
 	if len(response) <= 150 {
 		return false
 	}
-	// Skip action confirmations
 	lower := strings.ToLower(response)
 	for _, m := range []string{"done.", "moved", "created", "automation", "confirmed", "flagged", "dispute", "refund"} {
 		if strings.Contains(lower, m) {
 			return false
 		}
 	}
-	// Skip data-heavy responses that cite specific numbers (these are informational, not conversational)
-	if dollarAmountPattern.MatchString(response) {
+	hasFigure := dollarAmountPattern.MatchString(response) || nairaAmountPattern.MatchString(response)
+	if !hasFigure {
 		return false
 	}
-	return !strings.Contains(response, "?")
+	for _, marker := range []string{
+		" per ", " a year", " annual", " month", " week", " day", " compared",
+		" than ", " more ", " less ", "enough for", "cover ",
+		"move ", "set up", "pay ", "cut ", "cancel ", "build ",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 // isTooVerbose flags replies that run long for a text conversation. The user
@@ -355,7 +367,7 @@ func hasCurrencyConfusion(response string) bool {
 }
 
 // hasMarkdownOrLists detects markdown formatting or numbered lists in the response.
-var numberedListPattern = regexp.MustCompile(`(?m)^\s*\d+[\.\)]\s`)
+var numberedListPattern = regexp.MustCompile(`(?m)^\s*(?:\d+[\.\)]|[-•‣])\s`)
 
 func hasMarkdownOrLists(response string) bool {
 	// Bold/italic markdown

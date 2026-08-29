@@ -716,14 +716,15 @@ func (o *IntelligenceOrchestrator) executeTransferToSpend(ctx context.Context, u
 	}
 
 	if o.notifier != nil {
+		symbol := o.resolveSymbol(ctx, userID)
 		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam moved money from Stash",
-			fmt.Sprintf("Moved $%s from Stash to Spending for upcoming bills.", amount.StringFixed(2)))
+			fmt.Sprintf("Moved %s%s from Stash to Spending for upcoming bills.", symbol, amount.StringFixed(2)))
 	}
 	return nil
 }
 
 func (o *IntelligenceOrchestrator) recordBillReservation(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandate entities.MiriamAutopilotMandate) error {
-	reason := fmt.Sprintf("Reserved $%s for upcoming bills per mandate.", amount.StringFixed(2))
+	reason := fmt.Sprintf("Reserved %s%s for upcoming bills per mandate.", o.resolveSymbol(ctx, userID), amount.StringFixed(2))
 	receipt := &entities.MiriamDecisionReceipt{
 		ID:         uuid.New(),
 		UserID:     userID,

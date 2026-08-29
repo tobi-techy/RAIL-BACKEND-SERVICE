@@ -184,6 +184,38 @@ func fullAutopilotUser(id uuid.UUID) struct {
 
 // --- tests ---
 
+func TestAutopilotService_WeeklyAuditSendsOncePerWeek(t *testing.T) {
+	uid := uuid.New()
+	users := &mockAutopilotUsers{users: []struct {
+		ID      uuid.UUID
+		Country string
+	}{fullAutopilotUser(uid)}}
+	push := &mockPushSender{}
+	svc := newTestAutopilotService(
+		users,
+		&mockAutopilotControl{level: entities.ControlLevelGuided},
+		&mockAutopilotQueue{},
+		push,
+		&mockMoneySpender{flow: &entities.MoneyFlowSummary{
+			TotalDeposits:  decimal.NewFromInt(1000),
+			TotalCardSpend: decimal.NewFromInt(350),
+		}},
+		&mockBalanceReader{},
+		&mockBudgetReader{},
+		&mockTransferer{},
+	)
+
+	svc.RunWeeklyAudit(context.Background())
+	svc.RunWeeklyAudit(context.Background())
+
+	require.Len(t, push.sent, 1)
+	assert.Empty(t, push.sent[0].title)
+	assert.Contains(t, push.sent[0].body, "$1000.00")
+	assert.Contains(t, push.sent[0].body, "$350.00")
+	assert.Equal(t, "weekly_audit", push.sent[0].data["type"])
+	assert.Equal(t, int64(1), svc.Metrics().WeeklyAuditsSent)
+}
+
 func TestAutopilotService_MorningScan_AlertOnHighSpend(t *testing.T) {
 	uid := uuid.New()
 	users := &mockAutopilotUsers{users: []struct {
@@ -204,7 +236,7 @@ func TestAutopilotService_MorningScan_AlertOnHighSpend(t *testing.T) {
 	svc.RunMorningScan(context.Background())
 
 	require.Len(t, push.sent, 1)
-	assert.Contains(t, push.sent[0].title, "Miriam Alert")
+	assert.Empty(t, push.sent[0].title)
 	assert.Contains(t, push.sent[0].body, "$600")
 }
 
@@ -226,7 +258,7 @@ func TestAutopilotService_MorningScan_AlertOnLowBalance(t *testing.T) {
 	svc.RunMorningScan(context.Background())
 
 	require.Len(t, push.sent, 1)
-	assert.Contains(t, push.sent[0].title, "Miriam Alert")
+	assert.Empty(t, push.sent[0].title)
 	assert.Contains(t, push.sent[0].body, "$10")
 }
 
@@ -247,7 +279,7 @@ func TestAutopilotService_MorningScan_IncludesGuidedUsers(t *testing.T) {
 	svc.RunMorningScan(context.Background())
 
 	require.Len(t, push.sent, 1)
-	assert.Contains(t, push.sent[0].title, "Miriam Alert")
+	assert.Empty(t, push.sent[0].title)
 }
 
 func TestAutopilotService_MorningScan_SkipsMonitorUsers(t *testing.T) {

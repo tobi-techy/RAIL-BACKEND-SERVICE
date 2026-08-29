@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	executionpkg "github.com/rail-service/rail_service/internal/domain/services/ai/execution"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/metrics"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
+	prompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/trivia"
-	executionpkg "github.com/rail-service/rail_service/internal/domain/services/ai/execution"
-		prompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/tracing"
@@ -172,6 +172,13 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": 0, "provider": "quick-reply", "model": "quick-reply"}})
 		return nil
 	}
+
+	// Past the fast paths, so this turn will cost real time: context assembly
+	// plus the first completion round. Emit a thinking beat now so the client
+	// can raise its indicator immediately instead of waiting for the first
+	// per-tool beat (which only arrives after a full completion round-trip) or
+	// the first token. Neutral copy — we don't know yet what she'll look up.
+	emit(StreamEvent{Type: "thinking", Content: "..."})
 
 	// Root trace span for this turn — groups generations into a Langfuse
 	// session (per conversation) and attributes them to the user. The marker is
@@ -399,8 +406,8 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 					}
 				}
 			}
-		content = executionpkg.ApplyResponseGuard(o.responseGuardOn, o.buildAnomalyContext, o.logger, ctx, userID, content, req.Messages)
-		emit(StreamEvent{Type: "token", Content: content})
+			content = executionpkg.ApplyResponseGuard(o.responseGuardOn, o.buildAnomalyContext, o.logger, ctx, userID, content, req.Messages)
+			emit(StreamEvent{Type: "token", Content: content})
 		}
 		modelName := resp.Model
 		if modelName == "" {

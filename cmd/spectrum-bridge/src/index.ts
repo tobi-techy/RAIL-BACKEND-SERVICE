@@ -283,8 +283,13 @@ async function postToBackend(path: string, body: unknown): Promise<void> {
 // The keeper refreshes the indicator every TYPING_REFRESH_MS until an outbound
 // reply actually goes out or a safety deadline hits, so the user sees "..."
 // for the whole wait instead of a dead indicator.
-const TYPING_REFRESH_MS = 20_000;
-const TYPING_MAX_MS = 90_000;
+//
+// Refresh is well under the observed iMessage expiry so the indicator never
+// blinks out mid-wait; the calls are cheap provider pings. The deadline covers
+// the slowest legitimate turn (deep audit + tool chain + backend retry
+// backoff), which exceeds 90s in practice.
+const TYPING_REFRESH_MS = 8_000;
+const TYPING_MAX_MS = 180_000;
 
 interface TypingKeeper {
   refresh: NodeJS.Timeout;
@@ -495,6 +500,12 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   // Keep the typing indicator alive for as long as backend processing takes.
   startTypingKeeper(threadID, space);
 
+  // The keeper is only retired by an outbound reply (sendToSpace). Every path
+  // that returns without handing the message to the backend must end the
+  // indicator itself, or the user watches a "..." that no reply will ever
+  // follow until the safety deadline fires.
+  let handedOff = false;
+
   try {
     // Poll vote — the selected option title is posted as ordinary inbound text
     // so onboarding, send_poll, and Confirm/Cancel all go through one path.
@@ -513,6 +524,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
         is_poll_vote: true,
       };
       await postToBackend("/api/v1/platform/inbound", inbound);
+      handedOff = true;
       log.info({ text: text.slice(0, 60) }, "posted poll vote as inbound");
       return;
     }
@@ -530,6 +542,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
         contact: contactFromSpectrum(content),
       };
       await postToBackend("/api/v1/platform/inbound", inbound);
+      handedOff = true;
       log.info("posted shared contact to backend");
       return;
     }
@@ -556,6 +569,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
         audio_mime: content.mimeType,
       };
       await postToBackend("/api/v1/platform/inbound", inbound);
+      handedOff = true;
       log.info({ audio_len: audioB64.length }, "posted voice note to backend");
       return;
     }
@@ -584,6 +598,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
           vcard_text: vcardText,
         };
         await postToBackend("/api/v1/platform/inbound", inbound);
+        handedOff = true;
         log.info({ bytes: vcardText.length }, "posted vcard attachment to backend");
         return;
       }
@@ -611,6 +626,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
         image_mime: content.mimeType,
       };
       await postToBackend("/api/v1/platform/inbound", inbound);
+      handedOff = true;
       log.info({ image_len: imageB64.length }, "posted image to backend");
       return;
     }
@@ -630,6 +646,7 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
         msg_id: message.id,
       };
       await postToBackend("/api/v1/platform/inbound", inbound);
+      handedOff = true;
       log.info({ text: text.slice(0, 60) }, "posted inbound message to backend");
     }
   } catch (err) {
@@ -637,6 +654,8 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
     // still be processed — the backend never accepted it.
     if (message.id) processedMessageIds.delete(message.id);
     log.error({ err, thread_id: threadID }, "inbound handling failed");
+  } finally {
+    if (!handedOff) stopTypingKeeper(threadID);
   }
 }
 

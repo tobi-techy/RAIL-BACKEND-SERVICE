@@ -17,21 +17,21 @@ type ThreadResolver interface {
 
 // ChannelCapabilities holds the capabilities of a messaging platform.
 type ChannelCapabilities struct {
-	SupportsPolls        bool
-	SupportsEffects      bool
-	SupportsQuickReplies bool
+	SupportsPolls         bool
+	SupportsEffects       bool
+	SupportsQuickReplies  bool
 	SupportsInlineActions bool
-	SupportsRichCards    bool
-	SupportsThreading    bool
-	MaxBubblesPerReply  int
-	MaxCharsPerBubble   int
-	PreferredTone        string
+	SupportsRichCards     bool
+	SupportsThreading     bool
+	MaxBubblesPerReply    int
+	MaxCharsPerBubble     int
+	PreferredTone         string
 }
 
 // ChannelContext is the full platform context the bridge uses for rendering decisions.
 type ChannelContext struct {
-	Platform             entities.Platform
-	Capabilities         ChannelCapabilities
+	Platform     entities.Platform
+	Capabilities ChannelCapabilities
 }
 
 // NewChannelContext returns a ChannelContext for a given platform with sensible defaults.
@@ -92,6 +92,7 @@ type BridgeDispatcher struct {
 	threads  ThreadResolver
 	platform entities.Platform
 	guard    *ProactiveGuard
+	composer ProactiveComposer
 	logger   *zap.Logger
 }
 
@@ -114,6 +115,13 @@ func NewBridgeDispatcher(send SendMessageFunc, threads ThreadResolver, platform 
 // every proactive message is delivered.
 func (d *BridgeDispatcher) SetGuard(g *ProactiveGuard) {
 	d.guard = g
+}
+
+// SetComposer applies the shared Miriam voice to proactive drafts. It is
+// optional so deployments can disable it instantly and retain deterministic
+// notification delivery.
+func (d *BridgeDispatcher) SetComposer(c ProactiveComposer) {
+	d.composer = c
 }
 
 // SendChatMessage delivers a proactive nudge to the user's iMessage thread.
@@ -158,6 +166,9 @@ func (d *BridgeDispatcher) deliver(ctx context.Context, userID uuid.UUID, messag
 	}
 	if d.guard != nil && !d.guard.AllowCategory(ctx, userID, category, critical) {
 		return nil
+	}
+	if d.composer != nil {
+		message = d.composer.Compose(ctx, message)
 	}
 
 	threadID, err := d.threads.GetLastPlatformThread(ctx, userID, string(d.platform))
