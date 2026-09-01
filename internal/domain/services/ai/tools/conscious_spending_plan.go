@@ -60,7 +60,7 @@ func RegisterConsciousSpendingPlanTools(r *Registry) {
 
 	r.Register(NewTool(
 		ToolCommitConsciousSpendingPlan,
-		"Commit the exact four-number monthly plan after the user has stated a meaningful goal, explained why it matters, reviewed the reveal, chosen trade-offs, and explicitly agreed to these amounts. This creates coaching accountability but never moves money.",
+		"Commit the exact household plan after the user has stated a meaningful goal, explained why it matters, reviewed the reveal, chosen trade-offs, and explicitly agreed to these amounts. This creates coaching accountability but never moves money.",
 		cspParameters(true),
 		core.CategoryPlanning,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
