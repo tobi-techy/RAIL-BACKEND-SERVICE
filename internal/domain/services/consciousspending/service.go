@@ -135,11 +135,19 @@ func ValidateHeaderInput(in repositories.PlanHeaderInput) error {
 	if strings.TrimSpace(in.BaseCurrency) == "" {
 		return ErrMissingBaseCurrency
 	}
-	if in.GrossMonthlyIncome.IsNegative() || in.TakeHomeIncome.IsNegative() {
-		return ErrInvalidIncome
-	}
-	if !in.TakeHomeIncome.IsPositive() && !in.GrossMonthlyIncome.IsPositive() {
-		return ErrInvalidIncome
+func ValidateHeaderInput(in repositories.PlanHeaderInput) error {
+if strings.TrimSpace(in.BaseCurrency) == "" {
+return ErrMissingBaseCurrency
+}
+// At least one income value must be provided and positive
+if !in.TakeHomeIncome.IsPositive() && !in.GrossMonthlyIncome.IsPositive() {
+return ErrInvalidIncome
+}
+// Income values must not be negative
+if in.GrossMonthlyIncome.IsNegative() || in.TakeHomeIncome.IsNegative() {
+return ErrInvalidIncome
+}
+
 	}
 	for name, amount := range map[string]decimal.Decimal{
 		"payroll deductions": in.PayrollDeductions, "pre-tax investments": in.PreTaxInvestments,
