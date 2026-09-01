@@ -216,22 +216,25 @@ func sortItems(items []entities.ConsciousSpendingPlanItem) {
 }
 
 func reconcileHeaderItems(in *repositories.PlanHeaderInput) error {
-	var fixedAmount, investmentAmount, savingsAmount decimal.Decimal
-	for _, item := range in.Items {
-		switch item.Bucket {
-		case entities.CSPItemBucketFixedCost:
-			fixedAmount = fixedAmount.Add(item.Amount)
-		case entities.CSPItemBucketInvestment:
-			investmentAmount = investmentAmount.Add(item.Amount)
-		case entities.CSPItemBucketSavings:
-			savingsAmount = savingsAmount.Add(item.Amount)
-		default:
-			return fmt.Errorf("unknown bucket %q", item.Bucket)
-		}
-	}
-	in.FixedCosts = fixedAmount
-	in.PostTaxInvestments = investmentAmount
-	in.Savings = savingsAmount
-	in.FixedCostsSubtotal = fixedAmount.Add(in.MiscBufferAmount)
-	return nil
+var fixedAmount, investmentAmount, savingsAmount, guiltFreeAmount decimal.Decimal
+for _, item := range in.Items {
+switch item.Bucket {
+case entities.CSPItemBucketFixedCost:
+fixedAmount = fixedAmount.Add(item.Amount)
+case entities.CSPItemBucketInvestment:
+investmentAmount = investmentAmount.Add(item.Amount)
+case entities.CSPItemBucketSavings:
+savingsAmount = savingsAmount.Add(item.Amount)
+case entities.CSPItemBucketGuiltFreeSpending:
+guiltFreeAmount = guiltFreeAmount.Add(item.Amount)
+default:
+return fmt.Errorf("unknown bucket %q", item.Bucket)
 }
+in.FixedCosts = fixedAmount
+in.PostTaxInvestments = investmentAmount
+in.Savings = savingsAmount
+in.GuiltFreeSpending = guiltFreeAmount
+in.FixedCostsSubtotal = fixedAmount.Add(in.MiscBufferAmount)
+return nil
+}
+
