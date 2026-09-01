@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -14,9 +14,8 @@ import (
 const ToolGetBalanceHistory = "get_balance_history"
 
 // BalanceHistoryProvider returns stash balance snapshots over time.
-type BalanceHistoryProvider interface {
-	GetSnapshotsInWindow(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]*entities.YieldBalanceSnapshot, error)
-}
+// Deprecated: Use aiintelligence.BalanceHistoryProvider instead.
+type BalanceHistoryProvider = aiintelligence.BalanceHistoryProvider
 
 // SetBalanceHistory sets the balance history provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.

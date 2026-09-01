@@ -151,6 +151,11 @@ type ChatOptions struct {
 	// and renders it as a data-only message so any instructions embedded in it
 	// are inert.
 	CrossChannelHistory []CrossChannelHistoryFact
+	// FromVoice indicates the user's message was transcribed from a voice note.
+	// When true, the context builder injects a note telling Miriam to confirm
+	// amounts explicitly before staging money actions (transcription may
+	// garble numbers).
+	FromVoice bool
 }
 
 // CrossChannelHistoryFact mirrors core.CrossChannelHistoryFact at the adapter
@@ -226,6 +231,12 @@ func (o *AgentAdapter) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	// Enrich financial tool results with personal Supermemory data
 	if err == nil && result != nil && o.supermemory != nil && isFinancialDataTool(tc.Name) {
 		o.enrichWithMemory(ctx, userID, tc, result)
+	}
+
+	// Record journey milestones only observable through tool execution
+	// (statement-analysis aha moment, freedom-step diagnosis).
+	if err == nil && result != nil {
+		o.noteJourneyToolSuccess(ctx, userID, tc.Name)
 	}
 
 	return result, err

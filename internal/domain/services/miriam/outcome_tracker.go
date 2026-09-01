@@ -41,10 +41,28 @@ func (t *OutcomeTracker) RecordPredictions(ctx context.Context, userID uuid.UUID
 		return
 	}
 
+	// One pending outcome per prediction type. The sweep regenerates similar
+	// predictions every cycle with fresh IDs, so without this gate each sweep
+	// piles on another pending row for the same claim; when horizons expire
+	// they resolve one after another and the user receives the identical
+	// loop-closing message again and again.
+	pending, err := t.repo.GetPendingPredictionOutcomes(ctx, userID)
+	if err != nil && t.logger != nil {
+		t.logger.Warn("failed to check pending outcomes before recording",
+			zap.String("user_id", userID.String()), zap.Error(err))
+	}
+	alreadyPending := make(map[string]bool, len(pending))
+	for _, p := range pending {
+		alreadyPending[p.PredictionType] = true
+	}
+
 	outcomes := make([]entities.MiriamPredictionOutcome, 0, len(predictions))
 	now := time.Now().UTC()
 
 	for _, p := range predictions {
+		if alreadyPending[p.PredictionType] {
+			continue
+		}
 		thresholdData := map[string]interface{}{
 			"predicted_amount": p.ProjectedAmount.StringFixed(2),
 			"probability":      p.Probability.StringFixed(4),
@@ -69,6 +87,9 @@ func (t *OutcomeTracker) RecordPredictions(ctx context.Context, userID uuid.UUID
 		})
 	}
 
+	if len(outcomes) == 0 {
+		return
+	}
 	if err := t.repo.SavePredictionOutcomes(ctx, outcomes); err != nil && t.logger != nil {
 		t.logger.Warn("failed to record prediction outcomes",
 			zap.String("user_id", userID.String()), zap.Error(err))

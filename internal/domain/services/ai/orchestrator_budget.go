@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
@@ -17,10 +18,8 @@ const (
 )
 
 // BudgetProvider reads and writes spending budgets.
-type BudgetProvider interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.SpendingBudget, error)
-	Upsert(ctx context.Context, userID uuid.UUID, limit decimal.Decimal, currency string) error
-}
+// Deprecated: Use aifinance.BudgetProvider instead.
+type BudgetProvider = aifinance.BudgetProvider
 
 // SetBudgetProvider sets the budget provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.

@@ -9,8 +9,11 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai"
+	aichannel "github.com/rail-service/rail_service/internal/domain/services/ai/channel"
 	"go.uber.org/zap"
 )
 
@@ -23,6 +26,18 @@ type VoiceTranscoder interface {
 }
 
 var handshakeTokenPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// inboundDedupTTL bounds how long a processed message id stays marked as seen.
+// It must comfortably exceed the bridge's POST retry window (3 attempts over
+// ~7.5s) plus worst-case backend processing time.
+const inboundDedupTTL = 10 * time.Minute
+
+// InboundDeduper is the subset of the Redis client needed to make inbound
+// processing effectively-once: SetNX marks a message id as seen and reports
+// whether THIS caller was the first. Satisfied by cache.RedisClient.
+type InboundDeduper interface {
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
+}
 
 // retryableError marks a failure as transient (infrastructure) so the consumer
 // requeues the delivery. Anything not wrapped this way is treated as permanent
@@ -49,6 +64,7 @@ func IsRetryable(err error) bool {
 type InboundMessage struct {
 	Platform entities.Platform `json:"platform"`
 	UserID   string            `json:"user_id"`
+	PlatformUserID string      `json:"platform_user_id,omitempty"`
 	ThreadID string            `json:"thread_id,omitempty"`
 	Text     string            `json:"text"`
 	SpaceID  string            `json:"space_id,omitempty"`
@@ -93,6 +109,13 @@ type PlatformReply struct {
 	Poll    *PollRequest           // if set, render a custom-option poll (onboarding, send_poll)
 	OpenApp *OpenAppRequest        // if set, action must be authorized in-app (fund moves)
 	Cards   []entities.InsightCard // structured insight cards to render after the text
+
+	// Render hints for cross-channel rendering.
+	RenderStrategy string      `json:"render_strategy,omitempty"`
+	MaxBubbles     int         `json:"max_bubbles,omitempty"`
+	ActionChips    []ActionChip `json:"action_chips,omitempty"`
+	PlanData       *PlanData    `json:"plan_data,omitempty"`
+	TraceData      *TraceData   `json:"trace_data,omitempty"`
 }
 
 // ConfirmRequest describes a Confirm/Cancel prompt rendered as a poll.
@@ -128,16 +151,18 @@ type Orchestrator interface {
 }
 
 type Processor struct {
-	resolver        *UserResolver
-	orchestrator    Orchestrator
-	responseBuilder *ResponseBuilder
-	linking         *LinkingService
-	onboarder       *ChatOnboarder
-	babyStepsSeeder BabyStepsSeeder
-	voice           VoiceTranscoder
-	vision          ReceiptVision
-	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
-	logger          *zap.Logger
+	resolver         *UserResolver
+	orchestrator     Orchestrator
+	responseBuilder  *ResponseBuilder
+	linking          *LinkingService
+	onboarder        *ChatOnboarder
+	babyStepsSeeder  BabyStepsSeeder
+	voice            VoiceTranscoder
+	vision           ReceiptVision
+	bankDetailVision BankDetailVision
+	sendFunc         func(ctx context.Context, msg *OutboundMessage) error
+	dedupe           InboundDeduper
+	logger           *zap.Logger
 }
 
 func NewProcessor(
@@ -173,6 +198,21 @@ func (p *Processor) SetReceiptVision(v ReceiptVision) {
 	p.vision = v
 }
 
+// SetBankDetailVision enables bank-detail image understanding. When set,
+// images that look like bank transfer details (account number, bank name)
+// are extracted and formatted so Miriam can pre-fill a transfer.
+func (p *Processor) SetBankDetailVision(v BankDetailVision) {
+	p.bankDetailVision = v
+}
+
+// SetInboundDeduper enables effectively-once processing keyed on the bridge's
+// message id. Without it, every bridge-side retry (backend 500, POST timeout
+// after a slow LLM turn, double delivery) reprocesses the same text and Miriam
+// answers twice. Nil-safe: without a deduper behavior is at-least-once as before.
+func (p *Processor) SetInboundDeduper(d InboundDeduper) {
+	p.dedupe = d
+}
+
 func (p *Processor) visionEnabled() bool {
 	return p.vision != nil && p.vision.Available()
 }
@@ -202,6 +242,21 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		return nil
 	}
 
+	// Effectively-once processing: the bridge retries failed POSTs, and a POST
+	// that times out after processing succeeded server-side would otherwise run
+	// the orchestrator twice (double reply, double AI spend). Fail open — a
+	// dedup-store outage must not drop messages.
+	if p.dedupe != nil && strings.TrimSpace(msg.MsgID) != "" {
+		key := "platform:inbound:seen:" + msg.MsgID
+		fresh, dErr := p.dedupe.SetNX(ctx, key, 1, inboundDedupTTL)
+		if dErr != nil {
+			p.logger.Warn("inbound dedup check failed, processing anyway", zap.String("msg_id", msg.MsgID), zap.Error(dErr))
+		} else if !fresh {
+			p.logger.Info("duplicate inbound message dropped", zap.String("msg_id", msg.MsgID))
+			return nil
+		}
+	}
+
 	// Transcribe a voice note into text before anything else sees it. If we can't,
 	// tell the user rather than silently dropping.
 	if msg.IsVoice {
@@ -222,19 +277,32 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	// OCR a receipt/photo attachment into a quick summary before anything else
 	// sees it. The summary becomes the message text so the resolver, onboarder,
 	// and orchestrator all handle it like a normal turn.
+	// Bank detail images (screenshots of transfer pages, QR codes) are
+	// extracted first — if they contain account numbers, they're formatted as
+	// bank details so Miriam can pre-fill a transfer.
 	if msg.IsImage {
-		if !p.visionEnabled() {
-			return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
+		// Try bank detail extraction first.
+		if p.bankDetailVision != nil && p.bankDetailVision.Available() {
+			ext, err := p.extractBankDetails(ctx, msg)
+			if err == nil && ext != nil {
+				msg.Text = FormatBankDetailSummary(ext)
+			}
 		}
-		summary, err := p.summarizeImage(ctx, msg)
-		if err != nil {
-			log.Printf("image OCR failed for %s: %v", msg.UserID, err)
-			return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
+		// Fall back to receipt vision if bank detail extraction didn't produce text.
+		if strings.TrimSpace(msg.Text) == "" {
+			if !p.visionEnabled() {
+				return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
+			}
+			summary, err := p.summarizeImage(ctx, msg)
+			if err != nil {
+				log.Printf("image OCR failed for %s: %v", msg.UserID, err)
+				return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
+			}
+			if strings.TrimSpace(summary) == "" {
+				return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
+			}
+			msg.Text = summary
 		}
-		if strings.TrimSpace(summary) == "" {
-			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
-		}
-		msg.Text = summary
 	}
 
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
@@ -418,6 +486,19 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 		return p.sendErrorMessage(ctx, msg, "Sorry, something went wrong on my end. Mind trying that again?")
 	}
 
+	// Thread platform context into the outbound path so channel-aware replies
+	// can be rendered for iMessage, WhatsApp, Telegram, etc.
+	ctx = ai.WithChannelContext(ctx, &aichannel.ChannelContext{
+		Platform:        aichannel.NormalizePlatform(string(msg.Platform)),
+		PlatformUserID:  msg.PlatformUserID,
+		ThreadID:        msg.ThreadID,
+		IdentityLinked:  resolved.Identity.LinkedAt != nil && !resolved.Identity.LinkedAt.IsZero(),
+		Capabilities:    aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))),
+		PreferredTone:   aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))).PreferredTone,
+		MediaSupported:  msg.IsImage || msg.IsVoice,
+		UserID:          resolved.UserID,
+	})
+
 	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, msg.IsVoice)
 }
 
@@ -432,8 +513,6 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 	// Interactive prompts stay visual — a poll or app card can't be a voice note.
 	switch {
 	case reply.Confirm != nil:
-		// iMessage has no buttons — render a Confirm/Cancel poll. The vote comes
-		// back as an inbound poll_option we correlate by sender + thread.
 		title := reply.Confirm.Summary
 		if title == "" {
 			title = reply.Text
@@ -466,6 +545,27 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		out = p.responseBuilder.ReplyResponse(identity, reply.Text, threadID, replyTo)
 	default:
 		out = p.responseBuilder.MarkdownResponse(identity, reply.Text, threadID)
+	}
+
+	if reply.MaxBubbles > 0 {
+		out.MaxBubblesPerReply = reply.MaxBubbles
+	}
+	if reply.RenderStrategy != "" {
+		out.RenderStrategy = reply.RenderStrategy
+	}
+	if len(reply.ActionChips) > 0 {
+		out.ActionChips = reply.ActionChips
+	}
+	if reply.PlanData != nil {
+		out.PlanData = &PlanData{
+			PlanID: reply.PlanData.PlanID,
+			Status: reply.PlanData.Status,
+		}
+	}
+	if reply.TraceData != nil {
+		out.TraceData = &TraceData{
+			TraceID: reply.TraceData.TraceID,
+		}
 	}
 
 	// Structured cards ride along in the same atomic outbound message: the bridge
@@ -505,6 +605,17 @@ func (p *Processor) summarizeImage(ctx context.Context, msg InboundMessage) (str
 		return "", fmt.Errorf("empty image")
 	}
 	return p.vision.SummarizeReceipt(ctx, image, msg.ImageMime)
+}
+
+func (p *Processor) extractBankDetails(ctx context.Context, msg InboundMessage) (*BankDetailExtraction, error) {
+	image, err := base64.StdEncoding.DecodeString(msg.ImageB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode image: %w", err)
+	}
+	if len(image) == 0 {
+		return nil, fmt.Errorf("empty image")
+	}
+	return p.bankDetailVision.ExtractBankDetails(ctx, image, msg.ImageMime)
 }
 
 func (p *Processor) synthesizeVoice(ctx context.Context, identity *entities.PlatformIdentity, threadID, text string) (*OutboundMessage, error) {

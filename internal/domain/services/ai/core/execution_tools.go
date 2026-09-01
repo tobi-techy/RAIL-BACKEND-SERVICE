@@ -14,6 +14,9 @@ var (
 		"create_obligation_reminder": true,
 		"mark_obligation_paid":       true,
 		"protect_subscription":       true,
+		"pause_automation":           true,
+		"resume_automation":          true,
+		"delete_automation":          true,
 	}
 
 	StageConfirmTools = map[string]bool{
@@ -38,5 +41,9 @@ var (
 		"book_flight":           true,
 		"save_travel_passenger": true,
 		"request_flight_refund": true,
+		// Bank transfers + crypto sends move real money out of the user's
+		// balance to external destinations.
+		"send_to_bank": true,
+		"send_crypto":  true,
 	}
 )

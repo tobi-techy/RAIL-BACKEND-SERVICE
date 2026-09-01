@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	freedompkg "github.com/rail-service/rail_service/internal/domain/services/ai/freedom"
 	"github.com/shopspring/decimal"
 )
 
@@ -68,19 +69,19 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 	}
 
 	// 2. Classify the user's current step.
-	step, progress := ClassifyFreedomStep(
+	step, progress := freedompkg.ClassifyFreedomStep(
 		state,
 		spendBalance,
 		stashBalance,
 		debts,
 		profile,
-		isAuditReady(state, hasBankStatement),
+		freedompkg.IsAuditReady(state, hasBankStatement),
 		o.getPortfolioValue(fetchCtx, userID),
 	)
 
 	// 3. Build the context block.
 	var parts []string
-	parts = append(parts, fmt.Sprintf("step: %d (%s)", step, FreedomStepName(step)))
+	parts = append(parts, fmt.Sprintf("step: %d (%s)", step, freedompkg.FreedomStepName(step)))
 	parts = append(parts, fmt.Sprintf("status: %s", stepStatus(step, progress)))
 	parts = append(parts, fmt.Sprintf("progress: %s", progress))
 
@@ -96,8 +97,8 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 		toxicCount := 0
 		for _, d := range debts {
 			totalDebt = totalDebt.Add(d.Amount)
-			rate := estimateRateFromObligation(d)
-			if rate.GreaterThan(decimal.NewFromFloat(toxicDebtThreshold)) {
+			rate := freedompkg.EstimateRateFromObligation(d)
+			if rate.GreaterThan(decimal.NewFromFloat(freedompkg.ToxicDebtThreshold)) {
 				toxicCount++
 			}
 		}
@@ -105,7 +106,7 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 	}
 
 	// Audit readiness
-	auditReady := isAuditReady(state, hasBankStatement)
+	auditReady := freedompkg.IsAuditReady(state, hasBankStatement)
 	if auditReady {
 		parts = append(parts, "audit_ready: true")
 	}
@@ -117,7 +118,7 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 	parts = append(parts, fmt.Sprintf("mono_linked: %t", monoLinked))
 
 	// Coaching nudge — the key instruction that makes every conversation context-aware
-	nudge := FreedomStepNudge(step)
+	nudge := freedompkg.FreedomStepNudge(step)
 	if !monoLinked {
 		nudge += " If the conversation touches spending or budgets, suggest connecting their bank through Mono for real spending insights — but only if it fits naturally, never force it."
 	}

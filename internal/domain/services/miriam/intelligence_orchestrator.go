@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,25 @@ type IntelligenceOrchestrator struct {
 	selfReview      *SelfReviewEngine
 	controlLevel    ControlLevelReader
 	logger          *zap.Logger
+
+	// Daily cap state for proactive notifications, keyed "userID:kind". The
+	// worker runs on a single leader replica, so in-memory is sufficient;
+	// entries are one per user per kind and reset when the UTC date rolls over.
+	loopMu         sync.Mutex
+	loopCloseState map[string]*loopCloseTally
+}
+
+// Daily caps for proactive notification kinds. These bound how often Miriam
+// may ping a user per UTC day regardless of how many sweeps fire or outcomes
+// resolve — she's discreet, not chatty.
+const (
+	maxLoopClosingsPerDay   = 1
+	maxSuggestionCTAsPerDay = 1
+)
+
+type loopCloseTally struct {
+	day string
+	n   int
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -154,6 +174,29 @@ func (o *IntelligenceOrchestrator) resolveSymbol(ctx context.Context, userID uui
 // SetPatternAnalyzer injects a TransactionPatternAnalyzer after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetPatternAnalyzer(a *TransactionPatternAnalyzer) {
 	o.patternAnalyzer = a
+}
+
+// allowDailyNotice reports whether the user is still under the per-kind daily
+// notification cap, tallying this attempt when allowed. Kinds are independent:
+// hitting the cap on one kind never blocks another.
+func (o *IntelligenceOrchestrator) allowDailyNotice(userID uuid.UUID, kind string, max int) bool {
+	day := time.Now().UTC().Format("2006-01-02")
+	key := userID.String() + ":" + kind
+	o.loopMu.Lock()
+	defer o.loopMu.Unlock()
+	if o.loopCloseState == nil {
+		o.loopCloseState = make(map[string]*loopCloseTally)
+	}
+	tally := o.loopCloseState[key]
+	if tally == nil || tally.day != day {
+		tally = &loopCloseTally{day: day}
+		o.loopCloseState[key] = tally
+	}
+	if tally.n >= max {
+		return false
+	}
+	tally.n++
+	return true
 }
 
 // SetSelfReview injects the self-review engine after construction (deferred wiring).
@@ -299,11 +342,73 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 3. Generate predictions
-	predictions, err := o.predictions.GeneratePredictions(ctx, userID, state)
-	if err != nil && o.logger != nil {
-		o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
-	}
+	// 3-5b. Run independent sub-engines in parallel: predictions, signals,
+	// memory context, learning bias, and obligation detection.
+	var (
+		predictions  *entities.PredictionSummary
+		memoryFacts  []entities.MiriamUserFact
+		learningBias = decimal.Zero
+	)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		p, err := o.predictions.GeneratePredictions(ctx, userID, state)
+		if err != nil && o.logger != nil {
+			o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
+		}
+		predictions = p
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.signals != nil {
+			if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
+				o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.memory != nil {
+			facts, err := o.memory.GetActiveFacts(ctx, userID)
+			if err == nil {
+				memoryFacts = filterActionRelevantFacts(facts)
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.service.repo != nil {
+			bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
+			if err == nil {
+				learningBias = bias
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.obDetector != nil && eventType == EventWorkerSweep {
+			detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
+			if err == nil && len(detected) > 0 && o.logger != nil {
+				o.logger.Info("obligation auto-detection found candidates",
+					zap.String("user_id", userID.String()),
+					zap.Int("count", len(detected)))
+			}
+		}
+	}()
+
+	wg.Wait()
+
 	result.Predictions = predictions
 
 	// 3b. Record prediction outcomes (pending) and evaluate expired ones. When a
@@ -317,35 +422,13 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		if o.notifier != nil {
 			for _, out := range resolved {
 				if msg := LoopClosingMessage(out); msg != "" {
+					if !o.allowDailyNotice(userID, "loop_close", maxLoopClosingsPerDay) {
+						break // daily cap reached
+					}
 					_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
-					break // one loop-closing line per sweep — she's discreet, not chatty
+					break // one loop-closing line per sweep
 				}
 			}
-		}
-	}
-
-	// 4. Detect and upsert context signals
-	if o.signals != nil {
-		if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
-			o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
-		}
-	}
-
-	// 5. Load memory context
-	var memoryFacts []entities.MiriamUserFact
-	if o.memory != nil {
-		facts, err := o.memory.GetActiveFacts(ctx, userID)
-		if err == nil {
-			memoryFacts = filterActionRelevantFacts(facts)
-		}
-	}
-
-	// 5b. Get learning bias
-	learningBias := decimal.Zero
-	if o.service.repo != nil {
-		bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
-		if err == nil {
-			learningBias = bias
 		}
 	}
 
@@ -364,7 +447,7 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	// Autonomous (always-on) events are read-only. They may analyze, message,
 	// and stage pending actions, but they never execute mandates or move money.
 	isAutonomous := IsAutonomousEvent(eventType)
-	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual)
+	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual || eventType == EventSpendingSpike || eventType == EventBillPressure)
 	gateReason := ""
 	if mandateEvent {
 		gateReason = o.autonomyGateReason(ctx, userID)
@@ -422,10 +505,11 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	suggestions, err := o.suggestions.GenerateSuggestions(ctx, userID, state, memoryFacts)
 	if err == nil {
 		result.SuggestionsMade = len(suggestions)
-		// One CTA per evaluate when we have something new to propose — discreet,
-		// high-signal onboarding into silent wins. Users on guided can accept via
-		// chat tool accept_mandate_suggestion, then switch to Act (full).
-		if len(suggestions) > 0 && o.notifier != nil {
+		// One CTA per day at most when we have something new to propose —
+		// discreet, high-signal onboarding into silent wins. Users on guided can
+		// accept via chat tool accept_mandate_suggestion, then switch to Act
+		// (full). Without this cap the same pitch would re-send every sweep.
+		if len(suggestions) > 0 && o.notifier != nil && o.allowDailyNotice(userID, "mandate_cta", maxSuggestionCTAsPerDay) {
 			s0 := suggestions[0]
 			msg := strings.TrimSpace(s0.Reasoning)
 			if msg == "" {
@@ -438,16 +522,6 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 				msg = msg + " Text me \"accept mandate\" if you want me on it — then switch to Act so I can run it quietly."
 			}
 			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
-		}
-	}
-
-	// 9. Detect recurring obligations from transactions (weekly check)
-	if o.obDetector != nil && eventType == EventWorkerSweep {
-		detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
-		if err == nil && len(detected) > 0 && o.logger != nil {
-			o.logger.Info("obligation auto-detection found candidates",
-				zap.String("user_id", userID.String()),
-				zap.Int("count", len(detected)))
 		}
 	}
 
@@ -608,6 +682,15 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 		analytics.G().Increment(ctx, userID.String(), map[string]int{
 			analytics.PropMiriamActionsTotal: 1,
 		})
+	}
+	// Record outcome for the learning model so future decisions adjust
+	// confidence based on historical success/failure.
+	if o.decisions != nil {
+		feedbackScore := decimal.NewFromInt(1)
+		if err != nil {
+			feedbackScore = decimal.NewFromInt(-1)
+		}
+		_ = o.decisions.RecordOutcome(ctx, mandate.ID, userID, status, feedbackScore)
 	}
 	return err
 }

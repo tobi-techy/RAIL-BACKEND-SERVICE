@@ -11,8 +11,12 @@ func TestIsFundMovingAction_IncludesP2PAndSplit(t *testing.T) {
 	assert.True(t, IsFundMovingAction(ToolSplitReceipt))
 	assert.True(t, IsFundMovingAction(ToolPayBill))
 	assert.True(t, IsFundMovingAction(ToolTransferFunds))
+	assert.True(t, IsFundMovingAction("send_to_bank"))
+	assert.True(t, IsFundMovingAction("send_crypto"))
 	assert.False(t, IsFundMovingAction("get_account_summary"))
 	assert.False(t, IsFundMovingAction("list_automations"))
+	assert.False(t, IsFundMovingAction("pause_automation"))
+	assert.False(t, IsFundMovingAction("delete_automation"))
 }
 
 func TestParticipantsFromParams(t *testing.T) {

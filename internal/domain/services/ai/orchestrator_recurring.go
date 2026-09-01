@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -76,9 +78,9 @@ func (o *AgentAdapter) executeRecurringExpenses(ctx context.Context, userID uuid
 	}
 
 	// Enrich recurring expense entries with plain descriptions and context
-	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+	if enrichmentMap := aicontext.EnrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
 		for _, item := range items {
-			enrichMerchantEntry(item, enrichmentMap)
+			aicontext.EnrichMerchantEntry(item, enrichmentMap)
 		}
 	}
 

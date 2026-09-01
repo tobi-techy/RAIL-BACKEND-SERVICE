@@ -31,6 +31,7 @@ type WorkingMemoryEntry struct {
 	Topic         string    `json:"topic"`
 	MessageCount  int       `json:"message_count"`
 	LastExchangeAt time.Time `json:"last_exchange_at"`
+	ActiveThread  string    `json:"active_thread"`
 }
 
 // GetSummary returns the conversation summary (satisfies core.WorkingMemorySnapshot).
@@ -116,6 +117,11 @@ func (w *WorkingMemoryStore) AppendExchange(ctx context.Context, userID uuid.UUI
 	// Detect topic from the latest user message.
 	entry.Topic = extractTopic(userMsg)
 
+	// Maintain a short active-thread note: the user's latest unresolved goal,
+	// proposal, or question. This lets Miriam keep continuity across short
+	// follow-up turns without re-reading the full conversation.
+	entry.ActiveThread = buildActiveThread(userMsg, assistantBrief)
+
 	if err := w.Save(ctx, userID, entry); err != nil {
 		w.logger.Debug("failed to save working memory", zap.Error(err))
 	}
@@ -164,4 +170,52 @@ func extractTopic(msg string) string {
 	default:
 		return "general"
 	}
+}
+
+// buildActiveThread extracts a compact continuity note from the latest turn.
+// It prefers the user's stated goal or request, falls back to Miriam's last
+// proposal, and keeps the note short enough for prompt context.
+func buildActiveThread(userMsg, assistantBrief string) string {
+	thread := normalizeActiveThreadCandidate(userMsg)
+	// If user message is a simple acknowledgment, prefer the assistant's proposal
+	if thread != "" && isSimpleAcknowledgment(userMsg) {
+		if alt := normalizeActiveThreadCandidate(assistantBrief); alt != "" {
+			return alt
+		}
+	}
+	if thread == "" {
+		thread = normalizeActiveThreadCandidate(assistantBrief)
+	}
+	return thread
+}
+
+func isSimpleAcknowledgment(text string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(text))
+	switch trimmed {
+	case "yeah", "yes", "ok", "okay", "sure", "yep", "yup", "got it", "gotit", "cool", "nice", "fine", "maybe later", "maybe":
+		return true
+	}
+	return false
+}
+
+func normalizeActiveThreadCandidate(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(lower, "i'll "), strings.Contains(lower, "i can "), strings.Contains(lower, "let me "), strings.Contains(lower, "want me to "):
+		return trimmed
+	case strings.Contains(lower, "goal"), strings.Contains(lower, "saving for "), strings.Contains(lower, "save for "):
+		return trimmed
+	case strings.Contains(lower, "automation"), strings.Contains(lower, "every "), strings.Contains(lower, "recurring"):
+		return trimmed
+	case strings.Contains(lower, "transfer"), strings.Contains(lower, "move "), strings.Contains(lower, "send "):
+		return trimmed
+	}
+	if len([]rune(trimmed)) <= 90 {
+		return trimmed
+	}
+	return string([]rune(trimmed)[:88]) + "..."
 }

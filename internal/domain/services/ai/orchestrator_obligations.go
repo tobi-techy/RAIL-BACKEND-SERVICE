@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
@@ -18,11 +19,9 @@ const (
 	ToolMarkObligationPaid       = "mark_obligation_paid"
 )
 
-type FinancialObligationManager interface {
-	List(ctx context.Context, userID uuid.UUID, status, obligationType string) ([]entities.FinancialObligation, error)
-	MarkPaid(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error)
-	MarkCancelled(ctx context.Context, userID, id uuid.UUID) (*entities.FinancialObligation, error)
-}
+// FinancialObligationManager manages financial obligations.
+// Deprecated: Use aiobligations.FinancialObligationManager instead.
+type FinancialObligationManager = aiobligations.FinancialObligationManager
 
 func (o *AgentAdapter) SetFinancialObligationManager(m FinancialObligationManager) {
 	o.obligationManager = m

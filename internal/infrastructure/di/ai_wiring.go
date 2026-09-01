@@ -12,6 +12,8 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	aicore "github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	aigoals "github.com/rail-service/rail_service/internal/domain/services/ai/goals"
+	aiprompt "github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
 	aimemory "github.com/rail-service/rail_service/internal/domain/services/ai/memory"
 	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
@@ -392,7 +394,10 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 	if c.RedisClient != nil {
 		c.AIOrchestrator.SetPendingActions(aiservice.NewRedisPendingActions(c.RedisClient, c.ZapLog))
 		// Redis-backed savings goal store (persists user goals across sessions)
-		c.AIOrchestrator.SetSavingsGoalStore(aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
+		c.AIOrchestrator.SetSavingsGoalStore(aigoals.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
+		// Journey state: cross-session onboarding objectives + discovered facts,
+		// so Miriam never re-asks what she already knows.
+		c.AIOrchestrator.SetJourneyStore(aiservice.NewRedisJourneyStore(c.RedisClient, c.ZapLog))
 	}
 	if c.SharedGoalService != nil {
 		c.AIOrchestrator.SetSharedGoalCreator(&sharedGoalCreatorAdapter{svc: c.SharedGoalService})
@@ -467,6 +472,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		aitools.RegisterBillTools(toolRegistry)
 		aitools.RegisterTravelTools(toolRegistry)
 		aitools.RegisterSavingsGoalsV2Tools(toolRegistry)
+		aitools.RegisterBankTransferTools(toolRegistry)
 
 		c.NewToolRegistry = toolRegistry
 
@@ -543,6 +549,11 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		}
 		agentDeps.MerchantBlock = buildMerchantBlockProvider(c)
 		agentDeps.TradeCopy = buildTradeCopyProvider(c)
+		// Bank transfer + crypto send providers — wrap existing ramp/withdrawal
+		// services so Miriam can send to Nigerian bank accounts and external
+		// crypto wallets with Face ID confirmation.
+		agentDeps.BankTransfer = buildBankTransferProvider(c)
+		agentDeps.CryptoSend = buildCryptoSendProvider(c)
 		// agentDeps.Bills is wired later (after Airbills/billpay init) via
 		// c.AgentDeps, since Circle/ChainRails come up after AI services.
 
@@ -597,7 +608,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		// Core had no base system prompt — non-streaming Miriam ran with no persona.
 		// Give it the same base as the streaming path (persona + tool rules).
 		agentConfig := aicore.DefaultConfig()
-		agentConfig.SystemPrompt = aiservice.SystemPromptV2 + "\n\n" + aiservice.SystemPromptTools
+		agentConfig.SystemPrompt = aiprompt.SystemPromptV2 + "\n\n" + aiservice.SystemPromptTools
 		agentConfig.ResponseGuard = c.Config.AI.ResponseGuard
 
 		// ChatEngine delegation providers — these bridge the core.Agent to
@@ -628,7 +639,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			// Savings goals store (legacy single-goal Redis path; preserved for
 			// backward compat with the existing set_savings_goal tool).
 			if c.RedisClient != nil {
-				inner := aiservice.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog)
+				inner := aigoals.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog)
 				agentDeps.SavingsGoals = &coreSavingsGoalStoreAdapter{inner: inner}
 			}
 

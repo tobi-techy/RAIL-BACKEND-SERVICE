@@ -7,129 +7,62 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/channel"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
-	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
 // ContextAssemblyOpts controls what gets assembled.
 type ContextAssemblyOpts struct {
-	ToneMode string    // per-request tone (gentle/hard)
-	Message  string    // user message (used for supermemory relevance)
-	ConvID   uuid.UUID // conversation — used to look up staged pending actions
+	ToneMode  string    // per-request tone (gentle/hard)
+	Message   string    // user message (used for supermemory relevance)
+	ConvID    uuid.UUID // conversation — used to look up staged pending actions
+	FromVoice bool      // message was transcribed from a voice note
+}
+
+// channelContextKey is the context key for channel context.
+type channelContextKey struct{}
+
+// WithChannelContext attaches channel rendering context to the request context.
+func WithChannelContext(ctx context.Context, channelCtx *channel.ChannelContext) context.Context {
+	return context.WithValue(ctx, channelContextKey{}, channelCtx)
+}
+
+// GetChannelContext retrieves channel context from the request context.
+func GetChannelContext(ctx context.Context) (*channel.ChannelContext, bool) {
+	v := ctx.Value(channelContextKey{})
+	if v == nil {
+		return nil, false
+	}
+	c, ok := v.(*channel.ChannelContext)
+	return c, ok
 }
 
 // assembleContext runs all context lookups in parallel and returns system messages
 // to prepend to the conversation. Used by both streaming and non-streaming chat paths.
 // Total assembly is capped at ~1.5s.
 func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, opts ContextAssemblyOpts) []ai.Message {
-	// Pending staged action outranks the short-message bypass below:
-	// confirmation turns are usually two words ("yeah do it") and this is
-	// exactly the context they need — which tool to confirm, not re-stage.
-	if pa := o.pendingActionContext(ctx, opts.ConvID); pa != "" {
-		return []ai.Message{{Role: "system", Content: pa}}
-	}
+	builder := aicontext.NewBuilder(o.BuildContextDeps())
+	messages := builder.Assemble(ctx, userID, aicontext.ContextAssemblyOpts{
+		ToneMode:  opts.ToneMode,
+		Message:   opts.Message,
+		ConvID:    opts.ConvID,
+		FromVoice: opts.FromVoice,
+	})
 
-	// Short/casual messages (greetings, acks, "ok", "yeah") don't need context.
-	// Saves ~10k tokens and ~1.5s latency on trivial turns.
-	msgLen := len([]rune(strings.TrimSpace(opts.Message)))
-	if msgLen < 15 && opts.Message != "" {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-	defer cancel()
-
-	// 16 parallel slots — one per context source.
-	// Results are indexed to maintain consistent ordering.
-	const numSlots = 16
-	results := make([]string, numSlots)
-
-	g, gCtx := errgroup.WithContext(ctx)
-
-	slotNames := [numSlots]string{
-		"balance", "stash_lock", "financial_profile", "user_profile",
-		"bank_statement", "memory", "personality", "user_time", "naira_context",
-		"personal_memory", "anomalies", "working_memory", "financial_events",
-		"enrichment_summary", "onboarding", "coaching_state",
-	}
-
-	buildSlot := func(slot int, name string, fn func() string) func() error {
-		return func() error {
-			defer func() {
-				if r := recover(); r != nil && o.logger != nil {
-					o.logger.Error("context builder panicked", zap.String("slot", name), zap.Any("panic", r), zap.String("user_id", userID.String()))
-				}
-			}()
-			results[slot] = fn()
-			return nil
-		}
-	}
-
-	g.Go(buildSlot(0, slotNames[0], func() string { return o.buildBalanceContext(gCtx, userID) }))
-	g.Go(buildSlot(1, slotNames[1], func() string { return o.buildStashLockContext(gCtx, userID) }))
-	g.Go(buildSlot(2, slotNames[2], func() string { return o.buildFinancialProfileContext(gCtx, userID) }))
-	g.Go(buildSlot(3, slotNames[3], func() string { return o.buildUserProfileContext(gCtx, userID) }))
-	g.Go(buildSlot(4, slotNames[4], func() string {
-		if o.bankStatementCtx != nil {
-			return o.bankStatementCtx.BuildContext(gCtx, userID)
-		}
-		return ""
-	}))
-	g.Go(buildSlot(5, slotNames[5], func() string {
-		if o.memory != nil {
-			return o.memory.BuildMemoryContextWithSummary(gCtx, userID, opts.Message)
-		}
-		return ""
-	}))
-	g.Go(buildSlot(6, slotNames[6], func() string {
-		return o.buildConsolidatedPersonalityContext(gCtx, userID, opts.ToneMode)
-	}))
-	g.Go(buildSlot(7, slotNames[7], func() string { return o.buildUserTimeContext(gCtx, userID) }))
-	g.Go(buildSlot(8, slotNames[8], func() string { return o.buildNairaContext(gCtx, userID) }))
-	g.Go(buildSlot(9, slotNames[9], func() string { return o.buildPersonalMemoryContext(gCtx, userID, opts.Message) }))
-	g.Go(buildSlot(10, slotNames[10], func() string { return o.buildAnomalyContext(gCtx, userID) }))
-	g.Go(buildSlot(11, slotNames[11], func() string { return o.buildWorkingMemoryContext(gCtx, userID) }))
-	g.Go(buildSlot(12, slotNames[12], func() string { return o.buildFinancialEventsContext(gCtx, userID) }))
-	g.Go(buildSlot(13, slotNames[13], func() string { return o.buildEnrichmentSummaryContext(gCtx, userID) }))
-	g.Go(buildSlot(14, slotNames[14], func() string { return o.buildOnboardingContext(gCtx, userID) }))
-	g.Go(buildSlot(15, slotNames[15], func() string { return o.buildCoachingContext(gCtx, userID) }))
-
-	_ = g.Wait()
-
-	// Prevent the structured memory slot (5) and the recalled-memory slot (9) from
-	// repeating each other; keep only what slot 9 adds beyond slot 5.
-	results[9] = dedupePersonalMemory(results[5], results[9])
-
-	if ctx.Err() != nil && o.logger != nil {
-		o.logger.Warn("context assembly hit timeout", zap.Error(ctx.Err()), zap.String("user_id", userID.String()))
-	}
-
-	// Assemble in stable order
-	messages := make([]ai.Message, 0, numSlots+2)
-	for _, s := range results {
-		if s != "" {
-			messages = append(messages, ai.Message{Role: "system", Content: s})
-		}
-	}
-
-	// Emotion detection: inject tone hint if user sounds non-neutral
-	if hint := detectEmotion(opts.Message); hint != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: hint})
-	}
-
-	// Energy matching: tell Miriam how long/short to be based on user's message style
-	if hint := detectEnergy(opts.Message); hint != "" {
-		messages = append(messages, ai.Message{Role: "system", Content: hint})
+	channelCtx := o.buildChannelContext(ctx, userID, opts.Message)
+	if channelCtx != "" {
+		messages = append(messages, ai.Message{
+			Role:    "system",
+			Content: channelCtx,
+		})
 	}
 
 	return messages
 }
 
-// pendingActionContext returns guidance about a staged-but-unconfirmed action
-// for this conversation, so an affirmative reply ("yeah do it") resolves to
-// confirm_action instead of re-calling the original tool and double-staging.
-// Returns "" when nothing is staged.
+// pendingActionContext returns guidance about a staged-but-unconfirmed action.
+// Kept in root because it reads from o.pending which is owned by AgentAdapter.
 func (o *AgentAdapter) pendingActionContext(ctx context.Context, convID uuid.UUID) string {
 	if o.pending == nil || convID == uuid.Nil {
 		return ""
@@ -222,6 +155,19 @@ func (o *AgentAdapter) buildWorkingMemoryContext(ctx context.Context, userID uui
 	return fmt.Sprintf("[CONVERSATION STATE — recent context from this session: %s]", entry.Summary)
 }
 
+// buildActiveThreadContext returns the latest unresolved goal or proposal from
+// working memory so Miriam can maintain continuity across short follow-up turns.
+func (o *AgentAdapter) buildActiveThreadContext(ctx context.Context, userID uuid.UUID) string {
+	if o.workingMemory == nil || userID == uuid.Nil {
+		return ""
+	}
+	entry := o.workingMemory.Get(ctx, userID)
+	if entry == nil || strings.TrimSpace(entry.ActiveThread) == "" {
+		return ""
+	}
+	return fmt.Sprintf("[ACTIVE THREAD — keep continuity with this unresolved thread: %s]", strings.TrimSpace(entry.ActiveThread))
+}
+
 // buildFinancialEventsContext returns recent financial events from the timeline
 // so Miriam can reference recent financial activity naturally.
 func (o *AgentAdapter) buildFinancialEventsContext(ctx context.Context, userID uuid.UUID) string {
@@ -243,4 +189,32 @@ func (o *AgentAdapter) buildEnrichmentSummaryContext(ctx context.Context, userID
 		return ""
 	}
 	return summary
+}
+
+// buildChannelContext injects platform capability awareness so Miriam adapts
+// her responses to the current chat platform (iMessage, WhatsApp, Telegram, SMS).
+// This ensures she stays within platform limits (max bubbles, chars, available affordances)
+// and uses the appropriate tone and rendering style.
+func (o *AgentAdapter) buildChannelContext(ctx context.Context, userID uuid.UUID, message string) string {
+	if o == nil {
+		return ""
+	}
+
+	channelCtx, ok := ctx.Value(channelContextKey{}).(*channel.ChannelContext)
+	if !ok || channelCtx == nil {
+		return ""
+	}
+
+	caps := channelCtx.Capabilities
+	return fmt.Sprintf(
+		"[CHANNEL — %s. Max bubbles per reply: %d. Max chars per bubble: %d. Polls: %v. Quick replies: %v. Voice notes: %v. Image support: %v. Tone: %s.]",
+		channelCtx.Platform,
+		caps.MaxBubblesPerReply,
+		caps.MaxCharsPerBubble,
+		caps.SupportsPolls,
+		caps.SupportsQuickReplies,
+		caps.SupportsVoiceIn,
+		caps.SupportsImageIn,
+		caps.PreferredTone,
+	)
 }
