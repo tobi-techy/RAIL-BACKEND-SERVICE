@@ -151,6 +151,11 @@ type ChatOptions struct {
 	// and renders it as a data-only message so any instructions embedded in it
 	// are inert.
 	CrossChannelHistory []CrossChannelHistoryFact
+	// FromVoice indicates the user's message was transcribed from a voice note.
+	// When true, the context builder injects a note telling Miriam to confirm
+	// amounts explicitly before staging money actions (transcription may
+	// garble numbers).
+	FromVoice bool
 }
 
 // CrossChannelHistoryFact mirrors core.CrossChannelHistoryFact at the adapter
@@ -231,9 +236,7 @@ func (o *AgentAdapter) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	// Record journey milestones only observable through tool execution
 	// (statement-analysis aha moment, freedom-step diagnosis).
 	if err == nil && result != nil {
-		if err := o.noteJourneyToolSuccess(ctx, userID, tc.Name); err != nil && o.logger != nil {
-			o.logger.Warn("journey tool success recording failed", zap.String("tool", tc.Name), zap.Error(err))
-		}
+		o.noteJourneyToolSuccess(ctx, userID, tc.Name)
 	}
 
 	return result, err

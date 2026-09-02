@@ -244,9 +244,9 @@ func journeyMotivationValue(name, target string) string {
 // noteJourneyToolSuccess records milestones that can only be observed through
 // tool execution: the statement-analysis aha moment and the freedom-step
 // diagnosis. Called from executeTool after successful runs.
-func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.UUID, toolName string) error {
+func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.UUID, toolName string) {
 	if o.journey == nil {
-		return nil
+		return
 	}
 	var milestone string
 	switch toolName {
@@ -255,7 +255,7 @@ func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.U
 	case ToolGetBabySteps:
 		milestone = "path_named"
 	default:
-		return nil
+		return
 	}
 
 	hookCtx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -269,10 +269,8 @@ func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.U
 		metrics.ObserveJourneyMilestone(milestone)
 		if err := o.journey.Save(hookCtx, state); err != nil && o.logger != nil {
 			o.logger.Warn("journey milestone save failed", zap.Error(err), zap.String("user_id", userID.String()))
-			return err
 		}
 	}
-	return nil
 }
 
 // buildJourneyBlock renders the dynamic onboarding guidance. Returns "" when

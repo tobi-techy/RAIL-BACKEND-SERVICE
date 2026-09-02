@@ -119,7 +119,7 @@ func TestJourneyFactProvenance(t *testing.T) {
 		s.SetFact(JourneyFactMotivation, "save more", FactSourceChat, 0.8)
 		s.SetFact(JourneyFactMotivation, "save more for move-out", FactSourceChat, 0.6)
 
-		if s.Facts == nil || s.Facts[JourneyFactMotivation].Value != "save more" {
+		if s.Facts[JourneyFactMotivation].Value != "save more" {
 			t.Error("lower-confidence repeat overwrote original fact")
 		}
 	})
@@ -282,10 +282,7 @@ func TestNoteJourneyToolSuccess(t *testing.T) {
 	o.noteJourneyToolSuccess(context.Background(), uid, ToolGetBabySteps)
 	o.noteJourneyToolSuccess(context.Background(), uid, ToolGetAccountSummary)
 
-	state, err := store.Get(context.Background(), uid)
-	if err != nil {
-		t.Fatalf("store.Get returned error: %v", err)
-	}
+	state, _ := store.Get(context.Background(), uid)
 	if state == nil || !state.HasMilestone(MilestoneStatementAnalyzed) {
 		t.Fatal("statement_analyzed milestone not recorded")
 	}

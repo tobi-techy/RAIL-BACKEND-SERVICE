@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"go.uber.org/zap"
 )
 
 // Journey objectives: soft, conversational goals the backend tracks so Miriam
@@ -150,4 +152,32 @@ func journeySourceRank(source string) int {
 type JourneyStore interface {
 	Get(ctx context.Context, userID uuid.UUID) (*JourneyState, error)
 	Save(ctx context.Context, state *JourneyState) error
+}
+
+const journeyKeyPrefix = "miriam_journey:"
+
+// RedisJourneyStore stores journey state in Redis with a long TTL so a user
+// who disappears mid-onboarding picks up exactly where they left off.
+type RedisJourneyStore struct {
+	redis  cache.RedisClient
+	logger *zap.Logger
+}
+
+// NewRedisJourneyStore creates a Redis-backed journey store.
+func NewRedisJourneyStore(redis cache.RedisClient, logger *zap.Logger) JourneyStore {
+	return &RedisJourneyStore{redis: redis, logger: logger}
+}
+
+func (r *RedisJourneyStore) Get(ctx context.Context, userID uuid.UUID) (*JourneyState, error) {
+	var state JourneyState
+	if err := r.redis.Get(ctx, journeyKeyPrefix+userID.String(), &state); err != nil {
+		return nil, err
+	}
+	state.UserID = userID.String()
+	return &state, nil
+}
+
+func (r *RedisJourneyStore) Save(ctx context.Context, state *JourneyState) error {
+	state.UpdatedAt = time.Now().UTC()
+	return r.redis.Set(ctx, journeyKeyPrefix+state.UserID, state, journeyStateTTL)
 }

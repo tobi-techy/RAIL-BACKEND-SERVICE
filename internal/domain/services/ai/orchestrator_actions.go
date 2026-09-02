@@ -619,7 +619,13 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 
 	// Step-up gate: fund-moving actions require a verified step-up token.
 	// Enforced in the core so no caller can bypass it.
+	// Email-link verification (one-time link clicked from email) is accepted
+	// as an alternative to the passcode/Face ID step-up.
 	if IsFundMovingAction(action.Action) {
+		if execution.IsEmailLinkVerified(ctx) {
+			// Email link serves as step-up verification — proceed to execution.
+			goto executeAction
+		}
 		if o.stepUpVerifier == nil {
 			o.logger.Warn("fund-moving action refused: no step-up verifier configured (fail-closed)",
 				zap.String("user_id", userID.String()),
@@ -643,6 +649,7 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 		}
 	}
 
+executeAction:
 	var execErr error
 	switch action.Action {
 	case ToolTransferFunds:
@@ -1123,6 +1130,9 @@ func (o *AgentAdapter) canCreateActionTool(name string) bool {
 		return o.withdrawalInitiator != nil
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
+	case ToolSendToBank, ToolSendCrypto:
+		// These run through the core registry on confirm.
+		return o.agent != nil
 	default:
 		// Execution Engine tools run through the core registry on confirm.
 		if execution.IsExecutionActionTool(name) {

@@ -219,9 +219,10 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 
 	// Assemble all context in parallel (~1.5s ceiling)
 	messages = append(messages, o.assembleContext(ctx, userID, ContextAssemblyOpts{
-		ToneMode: opts.ToneMode,
-		Message:  message,
-		ConvID:   convID,
+		ToneMode:  opts.ToneMode,
+		Message:   message,
+		ConvID:    convID,
+		FromVoice: opts.FromVoice,
 	})...)
 
 	// Tool usage rules — skip for very short casual messages to save tokens

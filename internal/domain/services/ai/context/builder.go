@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"fmt"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 
 // ContextAssemblyOpts controls what gets assembled.
 type ContextAssemblyOpts struct {
-	ToneMode string
-	Message  string
-	ConvID   uuid.UUID
+	ToneMode  string
+	Message   string
+	ConvID    uuid.UUID
+	FromVoice bool
 }
 
 // Builder assembles per-turn system context for Miriam.
@@ -44,7 +46,7 @@ func (b *Builder) Assemble(ctx context.Context, userID uuid.UUID, opts ContextAs
 	ctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 
-	const numSlots = 17
+	const numSlots = 18
 	results := make([]string, numSlots)
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -54,6 +56,7 @@ func (b *Builder) Assemble(ctx context.Context, userID uuid.UUID, opts ContextAs
 		"bank_statement", "memory", "personality", "user_time", "naira_context",
 		"personal_memory", "anomalies", "working_memory", "financial_events",
 		"enrichment_summary", "onboarding", "coaching_state", "active_thread",
+		"automations",
 	}
 
 	buildSlot := func(slot int, name string, fn func() string) func() error {
@@ -97,6 +100,7 @@ func (b *Builder) Assemble(ctx context.Context, userID uuid.UUID, opts ContextAs
 	g.Go(buildSlot(14, slotNames[14], func() string { return b.buildOnboardingContext(gCtx, userID) }))
 	g.Go(buildSlot(15, slotNames[15], func() string { return b.buildCoachingContext(gCtx, userID) }))
 	g.Go(buildSlot(16, slotNames[16], func() string { return b.buildActiveThreadContext(gCtx, userID) }))
+	g.Go(buildSlot(17, slotNames[17], func() string { return b.buildAutomationContext(gCtx, userID) }))
 
 	_ = g.Wait()
 
@@ -135,4 +139,79 @@ func (b *Builder) pendingActionContext(ctx context.Context, convID uuid.UUID) st
 		"[PENDING ACTION — %q (%s) is already staged and awaiting in-app confirmation. If the user affirms (\"yeah\", \"do it\", \"confirm\"), call confirm_action — do NOT call %s again or you will double-stage it. If they decline or change their mind, call cancel_action. Never claim it executed until confirm_action succeeds.]",
 		label, action.Action, action.Action,
 	)
+}
+
+// buildAutomationContext injects the user's active automation rules so Miriam
+// proactively references them. When a user asks to do something an automation
+// already handles, Miriam should mention it instead of creating a duplicate.
+func (b *Builder) buildAutomationContext(ctx context.Context, userID uuid.UUID) string {
+	if b.deps.ListAutomationsFn == nil {
+		return ""
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	automations, err := b.deps.ListAutomationsFn(fetchCtx, userID)
+	if err != nil || len(automations) == 0 {
+		return ""
+	}
+
+	var lines []string
+	for _, a := range automations {
+		if !a.IsActive {
+			continue
+		}
+		line := fmt.Sprintf("'%s' (%s → %s", a.Name, a.TriggerType, a.ActionType)
+		if summary := summarizeAutomationConfig(a.TriggerType, a.TriggerConfig, a.ActionType, a.ActionConfig); summary != "" {
+			line += ": " + summary
+		}
+		line += ")"
+		if a.LastTriggeredAt != nil {
+			line += fmt.Sprintf(", last ran %s", a.LastTriggeredAt.Format("Jan 2"))
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"[ACTIVE AUTOMATIONS — You have %d active rule(s): %s. Reference these when relevant. If the user asks to do something an automation already handles, mention it and offer to adjust it instead of creating a duplicate. If they ask to stop or change a rule, use list_automations to get the ID, then pause_automation or delete_automation.]",
+		len(lines), strings.Join(lines, "; "),
+	)
+}
+
+// summarizeAutomationConfig extracts a brief human-readable summary from the
+// trigger and action configs. Returns "" if no useful summary can be extracted.
+func summarizeAutomationConfig(triggerType string, triggerConfig json.RawMessage, actionType string, actionConfig json.RawMessage) string {
+	var parts []string
+	if len(triggerConfig) > 0 {
+		var tc map[string]interface{}
+		if json.Unmarshal(triggerConfig, &tc) == nil {
+			if sched, ok := tc["schedule"].(string); ok && sched != "" {
+				parts = append(parts, "schedule: "+sched)
+			}
+			if threshold, ok := tc["threshold"].(float64); ok {
+				parts = append(parts, fmt.Sprintf("threshold: %.0f", threshold))
+			}
+			if day, ok := tc["payday_day"].(float64); ok {
+				parts = append(parts, fmt.Sprintf("payday: day %d", int(day)))
+			}
+		}
+	}
+	if len(actionConfig) > 0 {
+		var ac map[string]interface{}
+		if json.Unmarshal(actionConfig, &ac) == nil {
+			if amount, ok := ac["amount"].(float64); ok {
+				parts = append(parts, fmt.Sprintf("amount: %.0f", amount))
+			}
+			if direction, ok := ac["direction"].(string); ok && direction != "" {
+				parts = append(parts, "direction: "+direction)
+			}
+			if category, ok := ac["category"].(string); ok && category != "" {
+				parts = append(parts, "category: "+category)
+			}
+		}
+	}
+	return strings.Join(parts, ", ")
 }

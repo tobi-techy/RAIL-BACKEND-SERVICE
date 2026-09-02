@@ -21,6 +21,14 @@ func WithStepUpToken(ctx context.Context, token string) context.Context {
 	return aiexecution.WithStepUpToken(ctx, token)
 }
 
+func WithEmailLinkVerification(ctx context.Context) context.Context {
+	return aiexecution.WithEmailLinkVerification(ctx)
+}
+
+func IsEmailLinkVerified(ctx context.Context) bool {
+	return aiexecution.IsEmailLinkVerified(ctx)
+}
+
 type QualityVerdict = aiexecution.QualityVerdict
 
 func CheckResponseQuality(response string) QualityVerdict {

@@ -588,7 +588,7 @@ func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboar
 	// signal (LinkVerified binds on sender possession). Asking them to read a
 	// code from the same device they're typing on is pure friction and burns a
 	// Twilio send. Skip straight to account resolution + consent.
-	if senderPhone, ok := normalizePhone(in.SenderID, st.Country); ok && senderPhone == st.Phone {
+	if senderPhone, ok := normalizePhone(in.SenderID, ""); ok && senderPhone == st.Phone {
 		return c.finishPhoneVerification(ctx, key, st)
 	}
 	code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "phone", st.Phone)

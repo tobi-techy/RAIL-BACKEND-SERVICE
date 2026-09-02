@@ -14,9 +14,10 @@ import (
 
 // ContextAssemblyOpts controls what gets assembled.
 type ContextAssemblyOpts struct {
-	ToneMode string    // per-request tone (gentle/hard)
-	Message  string    // user message (used for supermemory relevance)
-	ConvID   uuid.UUID // conversation — used to look up staged pending actions
+	ToneMode  string    // per-request tone (gentle/hard)
+	Message   string    // user message (used for supermemory relevance)
+	ConvID    uuid.UUID // conversation — used to look up staged pending actions
+	FromVoice bool      // message was transcribed from a voice note
 }
 
 // channelContextKey is the context key for channel context.
@@ -43,9 +44,10 @@ func GetChannelContext(ctx context.Context) (*channel.ChannelContext, bool) {
 func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, opts ContextAssemblyOpts) []ai.Message {
 	builder := aicontext.NewBuilder(o.BuildContextDeps())
 	messages := builder.Assemble(ctx, userID, aicontext.ContextAssemblyOpts{
-		ToneMode: opts.ToneMode,
-		Message:  opts.Message,
-		ConvID:   opts.ConvID,
+		ToneMode:  opts.ToneMode,
+		Message:   opts.Message,
+		ConvID:    opts.ConvID,
+		FromVoice: opts.FromVoice,
 	})
 
 	channelCtx := o.buildChannelContext(ctx, userID, opts.Message)

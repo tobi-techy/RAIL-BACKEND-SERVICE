@@ -47,12 +47,9 @@ func (t *OutcomeTracker) RecordPredictions(ctx context.Context, userID uuid.UUID
 	// they resolve one after another and the user receives the identical
 	// loop-closing message again and again.
 	pending, err := t.repo.GetPendingPredictionOutcomes(ctx, userID)
-	if err != nil {
-		if t.logger != nil {
-			t.logger.Warn("failed to check pending outcomes before recording",
-				zap.String("user_id", userID.String()), zap.Error(err))
-		}
-		return // Return early on error to avoid creating duplicates
+	if err != nil && t.logger != nil {
+		t.logger.Warn("failed to check pending outcomes before recording",
+			zap.String("user_id", userID.String()), zap.Error(err))
 	}
 	alreadyPending := make(map[string]bool, len(pending))
 	for _, p := range pending {

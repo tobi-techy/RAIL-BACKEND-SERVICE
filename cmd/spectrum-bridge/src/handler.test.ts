@@ -137,8 +137,7 @@ function baseMsg(extra: Partial<OutboundMessage> = {}): OutboundMessage {
 function expectTypingBeforeContent(events: string[]): void {
   const idx = events.findIndex((e) => e !== "typing" && e !== "typing-stop");
   expect(idx).toBeGreaterThan(-1);
-  // Use .some instead of slice + toContain to handle idx=0 case where slice returns empty array
-  expect(events.slice(0, idx).some((e) => e === "typing")).toBe(true);
+  expect(events.slice(0, idx)).toContain("typing");
 }
 
 describe("typing-before-send rule", () => {

@@ -48,6 +48,7 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
+	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
@@ -380,6 +381,7 @@ type Container struct {
 	DepositSweepRepo           *repositories.DepositSweepRepository
 	PajHandlers                *fundinghandlers.PajHandlers
 	RampHandlers               *fundinghandlers.RampHandlers
+	RampService                *rampsvc.Service
 	NGNHandlers                *fundinghandlers.NGNHandlers
 	GraphVirtualAccountService *funding.GraphVirtualAccountService
 	GraphWebhookHandler        *webhooks.GraphWebhookHandler
@@ -458,6 +460,7 @@ type Container struct {
 	platformProcessor    *platform.Processor
 	platformLinking      *platform.LinkingService
 	ConfirmHandler       *platform.ConfirmHandler
+	ConfirmTokenStore    *platform.ConfirmTokenStore
 	EvalHandler          *evalhandlers.Handler
 
 	// Mono (open-banking data + DirectPay)
@@ -792,4 +795,19 @@ func (c *Container) GetPlatformProcessor() *platform.Processor {
 // GetConfirmHandler returns the email confirmation handler, or nil if platform messaging is disabled.
 func (c *Container) GetConfirmHandler() *platform.ConfirmHandler {
 	return c.ConfirmHandler
+}
+
+// GetConfirmTokenStore returns the confirm token store, or nil if platform messaging is disabled.
+func (c *Container) GetConfirmTokenStore() *platform.ConfirmTokenStore {
+	return c.ConfirmTokenStore
+}
+
+// GetEmailService returns the email service.
+func (c *Container) GetEmailService() *adapters.EmailService {
+	return c.EmailService
+}
+
+// GetUserRepo returns the user repository.
+func (c *Container) GetUserRepo() *repositories.UserRepository {
+	return c.UserRepo
 }

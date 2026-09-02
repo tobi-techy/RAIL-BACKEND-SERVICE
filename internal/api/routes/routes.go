@@ -34,6 +34,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
@@ -1677,6 +1678,19 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						container.GetConversationService(),
 						container.ZapLog,
 					)
+					// Wire email-link confirmation deps for in-app chat.
+					if container.GetConfirmTokenStore() != nil && container.GetEmailService() != nil && container.GetUserRepo() != nil {
+						confirmBase := strings.TrimRight(container.Config.Platform.ConfirmBaseURL, "/")
+						if confirmBase == "" {
+							confirmBase = "https://app.userail.money"
+						}
+						convHandlers.SetConfirmLinkDeps(
+							container.GetConfirmTokenStore(),
+							container.GetEmailService(),
+							adapters.NewUserEmailLookup(container.GetUserRepo()),
+							confirmBase,
+						)
+					}
 					convGroup := protected.Group("/ai/conversations")
 					{
 						convGroup.POST("", convHandlers.CreateConversation)
@@ -1685,6 +1699,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
 						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), convHandlers.ChatInConversation)
 						convGroup.POST("/:id/confirm", convHandlers.ConfirmAction)
+						convGroup.POST("/:id/confirm-link", convHandlers.ConfirmLink)
 						convGroup.POST("/:id/cancel", convHandlers.CancelAction)
 					}
 				}
