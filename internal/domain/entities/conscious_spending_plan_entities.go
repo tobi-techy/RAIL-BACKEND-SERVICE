@@ -23,9 +23,10 @@ const (
 	CheckInCadenceBiweekly = "biweekly"
 	CheckInCadenceMonthly  = "monthly"
 
-	CSPItemBucketFixedCost  = "fixed_cost"
-	CSPItemBucketInvestment = "investment"
-	CSPItemBucketSavings    = "savings"
+	CSPItemBucketFixedCost       = "fixed_cost"
+	CSPItemBucketInvestment      = "investment"
+	CSPItemBucketSavings         = "savings"
+	CSPItemBucketGuiltFreeSpending = "guilt_free_spending"
 
 	CSPAmountSourceUserProvided = "user_provided"
 	CSPAmountSourceProfile      = "financial_profile"
@@ -67,6 +68,7 @@ type ConsciousSpendingPlan struct {
 	Status                  string          `json:"status" db:"status"`
 	CheckInCadence          string          `json:"check_in_cadence" db:"check_in_cadence"`
 	CommittedAt             *time.Time      `json:"committed_at,omitempty" db:"committed_at"`
+	SupersededAt            *time.Time      `json:"superseded_at,omitempty" db:"superseded_at"`
 	CreatedAt               time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt               time.Time       `json:"updated_at" db:"updated_at"`
 	Items                   []ConsciousSpendingPlanItem `json:"items,omitempty" db:"-"`

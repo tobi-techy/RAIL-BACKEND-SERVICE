@@ -92,11 +92,19 @@ func RegisterConsciousSpendingPlanTools(r *Registry) {
 			if deps.ConsciousSpendingPlans == nil {
 				return &core.ToolResult{Error: "conscious spending plans are unavailable"}, nil
 			}
-			plan, err := deps.ConsciousSpendingPlans.Pause(ctx, userID)
+			plan, err := deps.ConsciousSpendingPlans.Get(ctx, userID)
 			if err != nil {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
-			return &core.ToolResult{Data: map[string]interface{}{"paused": plan != nil, "plan": plan}}, nil
+			version := 0
+			if plan != nil {
+				version = plan.Version
+			}
+			_, err = deps.ConsciousSpendingPlans.Pause(ctx, userID, version)
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{"paused": true}}, nil
 		},
 	))
 }

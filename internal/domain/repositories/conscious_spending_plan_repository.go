@@ -2,12 +2,15 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 )
+
+var ErrPlanNotFound = errors.New("conscious spending plan not found")
 
 type ConsciousSpendingPlanRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)

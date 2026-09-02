@@ -135,19 +135,13 @@ func ValidateHeaderInput(in repositories.PlanHeaderInput) error {
 	if strings.TrimSpace(in.BaseCurrency) == "" {
 		return ErrMissingBaseCurrency
 	}
-func ValidateHeaderInput(in repositories.PlanHeaderInput) error {
-if strings.TrimSpace(in.BaseCurrency) == "" {
-return ErrMissingBaseCurrency
-}
-// At least one income value must be provided and positive
-if !in.TakeHomeIncome.IsPositive() && !in.GrossMonthlyIncome.IsPositive() {
-return ErrInvalidIncome
-}
-// Income values must not be negative
-if in.GrossMonthlyIncome.IsNegative() || in.TakeHomeIncome.IsNegative() {
-return ErrInvalidIncome
-}
-
+	// At least one income value must be provided and positive
+	if !in.TakeHomeIncome.IsPositive() && !in.GrossMonthlyIncome.IsPositive() {
+		return ErrInvalidIncome
+	}
+	// Income values must not be negative
+	if in.GrossMonthlyIncome.IsNegative() || in.TakeHomeIncome.IsNegative() {
+		return ErrInvalidIncome
 	}
 	for name, amount := range map[string]decimal.Decimal{
 		"payroll deductions": in.PayrollDeductions, "pre-tax investments": in.PreTaxInvestments,
@@ -216,25 +210,26 @@ func sortItems(items []entities.ConsciousSpendingPlanItem) {
 }
 
 func reconcileHeaderItems(in *repositories.PlanHeaderInput) error {
-var fixedAmount, investmentAmount, savingsAmount, guiltFreeAmount decimal.Decimal
-for _, item := range in.Items {
-switch item.Bucket {
-case entities.CSPItemBucketFixedCost:
-fixedAmount = fixedAmount.Add(item.Amount)
-case entities.CSPItemBucketInvestment:
-investmentAmount = investmentAmount.Add(item.Amount)
-case entities.CSPItemBucketSavings:
-savingsAmount = savingsAmount.Add(item.Amount)
-case entities.CSPItemBucketGuiltFreeSpending:
-guiltFreeAmount = guiltFreeAmount.Add(item.Amount)
-default:
-return fmt.Errorf("unknown bucket %q", item.Bucket)
-}
-in.FixedCosts = fixedAmount
-in.PostTaxInvestments = investmentAmount
-in.Savings = savingsAmount
-in.GuiltFreeSpending = guiltFreeAmount
-in.FixedCostsSubtotal = fixedAmount.Add(in.MiscBufferAmount)
-return nil
+	var fixedAmount, investmentAmount, savingsAmount, guiltFreeAmount decimal.Decimal
+	for _, item := range in.Items {
+		switch item.Bucket {
+		case entities.CSPItemBucketFixedCost:
+			fixedAmount = fixedAmount.Add(item.Amount)
+		case entities.CSPItemBucketInvestment:
+			investmentAmount = investmentAmount.Add(item.Amount)
+		case entities.CSPItemBucketSavings:
+			savingsAmount = savingsAmount.Add(item.Amount)
+		case entities.CSPItemBucketGuiltFreeSpending:
+			guiltFreeAmount = guiltFreeAmount.Add(item.Amount)
+		default:
+			return fmt.Errorf("unknown bucket %q", item.Bucket)
+		}
+	}
+	in.FixedCosts = fixedAmount
+	in.PostTaxInvestments = investmentAmount
+	in.Savings = savingsAmount
+	in.GuiltFreeSpending = guiltFreeAmount
+	in.FixedCostsSubtotal = fixedAmount.Add(in.MiscBufferAmount)
+	return nil
 }
 

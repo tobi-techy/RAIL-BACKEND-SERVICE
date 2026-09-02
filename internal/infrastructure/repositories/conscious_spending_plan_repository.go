@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/shopspring/decimal"
+	domainrepos "github.com/rail-service/rail_service/internal/domain/repositories"
 )
 
 type ConsciousSpendingPlanRepository struct {
@@ -52,7 +52,7 @@ func (r *ConsciousSpendingPlanRepository) GetActiveVersion(ctx context.Context, 
 	return r.GetByUserID(ctx, userID)
 }
 
-func (r *ConsciousSpendingPlanRepository) Commit(ctx context.Context, userID uuid.UUID, in repositories.PlanHeaderInput) (*entities.ConsciousSpendingPlan, error) {
+func (r *ConsciousSpendingPlanRepository) Commit(ctx context.Context, userID uuid.UUID, in domainrepos.PlanHeaderInput) (*entities.ConsciousSpendingPlan, error) {
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin plan commit: %w", err)
@@ -204,7 +204,7 @@ func (r *ConsciousSpendingPlanRepository) nextVersion(ctx context.Context, tx *s
 	return version, nil
 }
 
-func (r *ConsciousSpendingPlanRepository) insertPlan(ctx context.Context, tx *sqlx.Tx, userID uuid.UUID, version int, in repositories.PlanHeaderInput, now time.Time) (*entities.ConsciousSpendingPlan, error) {
+func (r *ConsciousSpendingPlanRepository) insertPlan(ctx context.Context, tx *sqlx.Tx, userID uuid.UUID, version int, in domainrepos.PlanHeaderInput, now time.Time) (*entities.ConsciousSpendingPlan, error) {
 	plan := &entities.ConsciousSpendingPlan{
 		ID: uuid.New(), UserID: userID, Version: version,
 		Scope: strings.ToLower(strings.TrimSpace(in.Scope)), Country: in.Country,
@@ -387,7 +387,7 @@ func (r *ConsciousSpendingPlanRepository) loadPlanByVersion(ctx context.Context,
 	if err := r.db.GetContext(ctx, &plan, `
 		SELECT * FROM conscious_spending_plan_versions
 		WHERE user_id = $1 AND version = $2 AND status = $3`, userID, version, status); err == sql.ErrNoRows {
-		return nil, repositories.ErrPlanNotFound
+		return nil, domainrepos.ErrPlanNotFound
 	} else if err != nil {
 		return nil, fmt.Errorf("load plan version: %w", err)
 	}

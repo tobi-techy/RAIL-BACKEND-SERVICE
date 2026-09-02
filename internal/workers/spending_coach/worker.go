@@ -219,7 +219,7 @@ func (w *Worker) composeCommittedPlanCopy(ctx context.Context, userID uuid.UUID,
 	if !actual.Complete {
 		return "Miriam: plan check", "I need one missing number before I can check your four-number plan honestly. Open Miriam and we'll fill it in.", "csp:missing_data"
 	}
-	variances := consciousspending.Compare(plan, actual, decimal.NewFromInt(5))
+	variances, _ := consciousspending.Compare(plan, actual, decimal.NewFromInt(5))
 	adverse := variances[:0]
 	for _, variance := range variances {
 		if isAdverseVariance(variance) {

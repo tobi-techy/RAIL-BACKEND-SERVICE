@@ -926,7 +926,7 @@ type ConsciousSpendingPlanInput struct {
 type ConsciousSpendingPlanStore interface {
 	Get(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)
 	Commit(ctx context.Context, userID uuid.UUID, in ConsciousSpendingPlanInput) (*entities.ConsciousSpendingPlan, error)
-	Pause(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)
+	Pause(ctx context.Context, userID uuid.UUID, version int) (*entities.ConsciousSpendingPlan, error)
 }
 
 // CreateUserGoalInput is the create payload exposed to the LLM.

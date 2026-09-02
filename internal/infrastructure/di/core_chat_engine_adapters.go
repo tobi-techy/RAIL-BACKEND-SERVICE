@@ -12,6 +12,7 @@ import (
 	goalssvc "github.com/rail-service/rail_service/internal/domain/services/goals"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
+	domainrepos "github.com/rail-service/rail_service/internal/domain/repositories"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/shopspring/decimal"
@@ -88,37 +89,37 @@ func (a *coreConsciousSpendingPlanAdapter) Commit(ctx context.Context, userID uu
 	return a.svc.Commit(ctx, userID, parsed)
 }
 
-func (a *coreConsciousSpendingPlanAdapter) Pause(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error) {
-	return a.svc.Pause(ctx, userID)
+func (a *coreConsciousSpendingPlanAdapter) Pause(ctx context.Context, userID uuid.UUID, version int) (*entities.ConsciousSpendingPlan, error) {
+	return a.svc.Pause(ctx, userID, version)
 }
 
-func consciousSpendingPlanInput(in aicore.ConsciousSpendingPlanInput) (consciousspending.PlanInput, error) {
+func consciousSpendingPlanInput(in aicore.ConsciousSpendingPlanInput) (domainrepos.PlanHeaderInput, error) {
 	parse := func(value string) (decimal.Decimal, error) {
 		return decimal.NewFromString(value)
 	}
 	income, err := parse(in.TakeHomeIncome)
 	if err != nil {
-		return consciousspending.PlanInput{}, err
+		return domainrepos.PlanHeaderInput{}, err
 	}
 	fixed, err := parse(in.FixedCosts)
 	if err != nil {
-		return consciousspending.PlanInput{}, err
+		return domainrepos.PlanHeaderInput{}, err
 	}
 	investments, err := parse(in.Investments)
 	if err != nil {
-		return consciousspending.PlanInput{}, err
+		return domainrepos.PlanHeaderInput{}, err
 	}
 	savings, err := parse(in.Savings)
 	if err != nil {
-		return consciousspending.PlanInput{}, err
+		return domainrepos.PlanHeaderInput{}, err
 	}
 	guiltFree, err := parse(in.GuiltFreeSpending)
 	if err != nil {
-		return consciousspending.PlanInput{}, err
+		return domainrepos.PlanHeaderInput{}, err
 	}
-	return consciousspending.PlanInput{
-		TakeHomeIncome: income, Currency: in.Currency, FixedCosts: fixed,
-		Investments: investments, Savings: savings, GuiltFreeSpending: guiltFree,
+	return domainrepos.PlanHeaderInput{
+		TakeHomeIncome: income, BaseCurrency: in.Currency, FixedCosts: fixed,
+		PostTaxInvestments: investments, Savings: savings, GuiltFreeSpending: guiltFree,
 		CheckInCadence: in.CheckInCadence,
 	}, nil
 }

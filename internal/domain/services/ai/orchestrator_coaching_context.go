@@ -146,7 +146,7 @@ func (o *AgentAdapter) buildCoachingContext(ctx context.Context, userID uuid.UUI
 			plan := consciousPlan
 			parts = append(parts, fmt.Sprintf(
 				"csp: %s | income %s %s | fixed %s%% | investments %s%% | savings %s%% | guilt_free %s%% | check_in %s",
-				plan.Status, plan.Currency, plan.TakeHomeIncome.StringFixed(2),
+				plan.Status, plan.BaseCurrency, plan.TakeHomeIncome.StringFixed(2),
 				plan.FixedCostsPct.StringFixed(1), plan.InvestmentsPct.StringFixed(1),
 				plan.SavingsPct.StringFixed(1), plan.GuiltFreeSpendingPct.StringFixed(1),
 				plan.CheckInCadence,
