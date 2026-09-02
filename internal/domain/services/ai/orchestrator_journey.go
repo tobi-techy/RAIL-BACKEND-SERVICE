@@ -115,9 +115,12 @@ func (o *AgentAdapter) syncJourneyState(ctx context.Context, userID uuid.UUID, s
 	dirty := false
 
 	if sigs.name != "" {
-		before := state.Facts[JourneyFactName]
+		before := ""
+		if state.Facts != nil {
+			before = state.Facts[JourneyFactName].Value
+		}
 		state.SetFact(JourneyFactName, sigs.name, FactSourceSignup, 0.95)
-		if state.Facts[JourneyFactName] != before {
+		if state.Facts[JourneyFactName].Value != before {
 			dirty = true
 		}
 	}
@@ -136,9 +139,12 @@ func (o *AgentAdapter) syncJourneyState(ctx context.Context, userID uuid.UUID, s
 		confidence = 0.85
 	}
 	if motivation != "" {
-		before := state.Facts[JourneyFactMotivation]
+		before := ""
+		if state.Facts != nil {
+			before = state.Facts[JourneyFactMotivation].Value
+		}
 		state.SetFact(JourneyFactMotivation, motivation, source, confidence)
-		if state.Facts[JourneyFactMotivation] != before {
+		if state.Facts[JourneyFactMotivation].Value != before {
 			dirty = true
 			if state.ReachMilestone(MilestoneGoalCaptured) {
 				metrics.ObserveJourneyMilestone(MilestoneGoalCaptured)
@@ -238,9 +244,9 @@ func journeyMotivationValue(name, target string) string {
 // noteJourneyToolSuccess records milestones that can only be observed through
 // tool execution: the statement-analysis aha moment and the freedom-step
 // diagnosis. Called from executeTool after successful runs.
-func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.UUID, toolName string) {
+func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.UUID, toolName string) error {
 	if o.journey == nil {
-		return
+		return nil
 	}
 	var milestone string
 	switch toolName {
@@ -249,7 +255,7 @@ func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.U
 	case ToolGetBabySteps:
 		milestone = "path_named"
 	default:
-		return
+		return nil
 	}
 
 	hookCtx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -263,8 +269,10 @@ func (o *AgentAdapter) noteJourneyToolSuccess(ctx context.Context, userID uuid.U
 		metrics.ObserveJourneyMilestone(milestone)
 		if err := o.journey.Save(hookCtx, state); err != nil && o.logger != nil {
 			o.logger.Warn("journey milestone save failed", zap.Error(err), zap.String("user_id", userID.String()))
+			return err
 		}
 	}
+	return nil
 }
 
 // buildJourneyBlock renders the dynamic onboarding guidance. Returns "" when
@@ -274,6 +282,10 @@ func (o *AgentAdapter) buildJourneyBlock(ctx context.Context, userID uuid.UUID, 
 	if sigs.phase != PhaseFirstConversation &&
 		sigs.phase != PhaseOnboardedNotFunded &&
 		sigs.phase != PhaseFundedNewbie {
+		return ""
+	}
+
+	if sigs.user == nil {
 		return ""
 	}
 

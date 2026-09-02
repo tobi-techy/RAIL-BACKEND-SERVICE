@@ -1087,8 +1087,9 @@ func (a *Agent) qualityRetry(ctx context.Context, messages []*ai.Message, previo
 // string. Deliberately EXCLUDES greetings ("hi/hey/hello") and thread-tracking
 // acks ("ok/sure/got it"): those must flow through the full pipeline so the
 // system prompt, memory, and conversation history apply — a canned greeting is
-// the same every time and contradicts TRACK THE THREAD when something was just
-// proposed. Everything here is safe to answer without context.
+// trivialReply returns canned responses for thanks, farewells, and laughter.
+// Pure acknowledgments such as "ok", "sure", "got it" continue through the
+// full pipeline.
 func (a *Agent) trivialReply(message string) string {
 	msg := strings.TrimSpace(strings.ToLower(message))
 	if len(msg) > 50 || strings.Contains(msg, " ") && len(strings.Split(msg, " ")) > 3 {

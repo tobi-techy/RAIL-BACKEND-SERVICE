@@ -231,7 +231,9 @@ func (o *AgentAdapter) executeTool(ctx context.Context, userID uuid.UUID, tc ai.
 	// Record journey milestones only observable through tool execution
 	// (statement-analysis aha moment, freedom-step diagnosis).
 	if err == nil && result != nil {
-		o.noteJourneyToolSuccess(ctx, userID, tc.Name)
+		if err := o.noteJourneyToolSuccess(ctx, userID, tc.Name); err != nil && o.logger != nil {
+			o.logger.Warn("journey tool success recording failed", zap.String("tool", tc.Name), zap.Error(err))
+		}
 	}
 
 	return result, err

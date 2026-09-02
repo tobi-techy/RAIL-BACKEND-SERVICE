@@ -227,7 +227,9 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 		// instead of being locked out for the full cooldown window.
 		if delErr := s.redisClient.Del(opCtx, fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)); delErr != nil {
 			s.logger.Warn("failed to clear otp cooldown after send failure",
-				zap.String("identifier_type", identifierType), zap.Error(delErr))
+				zap.String("identifier_type", identifierType),
+				zap.String("identifier", identifier),
+				zap.Error(delErr))
 		}
 		return "", false, fmt.Errorf("failed to send verification code: %w", err)
 	}

@@ -22,6 +22,11 @@ func TestSystemPromptV2_ConversationalCore(t *testing.T) {
 		"GREETINGS:",
 		"CHAT NATURAL",
 		"VOICE ANCHORS",
+		"CLOSE ON THE MOVE",
+		"what are you trying to make this money do",
+		"Verdict shape",
+		"Never shame a small joy",
+		"You think of yourself as their money person",
 	} {
 		if !strings.Contains(SystemPromptV2, want) {
 			t.Errorf("SystemPromptV2 missing %q section from conversational retune", want)
@@ -34,6 +39,11 @@ func TestSystemPromptV2_ConversationalCore(t *testing.T) {
 		"Hard ceiling ~60 words",  // hard brevity cap replaced by ADAPTIVE LENGTH
 		"RAMIT",                   // philosophy is Miriam's own; no named personalities
 		"THE RAMIT SETHI METHOD",
+		"SETHI",
+		"SUZE",
+		"ORMAN",
+		"CARL RICHARDS",
+		"self-worth equals net worth",
 	} {
 		if strings.Contains(SystemPromptV2, banned) {
 			t.Errorf("SystemPromptV2 still contains banned rule %q", banned)

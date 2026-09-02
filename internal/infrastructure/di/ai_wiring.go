@@ -25,6 +25,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/embeddings"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/rail-service/rail_service/internal/infrastructure/ai/journey"
 	"github.com/rail-service/rail_service/internal/infrastructure/enrichment"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -397,7 +398,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 		c.AIOrchestrator.SetSavingsGoalStore(aigoals.NewRedisSavingsGoalStore(c.RedisClient, c.ZapLog))
 		// Journey state: cross-session onboarding objectives + discovered facts,
 		// so Miriam never re-asks what she already knows.
-		c.AIOrchestrator.SetJourneyStore(aiservice.NewRedisJourneyStore(c.RedisClient, c.ZapLog))
+		c.AIOrchestrator.SetJourneyStore(journey.NewRedisJourneyStore(c.RedisClient, c.ZapLog))
 	}
 	if c.SharedGoalService != nil {
 		c.AIOrchestrator.SetSharedGoalCreator(&sharedGoalCreatorAdapter{svc: c.SharedGoalService})

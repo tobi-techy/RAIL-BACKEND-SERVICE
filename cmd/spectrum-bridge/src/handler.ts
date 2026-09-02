@@ -209,12 +209,13 @@ export class MessageHandler {
     // polls and card-only sends — also get a hold so the indicator does not
     // vanish before the payload appears.
     const hasRenderable =
-      contentType === "poll" ||
-      (contentType === "appcard" || contentType === "richlink"
-        ? !!msg.text || !!msg.card_url
-        : contentType === "cards"
-          ? !!msg.text || (msg.cards ?? []).length > 0
-          : !!msg.text);
+      contentType === "poll" && (msg.poll_options?.length ?? 0) > 0
+        ? true
+        : (contentType === "appcard" || contentType === "richlink"
+            ? !!msg.text?.trim() || !!msg.card_url
+            : contentType === "cards"
+              ? !!msg.text?.trim() || (msg.cards ?? []).length > 0
+              : !!msg.text?.trim());
     if (!hasRenderable) {
       log.debug(
         { thread_id: msg.thread_id, content_type: contentType },
@@ -228,8 +229,9 @@ export class MessageHandler {
       contentType === "reply" ||
       contentType === "effect" ||
       (contentType === "poll" && !supportsPoll) ||
+      (contentType === "poll" && supportsPoll) || // ensure supported polls also pace
       ((contentType === "cards" || contentType === "appcard" || contentType === "richlink") &&
-        !!msg.text);
+        !!msg.text?.trim());
     await this.assertTyping(space, msg.thread_id);
     if (!pacedByBranch) {
       await this.delay(this.typingDurationMs(msg.poll_title || msg.text || ""));
@@ -252,8 +254,13 @@ export class MessageHandler {
           if (parent) {
             await this.assertTyping(space, msg.thread_id);
             await this.delay(this.typingDurationMs(msg.text));
-            await space.send(reply(markdown(msg.text), parent));
-            return true;
+            try {
+              await space.send(reply(markdown(msg.text), parent));
+              return true;
+            } catch (err) {
+              log.warn({ err, reply_to: msg.reply_to }, "reply send failed");
+              return false;
+            }
           }
           log.warn({ reply_to: msg.reply_to }, "parent message not found, sending as markdown");
           return this.sendWithPacing(space, msg.text, "markdown");
