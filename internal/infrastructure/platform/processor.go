@@ -34,9 +34,10 @@ const inboundDedupTTL = 10 * time.Minute
 
 // InboundDeduper is the subset of the Redis client needed to make inbound
 // processing effectively-once: SetNX marks a message id as seen and reports
-// whether THIS caller was the first. Satisfied by cache.RedisClient.
+// whether THIS caller was the first. Del removes a key. Satisfied by cache.RedisClient.
 type InboundDeduper interface {
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
+	Del(ctx context.Context, key string) error
 }
 
 // retryableError marks a failure as transient (infrastructure) so the consumer
@@ -242,20 +243,53 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		return nil
 	}
 
-	// Effectively-once processing: the bridge retries failed POSTs, and a POST
-	// that times out after processing succeeded server-side would otherwise run
-	// the orchestrator twice (double reply, double AI spend). Fail open — a
-	// dedup-store outage must not drop messages.
+	// Effectively-once processing with retry safety: use an in-flight reservation
+	// that is released on any processing error, so transient failures don't
+	// permanently suppress retries. Only mark as permanently "seen" after
+	// successful processing.
+	var dedupKey string
 	if p.dedupe != nil && strings.TrimSpace(msg.MsgID) != "" {
-		key := "platform:inbound:seen:" + msg.MsgID
-		fresh, dErr := p.dedupe.SetNX(ctx, key, 1, inboundDedupTTL)
+		dedupKey = "platform:inbound:seen:" + msg.MsgID
+		inFlightKey := "platform:inbound:inflight:" + msg.MsgID
+
+		// Try to acquire in-flight reservation (short TTL, e.g., 30s)
+		inFlight, dErr := p.dedupe.SetNX(ctx, inFlightKey, 1, 30*time.Second)
+		if dErr != nil {
+			p.logger.Warn("inbound in-flight reservation failed, processing anyway", zap.String("msg_id", msg.MsgID), zap.Error(dErr))
+		} else if !inFlight {
+			// Another worker is already processing this message
+			p.logger.Info("inbound message already in-flight, dropping", zap.String("msg_id", msg.MsgID))
+			return nil
+		}
+
+		// Check if already permanently processed
+		fresh, dErr := p.dedupe.SetNX(ctx, dedupKey, 1, inboundDedupTTL)
 		if dErr != nil {
 			p.logger.Warn("inbound dedup check failed, processing anyway", zap.String("msg_id", msg.MsgID), zap.Error(dErr))
 		} else if !fresh {
+			// Already fully processed — release in-flight and drop
+			_ = p.dedupe.Del(ctx, inFlightKey)
 			p.logger.Info("duplicate inbound message dropped", zap.String("msg_id", msg.MsgID))
 			return nil
 		}
 	}
+
+	// Track whether processing succeeded to manage dedup state
+	processingSucceeded := false
+	defer func() {
+		if p.dedupe != nil && strings.TrimSpace(msg.MsgID) != "" {
+			inFlightKey := "platform:inbound:inflight:" + msg.MsgID
+			if processingSucceeded {
+				// Processing succeeded — keep permanent dedup key, release in-flight
+				_ = p.dedupe.Del(ctx, inFlightKey)
+			} else {
+				// Processing failed — release both keys to allow retry
+				dedupKey := "platform:inbound:seen:" + msg.MsgID
+				_ = p.dedupe.Del(ctx, dedupKey)
+				_ = p.dedupe.Del(ctx, inFlightKey)
+			}
+		}
+	}()
 
 	// Transcribe a voice note into text before anything else sees it. If we can't,
 	// tell the user rather than silently dropping.
@@ -309,9 +343,14 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	if err == nil {
 		if isContactPayload(msg) && strings.TrimSpace(msg.Text) == "" {
 			p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, "You're already linked — I don't need the card. What do you want to look at?")
+			processingSucceeded = true
 			return nil
 		}
-		return p.handleNormalMessage(ctx, msg, resolved)
+		err := p.handleNormalMessage(ctx, msg, resolved)
+		if err == nil {
+			processingSucceeded = true
+		}
+		return err
 	}
 
 	// Unlinked sender. A handshake token always takes precedence — even if the
@@ -325,12 +364,17 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			}
 			return p.sendErrorMessage(ctx, msg, "That link code wasn't valid or has expired. Please try linking again from the RAIL app.")
 		}
+		processingSucceeded = true
 		return nil
 	}
 
 	// No handshake token: chat-first onboarding takes over if enabled.
 	if p.onboarder != nil {
-		return p.handleOnboarding(ctx, msg)
+		err := p.handleOnboarding(ctx, msg)
+		if err == nil {
+			processingSucceeded = true
+		}
+		return err
 	}
 
 	linkHint := "Link iMessage"
