@@ -15,6 +15,7 @@ func TestSystemPromptV2_ConversationalCore(t *testing.T) {
 		"YOUR JOB",
 		"RELATIONSHIP",
 		"CONVERSATIONAL INTELLIGENCE",
+		"CONVERSATIONAL MECHANICS",
 		"INTERACTION MODES",
 		"JUDGMENT",
 		"FINANCIAL PHILOSOPHY",
@@ -78,4 +79,19 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func TestSystemPromptV2_ConsciousSpendingCommitment(t *testing.T) {
+	for _, want := range []string{
+		"fixed costs, investments, savings, guilt-free spending",
+		"50-60%, about 10%, 5-10%, 20-35%",
+		"desired life → why now",
+		"Never silently lower a missed target",
+		"step sets the current safety priority",
+		"commit_conscious_spending_plan",
+	} {
+		if !strings.Contains(SystemPromptV2, want) {
+			t.Errorf("SystemPromptV2 missing Conscious Spending guidance %q", want)
+		}
+	}
 }

@@ -47,7 +47,7 @@ const (
 	// Ramsey Step 3 + Money Guys FOO Step 4. Also: capture any employer match.
 	StepFullSafetyNet FreedomStep = 3
 
-	// StepBuildTheMuscle — automate investing at 15–20% of income.
+	// StepBuildTheMuscle — automate the investment number in the user's plan.
 	// Sethi "automate" + Ramsey Step 4. Consistency beats intensity.
 	StepBuildTheMuscle FreedomStep = 4
 
@@ -104,9 +104,9 @@ var FreedomSteps = []FreedomStepInfo{
 	{
 		Step:       StepBuildTheMuscle,
 		Name:       "Build the Muscle",
-		Tagline:    "Automate investing at 15–20% of income. Consistency beats intensity.",
+		Tagline:    "Automate the investment number in your plan. Consistency beats intensity.",
 		Criteria:   "3+ consecutive months of automated investing.",
-		CoachNudge: "User is building the investing habit. The 70/30 split is already running; now layer in automated investing. Consistency over intensity — ₦10k/month beats ₦100k once a year. Help them set up an automation if they haven't. Don't try to time the market. If they ask about specific investments, offer options but never say 'buy X'.",
+		CoachNudge: "User is building the investing habit. Automate the investment amount in their committed plan; never replace it with a generic percentage. Consistency beats intensity. Help them set up an automation if they haven't. Don't try to time the market. If they ask about specific investments, offer options but never say 'buy X'.",
 	},
 	{
 		Step:       StepAccelerate,
@@ -120,7 +120,7 @@ var FreedomSteps = []FreedomStepInfo{
 		Name:       "Rich Life",
 		Tagline:    "Spend extravagantly on what you love. Cut mercilessly on what you don't. Give generously.",
 		Criteria:   "Ongoing — no terminal state.",
-		CoachNudge: "User has built wealth. The goal now is to spend it on what they love, guilt-free. Conscious spending: be extravagant on the 2–3 things that matter most, cut everything else. Give generously. Build legacy. The money works for them now, not the other way around. Ask: 'What does your Rich Life look like?'",
+		CoachNudge: "User has built wealth. The goal now is to spend it on what they love, guilt-free. Find their money dial: ask what they would spend on without guilt, then protect that category and cut what they do not value. Ask what they get for the work and saving they do. Give generously. Build legacy. The money works for them now, not the other way around. Return to: 'What would your rich life look like?' when they get stuck in the weeds.",
 	},
 }
 
@@ -275,7 +275,7 @@ func ClassifyFreedomStep(
 
 	// Step 4: Build the Muscle — has the user been investing consistently?
 	if !hasInvestmentActivity {
-		return int(StepBuildTheMuscle), "Build the Muscle: Start automated investing at 15–20% of income. Consistency beats intensity."
+		return int(StepBuildTheMuscle), "Build the Muscle: automate the investment amount in the user's Conscious Spending Plan. Consistency beats intensity."
 	}
 
 	// Step 5: Accelerate — is portfolio ≥ 1× annual income?

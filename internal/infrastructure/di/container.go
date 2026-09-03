@@ -33,6 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/billpay"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
+	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/document"
@@ -230,7 +231,9 @@ type Container struct {
 	// the v2 savings-goal tools + the goal_progress + spending_coach workers.
 	GoalsService *goals.Service
 	// UserGoalRepo is the persistence layer behind GoalsService.
-	UserGoalRepo *repositories.UserGoalRepository
+	UserGoalRepo                 *repositories.UserGoalRepository
+	ConsciousSpendingPlanService *consciousspending.Service
+	ConsciousSpendingPlanRepo    *repositories.ConsciousSpendingPlanRepository
 	// BabyStepsSeeder seeds the 7-step ladder for first-time users.
 	BabyStepsSeeder *goals.BabyStepsSeed
 	// GoalProgressHooks is the optional deposit-allocated callback wired
