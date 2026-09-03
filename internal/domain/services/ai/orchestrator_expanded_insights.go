@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -85,9 +87,9 @@ func (o *AgentAdapter) executeGetSubscriptions(ctx context.Context, userID uuid.
 			totalYearly := totalMonthly.Mul(decimal.NewFromInt(12))
 
 			// Enrich subscription candidates with plain descriptions and context
-			if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+			if enrichmentMap := aicontext.EnrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
 				for _, c := range candidates {
-					enrichMerchantEntry(c, enrichmentMap)
+					aicontext.EnrichMerchantEntry(c, enrichmentMap)
 				}
 			}
 
@@ -162,9 +164,9 @@ func (o *AgentAdapter) executeGetSubscriptions(ctx context.Context, userID uuid.
 	}
 
 	// Enrich fallback subscription entries with plain descriptions and context
-	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+	if enrichmentMap := aicontext.EnrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
 		for _, s := range subs {
-			enrichMerchantEntry(s, enrichmentMap)
+			aicontext.EnrichMerchantEntry(s, enrichmentMap)
 		}
 	}
 

@@ -49,6 +49,7 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
+	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
@@ -283,6 +284,7 @@ type Container struct {
 	MiriamPreferencesRepo    *repositories.MiriamPreferencesRepository
 	MiriamPreferencesService *miriamservice.PreferencesService
 	AnomalyStore             aiservice.AnomalyStore
+	AnomalyEngine            *aiservice.AnomalyEngine
 	proactiveGuard           *platform.ProactiveGuard // set during platform init; prefs wired later
 
 	// Additional Repositories
@@ -382,6 +384,7 @@ type Container struct {
 	DepositSweepRepo           *repositories.DepositSweepRepository
 	PajHandlers                *fundinghandlers.PajHandlers
 	RampHandlers               *fundinghandlers.RampHandlers
+	RampService                *rampsvc.Service
 	NGNHandlers                *fundinghandlers.NGNHandlers
 	GraphVirtualAccountService *funding.GraphVirtualAccountService
 	GraphWebhookHandler        *webhooks.GraphWebhookHandler
@@ -459,6 +462,8 @@ type Container struct {
 	PlatformHandler      *platformhandlers.PlatformHandler
 	platformProcessor    *platform.Processor
 	platformLinking      *platform.LinkingService
+	ConfirmHandler       *platform.ConfirmHandler
+	ConfirmTokenStore    *platform.ConfirmTokenStore
 	EvalHandler          *evalhandlers.Handler
 
 	// Mono (open-banking data + DirectPay)
@@ -677,8 +682,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		BridgeAdapter: bridgeAdapter,
 		CircleAdapter: circleAdapter,
 		UmbraClient:   umbraClient,
-		EmailService:  emailService,
-		SMSService:    smsService,
 		AuditService:  auditService,
 		RedisClient:   redisClient,
 
@@ -688,6 +691,18 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		// Cache & Queue
 		CacheInvalidator: cacheInvalidator,
 		JobQueueInstance: jobqueue.NewJobQueue(redisClient.Client(), zapLog),
+	}
+
+	// Store the optional email/SMS services only when actually constructed.
+	// Assigning a nil *adapters.X pointer directly would create a typed-nil
+	// interface downstream (x != nil is true, calling a method panics on the
+	// nil receiver) — exactly the failure that crashed chat onboarding when
+	// Twilio was unconfigured.
+	if emailService != nil {
+		container.EmailService = emailService
+	}
+	if smsService != nil {
+		container.SMSService = smsService
 	}
 
 	// Initialize Bridge virtual account service and webhook handler
@@ -778,4 +793,24 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 // GetPlatformProcessor returns the platform message processor, or nil if platform messaging is disabled.
 func (c *Container) GetPlatformProcessor() *platform.Processor {
 	return c.platformProcessor
+}
+
+// GetConfirmHandler returns the email confirmation handler, or nil if platform messaging is disabled.
+func (c *Container) GetConfirmHandler() *platform.ConfirmHandler {
+	return c.ConfirmHandler
+}
+
+// GetConfirmTokenStore returns the confirm token store, or nil if platform messaging is disabled.
+func (c *Container) GetConfirmTokenStore() *platform.ConfirmTokenStore {
+	return c.ConfirmTokenStore
+}
+
+// GetEmailService returns the email service.
+func (c *Container) GetEmailService() *adapters.EmailService {
+	return c.EmailService
+}
+
+// GetUserRepo returns the user repository.
+func (c *Container) GetUserRepo() *repositories.UserRepository {
+	return c.UserRepo
 }

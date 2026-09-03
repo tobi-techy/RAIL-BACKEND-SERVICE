@@ -52,6 +52,13 @@ type AnomalyRunner interface {
 	RunAllChecks(ctx context.Context, userID uuid.UUID, now time.Time) []AnomalyResult
 }
 
+// AutopilotEventDispatcher sends orchestrator-eligible events when the autopilot
+// detects something worth acting on (anomalies, income changes, etc.). The
+// implementation bridges to the intelligence orchestrator for mandate evaluation.
+type AutopilotEventDispatcher interface {
+	DispatchEvent(ctx context.Context, userID uuid.UUID, eventType string) error
+}
+
 // AutopilotMetrics exposes counters for monitoring.
 type AutopilotMetrics struct {
 	MorningAlertsSent     int64
@@ -73,6 +80,7 @@ type AutopilotService struct {
 	transferer AutopilotFundsTransferer
 	anomaly      AnomalyRunner
 	anomalyStore AnomalyStore
+	eventDispatch AutopilotEventDispatcher
 	logger       *zap.Logger
 
 	redis    cache.RedisClient
@@ -126,6 +134,12 @@ func scaledThreshold(usd decimal.Decimal, country string) decimal.Decimal {
 		return usd
 	}
 	return usd.Mul(decimal.NewFromFloat(factor))
+}
+
+// SetEventDispatcher wires the event dispatcher so the autopilot can trigger
+// orchestrator evaluations when anomalies are detected.
+func (s *AutopilotService) SetEventDispatcher(d AutopilotEventDispatcher) {
+	s.eventDispatch = d
 }
 
 func NewAutopilotService(
@@ -229,6 +243,18 @@ func (s *AutopilotService) RunMorningScan(ctx context.Context) {
 			}); err != nil {
 				s.logger.Warn("autopilot morning: push failed", zap.String("user_id", u.ID.String()), zap.Error(err))
 				continue
+			}
+			// Dispatch spending_spike event to the orchestrator so mandate-capable
+			// users get automatic bill-pay / surplus-sweep evaluations.
+			if s.eventDispatch != nil {
+				for _, r := range results {
+					if r.Type == AnomalyBillSpike || r.Type == AnomalySpendingAccel {
+						if err := s.eventDispatch.DispatchEvent(ctx, u.ID, "spending_spike"); err != nil {
+							s.logger.Debug("autopilot: dispatch spending_spike failed", zap.Error(err))
+						}
+						break
+					}
+				}
 			}
 			alerted++
 			atomic.AddInt64(&s.metrics.MorningAlertsSent, 1)
@@ -378,17 +404,35 @@ func (s *AutopilotService) RunEveningReview(ctx context.Context) {
 
 			switch act.Tool {
 			case ToolTransferFunds:
-				// Legacy queued transfers (pre-MVP) are not auto-executed anymore.
-				// Surface as a suggestion so money only moves via mandate + Act.
+				// For full-control users, dispatch to the orchestrator so queued
+				// surplus transfers get evaluated through the mandate pipeline
+				// (decision engine, cooldown, balance floor, day cap). For others,
+				// surface as a suggestion.
 				amount, _ := act.Args["amount"].(float64)
-				alerted++
-				if amount > 0 {
-					summary = append(summary, fmt.Sprintf(
-						"I held off on moving $%.2f to Stash — silent moves need an approved mandate and Act mode",
-						amount,
-					))
+				if s.eventDispatch != nil && amount > 0 {
+					if err := s.eventDispatch.DispatchEvent(ctx, u.ID, "worker_sweep"); err != nil {
+						s.logger.Debug("autopilot evening: dispatch failed", zap.String("user_id", u.ID.String()), zap.Error(err))
+						summary = append(summary, fmt.Sprintf(
+							"I tried to act on $%.2f surplus but the system held back: %v",
+							amount, err,
+						))
+					} else {
+						summary = append(summary, fmt.Sprintf(
+							"Evaluated $%.2f surplus through the mandate pipeline",
+							amount,
+						))
+						executed++
+					}
 				} else {
-					summary = append(summary, "I held a pending surplus transfer until you approve a mandate")
+					alerted++
+					if amount > 0 {
+						summary = append(summary, fmt.Sprintf(
+							"I held off on moving $%.2f to Stash — silent moves need an approved mandate and Act mode",
+							amount,
+						))
+					} else {
+						summary = append(summary, "I held a pending surplus transfer until you approve a mandate")
+					}
 				}
 
 			case "alert_overspend", "alert_surplus":

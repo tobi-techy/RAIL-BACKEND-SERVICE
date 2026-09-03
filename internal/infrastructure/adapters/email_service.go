@@ -798,3 +798,21 @@ func (e *EmailService) SendWithdrawalConfirmationEmail(ctx context.Context, toEm
 
 	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
 }
+
+// SendTransactionConfirmation sends an email with a one-tap confirmation link
+// for a fund-moving action initiated from a chat platform.
+func (e *EmailService) SendTransactionConfirmation(ctx context.Context, toEmail, description, confirmURL string) error {
+	subject := "Confirm your transfer"
+
+	innerHTML := renderHeader() +
+		renderHeading("Confirm your transfer") +
+		renderBody("Miriam is waiting to complete a transfer for you:") +
+		`<p style="margin:16px 0;padding:16px;background-color:#f2f0ed;border-radius:8px;font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:15px;color:#343433;">` + html.EscapeString(description) + `</p>` +
+		`<p style="text-align:center;margin:24px 0;"><a href="` + html.EscapeString(confirmURL) + `" style="display:inline-block;padding:14px 32px;background-color:#ff3e00;color:#ffffff;text-decoration:none;border-radius:8px;font-family:-apple-system,SF Pro Text,Helvetica Neue,sans-serif;font-size:16px;font-weight:600;">Confirm transfer</a></p>` +
+		renderSmallBody("This link expires in 10 minutes. If you didn't request this, you can safely ignore this email.")
+
+	htmlContent := renderBaseTemplate(innerHTML)
+	textContent := fmt.Sprintf("Miriam is waiting to complete a transfer for you:\n\n%s\n\nTap here to confirm: %s\n\nThis link expires in 10 minutes.\nIf you didn't request this, ignore this email.\n\n— Rail", description, confirmURL)
+
+	return e.sendEmail(ctx, toEmail, subject, htmlContent, textContent)
+}

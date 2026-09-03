@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
@@ -19,9 +20,8 @@ const (
 )
 
 // ActionHistoryReader reads executed/cancelled AI action receipts.
-type ActionHistoryReader interface {
-	ListRecentActions(ctx context.Context, userID uuid.UUID, limit int) ([]*entities.ActionAuditEntry, error)
-}
+// Deprecated: Use aiintelligence.ActionHistoryReader instead.
+type ActionHistoryReader = aiintelligence.ActionHistoryReader
 
 func FinancialIntelligenceTools(hasActionHistory bool) []infraai.Tool {
 	tools := []infraai.Tool{

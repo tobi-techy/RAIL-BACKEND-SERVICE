@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,7 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	aiactions "github.com/rail-service/rail_service/internal/domain/services/ai/actions"
+	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/execution"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/shopspring/decimal"
@@ -31,155 +33,61 @@ const pendingActionTTL = 5 * time.Minute
 // ErrStepUpRequired is returned by ConfirmAction when a fund-moving action
 // is staged but no valid step-up token (passcode/Face ID session) was provided.
 // Callers should translate this into a 403 or equivalent challenge.
-var ErrStepUpRequired = errors.New("step-up verification required")
 
 // StepUpVerifier validates a short-lived step-up token (passcode session,
 // Face ID authorization) before fund-moving pending actions execute. When nil,
 // ConfirmAction refuses all fund-moving actions (fail-closed).
-type StepUpVerifier interface {
-	VerifyStepUp(ctx context.Context, userID uuid.UUID, token string) (bool, error)
-}
-
-type stepUpTokenKey struct{}
-
-// WithStepUpToken injects a step-up token (e.g. an X-Passcode-Session header
-// value) into the context so ConfirmAction can pass it to the StepUpVerifier.
-func WithStepUpToken(ctx context.Context, token string) context.Context {
-	return context.WithValue(ctx, stepUpTokenKey{}, token)
-}
-
-// StepUpTokenFromContext extracts the step-up token, if any.
-func StepUpTokenFromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(stepUpTokenKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
-
-// fundMovingActions is the registry of action types that move real money and
-// therefore require step-up verification before execution in ConfirmAction.
-// Use RegisterFundMovingAction to add new tools so the step-up gate stays
-// in sync as tools evolve.
-var (
-	fundMovingActionsMu sync.RWMutex
-	fundMovingActions   = map[string]bool{}
-)
-
-func init() {
-	for _, name := range []string{
-		ToolTransferFunds, ToolInitiateWithdrawal,
-		ToolExecuteInvestment, ToolOptimizeYield, ToolCopyTrader,
-		ToolSetupBillAutopay, ToolPayBill, ToolAutomateBill,
-		"send_money", ToolSplitReceipt, ToolCreateAutomation,
-		// BRIJ flight bookings hold the user's Spend balance for escrow + fee.
-		// request_flight_refund moves money back (or closes the hold), so it
-		// gets the same step-up gate.
-		ToolBookFlight, ToolRequestFlightRefund,
-	} {
-		fundMovingActions[name] = true
-	}
-}
-
-// RegisterFundMovingAction marks an action type as fund-moving so
-// IsFundMovingAction returns true for it and the step-up gate in
-// ConfirmAction protects it.
-func RegisterFundMovingAction(name string) {
-	fundMovingActionsMu.Lock()
-	defer fundMovingActionsMu.Unlock()
-	fundMovingActions[name] = true
-}
+// StepUpVerifier validates a short-lived step-up token.
+// Deprecated: Use aiactions.StepUpVerifier instead.
+type StepUpVerifier = aiactions.StepUpVerifier
 
 // FundsTransferer moves money between spend and stash.
-//
-// Implementations MUST use database-level locking (e.g. SELECT FOR UPDATE) to
-// ensure the balance check and debit are atomic. The balance pre-check in
-// executeTransfer is defense-in-depth only; the real protection against
-// TOCTOU races must live in the FundsTransferer implementation.
-type FundsTransferer interface {
-	TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
-	TransferStashToSpend(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error
-	GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-	GetStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-}
+// Deprecated: Use aiactions.FundsTransferer instead.
+type FundsTransferer = aiactions.FundsTransferer
 
-// EmergencyWithdrawer handles stash withdrawals during the lock period (with fee).
-type EmergencyWithdrawer interface {
-	// IsStashLocked returns true if the user has no open withdrawal window (funds are locked).
-	IsStashLocked(ctx context.Context, userID uuid.UUID) (bool, error)
-	EmergencyWithdrawalPreview(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*entities.EmergencyWithdrawalPreviewResponse, error)
-	EmergencyStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) (*entities.EmergencyWithdrawalResult, error)
-}
+// EmergencyWithdrawer handles stash withdrawals during the lock period.
+// Deprecated: Use aiactions.EmergencyWithdrawer instead.
+type EmergencyWithdrawer = aiactions.EmergencyWithdrawer
 
 // GoalProtectionProvider checks whether a withdrawal would impact goal-allocated funds.
-type GoalProtectionProvider interface {
-	GetTotalGoalAllocated(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-	GetGoalAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.LedgerAccount, error)
-	GetUnallocatedStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-	GetWithdrawableStashBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-}
+// Deprecated: Use aiactions.GoalProtectionProvider instead.
+type GoalProtectionProvider = aiactions.GoalProtectionProvider
 
 // UserAccountChecker verifies user account status before executing financial actions.
-type UserAccountChecker interface {
-	IsActiveAndUnfrozen(ctx context.Context, userID uuid.UUID) (active bool, frozen bool, err error)
-}
+// Deprecated: Use aiactions.UserAccountChecker instead.
+type UserAccountChecker = aiactions.UserAccountChecker
 
 // ActionAuditor persists action audit entries.
-type ActionAuditor interface {
-	RecordAction(ctx context.Context, entry *entities.ActionAuditEntry) error
-}
+// Deprecated: Use aiactions.ActionAuditor instead.
+type ActionAuditor = aiactions.ActionAuditor
 
 // SavingsGoal represents a user's savings goal.
-type SavingsGoal struct {
-	Name      string `json:"name"`
-	Target    string `json:"target"`
-	Deadline  string `json:"deadline,omitempty"`
-	CreatedAt string `json:"created_at"`
-}
+// Deprecated: Use aiactions.SavingsGoal instead.
+type SavingsGoal = aiactions.SavingsGoal
 
 // SavingsGoalStore persists savings goals (Redis-backed).
-type SavingsGoalStore interface {
-	Set(ctx context.Context, userID uuid.UUID, goal *SavingsGoal) error
-	Get(ctx context.Context, userID uuid.UUID) (*SavingsGoal, error)
-}
+// Deprecated: Use aiactions.SavingsGoalStore instead.
+type SavingsGoalStore = aiactions.SavingsGoalStore
 
 // SharedGoalCreator creates shared goals from Miriam conversations.
-type SharedGoalCreator interface {
-	CreateGoalFromAI(ctx context.Context, userID uuid.UUID, name, targetAmount string, deadline *string) (uuid.UUID, error)
-}
+// Deprecated: Use aiactions.SharedGoalCreator instead.
+type SharedGoalCreator = aiactions.SharedGoalCreator
 
 // AutomationCreator creates Miriam automation rules after confirmation.
-type AutomationCreator interface {
-	CreateAutomationFromAI(ctx context.Context, userID uuid.UUID, req AIServiceAutomationRequest) (*entities.MiriamAutomation, error)
-}
+// Deprecated: Use aiactions.AutomationCreator instead.
+type AutomationCreator = aiactions.AutomationCreator
 
 // ObligationCreator creates manual obligations after confirmation.
-type ObligationCreator interface {
-	CreateObligationFromAI(ctx context.Context, userID uuid.UUID, req AIServiceObligationRequest) (*entities.FinancialObligation, error)
-}
+// Deprecated: Use aiobligations.ObligationCreator instead.
+type ObligationCreator = aiobligations.ObligationCreator
 
-type AIServiceAutomationRequest struct {
-	Name              string
-	Description       *string
-	TriggerType       string
-	TriggerConfig     map[string]interface{}
-	ActionType        string
-	ActionConfig      map[string]interface{}
-	MaxTriggersPerDay int
-	CooldownMinutes   int
-}
+// AIServiceAutomationRequest represents a request to create an automation.
+// Deprecated: Use aiactions.AIServiceAutomationRequest instead.
+type AIServiceAutomationRequest = aiactions.AIServiceAutomationRequest
 
-type AIServiceObligationRequest struct {
-	Type         string
-	Name         string
-	Amount       decimal.Decimal
-	Currency     string
-	Cadence      string
-	DueDay       *int
-	Priority     string
-	Counterparty *string
-	Status       string
-	Metadata     map[string]interface{}
-}
+// AIServiceObligationRequest represents a request to create an obligation from AI.
+// Deprecated: Use aiobligations.AIServiceObligationRequest instead.
+type AIServiceObligationRequest = aiobligations.AIServiceObligationRequest
 
 // PendingActionStore persists pending actions (Redis-backed for multi-instance safety).
 type PendingActionStore interface {
@@ -279,7 +187,7 @@ func (o *AgentAdapter) SetGoalProtectionProvider(g GoalProtectionProvider) {
 }
 
 // SetVoiceDailyLimiter wires the voice daily transfer cap.
-func (o *AgentAdapter) SetVoiceDailyLimiter(l *VoiceDailyLimiter) {
+func (o *AgentAdapter) SetVoiceDailyLimiter(l VoiceDailyLimiterer) {
 	o.voiceLimiter = l
 }
 
@@ -412,7 +320,7 @@ func (o *AgentAdapter) executeActionTool(ctx context.Context, userID, convID uui
 	case ToolUpdateFinancialProfile:
 		return o.createFinancialProfileAction(ctx, userID, convID, tc.Arguments)
 	default:
-		if isExecutionActionTool(tc.Name) {
+		if execution.IsExecutionActionTool(tc.Name) {
 			return o.createExecutionAction(ctx, userID, convID, tc)
 		}
 		return nil, fmt.Errorf("unknown action tool: %s", tc.Name)
@@ -546,7 +454,7 @@ func (o *AgentAdapter) createTransferAction(ctx context.Context, userID, convID 
 			impact["unallocated_stash"] = unallocated.StringFixed(2)
 			impact["goal_impact_amount"] = goalImpact.StringFixed(2)
 			impact["goal_warning_message"] = fmt.Sprintf(
-				"⚠️ Only $%s of your stash is unallocated. This transfer will pull $%s from your savings goals.",
+				"Only $%s of your stash is unallocated. This transfer will pull $%s from your savings goals.",
 				unallocated.StringFixed(2), goalImpact.StringFixed(2),
 			)
 		}
@@ -562,20 +470,25 @@ func (o *AgentAdapter) createTransferAction(ctx context.Context, userID, convID 
 		impact["source_balance_after"] = balance.Sub(amount).Sub(emergencyPreview.FeeAmount).StringFixed(2)
 	}
 
-	description := fmt.Sprintf("Move $%s from %s to %s", amount.StringFixed(2), from, to)
-	if emergencyPreview != nil {
-		description = fmt.Sprintf("Early withdrawal: move $%s from stash to spend (fee: $%s)", amount.StringFixed(2), emergencyPreview.FeeAmount.StringFixed(2))
+	userMessage, _ := args["user_message"].(string)
+	if userMessage == "" {
+		userMessage = "transfer funds"
 	}
-
 	action := &entities.PendingAction{
 		ID:             uuid.New().String(),
 		ConversationID: convID,
 		UserID:         userID,
 		Action:         ToolTransferFunds,
-		Description:    description,
-		Params:         map[string]interface{}{"from": from, "to": to, "amount": amount.StringFixed(2), "impact": impact},
-		ExpiresAt:      time.Now().Add(pendingActionTTL),
-		CreatedAt:      time.Now(),
+		Description:    conversationalTransferDescription(from, to, amount, emergencyPreview),
+		UserMessage:    userMessage,
+		SuggestedFollowUp: postActionFollowUp("transfer", map[string]interface{}{
+			"amount": amount.StringFixed(2),
+			"from":   from,
+			"to":     to,
+		}),
+		Params:    map[string]interface{}{"from": from, "to": to, "amount": amount.StringFixed(2), "impact": impact},
+		ExpiresAt: time.Now().Add(pendingActionTTL),
+		CreatedAt: time.Now(),
 	}
 
 	if err := o.pending.Set(ctx, convID, action); err != nil {
@@ -586,6 +499,7 @@ func (o *AgentAdapter) createTransferAction(ctx context.Context, userID, convID 
 		"action_required": true,
 		"pending_action":  action,
 		"impact":          impact,
+		"confirmation_message": actionConfirmationMessage(action),
 	}, nil
 }
 
@@ -600,24 +514,32 @@ func (o *AgentAdapter) createSavingsGoalAction(ctx context.Context, userID, conv
 
 	target := decimal.NewFromFloat(targetF)
 	params := map[string]interface{}{"name": name, "target": target.StringFixed(2)}
-	desc := fmt.Sprintf("Set savings goal '%s' for $%s", name, target.StringFixed(2))
 	if deadline != "" {
 		if _, err := time.Parse("2006-01-02", deadline); err != nil {
 			return map[string]interface{}{"error": "Invalid deadline format, use YYYY-MM-DD"}, nil
 		}
 		params["deadline"] = deadline
-		desc += fmt.Sprintf(" by %s", deadline)
 	}
 
+	userMessage, _ := args["user_message"].(string)
+	if userMessage == "" {
+		userMessage = fmt.Sprintf("set savings goal %s", name)
+	}
 	action := &entities.PendingAction{
 		ID:             uuid.New().String(),
 		ConversationID: convID,
 		UserID:         userID,
 		Action:         ToolSetSavingsGoal,
-		Description:    desc,
-		Params:         params,
-		ExpiresAt:      time.Now().Add(pendingActionTTL),
-		CreatedAt:      time.Now(),
+		Description:    conversationalGoalDescription(name, target, deadline),
+		UserMessage:    userMessage,
+		SuggestedFollowUp: postActionFollowUp("goal", map[string]interface{}{
+			"name":     name,
+			"target":   target.StringFixed(2),
+			"deadline": deadline,
+		}),
+		Params:    params,
+		ExpiresAt: time.Now().Add(pendingActionTTL),
+		CreatedAt: time.Now(),
 	}
 
 	if err := o.pending.Set(ctx, convID, action); err != nil {
@@ -627,6 +549,7 @@ func (o *AgentAdapter) createSavingsGoalAction(ctx context.Context, userID, conv
 	return map[string]interface{}{
 		"action_required": true,
 		"pending_action":  action,
+		"confirmation_message": actionConfirmationMessage(action),
 	}, nil
 }
 
@@ -676,12 +599,9 @@ func participantsFromParams(raw interface{}) []string {
 
 // IsFundMovingAction reports whether a staged action type moves money and
 // therefore warrants the same passcode step-up that the direct withdrawal and
-// stash-transfer routes enforce. Backed by an extensible registry — use
-// RegisterFundMovingAction to register new tools.
+// stash-transfer routes enforce. Delegates to execution package.
 func IsFundMovingAction(action string) bool {
-	fundMovingActionsMu.RLock()
-	defer fundMovingActionsMu.RUnlock()
-	return fundMovingActions[action]
+	return execution.IsFundMovingAction(action)
 }
 
 // ConfirmAction executes a pending action after user confirmation.
@@ -699,16 +619,22 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 
 	// Step-up gate: fund-moving actions require a verified step-up token.
 	// Enforced in the core so no caller can bypass it.
+	// Email-link verification (one-time link clicked from email) is accepted
+	// as an alternative to the passcode/Face ID step-up.
 	if IsFundMovingAction(action.Action) {
+		if execution.IsEmailLinkVerified(ctx) {
+			// Email link serves as step-up verification — proceed to execution.
+			goto executeAction
+		}
 		if o.stepUpVerifier == nil {
 			o.logger.Warn("fund-moving action refused: no step-up verifier configured (fail-closed)",
 				zap.String("user_id", userID.String()),
 				zap.String("action", action.Action))
-			return nil, ErrStepUpRequired
+			return nil, execution.ErrStepUpRequired
 		}
-		token := StepUpTokenFromContext(ctx)
+		token := execution.StepUpTokenFromContext(ctx)
 		if token == "" {
-			return nil, ErrStepUpRequired
+			return nil, execution.ErrStepUpRequired
 		}
 		ok, vErr := o.stepUpVerifier.VerifyStepUp(ctx, userID, token)
 		if vErr != nil {
@@ -716,13 +642,14 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 				zap.Error(vErr),
 				zap.String("user_id", userID.String()),
 				zap.String("action", action.Action))
-			return nil, ErrStepUpRequired
+			return nil, execution.ErrStepUpRequired
 		}
 		if !ok {
-			return nil, ErrStepUpRequired
+			return nil, execution.ErrStepUpRequired
 		}
 	}
 
+executeAction:
 	var execErr error
 	switch action.Action {
 	case ToolTransferFunds:
@@ -826,7 +753,7 @@ func (o *AgentAdapter) ConfirmAction(ctx context.Context, userID, convID uuid.UU
 			_, execErr = o.executeUpdateFinancialProfile(ctx, userID, action.Params)
 		}
 	default:
-		if isExecutionActionTool(action.Action) {
+		if execution.IsExecutionActionTool(action.Action) {
 			execErr = o.executeConfirmedExecutionAction(ctx, userID, action)
 		} else {
 			execErr = fmt.Errorf("unknown action: %s", action.Action)
@@ -1047,7 +974,7 @@ func (o *AgentAdapter) executeActionToolDirect(ctx context.Context, userID uuid.
 		zap.Strings("arg_keys", toolArgumentKeys(tc.Arguments)))
 	// Execution Engine tools live in the core registry; their confirm-argument
 	// contract handles conversational confirmation in voice mode.
-	if isExecutionActionTool(tc.Name) {
+	if execution.IsExecutionActionTool(tc.Name) {
 		if o.agent == nil {
 			return map[string]interface{}{"error": "This action isn't available right now."}, nil
 		}
@@ -1174,7 +1101,7 @@ func toolArgumentKeys(args map[string]interface{}) []string {
 
 // isActionTool returns true if the tool name is an action tool.
 func isActionTool(name string) bool {
-	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal || isExecutionActionTool(name)
+	return name == ToolTransferFunds || name == ToolSetSavingsGoal || name == ToolSendReport || name == ToolSetBudget || name == ToolCreateAutomation || name == ToolCreateObligationReminder || name == ToolMarkObligationPaid || name == ToolProtectSubscription || name == ToolMarkSubscriptionCancelled || name == ToolIgnoreSubscription || name == ToolSplitReceipt || name == ToolUpdateFinancialProfile || name == ToolInitiateWithdrawal || execution.IsExecutionActionTool(name)
 }
 
 func (o *AgentAdapter) canCreateActionTool(name string) bool {
@@ -1203,11 +1130,72 @@ func (o *AgentAdapter) canCreateActionTool(name string) bool {
 		return o.withdrawalInitiator != nil
 	case ToolUpdateFinancialProfile:
 		return o.financialProfile != nil
+	case ToolSendToBank, ToolSendCrypto:
+		// These run through the core registry on confirm.
+		return o.agent != nil
 	default:
 		// Execution Engine tools run through the core registry on confirm.
-		if isExecutionActionTool(name) {
+		if execution.IsExecutionActionTool(name) {
 			return o.agent != nil
 		}
 		return false
 	}
+}
+
+func conversationalTransferDescription(from, to string, amount decimal.Decimal, emergencyPreview *entities.EmergencyWithdrawalPreviewResponse) string {
+	switch {
+	case emergencyPreview != nil:
+		return fmt.Sprintf("Early withdrawal: move $%s from %s to %s (fee $%s, net $%s)", amount.StringFixed(2), from, to, emergencyPreview.FeeAmount.StringFixed(2), emergencyPreview.NetAmount.StringFixed(2))
+	case from == "spend" && to == "stash":
+		return fmt.Sprintf("Move $%s from spend to stash", amount.StringFixed(2))
+	case from == "stash" && to == "spend":
+		return fmt.Sprintf("Move $%s from stash to spend", amount.StringFixed(2))
+	default:
+		return fmt.Sprintf("Move $%s from %s to %s", amount.StringFixed(2), from, to)
+	}
+}
+
+func conversationalGoalDescription(name string, target decimal.Decimal, deadline string) string {
+	if deadline != "" {
+		return fmt.Sprintf("Set savings goal '%s' for $%s by %s", name, target.StringFixed(2), deadline)
+	}
+	return fmt.Sprintf("Set savings goal '%s' for $%s", name, target.StringFixed(2))
+}
+
+func actionConfirmationMessage(action *entities.PendingAction) string {
+	if action == nil {
+		return ""
+	}
+	switch action.Action {
+	case ToolTransferFunds:
+		return fmt.Sprintf("I'll move the money once you approve in-app. %s", action.SuggestedFollowUp)
+	case ToolSetSavingsGoal:
+		return fmt.Sprintf("I'll set up '%s' once you approve. %s", actionDescriptionParam(action, "name"), action.SuggestedFollowUp)
+	default:
+		return action.SuggestedFollowUp
+	}
+}
+
+func postActionFollowUp(actionType string, params map[string]interface{}) string {
+	switch actionType {
+	case "transfer":
+		return "Want me to set up the same move automatically next time?"
+	case "goal":
+		if name, _ := params["name"].(string); name != "" {
+			return fmt.Sprintf("Want me to auto-save toward '%s' every week?", name)
+		}
+		return "Want me to set up a weekly automation toward this?"
+	default:
+		return ""
+	}
+}
+
+func actionDescriptionParam(action *entities.PendingAction, key string) string {
+	if action == nil || action.Params == nil {
+		return ""
+	}
+	if v, ok := action.Params[key].(string); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	return ""
 }

@@ -260,6 +260,11 @@ type ChatOptions struct {
 	// ControlLevel gates action execution: "monitor" blocks all action tools,
 	// "guided"/"full"/"" allow them. Sourced from the user's saved autonomy setting.
 	ControlLevel string
+	// FromVoice indicates the user's message was transcribed from a voice note.
+	// When true, the context builder injects a note telling Miriam to confirm
+	// amounts explicitly before staging money actions (transcription may
+	// garble numbers).
+	FromVoice bool
 }
 
 // ControlLevelMonitor is the autonomy level where Miriam may only observe and
@@ -377,6 +382,11 @@ type Dependencies struct {
 	MerchantBlock     MerchantBlockProvider
 	TradeCopy         TradeCopyProvider
 	Travel            TravelProvider // BRIJ flight booking (travel.brij.fi)
+
+	// Bank transfer + crypto send providers (expose existing ramp/withdrawal
+	// infrastructure to Miriam as action tools with Face ID confirmation).
+	BankTransfer BankTransferProvider
+	CryptoSend   CryptoSendProvider
 
 	// AnomalyContextFn returns a system-prompt string of recent anomaly
 	// detections for context assembly. Returns empty string if none.
@@ -661,6 +671,9 @@ type ObligationProvider interface {
 type AutomationProvider interface {
 	List(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
 	Create(ctx context.Context, userID uuid.UUID, data map[string]interface{}) error
+	Pause(ctx context.Context, userID uuid.UUID, automationID string) error
+	Resume(ctx context.Context, userID uuid.UUID, automationID string) error
+	Delete(ctx context.Context, userID uuid.UUID, automationID string) error
 }
 
 type ProfileProvider interface {
@@ -1040,6 +1053,11 @@ type GameplayProvider interface {
 	GetUserStreaks(ctx context.Context, userID uuid.UUID) ([]*entities.UserStreak, error)
 	GetActiveChallenges(ctx context.Context, userID uuid.UUID) ([]*entities.UserChallenge, error)
 	GetUserAchievements(ctx context.Context, userID uuid.UUID) ([]*entities.Achievement, []*entities.UserAchievement, error)
+}
+
+// MerchantEnricher looks up enrichment data for merchants.
+type MerchantEnricher interface {
+	GetEnrichedByUser(ctx context.Context, userID uuid.UUID, limit int) ([]entities.EnrichedTransaction, error)
 }
 
 // ContributionSummary represents contribution totals.

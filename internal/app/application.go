@@ -708,15 +708,8 @@ func (app *Application) initializeWorkers() error {
 	}
 
 	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
-	var anomalyEngine *aiservice.AnomalyEngine
-	if app.container.LedgerSpendingRepo != nil {
-		anomalyEngine = aiservice.NewAnomalyEngine(
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.log.Zap(),
-		)
+	anomalyEngine := app.container.AnomalyEngine
+	if anomalyEngine != nil {
 		if app.container.EvalHandler != nil {
 			app.container.EvalHandler.SetAnomalyEngine(anomalyEngine, app.container.AnomalyStore)
 		}
@@ -746,6 +739,13 @@ func (app *Application) initializeWorkers() error {
 				anomalyEngine,
 				app.container.AnomalyStore,
 			)
+			// Wire event dispatcher so autopilot morning anomalies trigger
+			// orchestrator evaluations for mandate-capable users.
+			if app.container.MiriamIntelligenceOrchestrator != nil {
+				autopilotSvc.SetEventDispatcher(&autopilotEventDispatchAdapter{
+					orchestrator: app.container.MiriamIntelligenceOrchestrator,
+				})
+			}
 			app.autopilotWorker = autopilot_worker.NewWorker(autopilotSvc, app.log.Zap())
 			ctx, cancel := context.WithCancel(context.Background())
 			app.autopilotCancel = cancel
@@ -1627,6 +1627,18 @@ func (a *autopilotTransferAdapter) TransferSpendToStash(ctx context.Context, use
 
 func (a *autopilotTransferAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
 	return a.svc.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+}
+
+// autopilotEventDispatchAdapter bridges the autopilot's anomaly detection to
+// the intelligence orchestrator so spending_spike / bill_pressure events
+// trigger mandate evaluation for full-control users.
+type autopilotEventDispatchAdapter struct {
+	orchestrator *miriamservice.IntelligenceOrchestrator
+}
+
+func (a *autopilotEventDispatchAdapter) DispatchEvent(ctx context.Context, userID uuid.UUID, eventType string) error {
+	_, err := a.orchestrator.Evaluate(ctx, userID, eventType)
+	return err
 }
 
 // WaitForShutdown waits for interrupt signal

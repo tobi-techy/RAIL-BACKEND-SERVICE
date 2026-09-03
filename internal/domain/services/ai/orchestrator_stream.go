@@ -9,6 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/metrics"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/trivia"
+	executionpkg "github.com/rail-service/rail_service/internal/domain/services/ai/execution"
+		prompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/tracing"
@@ -151,8 +156,8 @@ func (o *AgentAdapter) ChatStreamInConversationWithOptions(ctx context.Context, 
 
 func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uuid.UUID, message string, history []ai.Message, opts ChatOptions, emit func(StreamEvent)) error {
 	// Trivial message bypass — skip LLM entirely for greetings/acknowledgements
-	if reply := trivialReply(message); reply != "" {
-		emitWithBubbleBreaks(reply, emit)
+	if reply := trivia.TrivialReply(message); reply != "" {
+		emit(StreamEvent{Type: "token", Content: reply})
 		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": 0, "provider": "bypass", "model": "bypass"}})
 		return nil
 	}
@@ -160,7 +165,7 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 	// Quick reply fast path — balance/spending/budget queries answered directly
 	// from tool data without an LLM call (sub-500ms latency for common queries)
 	if content, cards, ok := o.QuickReply(ctx, userID, message); ok {
-		emitWithBubbleBreaks(content, emit)
+		emit(StreamEvent{Type: "token", Content: content})
 		if len(cards) > 0 {
 			emit(StreamEvent{Type: "cards", Data: cards})
 		}
@@ -214,20 +219,21 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 
 	// Assemble all context in parallel (~1.5s ceiling)
 	messages = append(messages, o.assembleContext(ctx, userID, ContextAssemblyOpts{
-		ToneMode: opts.ToneMode,
-		Message:  message,
-		ConvID:   convID,
+		ToneMode:  opts.ToneMode,
+		Message:   message,
+		ConvID:    convID,
+		FromVoice: opts.FromVoice,
 	})...)
 
 	// Tool usage rules — skip for very short casual messages to save tokens
 	if len(message) > 15 || classifyMessage(message) != CategoryFull {
-		messages = append(messages, ai.Message{Role: "system", Content: SystemPromptTools})
+		messages = append(messages, ai.Message{Role: "system", Content: prompttools.SystemPromptTools})
 	}
 	messages = append(messages, ai.Message{Role: "user", Content: message})
 
 	req := &ai.ChatRequest{
 		Messages:     messages,
-		SystemPrompt: SystemPromptV2,
+		SystemPrompt: prompt.SystemPromptV2,
 		MaxTokens:    2048,
 		Temperature:  ai.Float64(0.6),
 		ModelHint:    classifyQueryComplexity(message),
@@ -237,7 +243,7 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 	tools := o.RouteTools(message)
 	resp, err := o.aiProvider.ChatCompletionWithTools(ctx, req, tools)
 	if err != nil {
-		observeChat("unknown", time.Since(start), 0, err)
+		metrics.ObserveChat("unknown", time.Since(start), 0, err)
 		return fmt.Errorf("AI completion failed: %w", err)
 	}
 
@@ -257,7 +263,7 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 			// Handle action tools (require confirmation)
 			if isActionTool(tc.Name) && convID != uuid.Nil && o.canCreateActionTool(tc.Name) {
 				result, execErr := o.executeActionTool(toolCtx, userID, convID, tc)
-				observeToolCall(tc.Name, execErr)
+				metrics.ObserveToolCall(tc.Name, execErr)
 				if execErr != nil {
 					result = o.sanitizeToolError(tc.Name, execErr)
 				}
@@ -269,7 +275,7 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 					}
 					emit(StreamEvent{Type: "pending_action", Data: pendingRaw})
 					emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider, "model": modelName}})
-					observeChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
+					metrics.ObserveChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
 					return nil
 				}
 				roundResults = append(roundResults, ToolResult{Name: tc.Name, Result: result})
@@ -279,7 +285,7 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 			}
 
 			result, execErr := o.executeTool(toolCtx, userID, tc)
-			observeToolCall(tc.Name, execErr)
+			metrics.ObserveToolCall(tc.Name, execErr)
 			if execErr != nil {
 				o.logger.Warn("Tool execution failed", zap.String("tool", tc.Name), zap.Error(execErr))
 				result = o.sanitizeToolError(tc.Name, execErr)
@@ -382,26 +388,26 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 		if resp.Content != "" {
 			content := o.applySafetyFilter(resp.Content)
 			// Quality gate: retry once if response is flat/boring
-			if verdict := CheckResponseQuality(content); !verdict.Pass {
-				if hint := QualityCorrectionHint(verdict.Failures); hint != "" {
+			if verdict := executionpkg.CheckResponseQuality(content); !verdict.Pass {
+				if hint := executionpkg.QualityCorrectionHint(verdict.Failures); hint != "" {
 					retryMsgs := make([]ai.Message, len(req.Messages), len(req.Messages)+2)
 					copy(retryMsgs, req.Messages)
 					retryMsgs = append(retryMsgs, ai.Message{Role: "assistant", Content: content}, ai.Message{Role: "system", Content: hint})
-					retryReq := &ai.ChatRequest{Messages: retryMsgs, SystemPrompt: SystemPromptV2, MaxTokens: 2048, Temperature: ai.Float64(0.7), ModelHint: "fast"}
+					retryReq := &ai.ChatRequest{Messages: retryMsgs, SystemPrompt: prompt.SystemPromptV2, MaxTokens: 2048, Temperature: ai.Float64(0.7), ModelHint: "fast"}
 					if retryResp, err := o.aiProvider.ChatCompletion(ctx, retryReq); err == nil && retryResp.Content != "" {
 						content = o.applySafetyFilter(retryResp.Content)
 						cumulativeTokens += retryResp.TokensUsed
 					}
 				}
 			}
-			content = o.applyResponseGuard(ctx, userID, content, req.Messages)
-			emitWithBubbleBreaks(content, emit)
+		content = executionpkg.ApplyResponseGuard(o.responseGuardOn, o.buildAnomalyContext, o.logger, ctx, userID, content, req.Messages)
+		emit(StreamEvent{Type: "token", Content: content})
 		}
 		modelName := resp.Model
 		if modelName == "" {
 			modelName = resp.Provider
 		}
-		observeChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
+		metrics.ObserveChat(resp.Provider, time.Since(start), cumulativeTokens, nil)
 		emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": resp.Provider, "model": modelName}})
 		return nil
 	}
@@ -420,17 +426,15 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 	if model == "" {
 		model = provider
 	}
-	bb := &bubbleBreakBuffer{emit: emit}
 	for chunk := range ch {
 		if chunk.Content != "" {
 			streamedContent.WriteString(chunk.Content)
-			bb.Write(chunk.Content)
+			emit(StreamEvent{Type: "token", Content: chunk.Content})
 		}
 		if chunk.Done {
 			streamTokens = chunk.TokensUsed
 		}
 	}
-	bb.Flush()
 
 	// Apply safety filter to the fully assembled streamed content.
 	// If triggered, emit the disclaimer as a final token.
@@ -442,16 +446,16 @@ func (o *AgentAdapter) chatStreamInternal(ctx context.Context, userID, convID uu
 
 	// Tokens already reached the client, so repair is impossible — detect
 	// ungrounded figures for observability only.
-	o.logUngroundedAmounts(userID, fullContent, req.Messages, span)
+	executionpkg.LogUngroundedAmounts(o.responseGuardOn, o.logger, userID, fullContent, req.Messages, span)
 
 	cumulativeTokens += streamTokens
 
 	if streamErr := <-errCh; streamErr != nil {
-		observeChat(provider, time.Since(start), 0, streamErr)
+		metrics.ObserveChat(provider, time.Since(start), 0, streamErr)
 		return streamErr
 	}
 
-	observeChat(provider, time.Since(start), cumulativeTokens, nil)
+	metrics.ObserveChat(provider, time.Since(start), cumulativeTokens, nil)
 	emit(StreamEvent{Type: "done", Data: map[string]interface{}{"tokens_used": cumulativeTokens, "provider": provider, "model": model}})
 	return nil
 }

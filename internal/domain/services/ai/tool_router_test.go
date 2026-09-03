@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
+	prompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -25,6 +27,10 @@ func TestClassifyMessage(t *testing.T) {
 		{"airtime", "buy airtime 500", CategoryAction},
 		{"p2p send", "send 5k to @tobi", CategoryAction},
 		{"transfer", "move $50 to stash", CategoryAction},
+		{"bank transfer", "send 2500 to gtbank 0916473844", CategoryAction},
+		{"bank transfer with naira", "send ₦2500 to gtbank 0916473844", CategoryAction},
+		{"crypto send", "send 50 usdc to 0x1234567890abcdef", CategoryAction},
+		{"crypto send with chain", "send 0.5 eth to 0x1234 on ethereum", CategoryAction},
 
 		// Automation precedence beats action overlap ("move" + "$50").
 		{"automation wins", "every friday move $50 to stash", CategoryAutomation},
@@ -92,7 +98,7 @@ func newProductionToolRegistry() *aitools.Registry {
 	aitools.RegisterBillTools(reg)
 	aitools.RegisterTravelTools(reg)
 	aitools.RegisterSavingsGoalsV2Tools(reg)
-	aitools.RegisterConsciousSpendingPlanTools(reg)
+	aitools.RegisterBankTransferTools(reg)
 	return reg
 }
 
@@ -131,6 +137,12 @@ func TestSystemPromptToolsReferencesResolve(t *testing.T) {
 	// also outside the registry.
 	extra := map[string]bool{
 		ToolVoiceMoneyLookup: true,
+		// Automation action types mentioned in the prompt as available actions
+		// for create_automation — they are not AI tools themselves.
+		"pay_utility_bill":  true,
+		"pause_card":        true,
+		"resume_card":       true,
+		"set_budget_alert":  true,
 		ToolVoiceMoneyAction: true,
 		"confirm_action":     true,
 		"cancel_action":      true,
@@ -141,9 +153,9 @@ func TestSystemPromptToolsReferencesResolve(t *testing.T) {
 	// names (amount_ngn, prod_id) never start with these verbs.
 	textRe := regexp.MustCompile(`\b(?:get|set|list|create|search|send|pay|move|transfer|book|find|validate|lookup|mark|audit|optimize|protect|block|unblock|pause|resume|stop|start|save|split|initiate|execute|research|copy|suggest|simulate|forget|archive|dismiss|accept|detect|request|update|connect)_[a-z0-9_]+\b`)
 
-	for _, prompt := range []string{SystemPromptTools, SystemPromptV2} {
+	for _, p := range []string{prompttools.SystemPromptTools, prompt.SystemPromptV2} {
 		for _, re := range []*regexp.Regexp{toolNameRe, textRe} {
-			for _, m := range re.FindAllStringSubmatch(prompt, -1) {
+			for _, m := range re.FindAllStringSubmatch(p, -1) {
 				name := m[len(m)-1]
 				if !registered[name] && !extra[name] {
 					t.Errorf("prompt references %q but it is not a registered tool", name)
@@ -189,6 +201,18 @@ func TestRouteToolsAgainstRealRegistry(t *testing.T) {
 				t.Error("automation route should not include transfer_funds")
 			}
 		}
+	})
+
+	t.Run("bank transfer routes with send_to_bank and resolve_bank_account", func(t *testing.T) {
+		got := filterToolsByCategory(fullList, classifyMessage("send 2500 to gtbank 0916473844"))
+		has(t, got, "send_to_bank")
+		has(t, got, "resolve_bank_account")
+		has(t, got, "list_banks")
+	})
+
+	t.Run("crypto send routes with send_crypto", func(t *testing.T) {
+		got := filterToolsByCategory(fullList, classifyMessage("send 50 usdc to 0x1234567890abcdef"))
+		has(t, got, "send_crypto")
 	})
 
 	t.Run("compound escalates to full set", func(t *testing.T) {

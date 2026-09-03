@@ -110,28 +110,50 @@ func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEven
 		default:
 		}
 
-		// First, try to reclaim pending entries from other consumers that have
-		// been idle for a while (e.g., crashed mid-processing). This ensures
-		// failed money events are redelivered as the MoneyEventConsumer contract
-		// requires.
-		msgs, _, err := s.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-			Stream:   s.stream,
-			Group:    s.group,
-			Consumer: s.consumer,
-			MinIdle:  pendingMinIdle,
-			Start:    "0-0",
-			Count:    10,
+		// First, try to reclaim pending entries that have been idle for a while:
+		// entries stranded on crashed consumers AND our own handler-failed
+		// entries (XReadGroup with ">" never redelivers those). We use
+		// XPENDING RANGE + XCLAIM rather than XAUTOCLAIM because Redis 7+
+		// returns a 3-element XAUTOCLAIM reply (cursor/messages/deleted) that
+		// go-redis v8 cannot parse ("got 3, wanted 2"), which silently disabled
+		// all redelivery.
+		pending, pErr := s.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+			Stream: s.stream,
+			Group:  s.group,
+			Idle:   pendingMinIdle,
+			Start:  "-",
+			End:    "+",
+			Count:  10,
 		}).Result()
-		if err != nil && err != redis.Nil {
-			if err == context.Canceled || err == context.DeadlineExceeded {
-				return err
+		if pErr != nil && pErr != redis.Nil {
+			if pErr == context.Canceled || pErr == context.DeadlineExceeded {
+				return pErr
 			}
-			s.logger.Warn("miriamevents: XAUTOCLAIM failed, will retry", zap.Error(err))
+			s.logger.Warn("miriamevents: XPENDING failed, will retry", zap.Error(pErr))
 		}
-		if len(msgs) > 0 {
-			s.processMessages(ctx, msgs, handler)
-			// Loop immediately to claim more pending before reading new messages.
-			continue
+		if len(pending) > 0 {
+			ids := make([]string, 0, len(pending))
+			for _, p := range pending {
+				ids = append(ids, p.ID)
+			}
+			msgs, cErr := s.client.XClaim(ctx, &redis.XClaimArgs{
+				Stream:   s.stream,
+				Group:    s.group,
+				Consumer: s.consumer,
+				MinIdle:  pendingMinIdle,
+				Messages: ids,
+			}).Result()
+			if cErr != nil && cErr != redis.Nil {
+				if cErr == context.Canceled || cErr == context.DeadlineExceeded {
+					return cErr
+				}
+				s.logger.Warn("miriamevents: XCLAIM failed, will retry", zap.Error(cErr))
+			}
+			if len(msgs) > 0 {
+				s.processMessages(ctx, msgs, handler)
+				// Loop immediately to claim more pending before reading new messages.
+				continue
+			}
 		}
 
 		// No pending entries — read new messages from the stream.

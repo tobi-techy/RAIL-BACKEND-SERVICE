@@ -59,6 +59,9 @@ func NewSMSService(logger *zap.Logger, config SMSConfig) (*SMSService, error) {
 
 // SendVerificationSMS sends a verification code via SMS
 func (s *SMSService) SendVerificationSMS(ctx context.Context, phone, code string) error {
+	if s == nil {
+		return fmt.Errorf("sms service not configured")
+	}
 	s.logger.Info("Sending verification SMS",
 		zap.String("phone", s.maskPhone(phone)),
 		zap.String("code", code))
@@ -73,6 +76,9 @@ func (s *SMSService) SendVerificationSMS(ctx context.Context, phone, code string
 
 // SendWelcomeSMS sends a welcome message via SMS
 func (s *SMSService) SendWelcomeSMS(ctx context.Context, phone string) error {
+	if s == nil {
+		return fmt.Errorf("sms service not configured")
+	}
 	s.logger.Info("Sending welcome SMS",
 		zap.String("phone", s.maskPhone(phone)))
 
@@ -85,6 +91,9 @@ func (s *SMSService) SendWelcomeSMS(ctx context.Context, phone string) error {
 
 // SendKYCSMS sends KYC status update via SMS
 func (s *SMSService) SendKYCSMS(ctx context.Context, phone, status string) error {
+	if s == nil {
+		return fmt.Errorf("sms service not configured")
+	}
 	s.logger.Info("Sending KYC status SMS",
 		zap.String("phone", s.maskPhone(phone)),
 		zap.String("status", status))
@@ -165,6 +174,9 @@ func (s *SMSService) maskPhone(phone string) string {
 }
 
 func (s *SMSService) sendSMS(ctx context.Context, phone, message string) error {
+	if s == nil {
+		return fmt.Errorf("sms service not configured")
+	}
 	provider := strings.ToLower(strings.TrimSpace(s.config.Provider))
 	switch provider {
 	case "twilio":
@@ -223,6 +235,9 @@ func (s *SMSService) sendTwilioSMS(ctx context.Context, phone, message string) e
 
 // HealthCheck checks SMS service health
 func (s *SMSService) HealthCheck(ctx context.Context) error {
+	if s == nil {
+		return fmt.Errorf("sms service not configured")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

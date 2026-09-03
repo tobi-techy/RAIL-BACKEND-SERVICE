@@ -9,19 +9,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/execution"
+	promptpkg "github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
 )
 
 // TestExecutionModelSection_MatchesEnforcement verifies the generated EXECUTION
 // MODEL block lists exactly the canonical tier sets — prompt can't drift.
 func TestExecutionModelSection_MatchesEnforcement(t *testing.T) {
-	section := executionModelSection()
+	section := execution.ExecutionModelSection()
 
-	for _, name := range autoExecuteToolNames() {
+	for _, name := range execution.AutoExecuteToolNames() {
 		if !strings.Contains(section, name) {
 			t.Errorf("AUTO-EXECUTE list missing %q", name)
 		}
 	}
-	for _, name := range stageConfirmToolNames() {
+	for _, name := range execution.StageConfirmToolNames() {
 		if !strings.Contains(section, name) {
 			t.Errorf("STAGE & CONFIRM list missing %q", name)
 		}
@@ -50,25 +52,26 @@ func TestTierSets_Disjoint(t *testing.T) {
 // original hand-written switch so refactoring to the shared map didn't drop any.
 func TestIsExecutionActionTool_CoversLegacySwitch(t *testing.T) {
 	legacy := []string{
-		ToolSetupBillAutopay, ToolCancelSubscription, ToolExecuteInvestment,
-		ToolOptimizeYield, ToolBlockMerchant, ToolUnblockMerchant,
-		ToolCopyTrader, ToolPauseTradeCopying, ToolResumeTradeCopying,
-		ToolStopTradeCopying,
-		ToolPayBill, ToolAutomateBill, ToolSaveBillBeneficiary,
-		ToolCreateFlightIntent, ToolBookFlight, ToolSaveTravelPassenger, ToolRequestFlightRefund,
+		"setup_bill_autopay", "cancel_subscription", "execute_investment",
+		"optimize_yield", "block_merchant", "unblock_merchant",
+		"copy_trader", "pause_trade_copying", "resume_trade_copying",
+		"stop_trade_copying",
+		"pay_bill", "automate_bill", "save_bill_beneficiary",
+		"create_flight_intent", "book_flight", "save_travel_passenger", "request_flight_refund",
 		// create_miriam_mandate was removed: no backing registry tool exists —
 		// mandates are proposed system-side and accepted via accept_mandate_suggestion.
 		"accept_mandate_suggestion",
 		"send_money", "split_receipt", "create_automation",
+		"send_to_bank", "send_crypto",
 	}
 	for _, name := range legacy {
-		if !isExecutionActionTool(name) {
+		if !execution.IsExecutionActionTool(name) {
 			t.Errorf("isExecutionActionTool(%q) = false, was true before refactor", name)
 		}
 	}
 	// Auto-execute tools must NOT be staged.
 	for _, name := range []string{"set_budget", "set_savings_goal", "mark_obligation_paid"} {
-		if isExecutionActionTool(name) {
+		if execution.IsExecutionActionTool(name) {
 			t.Errorf("isExecutionActionTool(%q) = true, but it's an auto-execute tool", name)
 		}
 	}
@@ -76,11 +79,11 @@ func TestIsExecutionActionTool_CoversLegacySwitch(t *testing.T) {
 
 // TestSystemPromptV2_ContainsGeneratedTiers guards the template wiring.
 func TestSystemPromptV2_ContainsGeneratedTiers(t *testing.T) {
-	if strings.Contains(SystemPromptV2, "[[EXECUTION_MODEL]]") {
+	if strings.Contains(promptpkg.SystemPromptV2, "[[EXECUTION_MODEL]]") {
 		t.Fatal("template placeholder leaked into final prompt")
 	}
 	for _, want := range []string{"transfer_funds", "pay_bill", "set_budget"} {
-		if !strings.Contains(SystemPromptV2, want) {
+		if !strings.Contains(promptpkg.SystemPromptV2, want) {
 			t.Errorf("SystemPromptV2 missing %q from generated tiers", want)
 		}
 	}

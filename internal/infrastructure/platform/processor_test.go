@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -106,12 +107,16 @@ func (*notFoundErr) Error() string { return "not found" }
 type fakeOrchestrator struct {
 	confirmCalls int
 	cancelCalls  int
+	handleCalls  int
 	lastConvID   string
 	lastMessage  string
 	reply        *PlatformReply // when set, HandlePlatformMessage returns it
 }
 
+func (o *fakeOrchestrator) callCount() int { return o.handleCalls }
+
 func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform) (*PlatformReply, error) {
+	o.handleCalls++
 	o.lastMessage = message
 	if o.reply != nil {
 		return o.reply, nil
@@ -458,5 +463,92 @@ func TestProcess_LinkedSenderContactCardNotForwarded(t *testing.T) {
 	}
 	if len(*sent) == 0 {
 		t.Fatal("expected an ack to the linked sender")
+	}
+}
+
+// fakeDeduper is an in-memory InboundDeduper; failErr simulates a store outage.
+type fakeDeduper struct {
+	seen    map[string]bool
+	failErr error
+}
+
+func newFakeDeduper() *fakeDeduper { return &fakeDeduper{seen: map[string]bool{}} }
+
+func (f *fakeDeduper) SetNX(_ context.Context, k string, _ interface{}, _ time.Duration) (bool, error) {
+	if f.failErr != nil {
+		return false, f.failErr
+	}
+	if f.seen[k] {
+		return false, nil
+	}
+	f.seen[k] = true
+	return true, nil
+}
+
+func (f *fakeDeduper) Del(_ context.Context, k string) error {
+	delete(f.seen, k)
+	return nil
+}
+
+func TestProcess_DuplicateMsgIDProcessedOnce(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+	p.SetInboundDeduper(newFakeDeduper())
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		Text:     "what's my balance?",
+		MsgID:    "bridge-msg-42",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := p.Process(context.Background(), raw); err != nil {
+			t.Fatalf("Process attempt %d: %v", i+1, err)
+		}
+	}
+	if orch.callCount() != 1 {
+		t.Fatalf("orchestrator must handle the message exactly once, got %d", orch.callCount())
+	}
+	replies := 0
+	for _, m := range *sent {
+		if m.ContentType != ContentTypeTyping {
+			replies++
+		}
+	}
+	if replies != 1 {
+		t.Fatalf("expected exactly one outbound reply (typing indicators excluded), got %d", replies)
+	}
+}
+
+func TestProcess_DeduperOutageFailsOpen(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, _, _ := newTestProcessor(repo, orch)
+	d := newFakeDeduper()
+	d.failErr = errors.New("redis down")
+	p.SetInboundDeduper(d)
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		Text:     "hello there",
+		MsgID:    "bridge-msg-43",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process must not fail when deduper is unavailable: %v", err)
+	}
+	if orch.callCount() != 1 {
+		t.Fatalf("message must still be processed on dedup outage, got %d calls", orch.callCount())
 	}
 }

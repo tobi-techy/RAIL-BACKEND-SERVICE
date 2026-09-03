@@ -35,7 +35,7 @@ type ProactiveOpener struct {
 	Subtitle      string       `json:"subtitle,omitempty"`
 	Severity      string       `json:"severity"`
 	Suggestions   []Suggestion `json:"suggestions"`
-	ActionChips   []ActionChip `json:"action_chips,omitempty"`
+	ActionChips   []ConversationActionChip `json:"action_chips,omitempty"`
 }
 
 // Suggestion is a prompt suggestion shown to the user.
@@ -44,8 +44,8 @@ type Suggestion struct {
 	Category string `json:"category,omitempty"`
 }
 
-// ActionChip is a quick-action chip shown in the UI.
-type ActionChip struct {
+// ConversationActionChip is a quick-action chip shown in the UI.
+type ConversationActionChip struct {
 	ID          string `json:"id"`
 	Label       string `json:"label"`
 	Type        string `json:"type"`
