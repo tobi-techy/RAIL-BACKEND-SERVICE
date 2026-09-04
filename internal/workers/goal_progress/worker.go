@@ -2,10 +2,10 @@
 // surfaces Baby-Steps-aware goal notifications. It owns three notification
 // types:
 //
-//   1. Milestone (25/50/75/100%) — copy is voice-shaped for the current step.
-//   2. Pace-behind — fires when the deadline is <30 days away and projected
-//      completion is <90% of target.
-//   3. Step advance — fires when every goal on the current step is completed.
+//  1. Milestone (25/50/75/100%) — copy is voice-shaped for the current step.
+//  2. Pace-behind — fires when ProjectPace shows the user is materially
+//     behind their expected progress.
+//  3. Step advance — fires when every goal on the current step is completed.
 //
 // All dispatches flow through the ProactiveCoordinator so the global
 // per-user daily cap holds.
@@ -52,14 +52,14 @@ type UserCountryResolver interface {
 
 // Worker is the hourly goal-progress worker.
 type Worker struct {
-	goals     *goals.Service
-	push      PushSender
-	coordinator *platform.ProactiveCoordinator
-	redis     cache.RedisClient
-	country   UserCountryResolver
-	logger    *zap.Logger
+	goals        *goals.Service
+	push         PushSender
+	coordinator  *platform.ProactiveCoordinator
+	redis        cache.RedisClient
+	country      UserCountryResolver
+	logger       *zap.Logger
 	tickInterval time.Duration
-	clock     func() time.Time
+	clock        func() time.Time
 }
 
 // New constructs the worker.
@@ -189,12 +189,12 @@ func (w *Worker) processUser(ctx context.Context, userID uuid.UUID) userResult {
 			}
 		}
 
-		// Pace check — only meaningful when the goal has a deadline.
+		// Pace check — use the same canonical projection as chat and goal tools.
 		if g.Deadline != nil {
-			daysLeft := int(g.Deadline.Sub(now).Hours() / 24)
-			if daysLeft < 30 && pct.LessThan(decimal.NewFromInt(90)) {
+			pace := goals.ProjectPace(&g, now)
+			if !pace.OnPace {
 				if cooldownOK(ctx, w.redis, paceCooldownKey(g.ID)) {
-					w.firePaceBehind(ctx, userID, &g, daysLeft)
+					w.firePaceBehind(ctx, userID, &g, pace.DaysRemaining)
 					out.pace++
 				}
 			}
@@ -242,11 +242,11 @@ func (w *Worker) fireMilestone(ctx context.Context, userID uuid.UUID, goal *enti
 	}
 	title, body := milestoneCopy(goal, milestone)
 	data := map[string]interface{}{
-		"type":     "goal_milestone",
-		"goal_id":  goal.ID.String(),
+		"type":      "goal_milestone",
+		"goal_id":   goal.ID.String(),
 		"milestone": milestone,
-		"kind":     kind,
-		"category": goal.Category,
+		"kind":      kind,
+		"category":  goal.Category,
 	}
 	if err := w.push.SendToUser(ctx, userID, title, body, data); err != nil {
 		w.logger.Warn("goal_progress: push failed",
@@ -265,10 +265,10 @@ func (w *Worker) firePaceBehind(ctx context.Context, userID uuid.UUID, goal *ent
 	}
 	title, body := paceBehindCopy(goal, daysLeft)
 	data := map[string]interface{}{
-		"type":    "goal_pace_behind",
-		"goal_id": goal.ID.String(),
+		"type":      "goal_pace_behind",
+		"goal_id":   goal.ID.String(),
 		"days_left": daysLeft,
-		"category": goal.Category,
+		"category":  goal.Category,
 	}
 	if err := w.push.SendToUser(ctx, userID, title, body, data); err != nil {
 		w.logger.Warn("goal_progress: pace push failed",

@@ -174,6 +174,15 @@ func TestFreedomStepNudge(t *testing.T) {
 	}
 }
 
+func TestRichLifeNudgeIncludesMoneyDial(t *testing.T) {
+	nudge := FreedomStepNudge(int(StepRichLife))
+	for _, want := range []string{"money dial", "what they get", "rich life"} {
+		if !strings.Contains(strings.ToLower(nudge), want) {
+			t.Errorf("Rich Life nudge missing %q", want)
+		}
+	}
+}
+
 func TestFilterToxicDebts(t *testing.T) {
 	debts := []entities.FinancialObligation{
 		{Type: entities.ObligationTypeDebt, Status: entities.ObligationStatusActive, Name: "Credit Card", Amount: decimal.NewFromInt(50000), InterestRate: ptrDecimal(decimal.NewFromInt(25))},

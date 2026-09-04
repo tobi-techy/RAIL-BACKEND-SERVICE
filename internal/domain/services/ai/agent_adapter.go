@@ -75,6 +75,7 @@ type AgentAdapter struct {
 	miriamIntelligence  MiriamIntelligenceReader
 	bankStatementCtx    *BankStatementContextProvider
 	monoAnalysis        MonoAnalysisProvider
+	consciousSpendingPlans ConsciousSpendingPlanProvider
 	nairaCtx            *nairaCtx
 	supermemory         SupermemoryClient
 	webSearcher         WebSearcher
@@ -176,6 +177,9 @@ func (a *AgentAdapter) ChatInContextWithOptions(ctx context.Context, userID, con
 	}
 	if rl := a.liveNairaRateLine(ctx); rl != "" {
 		systemContext = append(systemContext, rl)
+	}
+	if coaching := a.buildCoachingContext(ctx, userID); coaching != "" {
+		systemContext = append(systemContext, coaching)
 	}
 	systemContext = append(systemContext, opts.SystemContext...)
 	coreOpts.SystemContext = systemContext

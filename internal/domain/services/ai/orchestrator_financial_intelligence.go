@@ -186,10 +186,10 @@ func (o *AgentAdapter) executeFinancialHealth(ctx context.Context, userID uuid.U
 	if budgetStatus == "not_set" {
 		actions = append(actions, "Set a monthly spending budget so Miriam can track safe daily spend.")
 	} else if budgetRemaining.IsNegative() {
-		actions = append(actions, fmt.Sprintf("Pause non-essential spend; you are $%s over budget on average.", budgetRemaining.Abs().StringFixed(2)))
+		actions = append(actions, fmt.Sprintf("Pause non-essential spend; you are %s over budget on average.", budgetRemaining.Abs().StringFixed(2)))
 	}
 	if savingsRate.LessThan(decimal.NewFromInt(10)) && flow.TotalDeposits.IsPositive() {
-		actions = append(actions, "Aim to save at least 10% of incoming money.")
+		actions = append(actions, "Compare this savings rate with the savings number in your Conscious Spending Plan; build the four-number plan before choosing a new target.")
 	}
 	if stash.LessThan(spend.Mul(decimal.NewFromFloat(0.25))) && spend.GreaterThan(decimal.NewFromInt(20)) {
 		actions = append(actions, "Move a small amount from Spend to Stash so more of your money earns yield.")

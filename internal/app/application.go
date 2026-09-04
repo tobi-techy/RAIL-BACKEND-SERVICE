@@ -55,6 +55,7 @@ import (
 	engagement_worker "github.com/rail-service/rail_service/internal/workers/engagement_worker"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	goal_progress "github.com/rail-service/rail_service/internal/workers/goal_progress"
 	graph_ngn_recovery "github.com/rail-service/rail_service/internal/workers/graph_ngn_recovery"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
@@ -72,6 +73,7 @@ import (
 	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
+	spending_coach "github.com/rail-service/rail_service/internal/workers/spending_coach"
 	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
@@ -124,6 +126,10 @@ type Application struct {
 	autopilotWorker              *autopilot_worker.Worker
 	autopilotCancel              context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
+	spendingCoachWorker          *spending_coach.Worker
+	spendingCoachCancel          context.CancelFunc
+	goalProgressWorker           *goal_progress.Worker
+	goalProgressCancel           context.CancelFunc
 	engagementWorker             *engagement_worker.Worker
 	ledgerOutboxPublisher        *ledger_outbox_publisher.Worker
 	miriamEventWorker            *miriam_event_worker.Worker
@@ -658,7 +664,50 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Miriam daily pulse worker started (iMessage-only)")
 	}
 
-	// Anomaly engine — created in domain_wiring.go and stored on the container.
+	if app.container.ConsciousSpendingPlanService != nil && app.container.AIOrchestrator != nil {
+		var pushSender spending_coach.PushSender = noopPushSender{}
+		if app.container.MiriamBridgeDispatcher != nil {
+			pushSender = app.container.MiriamBridgeDispatcher
+		}
+		app.spendingCoachWorker = spending_coach.New(
+			pushSender,
+			app.container.ProactiveCoordinator,
+			app.container.RedisClient,
+			app.log.Zap(),
+		)
+		app.spendingCoachWorker.SetConsciousSpendingProviders(
+			app.container.ConsciousSpendingPlanService,
+			app.container.AIOrchestrator,
+		)
+		if app.container.AICostGuard != nil {
+			app.spendingCoachWorker.SetCostGate(app.container.AICostGuard)
+		}
+		coachCtx, coachCancel := context.WithCancel(context.Background())
+		app.spendingCoachCancel = coachCancel
+		go app.spendingCoachWorker.Start(coachCtx)
+		app.log.Info("Miriam conscious spending coach started (iMessage-only)")
+	}
+
+	if app.container.GoalsService != nil {
+		var pushSender goal_progress.PushSender = noopPushSender{}
+		if app.container.MiriamBridgeDispatcher != nil {
+			pushSender = app.container.MiriamBridgeDispatcher
+		}
+		app.goalProgressWorker = goal_progress.New(
+			app.container.GoalsService,
+			pushSender,
+			app.container.ProactiveCoordinator,
+			app.container.RedisClient,
+			nil,
+			app.log.Zap(),
+		)
+		goalCtx, goalCancel := context.WithCancel(context.Background())
+		app.goalProgressCancel = goalCancel
+		go app.goalProgressWorker.Start(goalCtx)
+		app.log.Info("Miriam goal progress worker started (iMessage-only)")
+	}
+
+	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
 	anomalyEngine := app.container.AnomalyEngine
 	if anomalyEngine != nil {
 		if app.container.EvalHandler != nil {
@@ -1421,6 +1470,12 @@ func (app *Application) stopWorkers() {
 	}
 	if app.autopilotCancel != nil {
 		app.autopilotCancel()
+	}
+	if app.spendingCoachCancel != nil {
+		app.spendingCoachCancel()
+	}
+	if app.goalProgressCancel != nil {
+		app.goalProgressCancel()
 	}
 
 	app.stopRedisMonitor()
