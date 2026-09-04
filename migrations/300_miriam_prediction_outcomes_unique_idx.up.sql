@@ -1,5 +1,5 @@
 -- +migrate UpNoTransaction
--- 290: Add unique index to prevent duplicate pending prediction outcomes
+-- 300: Add unique index to prevent duplicate pending prediction outcomes
 -- First, clean up any existing duplicates (keep the earliest created_at per user+type)
 WITH duplicates AS (
     SELECT id,
