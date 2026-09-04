@@ -62,13 +62,13 @@ func IsRetryable(err error) bool {
 }
 
 type InboundMessage struct {
-	Platform entities.Platform `json:"platform"`
-	UserID   string            `json:"user_id"`
-	PlatformUserID string      `json:"platform_user_id,omitempty"`
-	ThreadID string            `json:"thread_id,omitempty"`
-	Text     string            `json:"text"`
-	SpaceID  string            `json:"space_id,omitempty"`
-	MsgID    string            `json:"msg_id,omitempty"`
+	Platform       entities.Platform `json:"platform"`
+	UserID         string            `json:"user_id"`
+	PlatformUserID string            `json:"platform_user_id,omitempty"`
+	ThreadID       string            `json:"thread_id,omitempty"`
+	Text           string            `json:"text"`
+	SpaceID        string            `json:"space_id,omitempty"`
+	MsgID          string            `json:"msg_id,omitempty"`
 
 	// voice note (transcribed into Text before the AI sees it)
 	IsVoice   bool   `json:"is_voice,omitempty"`
@@ -111,8 +111,8 @@ type PlatformReply struct {
 	Cards   []entities.InsightCard // structured insight cards to render after the text
 
 	// Render hints for cross-channel rendering.
-	RenderStrategy string      `json:"render_strategy,omitempty"`
-	MaxBubbles     int         `json:"max_bubbles,omitempty"`
+	RenderStrategy string       `json:"render_strategy,omitempty"`
+	MaxBubbles     int          `json:"max_bubbles,omitempty"`
 	ActionChips    []ActionChip `json:"action_chips,omitempty"`
 	PlanData       *PlanData    `json:"plan_data,omitempty"`
 	TraceData      *TraceData   `json:"trace_data,omitempty"`
@@ -468,14 +468,14 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 	// Thread platform context into the outbound path so channel-aware replies
 	// can be rendered for iMessage, WhatsApp, Telegram, etc.
 	ctx = ai.WithChannelContext(ctx, &aichannel.ChannelContext{
-		Platform:        aichannel.NormalizePlatform(string(msg.Platform)),
-		PlatformUserID:  msg.PlatformUserID,
-		ThreadID:        msg.ThreadID,
-		IdentityLinked:  resolved.Identity.LinkedAt != nil && !resolved.Identity.LinkedAt.IsZero(),
-		Capabilities:    aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))),
-		PreferredTone:   aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))).PreferredTone,
-		MediaSupported:  msg.IsImage || msg.IsVoice,
-		UserID:          resolved.UserID,
+		Platform:       aichannel.NormalizePlatform(string(msg.Platform)),
+		PlatformUserID: msg.PlatformUserID,
+		ThreadID:       msg.ThreadID,
+		IdentityLinked: resolved.Identity.LinkedAt != nil && !resolved.Identity.LinkedAt.IsZero(),
+		Capabilities:   aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))),
+		PreferredTone:  aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))).PreferredTone,
+		MediaSupported: msg.IsImage || msg.IsVoice,
+		UserID:         resolved.UserID,
 	})
 
 	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, msg.IsVoice)

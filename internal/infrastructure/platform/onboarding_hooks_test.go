@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,12 +17,15 @@ type fakeSeeder struct {
 	called int32
 	err    error
 	delay  time.Duration
+	mu     sync.Mutex
 	userID uuid.UUID
 }
 
 func (f *fakeSeeder) Seed(ctx context.Context, userID uuid.UUID) (int, error) {
 	atomic.AddInt32(&f.called, 1)
+	f.mu.Lock()
 	f.userID = userID
+	f.mu.Unlock()
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
@@ -30,6 +34,12 @@ func (f *fakeSeeder) Seed(ctx context.Context, userID uuid.UUID) (int, error) {
 		}
 	}
 	return 1, f.err
+}
+
+func (f *fakeSeeder) UserID() uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.userID
 }
 
 func TestSeedBabyStepsOnLink_NilSeederIsNoop(t *testing.T) {
@@ -60,7 +70,7 @@ func TestSeedBabyStepsOnLink_FiresAndCallsSeed(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assert.Equal(t, int32(1), atomic.LoadInt32(&f.called))
-	assert.Equal(t, uid, f.userID)
+	assert.Equal(t, uid, f.UserID())
 }
 
 func TestSeedBabyStepsOnLink_SeederErrorDoesNotPanic(t *testing.T) {

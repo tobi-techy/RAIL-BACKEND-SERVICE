@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 )
 
 // ToolGetBankStatementAnalysis lets Miriam pull a detailed breakdown of the
@@ -326,16 +326,16 @@ func (a *BankStatementAnalysisAdapter) getMonoAnalysis(ctx context.Context, user
 	growthPlan := generateGrowthPlan(savingsRate, categories, nil)
 
 	return map[string]interface{}{
-		"has_data":           true,
-		"source":             "mono",
-		"period":             periodStr,
-		"total_income":       fmt.Sprintf("%.0f", totalIncome),
-		"total_expense":      fmt.Sprintf("%.0f", totalExpense),
-		"savings_rate":       fmt.Sprintf("%.1f%%", savingsRate),
-		"transaction_count":  analysis.TransactionCount,
-		"top_categories":     topCatsStr,
-		"categories":         categories,
-		"growth_plan":        growthPlan,
+		"has_data":          true,
+		"source":            "mono",
+		"period":            periodStr,
+		"total_income":      fmt.Sprintf("%.0f", totalIncome),
+		"total_expense":     fmt.Sprintf("%.0f", totalExpense),
+		"savings_rate":      fmt.Sprintf("%.1f%%", savingsRate),
+		"transaction_count": analysis.TransactionCount,
+		"top_categories":    topCatsStr,
+		"categories":        categories,
+		"growth_plan":       growthPlan,
 		"summary": fmt.Sprintf(
 			"Over the %s from your linked bank account, you earned %.0f and spent %.0f. Your savings rate is %.1f%%. Top spending: %s.",
 			periodStr, totalIncome, totalExpense, savingsRate, topCatsStr,

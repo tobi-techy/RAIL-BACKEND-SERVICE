@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 
 	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/rail-service/rail_service/internal/domain/services/spending"

@@ -56,6 +56,9 @@ func buildOnboardingHeader(
 	depositCount int,
 	monoLinked bool,
 ) string {
+	if user == nil {
+		return "[ONBOARDING STATUS — phase: " + string(phase) + " | user: nil]"
+	}
 	name := ""
 	if user.FirstName != nil && strings.TrimSpace(*user.FirstName) != "" {
 		name = strings.TrimSpace(*user.FirstName)

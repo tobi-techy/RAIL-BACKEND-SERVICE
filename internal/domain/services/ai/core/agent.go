@@ -832,6 +832,9 @@ var intentActionPatterns = []string{
 	"withdraw $", "withdraw ₦", "withdraw from", "withdraw to", "to my bank",
 	"block", "unblock", "pay my bill", "pay bill", "autopay", "auto-pay",
 	"buy airtime", "buy data", "copy trad", "copy trade", "stop copying", "pause copying", "cancel my",
+	// Bank transfers + crypto sends.
+	"to bank", "bank account", "account number", "gtbank", "send to bank",
+	"send crypto", "send usdc", "to wallet", "to 0x", "wallet address",
 }
 
 var intentAutomationPatterns = []string{
@@ -916,6 +919,7 @@ var alwaysOnTools = map[string]bool{
 	"get_budget": true, "set_budget": true,
 	// Automation
 	"list_automations": true, "create_automation": true,
+	"pause_automation": true, "resume_automation": true, "delete_automation": true,
 	// Action (mutating tools are staged for confirmation by the chat loop,
 	// never executed inline, so offering them every turn is safe).
 	"transfer_funds": true, "initiate_withdrawal": true, "optimize_yield": true,
@@ -925,6 +929,8 @@ var alwaysOnTools = map[string]bool{
 	"mark_obligation_paid": true, "protect_subscription": true, "get_linked_banks": true,
 	"list_bill_providers": true, "get_data_plans": true, "get_cable_packages": true,
 	"validate_meter": true, "detect_network": true,
+	// Bank transfers + crypto sends.
+	"list_banks": true, "resolve_bank_account": true, "send_to_bank": true, "send_crypto": true,
 	// Engagement
 	"celebrate": true, "send_poll": true, "connect_bank": true,
 	// Debt coaching

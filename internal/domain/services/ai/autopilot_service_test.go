@@ -363,7 +363,6 @@ func TestAutopilotService_Midday_QueuesSurplusAlertNotTransfer(t *testing.T) {
 
 	actions, _ := queue.List(context.Background(), uid)
 	require.Len(t, actions, 1)
-	// MVP: surplus is an alert/suggestion only — money moves via mandate path.
 	assert.Equal(t, "alert_surplus", actions[0].Tool)
 }
 

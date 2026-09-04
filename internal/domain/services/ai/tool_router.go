@@ -111,6 +111,11 @@ var actionPatterns = []string{
 	// send_money must be in scope for these turns.
 	"airtime", "buy data", "data plan", "nepa", "electricity", "cable tv",
 	"dstv", "gotv", "startimes", "meter", "betting", "top up",
+	// Bank transfers + crypto sends — "send 2500 to gtbank 0916473844",
+	// "send 50 usdc to 0x...", "transfer to bank".
+	"to bank", "bank account", "account number", "gtbank", "access bank",
+	"zenith", "uba", "first bank", "kuda", "send to bank",
+	"send crypto", "send usdc", "to wallet", "to 0x", "wallet address",
 }
 
 var automationPatterns = []string{
@@ -219,32 +224,38 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		// P2P sends — "send 5k to @tobi" previously had no send path in scope.
 		"lookup_recipient": true,
 		"send_money":       true,
+		// Bank transfers + crypto sends — "send 2500 to gtbank 0916473844"
+		// and "send 50 USDC to 0x..." previously had no tool path.
+		"list_banks":           true,
+		"resolve_bank_account": true,
+		"send_to_bank":         true,
+		"send_crypto":          true,
 		// Obligations — "what do I owe / mark it paid" context.
 		ToolListFinancialObligations: true,
 		ToolFindObligationPayments:   true,
 	},
 	CategoryPlanning: {
-		ToolGetUpcomingBills:      true,
-		ToolAuditSubscriptions:    true,
-		ToolGetYieldStatus:        true,
-		ToolGetInvestmentOptions:  true,
-		ToolListTradeConductors:   true,
-		ToolResearchTrader:        true,
-		ToolGetFinancialAudit:     true,
-		ToolGetFinancialHealth:    true,
-		ToolGetFinancialPlan:      true,
-		ToolGetCashFlowForecast:   true,
-		ToolGetMoneyOperatingPlan: true,
-		ToolGetFinancialProfile:   true,
-		ToolGetSavingsSuggestions: true,
-		ToolGetTaxSummary:         true,
-		ToolGetAccountSummary:     true,
-		ToolGetMiriamBrief:        true,
-		ToolSearchKnowledge:       true,
-		ToolGetInvestmentProducts: true,
-		ToolWebSearch:             true,
-		ToolGetBabySteps:              true,
-		ToolGetBankStatementAnalysis:  true,
+		ToolGetUpcomingBills:         true,
+		ToolAuditSubscriptions:       true,
+		ToolGetYieldStatus:           true,
+		ToolGetInvestmentOptions:     true,
+		ToolListTradeConductors:      true,
+		ToolResearchTrader:           true,
+		ToolGetFinancialAudit:        true,
+		ToolGetFinancialHealth:       true,
+		ToolGetFinancialPlan:         true,
+		ToolGetCashFlowForecast:      true,
+		ToolGetMoneyOperatingPlan:    true,
+		ToolGetFinancialProfile:      true,
+		ToolGetSavingsSuggestions:    true,
+		ToolGetTaxSummary:            true,
+		ToolGetAccountSummary:        true,
+		ToolGetMiriamBrief:           true,
+		ToolSearchKnowledge:          true,
+		ToolGetInvestmentProducts:    true,
+		ToolWebSearch:                true,
+		ToolGetBabySteps:             true,
+		ToolGetBankStatementAnalysis: true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,
@@ -263,6 +274,9 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolCreateAutomation:  true,
 		ToolGetAccountSummary: true,
 		ToolGetBudget:         true,
+		"pause_automation":    true,
+		"resume_automation":   true,
+		"delete_automation":   true,
 	},
 }
 

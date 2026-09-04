@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	onboardingRecencyThreshold     = 7 * 24 * time.Hour
-	fundedNewbieDepositThreshold   = 3
+	onboardingRecencyThreshold   = 7 * 24 * time.Hour
+	fundedNewbieDepositThreshold = 3
 )
 
 func (b *Builder) buildOnboardingContext(ctx context.Context, userID uuid.UUID) string {

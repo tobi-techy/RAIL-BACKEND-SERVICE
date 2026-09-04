@@ -62,12 +62,12 @@ func RegisterBabyStepsTools(r *Registry) {
 			debtList := make([]map[string]interface{}, 0, len(debts))
 			for i, d := range debts {
 				item := map[string]interface{}{
-					"name":            d.Name,
-					"balance":         d.Amount.StringFixed(2),
-					"minimum_payment": calculateMinimumPayment(d).StringFixed(2),
-					"interest_rate":   formatInterestRate(d),
-					"cadence":         d.Cadence,
-					"snowball_priority":  i + 1,
+					"name":              d.Name,
+					"balance":           d.Amount.StringFixed(2),
+					"minimum_payment":   calculateMinimumPayment(d).StringFixed(2),
+					"interest_rate":     formatInterestRate(d),
+					"cadence":           d.Cadence,
+					"snowball_priority": i + 1,
 				}
 				if d.InterestRate != nil {
 					item["interest_rate_pct"] = d.InterestRate.StringFixed(1)
@@ -113,8 +113,8 @@ func RegisterBabyStepsTools(r *Registry) {
 // freedomStepsList returns the 7-step framework with status for tool responses.
 func freedomStepsList(currentStep int) []map[string]interface{} {
 	steps := []struct {
-		name     string
-		tagline  string
+		name    string
+		tagline string
 	}{
 		{"Stabilize", "Income must beat expenses before anything else matters."},
 		{"Starter Safety Net", "Save 1 month of expenses so life's surprises don't send you to debt."},

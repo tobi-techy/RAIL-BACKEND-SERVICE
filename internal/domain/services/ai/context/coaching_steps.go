@@ -13,13 +13,13 @@ import (
 type FreedomStep int
 
 const (
-	StepStabilize         FreedomStep = 0
-	StepStarterSafetyNet  FreedomStep = 1
-	StepKillToxicDebt     FreedomStep = 2
-	StepFullSafetyNet     FreedomStep = 3
-	StepBuildTheMuscle    FreedomStep = 4
-	StepAccelerate        FreedomStep = 5
-	StepRichLife          FreedomStep = 6
+	StepStabilize        FreedomStep = 0
+	StepStarterSafetyNet FreedomStep = 1
+	StepKillToxicDebt    FreedomStep = 2
+	StepFullSafetyNet    FreedomStep = 3
+	StepBuildTheMuscle   FreedomStep = 4
+	StepAccelerate       FreedomStep = 5
+	StepRichLife         FreedomStep = 6
 )
 
 // FreedomStepInfo describes one step.

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aidata "github.com/rail-service/rail_service/internal/domain/services/ai/data"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aidata "github.com/rail-service/rail_service/internal/domain/services/ai/data"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )

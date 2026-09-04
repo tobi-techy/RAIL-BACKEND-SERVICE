@@ -191,11 +191,9 @@ func (c *Container) initializePlatformMessaging() {
 			c.platformLinking = linkingSvc
 
 			if c.EmailService != nil && c.UserRepo != nil {
-				c.ConfirmHandler = platform.NewConfirmHandler(
-					platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog),
-					c.AIOrchestrator,
-					c.ZapLog,
-				)
+				confirmStore := platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog)
+				c.ConfirmHandler = platform.NewConfirmHandler(confirmStore, c.AIOrchestrator, c.ZapLog)
+				c.ConfirmTokenStore = confirmStore
 			}
 
 			c.ZapLog.Info("Platform messaging via HTTP (bridge)",

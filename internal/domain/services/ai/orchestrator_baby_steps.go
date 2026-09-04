@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aifx "github.com/rail-service/rail_service/internal/domain/services/ai/fx"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -157,23 +157,23 @@ func (o *AgentAdapter) executeBabySteps(ctx context.Context, userID uuid.UUID) (
 
 	// Snowball detail
 	result["snowball"] = map[string]interface{}{
-		"smallest_debt":        snowball.NextTarget,
-		"freed_payment":        snowball.FreedPayment.StringFixed(2),
-		"projected_savings":    snowball.InterestSaved.StringFixed(2),
-		"sprint_allocation":    "80/20 spend/debt during sprint",
-		"post_sprint":          "70/30 spend/stash after all debts cleared",
+		"smallest_debt":     snowball.NextTarget,
+		"freed_payment":     snowball.FreedPayment.StringFixed(2),
+		"projected_savings": snowball.InterestSaved.StringFixed(2),
+		"sprint_allocation": "80/20 spend/debt during sprint",
+		"post_sprint":       "70/30 spend/stash after all debts cleared",
 	}
 
 	return result, nil
 }
 
 type snowballResult struct {
-	TotalDebt        decimal.Decimal
+	TotalDebt         decimal.Decimal
 	TotalInterestCost decimal.Decimal
-	InterestSaved    decimal.Decimal
-	MonthsToFreedom  int
-	NextTarget       string
-	FreedPayment     decimal.Decimal
+	InterestSaved     decimal.Decimal
+	MonthsToFreedom   int
+	NextTarget        string
+	FreedPayment      decimal.Decimal
 }
 
 func calculateSnowball(debts []entities.FinancialObligation) snowballResult {
@@ -188,7 +188,7 @@ func calculateSnowball(debts []entities.FinancialObligation) snowballResult {
 	}
 
 	// Next target = smallest debt
- smallest := debts[0]
+	smallest := debts[0]
 	result.NextTarget = fmt.Sprintf("%s (%s)", smallest.Name, smallest.Amount.StringFixed(2))
 	result.FreedPayment = calculateMinimumPayment(smallest)
 

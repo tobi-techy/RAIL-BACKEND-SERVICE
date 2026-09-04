@@ -20,18 +20,18 @@ import (
 // TTL is 30 minutes — long enough to cover a conversation session, short
 // enough to avoid stale state leaking into new sessions.
 const (
-	workingMemoryTTL   = 30 * time.Minute
+	workingMemoryTTL       = 30 * time.Minute
 	workingMemoryKeyPrefix = "miriam:wm:"
 	workingMemoryMaxChars  = 500
 )
 
 // WorkingMemoryEntry is the cached conversation state for a user.
 type WorkingMemoryEntry struct {
-	Summary       string    `json:"summary"`
-	Topic         string    `json:"topic"`
-	MessageCount  int       `json:"message_count"`
+	Summary        string    `json:"summary"`
+	Topic          string    `json:"topic"`
+	MessageCount   int       `json:"message_count"`
 	LastExchangeAt time.Time `json:"last_exchange_at"`
-	ActiveThread  string    `json:"active_thread"`
+	ActiveThread   string    `json:"active_thread"`
 }
 
 // GetSummary returns the conversation summary (satisfies core.WorkingMemorySnapshot).

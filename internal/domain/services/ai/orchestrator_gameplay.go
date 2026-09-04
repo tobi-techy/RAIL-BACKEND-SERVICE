@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 

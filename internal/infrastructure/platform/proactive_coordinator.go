@@ -13,9 +13,9 @@ import (
 // per-category caps. The string values match the ones in ProactiveGuard so
 // callers can pass either set interchangeably.
 const (
-	ProactiveCategoryGoalProgress     = "goal_progress"
-	ProactiveCategorySpendingCoach    = "spending_coach"
-	ProactiveCategorySavingsSuggest   = "savings_suggestion"
+	ProactiveCategoryGoalProgress   = "goal_progress"
+	ProactiveCategorySpendingCoach  = "spending_coach"
+	ProactiveCategorySavingsSuggest = "savings_suggestion"
 )
 
 // AllProactiveCategories is the canonical set. Used for tests that need to
@@ -39,11 +39,11 @@ var AllProactiveCategories = []string{
 // counter. Both expire automatically at the next local-day boundary so we
 // don't need a cron sweep.
 type ProactiveCoordinator struct {
-	redis      cache.RedisClient
-	logger     *zap.Logger
-	dailyCap   int
+	redis               cache.RedisClient
+	logger              *zap.Logger
+	dailyCap            int
 	categoryCapOverride map[string]int // category -> per-day cap; 0 means use dailyCap
-	clock      func() time.Time
+	clock               func() time.Time
 }
 
 // NewProactiveCoordinator builds a coordinator. dailyCap<=0 disables the
@@ -54,11 +54,11 @@ func NewProactiveCoordinator(redis cache.RedisClient, logger *zap.Logger, dailyC
 		categoryCapOverride = map[string]int{}
 	}
 	return &ProactiveCoordinator{
-		redis:              redis,
-		logger:             logger,
-		dailyCap:           dailyCap,
+		redis:               redis,
+		logger:              logger,
+		dailyCap:            dailyCap,
 		categoryCapOverride: categoryCapOverride,
-		clock:              func() time.Time { return time.Now().UTC() },
+		clock:               func() time.Time { return time.Now().UTC() },
 	}
 }
 

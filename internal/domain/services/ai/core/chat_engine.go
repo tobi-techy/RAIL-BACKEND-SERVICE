@@ -30,11 +30,11 @@ type ChatEngineResponse struct {
 
 // ProactiveOpener is a proactive message opener for ChatEngine consumers.
 type ProactiveOpener struct {
-	Greeting      string       `json:"greeting"`
-	BubbleMessage string       `json:"bubble_message"`
-	Subtitle      string       `json:"subtitle,omitempty"`
-	Severity      string       `json:"severity"`
-	Suggestions   []Suggestion `json:"suggestions"`
+	Greeting      string                   `json:"greeting"`
+	BubbleMessage string                   `json:"bubble_message"`
+	Subtitle      string                   `json:"subtitle,omitempty"`
+	Severity      string                   `json:"severity"`
+	Suggestions   []Suggestion             `json:"suggestions"`
 	ActionChips   []ConversationActionChip `json:"action_chips,omitempty"`
 }
 

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )

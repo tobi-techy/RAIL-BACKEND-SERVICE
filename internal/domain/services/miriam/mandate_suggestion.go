@@ -248,7 +248,7 @@ func (e *MandateSuggestionEngine) suggestBillReservation(ctx context.Context, us
 	}
 
 	// If obligations regularly exceed spend, suggest reservation
-		if state.UpcomingObligations.GreaterThan(spend.Mul(decimal.NewFromFloat(0.6))) {
+	if state.UpcomingObligations.GreaterThan(spend.Mul(decimal.NewFromFloat(0.6))) {
 		reserveAmount := state.UpcomingObligations.Mul(decimal.NewFromFloat(0.5))
 		return &entities.MiriamMandateSuggestion{
 			ID:                  uuid.New(),

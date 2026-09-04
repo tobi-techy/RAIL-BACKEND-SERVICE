@@ -24,8 +24,8 @@ func TestRankFacts_LimitsOutput(t *testing.T) {
 	facts := make([]*entities.MiriamUserFact, 20)
 	for i := range facts {
 		facts[i] = &entities.MiriamUserFact{
-			Importance:     i + 1,
-			Confidence:     decimal.NewFromFloat(0.8),
+			Importance:      i + 1,
+			Confidence:      decimal.NewFromFloat(0.8),
 			LastConfirmedAt: now,
 		}
 	}

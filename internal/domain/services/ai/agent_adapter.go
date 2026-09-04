@@ -9,13 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/memory"
-	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	promptcontext "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/context"
-	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 

@@ -1,8 +1,8 @@
 package channel
 
 import (
-	"testing"
 	"github.com/google/uuid"
+	"testing"
 )
 
 func TestNormalizePlatform(t *testing.T) {
@@ -40,12 +40,12 @@ func TestCapabilityRegistry(t *testing.T) {
 	registry := NewCapabilityRegistry()
 
 	tests := []struct {
-		name     string
-		platform Platform
-		wantPoll bool
-		wantEff  bool
+		name      string
+		platform  Platform
+		wantPoll  bool
+		wantEff   bool
 		wantQuick bool
-		wantMax  int
+		wantMax   int
 	}{
 		{"iMessage", PlatformIMessage, true, true, false, 8},
 		{"WhatsApp", PlatformWhatsApp, false, false, true, 3},

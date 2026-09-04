@@ -99,3 +99,22 @@ type TravelProvider interface {
 	GetBookingHistory(ctx context.Context, userID uuid.UUID, limit int) ([]map[string]interface{}, error)
 	SavePassenger(ctx context.Context, userID uuid.UUID, args map[string]interface{}) (map[string]interface{}, error)
 }
+
+// BankTransferProvider powers Nigerian bank transfers (USDC → NGN offramp)
+// through the existing RampHub infrastructure. Read methods surface the bank
+// list and resolve account holder names; the mutating CreateOfframp is
+// dispatched via an action tool so it inherits Monitor-mode blocking and the
+// pending-action confirmation flow (with Face ID step-up).
+type BankTransferProvider interface {
+	ListBanks(ctx context.Context) ([]map[string]interface{}, error)
+	ResolveBankAccount(ctx context.Context, bankCode, accountNumber, bankName string) (map[string]interface{}, error)
+	CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode, accountNumber, bankName, amount, currency, accountName string) (map[string]interface{}, error)
+}
+
+// CryptoSendProvider powers USDC sends to external wallet addresses via the
+// existing withdrawal service (Circle / ChainRails). The mutating SendCrypto
+// is dispatched via an action tool so it inherits Monitor-mode blocking and
+// the pending-action confirmation flow (with Face ID step-up).
+type CryptoSendProvider interface {
+	SendCrypto(ctx context.Context, userID uuid.UUID, destinationAddress, amount, chain string) (map[string]interface{}, error)
+}
