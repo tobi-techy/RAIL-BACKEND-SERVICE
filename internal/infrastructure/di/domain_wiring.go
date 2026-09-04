@@ -23,7 +23,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
@@ -68,7 +67,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
-	spending_coach "github.com/rail-service/rail_service/internal/workers/spending_coach"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	"github.com/rail-service/rail_service/pkg/ratelimit"
@@ -2365,37 +2363,6 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("AI services initialization failed, AI features disabled", zap.Error(err))
 	}
 
-	// Spending coach worker — weekly Baby-Step-aware proactive nudge.
-	// Constructed after AI services so the brief provider can reach the
-	// orchestrator. The push sender is late-bound in application.go because
-	// the bridge dispatcher is wired after the DI container returns.
-	if c.UserRepo != nil && c.GoalsService != nil && c.ProactiveCoordinator != nil {
-		var briefProvider spending_coach.BriefProvider
-		if c.AIOrchestrator != nil {
-			briefProvider = &spendingCoachBriefProvider{orch: c.AIOrchestrator}
-		}
-		var suggestionProvider spending_coach.SavingsSuggestionProvider
-		if c.ReceiptRepo != nil && c.LedgerSpendingRepo != nil {
-			suggestionProvider = &spendingCoachSuggestionProvider{
-				inner: aiservice.NewSavingsSuggestionProvider(c.ReceiptRepo, spendingsvc.NewService(c.LedgerSpendingRepo)),
-			}
-		}
-		c.SpendingCoachWorker = spending_coach.New(
-			c.UserRepo,                // UserLister
-			c.GoalsService,            // ActiveGoalProvider
-			briefProvider,             // BriefProvider
-			suggestionProvider,        // SavingsSuggestionProvider
-			nil,                       // PushSender — late-bound via SetPushSender
-			c.ProactiveCoordinator,    // coordinator
-			c.RedisClient,             // redis
-			&userProfileAdapter{userRepo: c.UserRepo}, // UserCountryResolver
-			c.ZapLog,
-		)
-		if c.AICostGuard != nil {
-			c.SpendingCoachWorker.SetCostGate(c.AICostGuard)
-		}
-	}
-
 	// Initialize Alpaca investment infrastructure
 	if err := c.initializeAlpacaInvestmentServices(sqlxDB); err != nil {
 		c.ZapLog.Warn("Alpaca investment services initialization failed", zap.Error(err))
@@ -2626,7 +2593,7 @@ type spendingCoachSuggestionProvider struct {
 	inner aiservice.SavingsSuggestionProvider
 }
 
-func (p *spendingCoachSuggestionProvider) GetSuggestions(ctx context.Context, userID uuid.UUID) (*spending_coach.SavingsSuggestions, error) {
+func (p *spendingCoachSuggestionProvider) GetSuggestions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if p.inner == nil {
 		return nil, nil
 	}
@@ -2634,10 +2601,9 @@ func (p *spendingCoachSuggestionProvider) GetSuggestions(ctx context.Context, us
 	if err != nil || result == nil {
 		return nil, err
 	}
-	return &spending_coach.SavingsSuggestions{
-		Suggestions:              result.Suggestions,
-		TotalPotentialMonthlySav: result.TotalPotentialMonthlySav,
-		AnnualStashGrowth:        result.AnnualStashGrowth,
-		Message:                  result.Message,
+	return map[string]interface{}{
+		"suggestions":       result.Suggestions,
+		"annual_stash_growth": result.AnnualStashGrowth,
+		"message":            result.Message,
 	}, nil
 }

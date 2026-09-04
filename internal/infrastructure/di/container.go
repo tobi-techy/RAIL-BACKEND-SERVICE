@@ -96,7 +96,6 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/vector"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
-	spending_coach "github.com/rail-service/rail_service/internal/workers/spending_coach"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/captcha"
 	"github.com/rail-service/rail_service/pkg/jobqueue"
