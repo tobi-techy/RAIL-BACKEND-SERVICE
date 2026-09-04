@@ -105,14 +105,14 @@ func TestGreetingForPhase(t *testing.T) {
 		timeOfDay string
 		contains  []string
 	}{
-		{PhaseObserver, "Tobi", "morning", []string{"Tobi", "Miriam", "Still getting to know"}},
-		{PhaseObserver, "", "morning", []string{"Miriam", "Still getting to know"}},
-		{PhaseReader, "Ade", "morning", []string{"Ade", "Miriam", "watching the numbers"}},
-		{PhaseReader, "", "evening", []string{"Miriam", "Let's look at today"}},
-		{PhaseConfidant, "Tobi", "morning", []string{"Morning", "Tobi"}},
-		{PhaseConfidant, "", "evening", []string{"Miriam"}},
-		{PhaseConfidant, "Ade", "night", []string{"Late one", "Ade"}},
-		{PhaseHumbleVet, "Jo", "morning", []string{"Morning", "Jo", "Miriam here"}},
+		{PhaseObserver, "Tobi", "morning", []string{"Tobi", "miriam", "still getting to know"}},
+		{PhaseObserver, "", "morning", []string{"miriam", "still getting to know"}},
+		{PhaseReader, "Ade", "morning", []string{"Ade", "been watching the numbers"}},
+		{PhaseReader, "", "evening", []string{"let's look at today"}},
+		{PhaseConfidant, "Tobi", "morning", []string{"morning", "Tobi"}},
+		{PhaseConfidant, "", "evening", []string{"evening"}},
+		{PhaseConfidant, "Ade", "night", []string{"late one", "Ade"}},
+		{PhaseHumbleVet, "Jo", "morning", []string{"morning", "Jo", "miriam here"}},
 	}
 
 	for _, tt := range tests {

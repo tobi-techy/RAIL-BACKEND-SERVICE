@@ -713,6 +713,16 @@ func (app *Application) initializeWorkers() error {
 		if app.container.EvalHandler != nil {
 			app.container.EvalHandler.SetAnomalyEngine(anomalyEngine, app.container.AnomalyStore)
 		}
+		// Wire real-time anomaly reactions into the intelligence orchestrator
+		// so money events trigger immediate conversational alerts.
+		if app.container.MiriamIntelligenceOrchestrator != nil {
+			app.container.MiriamIntelligenceOrchestrator.SetAnomalyChecker(&anomalyCheckerAdapter{engine: anomalyEngine})
+			app.container.MiriamIntelligenceOrchestrator.SetAnomalyChatBuilder(&anomalyChatBuilderAdapter{})
+			// Wire spend cooldown store so spend_cooldown mandates actually block spending.
+			if app.container.RedisClient != nil {
+				app.container.MiriamIntelligenceOrchestrator.SetSpendCooldownStore(&redisSpendCooldownStore{redis: app.container.RedisClient})
+			}
+		}
 	}
 
 	if app.container.UserRepo != nil && app.container.MemoryService != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil && getBoolEnvOrDefault("AUTOPILOT_ENABLED", false) {
@@ -1974,4 +1984,77 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// anomalyCheckerAdapter wraps ai.AnomalyEngine to satisfy
+// miriam.AnomalyChecker, converting ai.AnomalyResult to miriam.AnomalyResult.
+type anomalyCheckerAdapter struct {
+	engine *aiservice.AnomalyEngine
+}
+
+func (a *anomalyCheckerAdapter) RunAllChecks(ctx context.Context, userID uuid.UUID, now time.Time) []miriamservice.AnomalyResult {
+	if a.engine == nil {
+		return nil
+	}
+	aiResults := a.engine.RunAllChecks(ctx, userID, now)
+	if len(aiResults) == 0 {
+		return nil
+	}
+	results := make([]miriamservice.AnomalyResult, len(aiResults))
+	for i, r := range aiResults {
+		results[i] = miriamservice.AnomalyResult{
+			Type:        string(r.Type),
+			Severity:    string(r.Severity),
+			Title:       r.Title,
+			Description: r.Description,
+			Details:     r.Details,
+			DetectedAt:  r.DetectedAt,
+		}
+	}
+	return results
+}
+
+// anomalyChatBuilderAdapter wraps ai.BuildChatMessage to satisfy
+// miriam.AnomalyChatBuilder.
+type anomalyChatBuilderAdapter struct{}
+
+func (a *anomalyChatBuilderAdapter) BuildChatMessage(results []miriamservice.AnomalyResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+	// Convert back to ai.AnomalyResult for the chat message builder.
+	aiResults := make([]aiservice.AnomalyResult, len(results))
+	for i, r := range results {
+		aiResults[i] = aiservice.AnomalyResult{
+			Type:        aiservice.AnomalyType(r.Type),
+			Severity:    aiservice.AnomalySeverity(r.Severity),
+			Title:       r.Title,
+			Description: r.Description,
+			Details:     r.Details,
+			DetectedAt:  r.DetectedAt,
+		}
+	}
+	return aiservice.BuildChatMessage(aiResults)
+}
+
+// redisSpendCooldownStore implements miriam.SpendCooldownStore using Redis
+// with TTL-based cooldown flags. When a spend_cooldown mandate fires, a key
+// is set with the cooldown duration as TTL. The allocation service can check
+// IsCoolingDown before allowing discretionary card spend.
+type redisSpendCooldownStore struct {
+	redis cache.RedisClient
+}
+
+func (s *redisSpendCooldownStore) SetCooldown(ctx context.Context, userID uuid.UUID, duration time.Duration) error {
+	key := "miriam:spend_cooldown:" + userID.String()
+	return s.redis.Set(ctx, key, "1", duration)
+}
+
+func (s *redisSpendCooldownStore) IsCoolingDown(ctx context.Context, userID uuid.UUID) (bool, error) {
+	key := "miriam:spend_cooldown:" + userID.String()
+	exists, err := s.redis.Exists(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }

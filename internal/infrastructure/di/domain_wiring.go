@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -16,12 +17,12 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
@@ -61,6 +62,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
+	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
@@ -2548,4 +2550,61 @@ func (c *Container) initializeDomainServices() error {
 	c.PanicButtonService = premium.NewPanicButtonService(c.EmergencyRepo, c.LedgerService, c.ZapLog)
 
 	return nil
+}
+
+// spendingCoachBriefProvider adapts the AI orchestrator's ExecuteToolPublic to
+// the spending coach worker's BriefProvider interface. Mirrors the
+// dailyPulseBriefProvider in application.go.
+type spendingCoachBriefProvider struct {
+	orch aiservice.ChatEngine
+}
+
+func (p *spendingCoachBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {
+	if p.orch == nil {
+		return nil, nil
+	}
+	result, err := p.orch.ExecuteToolPublic(ctx, userID, infraai.ToolCall{
+		ID:   "spending-coach-miriam-brief",
+		Name: aiservice.ToolGetMiriamBrief,
+		Arguments: map[string]interface{}{
+			"country": country,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Normalize typed internal slices into JSON-like maps for the worker.
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var normalized map[string]interface{}
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+// spendingCoachSuggestionProvider adapts the AI service's
+// SavingsSuggestionProvider to the spending coach worker's own
+// SavingsSuggestions type (which mirrors the AI service's type to avoid
+// an import cycle).
+type spendingCoachSuggestionProvider struct {
+	inner aiservice.SavingsSuggestionProvider
+}
+
+func (p *spendingCoachSuggestionProvider) GetSuggestions(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
+	if p.inner == nil {
+		return nil, nil
+	}
+	result, err := p.inner.GetSuggestions(ctx, userID)
+	if err != nil || result == nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"suggestions":                     result.Suggestions,
+		"total_potential_monthly_savings": result.TotalPotentialMonthlySav,
+		"annual_stash_growth_if_saved":    result.AnnualStashGrowth,
+		"message":                         result.Message,
+	}, nil
 }

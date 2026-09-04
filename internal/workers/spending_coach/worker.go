@@ -85,6 +85,11 @@ func (w *Worker) SetCostGate(g CostGate) {
 	w.costGate = g
 }
 
+// SetPushSender late-binds the push sender. The bridge dispatcher is wired
+// after the DI container is built, so the worker is constructed with a nil
+// sender and the real one is installed before Start.
+func (w *Worker) SetPushSender(p PushSender) { w.push = p }
+
 // SetTickInterval overrides the hourly tick. Useful for tests.
 func (w *Worker) SetTickInterval(d time.Duration) { w.tickInterval = d }
 

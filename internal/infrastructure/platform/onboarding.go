@@ -377,7 +377,7 @@ func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st
 		st.Email = st.PendingEmail
 		st.PendingEmail = ""
 	}
-	if st.Email != "" {
+	if st.Email != "" && !st.EmailVerified {
 		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
 			return c.handleEmail(ctx, key, st, in, st.Email)
 		}
