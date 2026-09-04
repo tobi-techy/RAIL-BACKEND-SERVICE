@@ -363,8 +363,14 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
     if (lastInbound) {
       space.read(lastInbound).catch(() => {});
     }
+    if (msg.content_type === "attachment") {
+      log.info({ thread_id: msg.thread_id, url: msg.attachment_url, name: msg.attachment_name }, "attachment sent");
+    }
     return true;
   } catch (err) {
+    if (msg.content_type === "attachment") {
+      log.warn({ err, thread_id: msg.thread_id, url: msg.attachment_url, name: msg.attachment_name }, "attachment send failed");
+    }
     log.error({ err, thread_id: msg.thread_id }, "failed to send to space");
     space.stopTyping().catch(() => {});
     return false;
@@ -631,11 +637,17 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
       return;
     }
 
-    // Text message. Bare YES/NO is handled by the backend when a pending
-    // action exists, so onboarding consent is not swallowed here.
-    if (content.type === "text") {
-      const text = content.text?.trim();
-      if (!text) return;
+    // Typed/replied text message.
+    if (content.type === "text" || content.type === "reply") {
+      let text = "";
+      let replyTo = "";
+      if (content.type === "reply") {
+        replyTo = content.target?.id || "";
+        text = content.content?.text?.trim() || "";
+      } else {
+        text = content.text?.trim() || "";
+      }
+      if (!text && !replyTo) return;
 
       const inbound = {
         platform,
@@ -644,10 +656,10 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
         text,
         space_id: space.id,
         msg_id: message.id,
+        reply_to: replyTo || undefined,
       };
       await postToBackend("/api/v1/platform/inbound", inbound);
-      handedOff = true;
-      log.info({ text: text.slice(0, 60) }, "posted inbound message to backend");
+      log.info({ text: text.slice(0, 60), reply_to: replyTo }, "posted inbound message to backend");
     }
   } catch (err) {
     // Release the dedup reservation so a redelivered copy of this message can

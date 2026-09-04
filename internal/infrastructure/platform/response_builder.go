@@ -3,6 +3,7 @@ package platform
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
@@ -22,6 +23,7 @@ const (
 	ContentTypePoll     ContentType = "poll"     // poll() — Confirm/Cancel prompt
 	ContentTypeVoice    ContentType = "voice"    // voice() — spoken note (TTS)
 	ContentTypeCards    ContentType = "cards"    // structured InsightCards (rendered per platform)
+	ContentTypeAttachment ContentType = "attachment" // attachment() — native image/media bubble
 )
 
 // Delivery categories for the bridge's persistent outbound queue.
@@ -76,6 +78,10 @@ type OutboundMessage struct {
 	// structured insight cards (the engine's tool pipeline produces these for the
 	// in-app canvas; messaging renders them as portable per-platform card text)
 	Cards []entities.InsightCard `json:"cards,omitempty"`
+
+	// attachment image reply (native image bubble on supported platforms)
+	AttachmentURL string `json:"attachment_url,omitempty"`
+	AttachmentName string `json:"attachment_name,omitempty"`
 
 	// Category tells the bridge how long a message may live in the persistent
 	// outbound queue when the Space handle is cold. Critical messages (anomaly
@@ -231,6 +237,25 @@ func (b *ResponseBuilder) CardsResponse(identity *entities.PlatformIdentity, tex
 	m.Text = text
 	m.ContentType = ContentTypeCards
 	m.Cards = cards
+	return m
+}
+
+// AttachmentImageResponse sends a native image attachment, optionally threaded
+// under the user's message and paired with caption text. Primarily for iMessage
+// receipt thumbnails and generated meme images.
+func (b *ResponseBuilder) AttachmentImageResponse(identity *entities.PlatformIdentity, text, threadID, replyTo, imageURL, fileName string) *OutboundMessage {
+	if strings.TrimSpace(imageURL) == "" {
+		return nil
+	}
+	m := b.base(identity, threadID)
+	m.Text = text
+	m.ContentType = ContentTypeAttachment
+	m.ReplyTo = replyTo
+	m.AttachmentURL = imageURL
+	if fileName == "" {
+		fileName = "miriam-image.png"
+	}
+	m.AttachmentName = fileName
 	return m
 }
 

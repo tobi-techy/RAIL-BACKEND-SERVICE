@@ -1,4 +1,4 @@
-import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice } from "spectrum-ts";
+import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice, attachment } from "spectrum-ts";
 import { effect, imessage, type IMessageMessageEffect } from "spectrum-ts/providers/imessage";
 import { childLogger } from "./logger";
 import { renderMessage, type RenderRequest, type RenderedBubble, channelHintToRenderStrategy } from "./renderer/channel-renderer";
@@ -29,6 +29,7 @@ export interface OutboundMessage {
     | "poll"
     | "voice"
     | "cards"
+    | "attachment"
     | "text";
 
   // reply
@@ -51,6 +52,10 @@ export interface OutboundMessage {
 
   // structured insight cards (rendered as per-platform card text)
   cards?: InsightCard[];
+
+  // native image attachment
+  attachment_url?: string;
+  attachment_name?: string;
 
   // delivery category: critical messages survive longer in the bridge's
   // persistent outbound queue when the Space handle is cold.
@@ -299,6 +304,30 @@ export class MessageHandler {
           if (bubble) sent = (await this.sendWithPacing(space, bubble, "markdown")) || sent;
         }
         return sent;
+      }
+
+      case "attachment": {
+        if (!msg.attachment_url && !msg.text) {
+          log.warn({ thread_id: msg.thread_id }, "attachment message missing both url and text");
+          return;
+        }
+        const attachmentPayload = msg.attachment_url
+          ? attachment(msg.attachment_url, {
+              id: msg.attachment_name || "miriam-image",
+              name: msg.attachment_name || "miriam-image",
+            })
+          : attachment(Buffer.from(msg.text || ""), {
+              name: msg.attachment_name || "miriam-image.txt",
+              mimeType: "text/plain",
+            });
+        try {
+          await space.send(typing());
+          await this.delay(this.typingDurationMs(msg.text));
+          await space.send(attachmentPayload);
+        } catch (err) {
+          log.warn({ err, thread_id: msg.thread_id, url: msg.attachment_url }, "attachment send failed");
+        }
+        return;
       }
 
       case "markdown":

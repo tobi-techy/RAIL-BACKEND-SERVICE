@@ -161,6 +161,34 @@ func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.Handl
 	}
 }
 
+// HandlePollVote receives an inbound poll selection from the bridge and routes
+// it through the normal message processor so Miriam can respond.
+func (h *PlatformHandler) HandlePollVote(processor *platform.Processor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if processor == nil {
+			if h.logger != nil {
+				h.logger.Error("platform processor not configured for poll vote handler")
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor not configured"})
+			return
+		}
+
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1*1024*1024))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+		if err := processor.ProcessPollVote(c.Request.Context(), body); err != nil {
+			if h.logger != nil {
+				h.logger.Warn("platform poll vote processing failed", zap.Error(err))
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+}
+
 // HandleAction receives an action postback (confirm/cancel) from the bridge
 // via HTTP POST and feeds it to the processor. HMAC-authenticated via middleware.
 func (h *PlatformHandler) HandleAction(processor *platform.Processor) gin.HandlerFunc {
