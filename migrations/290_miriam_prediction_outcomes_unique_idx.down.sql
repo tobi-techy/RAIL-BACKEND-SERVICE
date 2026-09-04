@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_miriam_prediction_outcomes_unique;
