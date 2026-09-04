@@ -49,7 +49,6 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
-	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
@@ -58,6 +57,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/premium"
+	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
@@ -460,10 +460,10 @@ type Container struct {
 	// Platform Messaging (iMessage, WhatsApp, Telegram)
 	PlatformIdentityRepo *repositories.PlatformIdentityRepository
 	PlatformHandler      *platformhandlers.PlatformHandler
+	ConfirmTokenStore    *platform.ConfirmTokenStore
 	platformProcessor    *platform.Processor
 	platformLinking      *platform.LinkingService
 	ConfirmHandler       *platform.ConfirmHandler
-	ConfirmTokenStore    *platform.ConfirmTokenStore
 	EvalHandler          *evalhandlers.Handler
 
 	// Mono (open-banking data + DirectPay)
@@ -800,12 +800,12 @@ func (c *Container) GetConfirmHandler() *platform.ConfirmHandler {
 	return c.ConfirmHandler
 }
 
-// GetConfirmTokenStore returns the confirm token store, or nil if platform messaging is disabled.
+// GetConfirmTokenStore returns the confirmation token store.
 func (c *Container) GetConfirmTokenStore() *platform.ConfirmTokenStore {
 	return c.ConfirmTokenStore
 }
 
-// GetEmailService returns the email service.
+// GetEmailService returns the outbound email adapter.
 func (c *Container) GetEmailService() *adapters.EmailService {
 	return c.EmailService
 }

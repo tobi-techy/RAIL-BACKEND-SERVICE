@@ -34,10 +34,9 @@ const inboundDedupTTL = 10 * time.Minute
 
 // InboundDeduper is the subset of the Redis client needed to make inbound
 // processing effectively-once: SetNX marks a message id as seen and reports
-// whether THIS caller was the first. Del removes a key. Satisfied by cache.RedisClient.
+// whether THIS caller was the first. Satisfied by cache.RedisClient.
 type InboundDeduper interface {
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
-	Del(ctx context.Context, key string) error
 }
 
 // retryableError marks a failure as transient (infrastructure) so the consumer
@@ -63,13 +62,13 @@ func IsRetryable(err error) bool {
 }
 
 type InboundMessage struct {
-	Platform entities.Platform `json:"platform"`
-	UserID   string            `json:"user_id"`
-	PlatformUserID string      `json:"platform_user_id,omitempty"`
-	ThreadID string            `json:"thread_id,omitempty"`
-	Text     string            `json:"text"`
-	SpaceID  string            `json:"space_id,omitempty"`
-	MsgID    string            `json:"msg_id,omitempty"`
+	Platform       entities.Platform `json:"platform"`
+	UserID         string            `json:"user_id"`
+	PlatformUserID string            `json:"platform_user_id,omitempty"`
+	ThreadID       string            `json:"thread_id,omitempty"`
+	Text           string            `json:"text"`
+	SpaceID        string            `json:"space_id,omitempty"`
+	MsgID          string            `json:"msg_id,omitempty"`
 
 	// voice note (transcribed into Text before the AI sees it)
 	IsVoice   bool   `json:"is_voice,omitempty"`
@@ -112,8 +111,8 @@ type PlatformReply struct {
 	Cards   []entities.InsightCard // structured insight cards to render after the text
 
 	// Render hints for cross-channel rendering.
-	RenderStrategy string      `json:"render_strategy,omitempty"`
-	MaxBubbles     int         `json:"max_bubbles,omitempty"`
+	RenderStrategy string       `json:"render_strategy,omitempty"`
+	MaxBubbles     int          `json:"max_bubbles,omitempty"`
 	ActionChips    []ActionChip `json:"action_chips,omitempty"`
 	PlanData       *PlanData    `json:"plan_data,omitempty"`
 	TraceData      *TraceData   `json:"trace_data,omitempty"`
@@ -152,18 +151,17 @@ type Orchestrator interface {
 }
 
 type Processor struct {
-	resolver         *UserResolver
-	orchestrator     Orchestrator
-	responseBuilder  *ResponseBuilder
-	linking          *LinkingService
-	onboarder        *ChatOnboarder
-	babyStepsSeeder  BabyStepsSeeder
-	voice            VoiceTranscoder
-	vision           ReceiptVision
-	bankDetailVision BankDetailVision
-	sendFunc         func(ctx context.Context, msg *OutboundMessage) error
-	dedupe           InboundDeduper
-	logger           *zap.Logger
+	resolver        *UserResolver
+	orchestrator    Orchestrator
+	responseBuilder *ResponseBuilder
+	linking         *LinkingService
+	onboarder       *ChatOnboarder
+	babyStepsSeeder BabyStepsSeeder
+	voice           VoiceTranscoder
+	vision          ReceiptVision
+	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
+	dedupe          InboundDeduper
+	logger          *zap.Logger
 }
 
 func NewProcessor(
@@ -197,13 +195,6 @@ func (p *Processor) SetLogger(l *zap.Logger) {
 // a graceful "I can't look at photos yet" reply.
 func (p *Processor) SetReceiptVision(v ReceiptVision) {
 	p.vision = v
-}
-
-// SetBankDetailVision enables bank-detail image understanding. When set,
-// images that look like bank transfer details (account number, bank name)
-// are extracted and formatted so Miriam can pre-fill a transfer.
-func (p *Processor) SetBankDetailVision(v BankDetailVision) {
-	p.bankDetailVision = v
 }
 
 // SetInboundDeduper enables effectively-once processing keyed on the bridge's
@@ -243,53 +234,20 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		return nil
 	}
 
-	// Effectively-once processing with retry safety: use an in-flight reservation
-	// that is released on any processing error, so transient failures don't
-	// permanently suppress retries. Only mark as permanently "seen" after
-	// successful processing.
-	var dedupKey string
+	// Effectively-once processing: the bridge retries failed POSTs, and a POST
+	// that times out after processing succeeded server-side would otherwise run
+	// the orchestrator twice (double reply, double AI spend). Fail open — a
+	// dedup-store outage must not drop messages.
 	if p.dedupe != nil && strings.TrimSpace(msg.MsgID) != "" {
-		dedupKey = "platform:inbound:seen:" + msg.MsgID
-		inFlightKey := "platform:inbound:inflight:" + msg.MsgID
-
-		// Try to acquire in-flight reservation (short TTL, e.g., 30s)
-		inFlight, dErr := p.dedupe.SetNX(ctx, inFlightKey, 1, 30*time.Second)
-		if dErr != nil {
-			p.logger.Warn("inbound in-flight reservation failed, processing anyway", zap.String("msg_id", msg.MsgID), zap.Error(dErr))
-		} else if !inFlight {
-			// Another worker is already processing this message
-			p.logger.Info("inbound message already in-flight, dropping", zap.String("msg_id", msg.MsgID))
-			return nil
-		}
-
-		// Check if already permanently processed
-		fresh, dErr := p.dedupe.SetNX(ctx, dedupKey, 1, inboundDedupTTL)
+		key := "platform:inbound:seen:" + msg.MsgID
+		fresh, dErr := p.dedupe.SetNX(ctx, key, 1, inboundDedupTTL)
 		if dErr != nil {
 			p.logger.Warn("inbound dedup check failed, processing anyway", zap.String("msg_id", msg.MsgID), zap.Error(dErr))
 		} else if !fresh {
-			// Already fully processed — release in-flight and drop
-			_ = p.dedupe.Del(ctx, inFlightKey)
 			p.logger.Info("duplicate inbound message dropped", zap.String("msg_id", msg.MsgID))
 			return nil
 		}
 	}
-
-	// Track whether processing succeeded to manage dedup state
-	processingSucceeded := false
-	defer func() {
-		if p.dedupe != nil && strings.TrimSpace(msg.MsgID) != "" {
-			inFlightKey := "platform:inbound:inflight:" + msg.MsgID
-			if processingSucceeded {
-				// Processing succeeded — keep permanent dedup key, release in-flight
-				_ = p.dedupe.Del(ctx, inFlightKey)
-			} else {
-				// Processing failed — release both keys to allow retry
-				dedupKey := "platform:inbound:seen:" + msg.MsgID
-				_ = p.dedupe.Del(ctx, dedupKey)
-				_ = p.dedupe.Del(ctx, inFlightKey)
-			}
-		}
-	}()
 
 	// Transcribe a voice note into text before anything else sees it. If we can't,
 	// tell the user rather than silently dropping.
@@ -311,46 +269,28 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	// OCR a receipt/photo attachment into a quick summary before anything else
 	// sees it. The summary becomes the message text so the resolver, onboarder,
 	// and orchestrator all handle it like a normal turn.
-	// Bank detail images (screenshots of transfer pages, QR codes) are
-	// extracted first — if they contain account numbers, they're formatted as
-	// bank details so Miriam can pre-fill a transfer.
 	if msg.IsImage {
-		// Try bank detail extraction first.
-		if p.bankDetailVision != nil && p.bankDetailVision.Available() {
-			ext, err := p.extractBankDetails(ctx, msg)
-			if err == nil && ext != nil {
-				msg.Text = FormatBankDetailSummary(ext)
-			}
+		if !p.visionEnabled() {
+			return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
 		}
-		// Fall back to receipt vision if bank detail extraction didn't produce text.
-		if strings.TrimSpace(msg.Text) == "" {
-			if !p.visionEnabled() {
-				return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
-			}
-			summary, err := p.summarizeImage(ctx, msg)
-			if err != nil {
-				log.Printf("image OCR failed for %s: %v", msg.UserID, err)
-				return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
-			}
-			if strings.TrimSpace(summary) == "" {
-				return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
-			}
-			msg.Text = summary
+		summary, err := p.summarizeImage(ctx, msg)
+		if err != nil {
+			log.Printf("image OCR failed for %s: %v", msg.UserID, err)
+			return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
 		}
+		if strings.TrimSpace(summary) == "" {
+			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
+		}
+		msg.Text = summary
 	}
 
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
 	if err == nil {
 		if isContactPayload(msg) && strings.TrimSpace(msg.Text) == "" {
 			p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, "You're already linked — I don't need the card. What do you want to look at?")
-			processingSucceeded = true
 			return nil
 		}
-		err := p.handleNormalMessage(ctx, msg, resolved)
-		if err == nil {
-			processingSucceeded = true
-		}
-		return err
+		return p.handleNormalMessage(ctx, msg, resolved)
 	}
 
 	// Unlinked sender. A handshake token always takes precedence — even if the
@@ -364,17 +304,12 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			}
 			return p.sendErrorMessage(ctx, msg, "That link code wasn't valid or has expired. Please try linking again from the RAIL app.")
 		}
-		processingSucceeded = true
 		return nil
 	}
 
 	// No handshake token: chat-first onboarding takes over if enabled.
 	if p.onboarder != nil {
-		err := p.handleOnboarding(ctx, msg)
-		if err == nil {
-			processingSucceeded = true
-		}
-		return err
+		return p.handleOnboarding(ctx, msg)
 	}
 
 	linkHint := "Link iMessage"
@@ -533,14 +468,14 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 	// Thread platform context into the outbound path so channel-aware replies
 	// can be rendered for iMessage, WhatsApp, Telegram, etc.
 	ctx = ai.WithChannelContext(ctx, &aichannel.ChannelContext{
-		Platform:        aichannel.NormalizePlatform(string(msg.Platform)),
-		PlatformUserID:  msg.PlatformUserID,
-		ThreadID:        msg.ThreadID,
-		IdentityLinked:  resolved.Identity.LinkedAt != nil && !resolved.Identity.LinkedAt.IsZero(),
-		Capabilities:    aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))),
-		PreferredTone:   aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))).PreferredTone,
-		MediaSupported:  msg.IsImage || msg.IsVoice,
-		UserID:          resolved.UserID,
+		Platform:       aichannel.NormalizePlatform(string(msg.Platform)),
+		PlatformUserID: msg.PlatformUserID,
+		ThreadID:       msg.ThreadID,
+		IdentityLinked: resolved.Identity.LinkedAt != nil && !resolved.Identity.LinkedAt.IsZero(),
+		Capabilities:   aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))),
+		PreferredTone:  aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))).PreferredTone,
+		MediaSupported: msg.IsImage || msg.IsVoice,
+		UserID:         resolved.UserID,
 	})
 
 	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, msg.IsVoice)
@@ -649,17 +584,6 @@ func (p *Processor) summarizeImage(ctx context.Context, msg InboundMessage) (str
 		return "", fmt.Errorf("empty image")
 	}
 	return p.vision.SummarizeReceipt(ctx, image, msg.ImageMime)
-}
-
-func (p *Processor) extractBankDetails(ctx context.Context, msg InboundMessage) (*BankDetailExtraction, error) {
-	image, err := base64.StdEncoding.DecodeString(msg.ImageB64)
-	if err != nil {
-		return nil, fmt.Errorf("decode image: %w", err)
-	}
-	if len(image) == 0 {
-		return nil, fmt.Errorf("empty image")
-	}
-	return p.bankDetailVision.ExtractBankDetails(ctx, image, msg.ImageMime)
 }
 
 func (p *Processor) synthesizeVoice(ctx context.Context, identity *entities.PlatformIdentity, threadID, text string) (*OutboundMessage, error) {

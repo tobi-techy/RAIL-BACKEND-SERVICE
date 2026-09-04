@@ -7,17 +7,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/channel"
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
 // ContextAssemblyOpts controls what gets assembled.
 type ContextAssemblyOpts struct {
-	ToneMode  string    // per-request tone (gentle/hard)
-	Message   string    // user message (used for supermemory relevance)
-	ConvID    uuid.UUID // conversation — used to look up staged pending actions
-	FromVoice bool      // message was transcribed from a voice note
+	ToneMode string    // per-request tone (gentle/hard)
+	Message  string    // user message (used for supermemory relevance)
+	ConvID   uuid.UUID // conversation — used to look up staged pending actions
 }
 
 // channelContextKey is the context key for channel context.
@@ -44,10 +43,9 @@ func GetChannelContext(ctx context.Context) (*channel.ChannelContext, bool) {
 func (o *AgentAdapter) assembleContext(ctx context.Context, userID uuid.UUID, opts ContextAssemblyOpts) []ai.Message {
 	builder := aicontext.NewBuilder(o.BuildContextDeps())
 	messages := builder.Assemble(ctx, userID, aicontext.ContextAssemblyOpts{
-		ToneMode:  opts.ToneMode,
-		Message:   opts.Message,
-		ConvID:    opts.ConvID,
-		FromVoice: opts.FromVoice,
+		ToneMode: opts.ToneMode,
+		Message:  opts.Message,
+		ConvID:   opts.ConvID,
 	})
 
 	channelCtx := o.buildChannelContext(ctx, userID, opts.Message)

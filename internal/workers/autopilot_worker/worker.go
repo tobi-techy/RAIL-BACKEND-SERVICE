@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// Worker runs Miriam's daily autopilot loop: morning scan, midday check, evening review.
+// Worker runs Miriam's daily autopilot loop plus a Sunday weekly audit.
 type Worker struct {
 	svc      *ai.AutopilotService
 	logger   *zap.Logger
@@ -46,6 +46,11 @@ func (w *Worker) Start(ctx context.Context) {
 func (w *Worker) tick(ctx context.Context) {
 	now := time.Now().UTC()
 	hour := now.Hour()
+
+	if now.Weekday() == time.Sunday && hour >= 18 && hour < 19 {
+		w.logger.Info("autopilot: weekly audit phase")
+		w.svc.RunWeeklyAudit(ctx)
+	}
 
 	switch {
 	case hour >= 6 && hour < 7:

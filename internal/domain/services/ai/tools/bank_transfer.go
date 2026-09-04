@@ -44,7 +44,7 @@ func RegisterBankTransferTools(r *Registry) {
 		SimpleArgs(map[string]map[string]interface{}{
 			"bank_code":      StringParam("Bank code from list_banks (e.g. '058' for GTBank)"),
 			"account_number": StringParam("10-digit NUBAN account number, e.g. '0916473844'"),
-			"bank_name":       StringParam("Bank name (optional but improves match rate, e.g. 'GTBank')"),
+			"bank_name":      StringParam("Bank name (optional but improves match rate, e.g. 'GTBank')"),
 		}, []string{"bank_code", "account_number"}),
 		core.CategoryAction,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {

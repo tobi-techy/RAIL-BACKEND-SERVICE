@@ -485,11 +485,6 @@ func (f *fakeDeduper) SetNX(_ context.Context, k string, _ interface{}, _ time.D
 	return true, nil
 }
 
-func (f *fakeDeduper) Del(_ context.Context, k string) error {
-	delete(f.seen, k)
-	return nil
-}
-
 func TestProcess_DuplicateMsgIDProcessedOnce(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")

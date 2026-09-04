@@ -106,7 +106,7 @@ func countryForLocale(locale string) string {
 		"en-US": "US", "en-GB": "GB", "en-CA": "CA", "en-AU": "AU",
 		"nigeria": "NG", "west_africa": "NG", "east_africa": "KE",
 		"southern_africa": "ZA",
-		"diaspora_us": "US", "diaspora_uk": "GB", "europe": "DE",
+		"diaspora_us":     "US", "diaspora_uk": "GB", "europe": "DE",
 		"global": "", "formal_global": "",
 	}
 	if c, ok := localeMap[locale]; ok {

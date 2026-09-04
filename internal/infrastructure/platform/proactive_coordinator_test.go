@@ -32,11 +32,13 @@ func (r *stubRedis) Incr(_ context.Context, key string) (int64, error) {
 
 func (r *stubRedis) Expire(_ context.Context, _ string, _ time.Duration) error { return nil }
 
-func (r *stubRedis) Get(_ context.Context, _ string, _ interface{}) error { return errors.New("not implemented") }
+func (r *stubRedis) Get(_ context.Context, _ string, _ interface{}) error {
+	return errors.New("not implemented")
+}
 func (r *stubRedis) Set(_ context.Context, _ string, _ interface{}, _ time.Duration) error {
 	return errors.New("not implemented")
 }
-func (r *stubRedis) Del(_ context.Context, _ string) error             { return errors.New("not implemented") }
+func (r *stubRedis) Del(_ context.Context, _ string) error            { return errors.New("not implemented") }
 func (r *stubRedis) Exists(_ context.Context, _ string) (bool, error) { return false, nil }
 func (r *stubRedis) SetNX(_ context.Context, _ string, _ interface{}, _ time.Duration) (bool, error) {
 	return false, errors.New("not implemented")
@@ -47,7 +49,7 @@ func (r *stubRedis) IncrBy(_ context.Context, _ string, _ int64) (int64, error) 
 func (r *stubRedis) Keys(_ context.Context, _ string) ([]string, error) { return nil, nil }
 func (r *stubRedis) Ping(_ context.Context) error                       { return nil }
 func (r *stubRedis) Close() error                                       { return nil }
-func (r *stubRedis) Client() *redis.Client                             { return nil }
+func (r *stubRedis) Client() *redis.Client                              { return nil }
 
 // ensure stubRedis satisfies the interface.
 var _ cache.RedisClient = (*stubRedis)(nil)

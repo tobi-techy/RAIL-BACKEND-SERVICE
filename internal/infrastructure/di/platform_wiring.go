@@ -109,6 +109,9 @@ func (c *Container) initializePlatformMessaging() {
 			}
 
 			bridgeDispatcher := platform.NewBridgeDispatcher(sendFunc, c.ConversationRepo, entities.PlatformIMessage, c.ZapLog)
+			if c.Config.AI.ProactiveVoice {
+				bridgeDispatcher.SetComposer(platform.NewProactiveComposer(c.AIProvider, c.ZapLog))
+			}
 
 			// Quiet-hours + daily-frequency guard so Miriam stays a discreet
 			// presence, not a notification machine. Timezone resolved per user
@@ -176,7 +179,6 @@ func (c *Container) initializePlatformMessaging() {
 						Logger:           c.ZapLog,
 					})
 					proc.SetReceiptVision(platform.NewDocumentReceiptVision(visionPipeline))
-					proc.SetBankDetailVision(platform.NewOCRBankDetailVision(visionPipeline))
 					c.ZapLog.Info("Platform receipt vision enabled (PaddleOCR pipeline)")
 				}
 			}
@@ -189,12 +191,9 @@ func (c *Container) initializePlatformMessaging() {
 			c.platformLinking = linkingSvc
 
 			if c.EmailService != nil && c.UserRepo != nil {
-				c.ConfirmTokenStore = platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog)
-				c.ConfirmHandler = platform.NewConfirmHandler(
-					c.ConfirmTokenStore,
-					c.AIOrchestrator,
-					c.ZapLog,
-				)
+				confirmStore := platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog)
+				c.ConfirmHandler = platform.NewConfirmHandler(confirmStore, c.AIOrchestrator, c.ZapLog)
+				c.ConfirmTokenStore = confirmStore
 			}
 
 			c.ZapLog.Info("Platform messaging via HTTP (bridge)",

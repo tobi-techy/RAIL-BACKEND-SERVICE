@@ -1,11 +1,11 @@
 package ai
 
 import (
+	"context"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	aiexecution "github.com/rail-service/rail_service/internal/domain/services/ai/execution"
 	aiprompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
 	aivoicelimits "github.com/rail-service/rail_service/internal/domain/services/ai/voice/limits"
-	"context"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"go.uber.org/zap"
 )
@@ -19,14 +19,6 @@ var ErrStepUpRequired = aiexecution.ErrStepUpRequired
 
 func WithStepUpToken(ctx context.Context, token string) context.Context {
 	return aiexecution.WithStepUpToken(ctx, token)
-}
-
-func WithEmailLinkVerification(ctx context.Context) context.Context {
-	return aiexecution.WithEmailLinkVerification(ctx)
-}
-
-func IsEmailLinkVerified(ctx context.Context) bool {
-	return aiexecution.IsEmailLinkVerified(ctx)
 }
 
 type QualityVerdict = aiexecution.QualityVerdict

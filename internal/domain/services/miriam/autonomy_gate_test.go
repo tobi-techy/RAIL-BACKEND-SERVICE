@@ -61,7 +61,9 @@ func (r *fakeRepo) MarkMandateExecuted(_ context.Context, _ uuid.UUID, _ time.Ti
 func (r *fakeRepo) MandateExecutedAmountSince(_ context.Context, _ uuid.UUID, _ time.Time) (decimal.Decimal, error) {
 	return decimal.Zero, nil
 }
-func (r *fakeRepo) CreateReceipt(_ context.Context, _ *entities.MiriamDecisionReceipt) error { return nil }
+func (r *fakeRepo) CreateReceipt(_ context.Context, _ *entities.MiriamDecisionReceipt) error {
+	return nil
+}
 func (r *fakeRepo) ListReceipts(_ context.Context, _ uuid.UUID, _ int) ([]entities.MiriamDecisionReceipt, error) {
 	return nil, nil
 }
@@ -151,8 +153,8 @@ func (fakeNudgeStore) CreateNudge(_ context.Context, _ *entities.ProactiveNudge)
 func (fakeNudgeStore) ListPendingNudges(_ context.Context, _ uuid.UUID) ([]entities.ProactiveNudge, error) {
 	return nil, nil
 }
-func (fakeNudgeStore) MarkDelivered(_ context.Context, _ uuid.UUID) error    { return nil }
-func (fakeNudgeStore) MarkDismissed(_ context.Context, _ uuid.UUID) error    { return nil }
+func (fakeNudgeStore) MarkDelivered(_ context.Context, _ uuid.UUID) error { return nil }
+func (fakeNudgeStore) MarkDismissed(_ context.Context, _ uuid.UUID) error { return nil }
 func (fakeNudgeStore) ExpireOldNudges(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }
@@ -329,11 +331,11 @@ func TestIsAutonomousEvent(t *testing.T) {
 // only for ControlLevelFull users.
 func TestEvaluateSkipsMandateExecutionForAutonomousEvents(t *testing.T) {
 	tests := []struct {
-		name           string
-		eventType      string
-		controlLevel   string
-		wantActions    int  // expected ActionsExecuted (0 for blocked, >0 for executed)
-		wantTransfer   bool // whether TransferSpendingToStash should be called
+		name         string
+		eventType    string
+		controlLevel string
+		wantActions  int  // expected ActionsExecuted (0 for blocked, >0 for executed)
+		wantTransfer bool // whether TransferSpendingToStash should be called
 	}{
 		{
 			name:         "money event skips mandates even for full users",

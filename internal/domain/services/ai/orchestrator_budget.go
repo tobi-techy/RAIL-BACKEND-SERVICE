@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )

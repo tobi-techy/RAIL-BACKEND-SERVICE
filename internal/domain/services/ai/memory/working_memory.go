@@ -20,18 +20,18 @@ import (
 // TTL is 30 minutes — long enough to cover a conversation session, short
 // enough to avoid stale state leaking into new sessions.
 const (
-	workingMemoryTTL   = 30 * time.Minute
+	workingMemoryTTL       = 30 * time.Minute
 	workingMemoryKeyPrefix = "miriam:wm:"
 	workingMemoryMaxChars  = 500
 )
 
 // WorkingMemoryEntry is the cached conversation state for a user.
 type WorkingMemoryEntry struct {
-	Summary       string    `json:"summary"`
-	Topic         string    `json:"topic"`
-	MessageCount  int       `json:"message_count"`
+	Summary        string    `json:"summary"`
+	Topic          string    `json:"topic"`
+	MessageCount   int       `json:"message_count"`
 	LastExchangeAt time.Time `json:"last_exchange_at"`
-	ActiveThread  string    `json:"active_thread"`
+	ActiveThread   string    `json:"active_thread"`
 }
 
 // GetSummary returns the conversation summary (satisfies core.WorkingMemorySnapshot).
@@ -177,25 +177,10 @@ func extractTopic(msg string) string {
 // proposal, and keeps the note short enough for prompt context.
 func buildActiveThread(userMsg, assistantBrief string) string {
 	thread := normalizeActiveThreadCandidate(userMsg)
-	// If user message is a simple acknowledgment, prefer the assistant's proposal
-	if thread != "" && isSimpleAcknowledgment(userMsg) {
-		if alt := normalizeActiveThreadCandidate(assistantBrief); alt != "" {
-			return alt
-		}
-	}
 	if thread == "" {
 		thread = normalizeActiveThreadCandidate(assistantBrief)
 	}
 	return thread
-}
-
-func isSimpleAcknowledgment(text string) bool {
-	trimmed := strings.TrimSpace(strings.ToLower(text))
-	switch trimmed {
-	case "yeah", "yes", "ok", "okay", "sure", "yep", "yup", "got it", "gotit", "cool", "nice", "fine", "maybe later", "maybe":
-		return true
-	}
-	return false
 }
 
 func normalizeActiveThreadCandidate(text string) string {

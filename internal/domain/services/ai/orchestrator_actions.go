@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aiactions "github.com/rail-service/rail_service/internal/domain/services/ai/actions"
-	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiactions "github.com/rail-service/rail_service/internal/domain/services/ai/actions"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/execution"
+	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/shopspring/decimal"
@@ -496,9 +496,9 @@ func (o *AgentAdapter) createTransferAction(ctx context.Context, userID, convID 
 	}
 
 	return map[string]interface{}{
-		"action_required": true,
-		"pending_action":  action,
-		"impact":          impact,
+		"action_required":      true,
+		"pending_action":       action,
+		"impact":               impact,
 		"confirmation_message": actionConfirmationMessage(action),
 	}, nil
 }
@@ -547,8 +547,8 @@ func (o *AgentAdapter) createSavingsGoalAction(ctx context.Context, userID, conv
 	}
 
 	return map[string]interface{}{
-		"action_required": true,
-		"pending_action":  action,
+		"action_required":      true,
+		"pending_action":       action,
 		"confirmation_message": actionConfirmationMessage(action),
 	}, nil
 }

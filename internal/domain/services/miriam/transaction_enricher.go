@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	llmFallbackThreshold    = 0.5
-	enrichBatchConcurrency  = 10
-	defaultCurrency         = "USD"
+	llmFallbackThreshold   = 0.5
+	enrichBatchConcurrency = 10
+	defaultCurrency        = "USD"
 )
 
 // EnrichmentStore persists enriched transactions.
@@ -210,7 +210,7 @@ func (e *TransactionEnricher) llmEnrich(ctx context.Context, txnID, userID uuid.
 			TransactionDate: txnDate, Direction: direction(amount),
 			Counterparty: rawDesc, CategoryL1: "Uncategorized", CategoryL2: "Other",
 			ClassificationLayer: entities.ClassificationLayerRule,
-			Confidence: decimal.NewFromFloat(0.1), CreatedAt: time.Now().UTC(),
+			Confidence:          decimal.NewFromFloat(0.1), CreatedAt: time.Now().UTC(),
 		}, nil
 	}
 
@@ -239,7 +239,7 @@ plain_description should read naturally like a sentence: "Uber ride to Victoria 
 			TransactionDate: txnDate, Direction: direction(amount),
 			Counterparty: rawDesc, CategoryL1: "Uncategorized", CategoryL2: "Other",
 			ClassificationLayer: entities.ClassificationLayerRule,
-			Confidence: decimal.NewFromFloat(0.1), CreatedAt: time.Now().UTC(),
+			Confidence:          decimal.NewFromFloat(0.1), CreatedAt: time.Now().UTC(),
 		}, nil
 	}
 

@@ -67,7 +67,7 @@ func RegisterSavingsGoalsV2Tools(r *Registry) {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
 			return &core.ToolResult{Data: map[string]interface{}{
-				"goal":  goal,
+				"goal":    goal,
 				"created": true,
 			}}, nil
 		},
@@ -118,8 +118,8 @@ func RegisterSavingsGoalsV2Tools(r *Registry) {
 		"update_user_goal_progress",
 		"Update the saved-so-far amount on a goal. Use when the user manually moves money toward a goal (e.g., 'I just put another $50 toward my laptop'). The goal_progress worker reads this on its next tick and may fire a milestone notification if a 25/50/75/100% threshold was crossed.",
 		SimpleArgs(map[string]map[string]interface{}{
-			"goal_id":     StringParam("UUID of the goal."),
-			"new_amount":  NumberParam("New saved-so-far amount in the goal's currency."),
+			"goal_id":    StringParam("UUID of the goal."),
+			"new_amount": NumberParam("New saved-so-far amount in the goal's currency."),
 		}, []string{"goal_id", "new_amount"}),
 		core.CategoryPlanning,
 		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
@@ -136,8 +136,8 @@ func RegisterSavingsGoalsV2Tools(r *Registry) {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
 			return &core.ToolResult{Data: map[string]interface{}{
-				"goal":     updated,
-				"updated":  true,
+				"goal":    updated,
+				"updated": true,
 			}}, nil
 		},
 	))

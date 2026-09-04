@@ -111,11 +111,11 @@ type ActionChip struct {
 
 // PlanData carries the executable plan (multi-step actions).
 type PlanData struct {
-	PlanID      string   `json:"plan_id"`
-	Steps       []Step   `json:"steps"`
-	Status      string   `json:"status"` // "draft" | "confirmed" | "running" | "completed" | "failed" | "cancelled"
-	CreatedAt   int64    `json:"created_at"`
-	UpdatedAt   int64    `json:"updated_at"`
+	PlanID    string `json:"plan_id"`
+	Steps     []Step `json:"steps"`
+	Status    string `json:"status"` // "draft" | "confirmed" | "running" | "completed" | "failed" | "cancelled"
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 // Step is a single unit of work in a plan.

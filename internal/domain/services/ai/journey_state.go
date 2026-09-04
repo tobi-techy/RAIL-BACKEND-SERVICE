@@ -102,9 +102,6 @@ func (s *JourneyState) SetFact(key, value, source string, confidence float64) {
 
 // HasFact reports whether a fact key is already known.
 func (s *JourneyState) HasFact(key string) bool {
-	if s.Facts == nil {
-		return false
-	}
 	_, ok := s.Facts[key]
 	return ok
 }
@@ -124,9 +121,6 @@ func (s *JourneyState) ReachMilestone(name string) bool {
 
 // HasMilestone reports whether a milestone has been reached.
 func (s *JourneyState) HasMilestone(name string) bool {
-	if s.Milestones == nil {
-		return false
-	}
 	_, ok := s.Milestones[name]
 	return ok
 }

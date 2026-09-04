@@ -10,11 +10,11 @@ import (
 
 // fakeBankTransferProvider implements core.BankTransferProvider for testing.
 type fakeBankTransferProvider struct {
-	banks          []map[string]interface{}
-	resolveResult  map[string]interface{}
-	resolveErr     error
-	offrampResult  map[string]interface{}
-	offrampErr     error
+	banks           []map[string]interface{}
+	resolveResult   map[string]interface{}
+	resolveErr      error
+	offrampResult   map[string]interface{}
+	offrampErr      error
 	lastOfframpArgs struct {
 		bankCode, accountNumber, bankName, amount, currency, accountName string
 	}
@@ -176,8 +176,8 @@ func TestSendToBank_ExecutesThroughProvider(t *testing.T) {
 	ft := &fakeBankTransferProvider{
 		offrampResult: map[string]interface{}{
 			"status":         "pending",
-			"transaction_id":  "tx-123",
-			"fiat_amount":     2500.0,
+			"transaction_id": "tx-123",
+			"fiat_amount":    2500.0,
 		},
 	}
 	deps := &core.Dependencies{BankTransfer: ft}

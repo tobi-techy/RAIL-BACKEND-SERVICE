@@ -18,11 +18,13 @@ func TestSystemPromptV2_ConversationalCore(t *testing.T) {
 		"CONVERSATIONAL MECHANICS",
 		"INTERACTION MODES",
 		"JUDGMENT",
+		"SPECIFICITY",
 		"FINANCIAL PHILOSOPHY",
 		"ADAPTIVE LENGTH",
 		"GREETINGS:",
 		"CHAT NATURAL",
 		"VOICE ANCHORS",
+		"Default to lowercase",
 	} {
 		if !strings.Contains(SystemPromptV2, want) {
 			t.Errorf("SystemPromptV2 missing %q section from conversational retune", want)

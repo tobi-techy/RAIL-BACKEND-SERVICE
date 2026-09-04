@@ -4,9 +4,9 @@ import (
 	"regexp"
 	"testing"
 
-	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
 	prompttools "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/tools"
+	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -139,10 +139,10 @@ func TestSystemPromptToolsReferencesResolve(t *testing.T) {
 		ToolVoiceMoneyLookup: true,
 		// Automation action types mentioned in the prompt as available actions
 		// for create_automation — they are not AI tools themselves.
-		"pay_utility_bill":  true,
-		"pause_card":        true,
-		"resume_card":       true,
-		"set_budget_alert":  true,
+		"pay_utility_bill":   true,
+		"pause_card":         true,
+		"resume_card":        true,
+		"set_budget_alert":   true,
 		ToolVoiceMoneyAction: true,
 		"confirm_action":     true,
 		"cancel_action":      true,

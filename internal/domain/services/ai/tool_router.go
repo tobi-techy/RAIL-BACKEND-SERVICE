@@ -227,10 +227,10 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		"send_money":       true,
 		// Bank transfers + crypto sends — "send 2500 to gtbank 0916473844"
 		// and "send 50 USDC to 0x..." previously had no tool path.
-		"list_banks":          true,
+		"list_banks":           true,
 		"resolve_bank_account": true,
-		"send_to_bank":        true,
-		"send_crypto":         true,
+		"send_to_bank":         true,
+		"send_crypto":          true,
 		// Obligations — "what do I owe / mark it paid" context.
 		ToolListFinancialObligations: true,
 		ToolFindObligationPayments:   true,

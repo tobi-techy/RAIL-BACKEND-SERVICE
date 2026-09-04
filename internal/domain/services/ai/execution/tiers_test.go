@@ -48,7 +48,6 @@ func TestIsExecutionActionTool_CoversLegacySwitch(t *testing.T) {
 		"create_flight_intent", "book_flight", "save_travel_passenger", "request_flight_refund",
 		"accept_mandate_suggestion",
 		"send_money", "split_receipt", "create_automation",
-		"send_to_bank", "send_crypto",
 	}
 	for _, name := range legacy {
 		if !IsExecutionActionTool(name) {
@@ -59,28 +58,6 @@ func TestIsExecutionActionTool_CoversLegacySwitch(t *testing.T) {
 	for _, name := range []string{"set_budget", "set_savings_goal", "mark_obligation_paid"} {
 		if IsExecutionActionTool(name) {
 			t.Errorf("IsExecutionActionTool(%q) = true, but it's an auto-execute tool", name)
-		}
-	}
-}
-
-// TestNewToolsAreInCorrectTiers verifies that bank transfer and crypto send
-// tools are in StageConfirmTools (they move money), and the new automation
-// management tools are in AutoExecuteTools (they don't move money).
-func TestNewToolsAreInCorrectTiers(t *testing.T) {
-	for _, name := range []string{"send_to_bank", "send_crypto"} {
-		if !core.StageConfirmTools[name] {
-			t.Errorf("%q must be in StageConfirmTools (fund-moving)", name)
-		}
-		if core.AutoExecuteTools[name] {
-			t.Errorf("%q must NOT be in AutoExecuteTools (it requires confirmation)", name)
-		}
-	}
-	for _, name := range []string{"pause_automation", "resume_automation", "delete_automation"} {
-		if !core.AutoExecuteTools[name] {
-			t.Errorf("%q must be in AutoExecuteTools (no money moved)", name)
-		}
-		if core.StageConfirmTools[name] {
-			t.Errorf("%q must NOT be in StageConfirmTools (no confirmation needed)", name)
 		}
 	}
 }

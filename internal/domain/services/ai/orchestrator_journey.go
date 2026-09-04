@@ -115,12 +115,9 @@ func (o *AgentAdapter) syncJourneyState(ctx context.Context, userID uuid.UUID, s
 	dirty := false
 
 	if sigs.name != "" {
-		before := ""
-		if state.Facts != nil {
-			before = state.Facts[JourneyFactName].Value
-		}
+		before := state.Facts[JourneyFactName]
 		state.SetFact(JourneyFactName, sigs.name, FactSourceSignup, 0.95)
-		if state.Facts[JourneyFactName].Value != before {
+		if state.Facts[JourneyFactName] != before {
 			dirty = true
 		}
 	}
@@ -139,12 +136,9 @@ func (o *AgentAdapter) syncJourneyState(ctx context.Context, userID uuid.UUID, s
 		confidence = 0.85
 	}
 	if motivation != "" {
-		before := ""
-		if state.Facts != nil {
-			before = state.Facts[JourneyFactMotivation].Value
-		}
+		before := state.Facts[JourneyFactMotivation]
 		state.SetFact(JourneyFactMotivation, motivation, source, confidence)
-		if state.Facts[JourneyFactMotivation].Value != before {
+		if state.Facts[JourneyFactMotivation] != before {
 			dirty = true
 			if state.ReachMilestone(MilestoneGoalCaptured) {
 				metrics.ObserveJourneyMilestone(MilestoneGoalCaptured)
@@ -280,10 +274,6 @@ func (o *AgentAdapter) buildJourneyBlock(ctx context.Context, userID uuid.UUID, 
 	if sigs.phase != PhaseFirstConversation &&
 		sigs.phase != PhaseOnboardedNotFunded &&
 		sigs.phase != PhaseFundedNewbie {
-		return ""
-	}
-
-	if sigs.user == nil {
 		return ""
 	}
 

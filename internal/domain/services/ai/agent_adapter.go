@@ -9,13 +9,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/memory"
-	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	promptcontext "github.com/rail-service/rail_service/internal/domain/services/ai/prompt/context"
-	"github.com/shopspring/decimal"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -502,12 +502,6 @@ func (a *AgentAdapter) BuildContextDeps() *aicontext.ContextDeps {
 				return ""
 			}
 			return a.bankStatementCtx.BuildContext(ctx, userID)
-		},
-		ListAutomationsFn: func(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutomation, error) {
-			if a.automationProvider == nil {
-				return nil, nil
-			}
-			return a.automationProvider.List(ctx, userID)
 		},
 		GetActiveThreadFn: func(ctx context.Context, userID uuid.UUID) string {
 			if a.workingMemory == nil {

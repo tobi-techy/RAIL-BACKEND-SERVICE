@@ -66,6 +66,9 @@ type Worker struct {
 
 // NewWorker creates a Miriam worker with the classic service for backward compatibility.
 func NewWorker(users UserLister, service *miriamsvc.Service, logger *zap.Logger) *Worker {
+	if logger != nil {
+		logger.Warn("miriam worker running without unified intelligence; self-review is unavailable")
+	}
 	return &Worker{
 		users: users, runner: &serviceRunner{s: service}, interval: 15 * time.Minute,
 		limit: 500, concurrency: 10, logger: logger,
@@ -79,6 +82,8 @@ func NewWorkerWithIntelligence(users UserLister, service *miriamsvc.Service, bra
 	var r runner = &serviceRunner{s: service}
 	if brain != nil {
 		r = &brainRunner{b: brain}
+	} else if logger != nil {
+		logger.Warn("miriam worker running without unified intelligence; self-review is unavailable")
 	}
 	return &Worker{
 		users: users, runner: r, interval: 15 * time.Minute,

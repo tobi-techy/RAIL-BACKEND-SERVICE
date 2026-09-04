@@ -123,3 +123,18 @@ func TestQualityGateAllowsLongGroundedBreakdown(t *testing.T) {
 	v := CheckResponseQuality(b.String())
 	assert.NotContains(t, v.Failures, "too_verbose", "grounded breakdown should not be flagged verbose")
 }
+
+func TestQualityGateSpecificity(t *testing.T) {
+	flat := "okay. your ₦12,500 food spending is what the record shows right now, and it is worth keeping in mind because these numbers matter when you are trying to make a decision about where your money should go next."
+	v := CheckResponseQuality(flat)
+	assert.Contains(t, v.Failures, "lacks_specificity")
+
+	specific := "okay, ₦12,500 went on food. that's 25% above your normal month, so pause takeout this week and set a food cap before the next shop."
+	v = CheckResponseQuality(specific)
+	assert.NotContains(t, v.Failures, "lacks_specificity")
+}
+
+func TestQualityGateCatchesBullets(t *testing.T) {
+	v := CheckResponseQuality("• food: ₦12,500\n- transport: ₦4,000")
+	assert.Contains(t, v.Failures, "has_markdown")
+}

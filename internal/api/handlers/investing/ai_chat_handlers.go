@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -27,6 +28,65 @@ import (
 // aiChatLimiters provides per-user rate limiting for AI chat endpoints (10 req/min).
 // Entries are evicted every 10 minutes to prevent unbounded memory growth.
 var aiChatLimiters sync.Map
+
+// sseKeepaliveInterval paces the comment heartbeat on the chat stream. Short
+// enough to stay under common proxy idle timeouts and to keep the client's
+// typing indicator alive through a long tool chain.
+const sseKeepaliveInterval = 10 * time.Second
+
+// sseStream serializes every write to a Server-Sent Events response. Gin's
+// ResponseWriter is not safe for concurrent use and the keepalive heartbeat
+// writes from its own goroutine alongside the orchestrator's emit callback, so
+// all writes funnel through one mutex.
+type sseStream struct {
+	mu sync.Mutex
+	w  gin.ResponseWriter
+}
+
+// writeRaw emits a pre-formatted SSE payload (including its trailing blank
+// line) and flushes.
+func (s *sseStream) writeRaw(payload string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := io.WriteString(s.w, payload); err != nil {
+		return
+	}
+	s.w.Flush()
+}
+
+// event marshals and emits one stream event. Marshal failures are dropped:
+// callers that need a guaranteed-renderable fallback build the payload
+// themselves and use writeRaw.
+func (s *sseStream) event(e aiservice.StreamEvent) {
+	data, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+	s.writeRaw("data: " + string(data) + "\n\n")
+}
+
+// keepalive starts a comment heartbeat and returns a stop function. SSE
+// comment lines are ignored by EventSource clients but defeat proxy buffering
+// and idle timeouts during the dead air before the first token.
+func (s *sseStream) keepalive(ctx context.Context, every time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.writeRaw(": ka\n\n")
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
 
 // nudgeLimiters provides per-user rate limiting for nudge endpoints (2 req/30s, burst 3).
 var nudgeLimiters sync.Map
@@ -212,27 +272,26 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
+	stream := &sseStream{w: c.Writer}
+	// Hold the connection and the client's typing indicator through context
+	// assembly, tool chains, and model latency — all of which can pass with no
+	// token to send.
+	stopKeepalive := stream.keepalive(c.Request.Context(), sseKeepaliveInterval)
+	defer stopKeepalive()
+
 	err = func() error {
 		message := req.TransactionContext.toPromptPrefix() + sanitizeUserMessage(req.Message)
-		emitFn := func(event aiservice.StreamEvent) {
-			data, _ := json.Marshal(event)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-			c.Writer.Flush()
-		}
+		emitFn := stream.event
 
 		if req.ConversationID != "" && h.convService != nil {
 			convID, parseErr := uuid.Parse(req.ConversationID)
 			if parseErr != nil {
-				errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Invalid conversation ID"})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
-				c.Writer.Flush()
+				stream.event(aiservice.StreamEvent{Type: "error", Content: "Invalid conversation ID"})
 				return nil
 			}
 			conv, convErr := h.convService.GetConversation(c.Request.Context(), convID)
 			if convErr != nil || conv == nil || conv.UserID != userID {
-				errEvent, _ := json.Marshal(aiservice.StreamEvent{Type: "error", Content: "Conversation not found"})
-				fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
-				c.Writer.Flush()
+				stream.event(aiservice.StreamEvent{Type: "error", Content: "Conversation not found"})
 				return nil
 			}
 			// Inject conversation_id into done event so frontend can track it
@@ -269,6 +328,10 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 		return h.orchestrator.ChatStreamWithOptions(c.Request.Context(), userID, message, req.History, aiservice.ChatOptions{ToneMode: req.ToneMode}, emitFn)
 	}()
 
+	// The turn is over one way or another: no more dead air to cover, and the
+	// heartbeat must not race the terminal events below.
+	stopKeepalive()
+
 	if err != nil {
 		if c.Request.Context().Err() != nil {
 			// Client disconnected — expected for streaming, don't log as error
@@ -285,12 +348,10 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 				"spent_usd", ex.SpentUSD,
 				"limit_usd", ex.LimitUSD,
 			)
-			errEvent, _ := json.Marshal(aiservice.StreamEvent{
+			stream.event(aiservice.StreamEvent{
 				Type:    "error",
 				Content: friendlyCeilingMessage(ex),
 			})
-			fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
-			c.Writer.Flush()
 			return
 		}
 
@@ -306,13 +367,11 @@ func (h *AIChatHandlers) ChatStream(c *gin.Context) {
 			h.logger.Error("failed to marshal stream error event", "error", marshalErr, "user_id", userID.String())
 			errEvent = []byte(`{"type":"error","content":"I couldn't finish that one — mind trying again?"}`)
 		}
-		fmt.Fprintf(c.Writer, "data: %s\n\n", errEvent)
-		c.Writer.Flush()
+		stream.writeRaw("data: " + string(errEvent) + "\n\n")
 	}
 
 	// Signal end of stream
-	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
-	c.Writer.Flush()
+	stream.writeRaw("data: [DONE]\n\n")
 }
 
 // Chat handles POST /api/v1/ai/chat
@@ -381,12 +440,12 @@ func (h *AIChatHandlers) Chat(c *gin.Context) {
 					"limit_usd", ex.LimitUSD,
 				)
 				c.JSON(http.StatusTooManyRequests, gin.H{
-					"error":         "cost_ceiling_exceeded",
-					"scope":         ex.Scope,
-					"limit_usd":     ex.LimitUSD,
-					"spent_usd":     ex.SpentUSD,
-					"message":       friendlyCeilingMessage(ex),
-					"retry_after":   nextResetUnix(ex.Scope),
+					"error":       "cost_ceiling_exceeded",
+					"scope":       ex.Scope,
+					"limit_usd":   ex.LimitUSD,
+					"spent_usd":   ex.SpentUSD,
+					"message":     friendlyCeilingMessage(ex),
+					"retry_after": nextResetUnix(ex.Scope),
 				})
 				return
 			}

@@ -9,12 +9,12 @@ import (
 type Platform string
 
 const (
-	PlatformIMessage  Platform = "imessage"
-	PlatformWhatsApp  Platform = "whatsapp"
-	PlatformTelegram  Platform = "telegram"
-	PlatformSMS       Platform = "sms"
-	PlatformTerminal  Platform = "terminal"
-	PlatformUnknown   Platform = "unknown"
+	PlatformIMessage Platform = "imessage"
+	PlatformWhatsApp Platform = "whatsapp"
+	PlatformTelegram Platform = "telegram"
+	PlatformSMS      Platform = "sms"
+	PlatformTerminal Platform = "terminal"
+	PlatformUnknown  Platform = "unknown"
 )
 
 // NormalizePlatform normalizes a platform string to a known Platform.
@@ -63,15 +63,15 @@ type ChannelCapabilities struct {
 
 // ChannelContext is the platform-agnostic context Miriam receives.
 type ChannelContext struct {
-	Platform        Platform
-	PlatformUserID  string
-	ThreadID        string
-	IdentityLinked  bool
-	Capabilities    ChannelCapabilities
-	Locale          string
-	PreferredTone   string
-	MediaSupported  bool
-	UserID          uuid.UUID
+	Platform       Platform
+	PlatformUserID string
+	ThreadID       string
+	IdentityLinked bool
+	Capabilities   ChannelCapabilities
+	Locale         string
+	PreferredTone  string
+	MediaSupported bool
+	UserID         uuid.UUID
 }
 
 // RenderStrategy tells the renderer how to present a tool result.
@@ -98,19 +98,19 @@ type ChannelHints struct {
 // ActionChip is a tappable action for quick replies / inline keyboards.
 type ActionChip struct {
 	Label   string `json:"label"`
-	Action  string `json:"action"`   // tool name to call
-	Confirm bool   `json:"confirm"`  // requires pending action confirmation
+	Action  string `json:"action"`  // tool name to call
+	Confirm bool   `json:"confirm"` // requires pending action confirmation
 }
 
 // PlanStep represents a single step in a multi-step plan.
 type PlanStep struct {
-	ID        int                    `json:"id"`
-	Tool      string                 `json:"tool"`
-	Status    string                 `json:"status"` // "pending" | "running" | "done" | "failed"
-	Check     string                 `json:"check,omitempty"`
-	Params    map[string]interface{} `json:"params,omitempty"`
-	Error     string                 `json:"error,omitempty"`
-	Result    map[string]interface{} `json:"result,omitempty"`
+	ID     int                    `json:"id"`
+	Tool   string                 `json:"tool"`
+	Status string                 `json:"status"` // "pending" | "running" | "done" | "failed"
+	Check  string                 `json:"check,omitempty"`
+	Params map[string]interface{} `json:"params,omitempty"`
+	Error  string                 `json:"error,omitempty"`
+	Result map[string]interface{} `json:"result,omitempty"`
 }
 
 // Plan represents a multi-step execution plan.
@@ -165,82 +165,82 @@ func (r *CapabilityRegistry) Set(platform Platform, caps ChannelCapabilities) {
 func defaultCapabilities() map[Platform]ChannelCapabilities {
 	return map[Platform]ChannelCapabilities{
 		PlatformIMessage: {
-			SupportsPolls:        true,
-			SupportsEffects:      true,
-			SupportsQuickReplies: false,
+			SupportsPolls:         true,
+			SupportsEffects:       true,
+			SupportsQuickReplies:  false,
 			SupportsInlineActions: false,
-			SupportsRichCards:    true,
-			SupportsThreading:    true,
-			SupportsVoiceIn:      true,
-			SupportsImageIn:      true,
-			MaxBubblesPerReply:   8,
-			MaxCharsPerBubble:    2000,
-			PreferredTone:        "warm, concise",
+			SupportsRichCards:     true,
+			SupportsThreading:     true,
+			SupportsVoiceIn:       true,
+			SupportsImageIn:       true,
+			MaxBubblesPerReply:    8,
+			MaxCharsPerBubble:     2000,
+			PreferredTone:         "warm, concise",
 		},
 		PlatformWhatsApp: {
-			SupportsPolls:        false,
-			SupportsEffects:      false,
-			SupportsQuickReplies: true,
+			SupportsPolls:         false,
+			SupportsEffects:       false,
+			SupportsQuickReplies:  true,
 			SupportsInlineActions: false,
-			SupportsRichCards:    true,
-			SupportsThreading:    false,
-			SupportsVoiceIn:      true,
-			SupportsImageIn:      true,
-			MaxBubblesPerReply:   3,
-			MaxCharsPerBubble:    4096,
-			PreferredTone:        "warm, concise",
+			SupportsRichCards:     true,
+			SupportsThreading:     false,
+			SupportsVoiceIn:       true,
+			SupportsImageIn:       true,
+			MaxBubblesPerReply:    3,
+			MaxCharsPerBubble:     4096,
+			PreferredTone:         "warm, concise",
 		},
 		PlatformTelegram: {
-			SupportsPolls:        true,
-			SupportsEffects:      false,
-			SupportsQuickReplies: false,
+			SupportsPolls:         true,
+			SupportsEffects:       false,
+			SupportsQuickReplies:  false,
 			SupportsInlineActions: true,
-			SupportsRichCards:    true,
-			SupportsThreading:    true,
-			SupportsVoiceIn:      true,
-			SupportsImageIn:      true,
-			MaxBubblesPerReply:   5,
-			MaxCharsPerBubble:    4096,
-			PreferredTone:        "concise, structured",
+			SupportsRichCards:     true,
+			SupportsThreading:     true,
+			SupportsVoiceIn:       true,
+			SupportsImageIn:       true,
+			MaxBubblesPerReply:    5,
+			MaxCharsPerBubble:     4096,
+			PreferredTone:         "concise, structured",
 		},
 		PlatformSMS: {
-			SupportsPolls:        false,
-			SupportsEffects:      false,
-			SupportsQuickReplies: false,
+			SupportsPolls:         false,
+			SupportsEffects:       false,
+			SupportsQuickReplies:  false,
 			SupportsInlineActions: false,
-			SupportsRichCards:    false,
-			SupportsThreading:    false,
-			SupportsVoiceIn:      false,
-			SupportsImageIn:      false,
-			MaxBubblesPerReply:   1,
-			MaxCharsPerBubble:    1600,
-			PreferredTone:        "brief, action-oriented",
+			SupportsRichCards:     false,
+			SupportsThreading:     false,
+			SupportsVoiceIn:       false,
+			SupportsImageIn:       false,
+			MaxBubblesPerReply:    1,
+			MaxCharsPerBubble:     1600,
+			PreferredTone:         "brief, action-oriented",
 		},
 		PlatformTerminal: {
-			SupportsPolls:        false,
-			SupportsEffects:      false,
-			SupportsQuickReplies: false,
+			SupportsPolls:         false,
+			SupportsEffects:       false,
+			SupportsQuickReplies:  false,
 			SupportsInlineActions: false,
-			SupportsRichCards:    true,
-			SupportsThreading:    false,
-			SupportsVoiceIn:      false,
-			SupportsImageIn:      false,
-			MaxBubblesPerReply:   10,
-			MaxCharsPerBubble:    4096,
-			PreferredTone:        "technical, detailed",
+			SupportsRichCards:     true,
+			SupportsThreading:     false,
+			SupportsVoiceIn:       false,
+			SupportsImageIn:       false,
+			MaxBubblesPerReply:    10,
+			MaxCharsPerBubble:     4096,
+			PreferredTone:         "technical, detailed",
 		},
 		PlatformUnknown: {
-			SupportsPolls:        false,
-			SupportsEffects:      false,
-			SupportsQuickReplies: false,
+			SupportsPolls:         false,
+			SupportsEffects:       false,
+			SupportsQuickReplies:  false,
 			SupportsInlineActions: false,
-			SupportsRichCards:    false,
-			SupportsThreading:    false,
-			SupportsVoiceIn:      false,
-			SupportsImageIn:      false,
-			MaxBubblesPerReply:   1,
-			MaxCharsPerBubble:    1000,
-			PreferredTone:        "concise",
+			SupportsRichCards:     false,
+			SupportsThreading:     false,
+			SupportsVoiceIn:       false,
+			SupportsImageIn:       false,
+			MaxBubblesPerReply:    1,
+			MaxCharsPerBubble:     1000,
+			PreferredTone:         "concise",
 		},
 	}
 }
@@ -249,15 +249,15 @@ func defaultCapabilities() map[Platform]ChannelCapabilities {
 func BuildChannelContext(platform Platform, userID uuid.UUID, platformUserID, threadID string, identityLinked bool, locale string) ChannelContext {
 	caps := defaultCapabilities()[platform]
 	return ChannelContext{
-		Platform:        platform,
-		UserID:          userID,
-		PlatformUserID:  platformUserID,
-		ThreadID:        threadID,
-		IdentityLinked:  identityLinked,
-		Capabilities:    caps,
-		Locale:          locale,
-		PreferredTone:   caps.PreferredTone,
-		MediaSupported:  caps.SupportsImageIn || caps.SupportsVoiceIn,
+		Platform:       platform,
+		UserID:         userID,
+		PlatformUserID: platformUserID,
+		ThreadID:       threadID,
+		IdentityLinked: identityLinked,
+		Capabilities:   caps,
+		Locale:         locale,
+		PreferredTone:  caps.PreferredTone,
+		MediaSupported: caps.SupportsImageIn || caps.SupportsVoiceIn,
 	}
 }
 
@@ -265,15 +265,15 @@ func BuildChannelContext(platform Platform, userID uuid.UUID, platformUserID, th
 func BuildChannelContextFromRegistry(registry *CapabilityRegistry, platform Platform, userID uuid.UUID, platformUserID, threadID string, identityLinked bool, locale string) ChannelContext {
 	caps := registry.Get(platform)
 	return ChannelContext{
-		Platform:        platform,
-		UserID:          userID,
-		PlatformUserID:  platformUserID,
-		ThreadID:        threadID,
-		IdentityLinked:  identityLinked,
-		Capabilities:    caps,
-		Locale:          locale,
-		PreferredTone:   caps.PreferredTone,
-		MediaSupported:  caps.SupportsImageIn || caps.SupportsVoiceIn,
+		Platform:       platform,
+		UserID:         userID,
+		PlatformUserID: platformUserID,
+		ThreadID:       threadID,
+		IdentityLinked: identityLinked,
+		Capabilities:   caps,
+		Locale:         locale,
+		PreferredTone:  caps.PreferredTone,
+		MediaSupported: caps.SupportsImageIn || caps.SupportsVoiceIn,
 	}
 }
 
