@@ -341,8 +341,14 @@ async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
     if (lastInbound) {
       space.read(lastInbound).catch(() => {});
     }
+    if (msg.content_type === "attachment") {
+      log.info({ thread_id: msg.thread_id, url: msg.attachment_url, name: msg.attachment_name }, "attachment sent");
+    }
     return true;
   } catch (err) {
+    if (msg.content_type === "attachment") {
+      log.warn({ err, thread_id: msg.thread_id, url: msg.attachment_url, name: msg.attachment_name }, "attachment send failed");
+    }
     log.error({ err, thread_id: msg.thread_id }, "failed to send to space");
     return false;
   }

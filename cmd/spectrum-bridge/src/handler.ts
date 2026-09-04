@@ -1,4 +1,4 @@
-import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice } from "spectrum-ts";
+import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice, attachment } from "spectrum-ts";
 import { effect, imessage, type IMessageMessageEffect } from "spectrum-ts/providers/imessage";
 import { childLogger } from "./logger";
 
@@ -28,6 +28,7 @@ export interface OutboundMessage {
     | "poll"
     | "voice"
     | "cards"
+    | "attachment"
     | "text";
 
   // reply
@@ -50,6 +51,10 @@ export interface OutboundMessage {
 
   // structured insight cards (rendered as per-platform card text)
   cards?: InsightCard[];
+
+  // native image attachment
+  attachment_url?: string;
+  attachment_name?: string;
 
   // delivery category: critical messages survive longer in the bridge's
   // persistent outbound queue when the Space handle is cold.
@@ -231,6 +236,22 @@ export class MessageHandler {
           const bubble = renderInsightCard(card);
           if (bubble) await this.sendWithPacing(space, bubble, "markdown");
         }
+        return;
+      }
+
+      case "attachment": {
+        const attachmentPayload = msg.attachment_url
+          ? attachment(msg.attachment_url, {
+              id: msg.attachment_name || "miriam-image",
+              name: msg.attachment_name || "miriam-image",
+            })
+          : attachment(Buffer.from(msg.text || ""), {
+              name: msg.attachment_name || "miriam-image.txt",
+              mimeType: "text/plain",
+            });
+        await space.send(typing());
+        await this.delay(this.typingDurationMs(msg.text));
+        await space.send(attachmentPayload);
         return;
       }
 

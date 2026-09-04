@@ -475,7 +475,59 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 	if len(reply.Cards) > 0 && reply.Confirm == nil && reply.OpenApp == nil {
 		out = p.responseBuilder.CardsResponse(identity, reply.Text, threadID, reply.Cards)
 	}
-	return p.send(ctx, out)
+	if err := p.send(ctx, out); err != nil {
+		return err
+	}
+
+	return p.sendVisualAttachmentIfAny(ctx, identity, threadID, replyTo, reply)
+}
+
+func (p *Processor) sendVisualAttachmentIfAny(ctx context.Context, identity *entities.PlatformIdentity, threadID, replyTo string, reply *PlatformReply) error {
+	if reply == nil || identity.Platform != entities.PlatformIMessage {
+		return nil
+	}
+
+	for _, card := range reply.Cards {
+		switch card.Type {
+		case "meme":
+			data, ok := card.Data.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			url, ok := data["image_url"].(string)
+			if !ok || url == "" {
+				continue
+			}
+			name := "miriam-meme.png"
+			if v, ok := data["template"].(string); ok && v != "" {
+				name = "miriam-" + v + "-meme.png"
+			}
+			attachment := p.responseBuilder.AttachmentImageResponse(identity, "", threadID, replyTo, url, name)
+			if err := p.send(ctx, attachment); err != nil {
+				return err
+			}
+			return nil
+		case "receipt", "image_analysis":
+			data, ok := card.Data.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			thumb, ok := data["thumbnail"].(string)
+			if !ok {
+				thumb, _ = data["image_url"].(string)
+			}
+			if !ok || thumb == "" {
+				continue
+			}
+			attachment := p.responseBuilder.AttachmentImageResponse(identity, "", threadID, replyTo, thumb, "miriam-receipt.jpg")
+			if err := p.send(ctx, attachment); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
+	return nil
 }
 
 func (p *Processor) send(ctx context.Context, out *OutboundMessage) error {
