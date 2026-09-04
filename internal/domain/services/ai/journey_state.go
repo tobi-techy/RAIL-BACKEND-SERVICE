@@ -163,12 +163,11 @@ func NewRedisJourneyStore(redis cache.RedisClient, logger *zap.Logger) JourneySt
 }
 
 func (r *RedisJourneyStore) Get(ctx context.Context, userID uuid.UUID) (*JourneyState, error) {
-	var state JourneyState
-	if err := r.redis.Get(ctx, journeyKeyPrefix+userID.String(), &state); err != nil {
+	state := &JourneyState{UserID: userID.String()}
+	if err := r.redis.Get(ctx, journeyKeyPrefix+userID.String(), state); err != nil {
 		return nil, err
 	}
-	state.UserID = userID.String()
-	return &state, nil
+	return state, nil
 }
 
 func (r *RedisJourneyStore) Save(ctx context.Context, state *JourneyState) error {

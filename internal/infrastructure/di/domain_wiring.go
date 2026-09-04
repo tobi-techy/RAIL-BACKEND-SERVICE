@@ -2602,8 +2602,9 @@ func (p *spendingCoachSuggestionProvider) GetSuggestions(ctx context.Context, us
 		return nil, err
 	}
 	return map[string]interface{}{
-		"suggestions":       result.Suggestions,
-		"annual_stash_growth": result.AnnualStashGrowth,
-		"message":            result.Message,
+		"suggestions":                     result.Suggestions,
+		"total_potential_monthly_savings": result.TotalPotentialMonthlySav,
+		"annual_stash_growth_if_saved":    result.AnnualStashGrowth,
+		"message":                         result.Message,
 	}, nil
 }
