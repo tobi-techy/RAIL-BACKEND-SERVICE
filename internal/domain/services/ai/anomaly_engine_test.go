@@ -424,16 +424,16 @@ func TestAnomalyEngine_RunAllChecks_AggregatesResults(t *testing.T) {
 	uid := uuid.New()
 	today := fixedNow().Format("2006-01-02")
 	eng := AnomalyEngine{
-		categories:             &mockAnomalyCategories{data: []entities.SpendingByCategory{
+		categories: &mockAnomalyCategories{data: []entities.SpendingByCategory{
 			{Category: "Utilities", Total: decimal.NewFromInt(300)},
 		}},
-		merchants:              &mockAnomalyMerchants{data: []entities.SpendingByMerchant{
+		merchants: &mockAnomalyMerchants{data: []entities.SpendingByMerchant{
 			{Merchant: "DraftKings", Count: 10, Total: decimal.NewFromInt(500)},
 		}},
-		outflows:               &mockAnomalyOutflows{data: []entities.SpendingTransaction{
+		outflows: &mockAnomalyOutflows{data: []entities.SpendingTransaction{
 			{Date: today, Amount: decimal.NewFromInt(1000), Source: "Best Buy", Category: "Electronics"},
 		}},
-		flow:                   &callTrackingFlow{
+		flow: &callTrackingFlow{
 			calls: []interface{}{
 				&entities.MoneyFlowSummary{
 					TotalCardSpend: decimal.NewFromInt(1500),
@@ -475,7 +475,7 @@ func TestBuildAlertText_SingleResult(t *testing.T) {
 	}
 
 	title, body := BuildAlertText(results)
-	assert.Contains(t, title, "1 issue")
+	assert.Empty(t, title)
 	assert.Contains(t, body, "Something happened")
 }
 
@@ -486,9 +486,10 @@ func TestBuildAlertText_MultipleResults(t *testing.T) {
 	}
 
 	title, body := BuildAlertText(results)
-	assert.Contains(t, title, "1 issue")
+	assert.Empty(t, title)
 	assert.Contains(t, body, "Issue one")
 	assert.Contains(t, body, "Issue two")
+	assert.NotContains(t, body, "•")
 }
 
 func TestBuildAlertText_OnlyLowSeverity(t *testing.T) {
@@ -497,7 +498,7 @@ func TestBuildAlertText_OnlyLowSeverity(t *testing.T) {
 	}
 
 	title, _ := BuildAlertText(results)
-	assert.Contains(t, title, "Morning Check")
+	assert.Empty(t, title)
 }
 
 // --- call tracking mocks for sequential calls ---

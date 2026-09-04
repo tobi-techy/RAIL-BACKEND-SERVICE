@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aidata "github.com/rail-service/rail_service/internal/domain/services/ai/data"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -23,37 +24,28 @@ const (
 )
 
 // CardTransactionProvider returns recent card transactions.
-type CardTransactionProvider interface {
-	GetTransactionsByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.BridgeCardTransaction, error)
-}
+// Deprecated: Use aidata.CardTransactionProvider instead.
+type CardTransactionProvider = aidata.CardTransactionProvider
 
 // DepositHistoryProvider returns recent deposits.
-type DepositHistoryProvider interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Deposit, error)
-	GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.Deposit, error)
-}
+// Deprecated: Use aidata.DepositHistoryProvider instead.
+type DepositHistoryProvider = aidata.DepositHistoryProvider
 
 // DepositIncomeProvider optionally returns aggregate deposit trend data.
-type DepositIncomeProvider interface {
-	GetCompletedMonthlyTotals(ctx context.Context, userID uuid.UUID, since, until time.Time) ([]entities.DepositMonthlyTotal, error)
-}
+// Deprecated: Use aidata.DepositIncomeProvider instead.
+type DepositIncomeProvider = aidata.DepositIncomeProvider
 
 // YieldProvider returns yield data.
-type YieldProvider interface {
-	GetSnapshotsInWindow(ctx context.Context, userID uuid.UUID, from, to time.Time) ([]*entities.YieldBalanceSnapshot, error)
-}
+// Deprecated: Use aidata.YieldProvider instead.
+type YieldProvider = aidata.YieldProvider
 
 // WithdrawalHistoryProvider returns recent withdrawals.
-type WithdrawalHistoryProvider interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*entities.Withdrawal, error)
-	GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.Withdrawal, error)
-}
+// Deprecated: Use aidata.WithdrawalHistoryProvider instead.
+type WithdrawalHistoryProvider = aidata.WithdrawalHistoryProvider
 
 // ReceiptHistoryProvider returns stored receipt scans.
-type ReceiptHistoryProvider interface {
-	GetByUserIDInRange(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]*entities.ReceiptScan, error)
-	GetTotalByCategory(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByCategory, error)
-}
+// Deprecated: Use aidata.ReceiptHistoryProvider instead.
+type ReceiptHistoryProvider = aidata.ReceiptHistoryProvider
 
 // SetCardTransactions sets the card transaction provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.

@@ -50,6 +50,18 @@ func (w *Worker) Start(ctx context.Context) {
 			if err := w.service.EvaluateObligationDue(ctx); err != nil {
 				w.logger.Error("obligation due evaluation failed", zap.Error(err))
 			}
+			if err := w.service.EvaluateIncomeDetected(ctx); err != nil {
+				w.logger.Error("income detected evaluation failed", zap.Error(err))
+			}
+			if err := w.service.EvaluateSpendingSpikes(ctx); err != nil {
+				w.logger.Error("spending spike evaluation failed", zap.Error(err))
+			}
+			if err := w.service.EvaluatePaydayTriggers(ctx); err != nil {
+				w.logger.Error("payday trigger evaluation failed", zap.Error(err))
+			}
+			if err := w.service.EvaluateLifeEvents(ctx); err != nil {
+				w.logger.Error("life event evaluation failed", zap.Error(err))
+			}
 			if err := w.service.DeactivateCompletedGoalAutomations(ctx); err != nil {
 				w.logger.Error("goal-linked deactivation failed", zap.Error(err))
 			}

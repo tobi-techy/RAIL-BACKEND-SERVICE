@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -14,9 +15,8 @@ import (
 const ToolGetComparativeContext = "get_comparative_context"
 
 // AggregateStatsProvider returns anonymous aggregate stats for comparison.
-type AggregateStatsProvider interface {
-	GetAccountBalance(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (decimal.Decimal, error)
-}
+// Deprecated: Use aifinance.AggregateStatsProvider instead.
+type AggregateStatsProvider = aifinance.AggregateStatsProvider
 
 // SetAggregateStats sets the aggregate stats provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.

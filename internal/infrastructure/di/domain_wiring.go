@@ -23,8 +23,10 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
 	"github.com/rail-service/rail_service/internal/domain/services/autoinvest"
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
+	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
+	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/gameplay"
 	"github.com/rail-service/rail_service/internal/domain/services/goals"
@@ -1484,10 +1486,20 @@ func (c *Container) initializeDomainServices() error {
 		c.AutomationService.SetYieldSnapshotRecorder(c.YieldService)
 	}
 
+	// Wire automation trigger evaluation dependencies (income_detected,
+	// spending_spike, payday, life_event). The AnomalyEngine is also stored
+	// on the container for use by application.go.
+	if c.LedgerSpendingRepo != nil {
+		c.AnomalyEngine = aiservice.NewAnomalyEngine(c.LedgerSpendingRepo, c.LedgerSpendingRepo, c.LedgerSpendingRepo, c.LedgerSpendingRepo, c.ZapLog)
+	}
+	wireAutomationTriggers(c.AutomationService, c.LedgerSpendingRepo, c.ContextSignalRepo, c.AnomalyEngine)
+
 	// Goals service (Postgres-backed multi-goal). Wired early so subsequent
 	// services (automation, AI, workers) can hold a reference.
 	c.UserGoalRepo = repositories.NewUserGoalRepository(sqlxDB)
 	c.GoalsService = goals.NewService(c.UserGoalRepo, c.ZapLog)
+	c.ConsciousSpendingPlanRepo = repositories.NewConsciousSpendingPlanRepository(sqlxDB)
+	c.ConsciousSpendingPlanService = consciousspending.NewService(c.ConsciousSpendingPlanRepo)
 	c.BabyStepsSeeder = goals.NewBabyStepsSeed(c.GoalsService, c.UserGoalRepo, c.FinancialProfileRepo, c.FinancialObligationService, c.ZapLog)
 	c.GoalProgressHooks = NewGoalProgressHooks(c.GoalsService, c.ZapLog)
 	if c.AutomationService != nil && c.GoalProgressHooks != nil {
@@ -1589,6 +1601,9 @@ func (c *Container) initializeDomainServices() error {
 		c.FinancialProfileRepo,
 		c.ZapLog,
 	)
+	if c.MiriamDecisionEngine != nil {
+		c.MiriamMandateSuggestionEngine.SetLearningBiasProvider(c.MiriamDecisionEngine)
+	}
 
 	c.MiriamObligationDetector = miriamservice.NewObligationAutoDetector(
 		transactionProvider,

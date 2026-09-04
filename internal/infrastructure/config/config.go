@@ -64,10 +64,10 @@ type Config struct {
 // (predictions, outcomes, health scores) is kept before automatic cleanup.
 // Financial ledger, audit, and compliance records are never affected.
 type DataRetentionConfig struct {
-	HealthScoreDays     int `mapstructure:"health_score_days"`
-	PredictionDays      int `mapstructure:"prediction_days"`
-	OutcomeDays         int `mapstructure:"outcome_days"`
-	NotificationDays    int `mapstructure:"notification_days"`
+	HealthScoreDays      int `mapstructure:"health_score_days"`
+	PredictionDays       int `mapstructure:"prediction_days"`
+	OutcomeDays          int `mapstructure:"outcome_days"`
+	NotificationDays     int `mapstructure:"notification_days"`
 	CampaignDeliveryDays int `mapstructure:"campaign_delivery_days"`
 }
 
@@ -113,12 +113,12 @@ type EnrichmentConfig struct {
 // MonoConfig holds configuration for Mono (open-banking data + DirectPay).
 // Sandbox base URL: https://api.withmono.com  |  Live: https://api.withmono.com
 type MonoConfig struct {
-	APIKey         string `mapstructure:"api_key"`          // mono-sec-key from Mono dashboard
-	Environment    string `mapstructure:"environment"`      // "sandbox" or "production"
-	BaseURL        string `mapstructure:"base_url"`         // defaults to https://api.withmono.com
-	WebhookSecret  string `mapstructure:"webhook_secret"`   // for verifying webhook signatures
-	Timeout        int    `mapstructure:"timeout"`          // HTTP timeout in seconds (default 30)
-	MaxRetries     int    `mapstructure:"max_retries"`      // retry attempts for 5xx (default 3)
+	APIKey        string `mapstructure:"api_key"`        // mono-sec-key from Mono dashboard
+	Environment   string `mapstructure:"environment"`    // "sandbox" or "production"
+	BaseURL       string `mapstructure:"base_url"`       // defaults to https://api.withmono.com
+	WebhookSecret string `mapstructure:"webhook_secret"` // for verifying webhook signatures
+	Timeout       int    `mapstructure:"timeout"`        // HTTP timeout in seconds (default 30)
+	MaxRetries    int    `mapstructure:"max_retries"`    // retry attempts for 5xx (default 3)
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration
@@ -163,6 +163,12 @@ type AIConfig struct {
 	// formatting). Off by default in production; the simulation harness turns it
 	// on. Env: AI_RESPONSE_GUARD.
 	ResponseGuard bool `mapstructure:"response_guard"`
+
+	// ProactiveVoice rewrites deterministic proactive drafts through Miriam's
+	// persona before delivery. The composer fails closed to the original draft
+	// whenever a rewrite changes any number or violates output constraints.
+	// Env: AI_PROACTIVE_VOICE.
+	ProactiveVoice bool `mapstructure:"proactive_voice"`
 
 	// CostGuard configures per-user daily cost ceilings enforced before each
 	// Cencori call. CostGuard.Enabled must be true to actually enforce; the
@@ -795,6 +801,7 @@ type PlatformConfig struct {
 	BridgeMessagingAddress string `mapstructure:"bridge_messaging_address"`    // Platform address users text the link code to (e.g. bridge iMessage handle)
 	AppDeepLinkBaseURL     string `mapstructure:"app_deep_link_base_url"`      // Base for app authorization deep links (default "rail://")
 	AppDownloadURL         string `mapstructure:"app_download_url"`            // App download link shared during chat-first onboarding (e.g. TestFlight)
+	ConfirmBaseURL         string `mapstructure:"confirm_base_url"`            // Base URL for email confirmation links (e.g. https://app.userail.money)
 	OnboardingEnabled      bool   `mapstructure:"onboarding_enabled"`          // Enable chat-first account creation for unlinked senders
 	PushNotificationRule   string `mapstructure:"push_notification_rule"`      // "always", "action_only", "never"
 }
@@ -1106,6 +1113,8 @@ func setDefaults() {
 	viper.SetDefault("ai.assemblyai.voice", "ivy")
 	viper.SetDefault("ai.response_guard", false)
 	viper.BindEnv("ai.response_guard", "AI_RESPONSE_GUARD")
+	viper.SetDefault("ai.proactive_voice", true)
+	viper.BindEnv("ai.proactive_voice", "AI_PROACTIVE_VOICE")
 
 	// Cost guard — per-user daily/monthly ceilings enforced before each
 	// Cencori call. Off by default for backwards compatibility; the AtlasFlow

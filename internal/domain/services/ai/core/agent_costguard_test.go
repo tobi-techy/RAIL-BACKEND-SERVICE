@@ -36,11 +36,11 @@ func TestChat_CostGuardAllowBlocksBeforeLLM(t *testing.T) {
 	prov := &fakeProvider{responses: []*ai.ChatResponse{{Content: "should never run"}}}
 	reg := &fakeRegistry{}
 	deps := &Dependencies{
-		AIProvider: prov,
+		AIProvider:   prov,
 		ToolRegistry: reg,
-		State:      fakeState{},
-		Logger:     zap.NewNop(),
-		CostGuard:  &fakeCostGuard{allowErr: errors.New("over daily ceiling")},
+		State:        fakeState{},
+		Logger:       zap.NewNop(),
+		CostGuard:    &fakeCostGuard{allowErr: errors.New("over daily ceiling")},
 	}
 	a := NewAgent(deps, DefaultConfig(), zap.NewNop())
 
@@ -61,11 +61,11 @@ func TestChat_CostGuardRecordsAfterSuccessfulCall(t *testing.T) {
 	reg := &fakeRegistry{}
 	guard := &fakeCostGuard{}
 	deps := &Dependencies{
-		AIProvider: prov,
+		AIProvider:   prov,
 		ToolRegistry: reg,
-		State:      fakeState{},
-		Logger:     zap.NewNop(),
-		CostGuard:  guard,
+		State:        fakeState{},
+		Logger:       zap.NewNop(),
+		CostGuard:    guard,
 	}
 	a := NewAgent(deps, DefaultConfig(), zap.NewNop())
 
@@ -81,10 +81,10 @@ func TestChat_NilCostGuardIsNoop(t *testing.T) {
 	prov := &fakeProvider{responses: []*ai.ChatResponse{{Content: "ok"}}}
 	reg := &fakeRegistry{}
 	deps := &Dependencies{
-		AIProvider: prov,
+		AIProvider:   prov,
 		ToolRegistry: reg,
-		State:      fakeState{},
-		Logger:     zap.NewNop(),
+		State:        fakeState{},
+		Logger:       zap.NewNop(),
 		// CostGuard intentionally nil
 	}
 	a := NewAgent(deps, DefaultConfig(), zap.NewNop())
@@ -98,11 +98,11 @@ func TestChat_CostGuardDoesNotRecordOnCeilingHit(t *testing.T) {
 	reg := &fakeRegistry{}
 	guard := &fakeCostGuard{allowErr: errors.New("over monthly ceiling")}
 	deps := &Dependencies{
-		AIProvider: prov,
+		AIProvider:   prov,
 		ToolRegistry: reg,
-		State:      fakeState{},
-		Logger:     zap.NewNop(),
-		CostGuard:  guard,
+		State:        fakeState{},
+		Logger:       zap.NewNop(),
+		CostGuard:    guard,
 	}
 	a := NewAgent(deps, DefaultConfig(), zap.NewNop())
 

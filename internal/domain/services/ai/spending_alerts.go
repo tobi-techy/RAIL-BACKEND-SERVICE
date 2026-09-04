@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 )
 
 // SpendingAlert represents a real-time spending alert for the user.
@@ -38,8 +40,8 @@ func (o *AgentAdapter) CheckSpendingAlert(ctx context.Context, userID uuid.UUID,
 
 	// Look up enrichment context for the merchant
 	merchantContext := ""
-	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
-		if et := lookupEnrichment(merchant, enrichmentMap); et != nil {
+	if enrichmentMap := aicontext.EnrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+		if et := aicontext.LookupEnrichment(merchant, enrichmentMap); et != nil {
 			merchantContext = et.MerchantContext
 		}
 	}

@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai"
+	aichannel "github.com/rail-service/rail_service/internal/domain/services/ai/channel"
 	"go.uber.org/zap"
 )
 
@@ -60,12 +62,13 @@ func IsRetryable(err error) bool {
 }
 
 type InboundMessage struct {
-	Platform entities.Platform `json:"platform"`
-	UserID   string            `json:"user_id"`
-	ThreadID string            `json:"thread_id,omitempty"`
-	Text     string            `json:"text"`
-	SpaceID  string            `json:"space_id,omitempty"`
-	MsgID    string            `json:"msg_id,omitempty"`
+	Platform       entities.Platform `json:"platform"`
+	UserID         string            `json:"user_id"`
+	PlatformUserID string            `json:"platform_user_id,omitempty"`
+	ThreadID       string            `json:"thread_id,omitempty"`
+	Text           string            `json:"text"`
+	SpaceID        string            `json:"space_id,omitempty"`
+	MsgID          string            `json:"msg_id,omitempty"`
 
 	// voice note (transcribed into Text before the AI sees it)
 	IsVoice   bool   `json:"is_voice,omitempty"`
@@ -106,6 +109,13 @@ type PlatformReply struct {
 	Poll    *PollRequest           // if set, render a custom-option poll (onboarding, send_poll)
 	OpenApp *OpenAppRequest        // if set, action must be authorized in-app (fund moves)
 	Cards   []entities.InsightCard // structured insight cards to render after the text
+
+	// Render hints for cross-channel rendering.
+	RenderStrategy string       `json:"render_strategy,omitempty"`
+	MaxBubbles     int          `json:"max_bubbles,omitempty"`
+	ActionChips    []ActionChip `json:"action_chips,omitempty"`
+	PlanData       *PlanData    `json:"plan_data,omitempty"`
+	TraceData      *TraceData   `json:"trace_data,omitempty"`
 }
 
 // ConfirmRequest describes a Confirm/Cancel prompt rendered as a poll.
@@ -455,6 +465,19 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 		return p.sendErrorMessage(ctx, msg, "Sorry, something went wrong on my end. Mind trying that again?")
 	}
 
+	// Thread platform context into the outbound path so channel-aware replies
+	// can be rendered for iMessage, WhatsApp, Telegram, etc.
+	ctx = ai.WithChannelContext(ctx, &aichannel.ChannelContext{
+		Platform:       aichannel.NormalizePlatform(string(msg.Platform)),
+		PlatformUserID: msg.PlatformUserID,
+		ThreadID:       msg.ThreadID,
+		IdentityLinked: resolved.Identity.LinkedAt != nil && !resolved.Identity.LinkedAt.IsZero(),
+		Capabilities:   aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))),
+		PreferredTone:  aichannel.NewCapabilityRegistry().Get(aichannel.NormalizePlatform(string(msg.Platform))).PreferredTone,
+		MediaSupported: msg.IsImage || msg.IsVoice,
+		UserID:         resolved.UserID,
+	})
+
 	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, msg.IsVoice)
 }
 
@@ -469,8 +492,6 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 	// Interactive prompts stay visual — a poll or app card can't be a voice note.
 	switch {
 	case reply.Confirm != nil:
-		// iMessage has no buttons — render a Confirm/Cancel poll. The vote comes
-		// back as an inbound poll_option we correlate by sender + thread.
 		title := reply.Confirm.Summary
 		if title == "" {
 			title = reply.Text
@@ -503,6 +524,27 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		out = p.responseBuilder.ReplyResponse(identity, reply.Text, threadID, replyTo)
 	default:
 		out = p.responseBuilder.MarkdownResponse(identity, reply.Text, threadID)
+	}
+
+	if reply.MaxBubbles > 0 {
+		out.MaxBubblesPerReply = reply.MaxBubbles
+	}
+	if reply.RenderStrategy != "" {
+		out.RenderStrategy = reply.RenderStrategy
+	}
+	if len(reply.ActionChips) > 0 {
+		out.ActionChips = reply.ActionChips
+	}
+	if reply.PlanData != nil {
+		out.PlanData = &PlanData{
+			PlanID: reply.PlanData.PlanID,
+			Status: reply.PlanData.Status,
+		}
+	}
+	if reply.TraceData != nil {
+		out.TraceData = &TraceData{
+			TraceID: reply.TraceData.TraceID,
+		}
 	}
 
 	// Structured cards ride along in the same atomic outbound message: the bridge

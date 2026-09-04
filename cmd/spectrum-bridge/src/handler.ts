@@ -1,6 +1,7 @@
 import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice } from "spectrum-ts";
 import { effect, imessage, type IMessageMessageEffect } from "spectrum-ts/providers/imessage";
 import { childLogger } from "./logger";
+import { renderMessage, type RenderRequest, type RenderedBubble, channelHintToRenderStrategy } from "./renderer/channel-renderer";
 
 const log = childLogger({ module: "handler" });
 
@@ -54,6 +55,20 @@ export interface OutboundMessage {
   // delivery category: critical messages survive longer in the bridge's
   // persistent outbound queue when the Space handle is cold.
   category?: "critical" | "normal";
+
+  // Channel rendering hints from the backend
+  render_strategy?: string;
+  max_bubbles_per_reply?: number;
+  action_chips?: Array<{ label: string; action: string; confirm?: boolean }>;
+  plan_data?: {
+    plan_id: string;
+    steps: Array<{ id: number; tool: string; status: string; check?: string }>;
+    status: string;
+  };
+  trace_data?: {
+    trace_id: string;
+    content: Record<string, unknown>;
+  };
 }
 
 const EFFECTS: Record<string, IMessageMessageEffect> = {
@@ -196,7 +211,7 @@ export class MessageHandler {
     const hasRenderable =
       contentType === "poll" ||
       (contentType === "appcard" || contentType === "richlink"
-        ? !!msg.card_url
+        ? !!msg.text || !!msg.card_url
         : contentType === "cards"
           ? !!msg.text || (msg.cards ?? []).length > 0
           : !!msg.text);
@@ -292,6 +307,68 @@ export class MessageHandler {
       default:
         return this.sendWithPacing(space, msg.text, "text");
     }
+  }
+
+  /**
+   * Renders a backend outbound message into platform-native bubbles and sends them.
+   * This is the channel-aware entry point for Miriam's tool results, plans, traces,
+   * polls, and quick replies.
+   */
+  async renderOutbound(space: Space, msg: OutboundMessage): Promise<boolean> {
+    const strategy = channelHintToRenderStrategy(
+      (msg.render_strategy as RenderRequest["strategy"]) || "text"
+    );
+
+    const channel = {
+      supportsPolls: msg.platform === "imessage" || msg.platform === "telegram",
+      supportsEffects: msg.platform === "imessage",
+      supportsQuickReplies: msg.platform === "whatsapp",
+      supportsInlineActions: msg.platform === "telegram",
+      supportsRichCards: true,
+      maxBubblesPerReply: msg.max_bubbles_per_reply,
+    };
+
+    const request: RenderRequest = {
+      strategy,
+      text: msg.text || "",
+      platform: msg.platform,
+      channel,
+      actionChips: msg.action_chips,
+      planData: msg.plan_data,
+      traceData: msg.trace_data,
+      pollOptions: msg.poll_options,
+    };
+
+    const bubbles = renderMessage(request);
+    if (bubbles.length === 0) {
+      return false;
+    }
+
+    let sent = false;
+    for (const bubble of bubbles) {
+      const outbound: OutboundMessage = {
+        ...msg,
+        text: bubble.text || "",
+        content_type: bubble.contentType || "markdown",
+        poll_title: bubble.pollTitle,
+        poll_options: bubble.pollOptions,
+        action_chips: bubble.actionChips,
+        plan_data: bubble.planData,
+        trace_data: bubble.traceData,
+      };
+
+      if (bubble.contentType === "poll" && !channel.supportsPolls) {
+        outbound.content_type = "text";
+        outbound.text = `${bubble.text}\n\nReply YES to confirm or NO to cancel.`;
+        outbound.poll_title = undefined;
+        outbound.poll_options = undefined;
+      }
+
+      const ok = await this.handleOutbound(space, outbound);
+      if (ok) sent = true;
+    }
+
+    return sent;
   }
 
   /**

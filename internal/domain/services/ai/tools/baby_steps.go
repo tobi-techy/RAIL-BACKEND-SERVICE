@@ -62,12 +62,12 @@ func RegisterBabyStepsTools(r *Registry) {
 			debtList := make([]map[string]interface{}, 0, len(debts))
 			for i, d := range debts {
 				item := map[string]interface{}{
-					"name":            d.Name,
-					"balance":         d.Amount.StringFixed(2),
-					"minimum_payment": calculateMinimumPayment(d).StringFixed(2),
-					"interest_rate":   formatInterestRate(d),
-					"cadence":         d.Cadence,
-					"snowball_priority":  i + 1,
+					"name":              d.Name,
+					"balance":           d.Amount.StringFixed(2),
+					"minimum_payment":   calculateMinimumPayment(d).StringFixed(2),
+					"interest_rate":     formatInterestRate(d),
+					"cadence":           d.Cadence,
+					"snowball_priority": i + 1,
 				}
 				if d.InterestRate != nil {
 					item["interest_rate_pct"] = d.InterestRate.StringFixed(1)
@@ -113,14 +113,14 @@ func RegisterBabyStepsTools(r *Registry) {
 // freedomStepsList returns the 7-step framework with status for tool responses.
 func freedomStepsList(currentStep int) []map[string]interface{} {
 	steps := []struct {
-		name     string
-		tagline  string
+		name    string
+		tagline string
 	}{
 		{"Stabilize", "Income must beat expenses before anything else matters."},
 		{"Starter Safety Net", "Save 1 month of expenses so life's surprises don't send you to debt."},
 		{"Kill Toxic Debt", "Destroy any debt charging you > 10% interest. Sprint phase: 80/20."},
 		{"Full Safety Net", "3-6 months of expenses in your stash. This buys you time and peace."},
-		{"Build the Muscle", "Automate investing at 15-20% of income. Consistency beats intensity."},
+		{"Build the Muscle", "Automate the investment amount in the user's Conscious Spending Plan. Consistency beats intensity."},
 		{"Accelerate", "Max out accounts, hyper-accumulate, pre-pay the future, and incomemax."},
 		{"Rich Life", "Spend extravagantly on what you love. Cut mercilessly on what you don't. Give generously."},
 	}

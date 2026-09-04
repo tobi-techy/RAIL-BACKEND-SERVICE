@@ -121,10 +121,27 @@ type NotifyActionConfig struct {
 	Channel string `json:"channel,omitempty"` // push, email, in_app; defaults to push
 }
 
+// IncomeDetectedTriggerConfig triggers when a deposit arrives or income changes.
+type IncomeDetectedTriggerConfig struct {
+	EventType string  `json:"event_type,omitempty"` // "income_increase", "income_decrease"; empty = any deposit
+	Threshold float64 `json:"threshold,omitempty"`   // min change ratio vs trailing avg; 0 = any deposit
+}
+
+// SpendingSpikeTriggerConfig triggers when spending exceeds normal levels.
+type SpendingSpikeTriggerConfig struct {
+	SpikeRatio float64 `json:"spike_ratio,omitempty"` // e.g. 1.5 = 50% above normal; 0 = default 1.5
+}
+
+// PaydayTriggerConfig triggers around the user's detected payday.
+type PaydayTriggerConfig struct {
+	DaysBefore int `json:"days_before,omitempty"` // trigger N days before detected payday; 0 = on payday
+	DaysAfter  int `json:"days_after,omitempty"`  // trigger N days after detected payday
+}
+
 // LifeEventTriggerConfig for aspirational triggers Miriam detects.
 type LifeEventTriggerConfig struct {
-	EventType string  `json:"event_type"` // "income_increase", "income_decrease", "new_recurring_expense", "expense_removed"
-	Threshold float64 `json:"threshold,omitempty"` // e.g. 0.20 = 20% increase
+	EventType string  `json:"event_type"`            // "income_increase", "income_decrease", "new_recurring_expense", "expense_removed"
+	Threshold float64 `json:"threshold,omitempty"`   // e.g. 0.20 = 20% increase
 }
 
 // MiriamAutomationLog records each automation execution.

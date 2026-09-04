@@ -8,9 +8,11 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	aicore "github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
 	goalssvc "github.com/rail-service/rail_service/internal/domain/services/goals"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
+	domainrepos "github.com/rail-service/rail_service/internal/domain/repositories"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/shopspring/decimal"
@@ -69,6 +71,57 @@ func mapCoreSupermemoryResults(results []supermemoryclient.SearchResult) []aicor
 
 type coreUserGoalStoreAdapter struct {
 	svc *goalssvc.Service
+}
+
+type coreConsciousSpendingPlanAdapter struct {
+	svc *consciousspending.Service
+}
+
+func (a *coreConsciousSpendingPlanAdapter) Get(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error) {
+	return a.svc.Get(ctx, userID)
+}
+
+func (a *coreConsciousSpendingPlanAdapter) Commit(ctx context.Context, userID uuid.UUID, in aicore.ConsciousSpendingPlanInput) (*entities.ConsciousSpendingPlan, error) {
+	parsed, err := consciousSpendingPlanInput(in)
+	if err != nil {
+		return nil, err
+	}
+	return a.svc.Commit(ctx, userID, parsed)
+}
+
+func (a *coreConsciousSpendingPlanAdapter) Pause(ctx context.Context, userID uuid.UUID, version int) (*entities.ConsciousSpendingPlan, error) {
+	return a.svc.Pause(ctx, userID, version)
+}
+
+func consciousSpendingPlanInput(in aicore.ConsciousSpendingPlanInput) (domainrepos.PlanHeaderInput, error) {
+	parse := func(value string) (decimal.Decimal, error) {
+		return decimal.NewFromString(value)
+	}
+	income, err := parse(in.TakeHomeIncome)
+	if err != nil {
+		return domainrepos.PlanHeaderInput{}, err
+	}
+	fixed, err := parse(in.FixedCosts)
+	if err != nil {
+		return domainrepos.PlanHeaderInput{}, err
+	}
+	investments, err := parse(in.Investments)
+	if err != nil {
+		return domainrepos.PlanHeaderInput{}, err
+	}
+	savings, err := parse(in.Savings)
+	if err != nil {
+		return domainrepos.PlanHeaderInput{}, err
+	}
+	guiltFree, err := parse(in.GuiltFreeSpending)
+	if err != nil {
+		return domainrepos.PlanHeaderInput{}, err
+	}
+	return domainrepos.PlanHeaderInput{
+		TakeHomeIncome: income, BaseCurrency: in.Currency, FixedCosts: fixed,
+		PostTaxInvestments: investments, Savings: savings, GuiltFreeSpending: guiltFree,
+		CheckInCadence: in.CheckInCadence,
+	}, nil
 }
 
 func (a *coreUserGoalStoreAdapter) List(ctx context.Context, userID uuid.UUID, includeArchived bool) ([]aicore.UserGoalData, error) {
@@ -401,6 +454,7 @@ func getStringField(m map[string]interface{}, key string) string {
 var (
 	_ aicore.SupermemoryClient            = (*coreSupermemoryAdapter)(nil)
 	_ aicore.UserGoalStore                = (*coreUserGoalStoreAdapter)(nil)
+	_ aicore.ConsciousSpendingPlanStore   = (*coreConsciousSpendingPlanAdapter)(nil)
 	_ aicore.SavingsGoalStore             = (*coreSavingsGoalStoreAdapter)(nil)
 	_ aicore.SpendingAnalyzer             = (*coreSpendingAnalyzerAdapter)(nil)
 	_ aicore.BalanceHistoryProvider       = (*coreBalanceHistoryAdapter)(nil)

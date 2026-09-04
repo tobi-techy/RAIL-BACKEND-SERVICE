@@ -34,7 +34,7 @@ func TestResolvePhase(t *testing.T) {
 				return
 			}
 			state := &entities.MiriamMoneyState{
-				ActiveMonths:    tt.activeMonths,
+				ActiveMonths:     tt.activeMonths,
 				CalibrationScore: decimal.NewFromInt(int64(tt.calibration)),
 			}
 			assert.Equal(t, tt.want, ResolvePhase(state))

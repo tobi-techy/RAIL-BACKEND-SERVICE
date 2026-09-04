@@ -32,6 +32,13 @@ type MandateProvider interface {
 	HasActiveMandate(ctx context.Context, userID uuid.UUID, actionType string) (bool, error)
 }
 
+// LearningBiasProvider reads the historical bias for a mandate category.
+// A positive bias means past executions of this category were mostly successful;
+// negative means the user rejected or reverted them.
+type LearningBiasProvider interface {
+	GetLearningBias(ctx context.Context, userID uuid.UUID, category string) decimal.Decimal
+}
+
 // MandateSuggestionEngine analyzes user state and memory to propose new mandates.
 type MandateSuggestionEngine struct {
 	repo        MandateSuggestionRepository
@@ -40,6 +47,7 @@ type MandateSuggestionEngine struct {
 	spending    SpendingProvider
 	obligations ObligationProvider
 	profiles    FinancialProfileProvider
+	learning    LearningBiasProvider
 	logger      *zap.Logger
 }
 
@@ -57,6 +65,32 @@ func NewMandateSuggestionEngine(
 		repo: repo, mandates: mandates, balances: balances, spending: spending,
 		obligations: obligations, profiles: profiles, logger: logger,
 	}
+}
+
+// SetLearningBiasProvider injects the learning model so suggestion confidence
+// adjusts based on historical mandate outcomes.
+func (e *MandateSuggestionEngine) SetLearningBiasProvider(p LearningBiasProvider) {
+	e.learning = p
+}
+
+// adjustConfidence scales a suggestion's confidence by the learning bias.
+// Bias range: [-1, +1]. Positive = past successes → boost confidence.
+// Negative = past rejections/failures → dampen confidence.
+func (e *MandateSuggestionEngine) adjustConfidence(ctx context.Context, userID uuid.UUID, category string, base int) int {
+	if e.learning == nil {
+		return base
+	}
+	bias := e.learning.GetLearningBias(ctx, userID, category)
+	// bias is [-1, +1], map to a [-20, +20] confidence adjustment
+	adj := int(bias.Mul(decimal.NewFromInt(20)).IntPart())
+	adjusted := base + adj
+	if adjusted < 10 {
+		adjusted = 10
+	}
+	if adjusted > 90 {
+		adjusted = 90
+	}
+	return adjusted
 }
 
 // GenerateSuggestions produces mandate recommendations based on state and memory.
@@ -153,7 +187,7 @@ func (e *MandateSuggestionEngine) suggestTransferToStash(ctx context.Context, us
 		SuggestedMaxDay:     maxDay,
 		SuggestedMinBalance: obligationBuffer.Add(decimal.NewFromInt(100)),
 		SuggestedCooldown:   1440, // 24 hours
-		Confidence:          60,
+		Confidence:          e.adjustConfidence(ctx, userID, entities.MiriamMandateTransferToStash, 60),
 		CreatedAt:           time.Now().UTC(),
 	}
 }
@@ -198,7 +232,7 @@ func (e *MandateSuggestionEngine) suggestStashTopUp(ctx context.Context, userID 
 		SuggestedMaxDay:     suggested,
 		SuggestedMinBalance: state.UpcomingObligations.Add(decimal.NewFromInt(150)),
 		SuggestedCooldown:   10080, // weekly
-		Confidence:          55,
+		Confidence:          e.adjustConfidence(ctx, userID, MiriamMandateStashTopUp, 55),
 		CreatedAt:           time.Now().UTC(),
 	}
 }
@@ -226,7 +260,7 @@ func (e *MandateSuggestionEngine) suggestBillReservation(ctx context.Context, us
 			SuggestedMaxDay:     reserveAmount,
 			SuggestedMinBalance: decimal.NewFromInt(50),
 			SuggestedCooldown:   43200, // monthly
-			Confidence:          65,
+			Confidence:          e.adjustConfidence(ctx, userID, MiriamMandateBillReservation, 65),
 			CreatedAt:           time.Now().UTC(),
 		}
 	}
@@ -260,7 +294,7 @@ func (e *MandateSuggestionEngine) suggestGoalContribution(ctx context.Context, u
 		SuggestedMaxDay:     amount,
 		SuggestedMinBalance: state.UpcomingObligations.Add(decimal.NewFromInt(100)),
 		SuggestedCooldown:   10080,
-		Confidence:          50,
+		Confidence:          e.adjustConfidence(ctx, userID, MiriamMandateGoalContribution, 50),
 		CreatedAt:           time.Now().UTC(),
 	}
 }

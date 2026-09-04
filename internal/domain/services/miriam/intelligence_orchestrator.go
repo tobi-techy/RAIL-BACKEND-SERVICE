@@ -397,11 +397,73 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 3. Generate predictions
-	predictions, err := o.predictions.GeneratePredictions(ctx, userID, state)
-	if err != nil && o.logger != nil {
-		o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
-	}
+	// 3-5b. Run independent sub-engines in parallel: predictions, signals,
+	// memory context, learning bias, and obligation detection.
+	var (
+		predictions  *entities.PredictionSummary
+		memoryFacts  []entities.MiriamUserFact
+		learningBias = decimal.Zero
+	)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		p, err := o.predictions.GeneratePredictions(ctx, userID, state)
+		if err != nil && o.logger != nil {
+			o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
+		}
+		predictions = p
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.signals != nil {
+			if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
+				o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.memory != nil {
+			facts, err := o.memory.GetActiveFacts(ctx, userID)
+			if err == nil {
+				memoryFacts = filterActionRelevantFacts(facts)
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.service.repo != nil {
+			bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
+			if err == nil {
+				learningBias = bias
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.obDetector != nil && eventType == EventWorkerSweep {
+			detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
+			if err == nil && len(detected) > 0 && o.logger != nil {
+				o.logger.Info("obligation auto-detection found candidates",
+					zap.String("user_id", userID.String()),
+					zap.Int("count", len(detected)))
+			}
+		}
+	}()
+
+	wg.Wait()
+
 	result.Predictions = predictions
 
 	// 3b. Record prediction outcomes (pending) and evaluate expired ones. When a
@@ -425,56 +487,6 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 4. Detect and upsert context signals
-	if o.signals != nil {
-		if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
-			o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
-		}
-	}
-
-	// 4b. Real-time anomaly reaction: on money events, run anomaly checks
-	// immediately and send a conversational chat message for high/critical
-	// findings. This is what makes Miriam feel "always listening" — she
-	// reacts to a suspicious charge or spending spike the moment it lands,
-	// not the next morning. Autonomous (tick) events skip this to avoid
-	// re-alerting on every sweep.
-	if eventType == EventMoneyEvent && o.anomalyChecker != nil && o.anomalyChatBuilder != nil {
-		anomalyResults := o.anomalyChecker.RunAllChecks(ctx, userID, time.Now().UTC())
-		if len(anomalyResults) > 0 {
-			chatMsg := o.anomalyChatBuilder.BuildChatMessage(anomalyResults)
-			if chatMsg != "" && o.notifier != nil {
-				if o.allowDailyNotice(userID, "anomaly_alert", 2) {
-					_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", chatMsg)
-					result.AnomalyAlert = chatMsg
-					if o.logger != nil {
-						o.logger.Info("miriam: real-time anomaly alert sent",
-							zap.String("user_id", userID.String()),
-							zap.Int("anomalies", len(anomalyResults)),
-							zap.String("alert", chatMsg))
-					}
-				}
-			}
-		}
-	}
-
-	// 5. Load memory context
-	var memoryFacts []entities.MiriamUserFact
-	if o.memory != nil {
-		facts, err := o.memory.GetActiveFacts(ctx, userID)
-		if err == nil {
-			memoryFacts = filterActionRelevantFacts(facts)
-		}
-	}
-
-	// 5b. Get learning bias
-	learningBias := decimal.Zero
-	if o.service.repo != nil {
-		bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
-		if err == nil {
-			learningBias = bias
-		}
-	}
-
 	// 5. Evaluate mandates with decision engine.
 	//
 	// Autonomous money movement is gated on the user's control level: only Full
@@ -490,7 +502,7 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	// Autonomous (always-on) events are read-only. They may analyze, message,
 	// and stage pending actions, but they never execute mandates or move money.
 	isAutonomous := IsAutonomousEvent(eventType)
-	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual)
+	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual || eventType == EventSpendingSpike || eventType == EventBillPressure)
 	gateReason := ""
 	if mandateEvent {
 		gateReason = o.autonomyGateReason(ctx, userID)
@@ -565,16 +577,6 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 				msg = msg + " Text me \"accept mandate\" if you want me on it, then switch to Act so I can run it quietly."
 			}
 			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
-		}
-	}
-
-	// 9. Detect recurring obligations from transactions (weekly check)
-	if o.obDetector != nil && eventType == EventWorkerSweep {
-		detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
-		if err == nil && len(detected) > 0 && o.logger != nil {
-			o.logger.Info("obligation auto-detection found candidates",
-				zap.String("user_id", userID.String()),
-				zap.Int("count", len(detected)))
 		}
 	}
 
@@ -752,6 +754,15 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 			analytics.PropMiriamActionsTotal: 1,
 		})
 	}
+	// Record outcome for the learning model so future decisions adjust
+	// confidence based on historical success/failure.
+	if o.decisions != nil {
+		feedbackScore := decimal.NewFromInt(1)
+		if err != nil {
+			feedbackScore = decimal.NewFromInt(-1)
+		}
+		_ = o.decisions.RecordOutcome(ctx, mandate.ID, userID, status, feedbackScore)
+	}
 	return err
 }
 
@@ -776,14 +787,15 @@ func (o *IntelligenceOrchestrator) executeTransferToSpend(ctx context.Context, u
 	}
 
 	if o.notifier != nil {
+		symbol := o.resolveSymbol(ctx, userID)
 		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam moved money from Stash",
-			fmt.Sprintf("Moved $%s from Stash to Spending for upcoming bills.", amount.StringFixed(2)))
+			fmt.Sprintf("Moved %s%s from Stash to Spending for upcoming bills.", symbol, amount.StringFixed(2)))
 	}
 	return nil
 }
 
 func (o *IntelligenceOrchestrator) recordBillReservation(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandate entities.MiriamAutopilotMandate) error {
-	reason := fmt.Sprintf("Reserved $%s for upcoming bills per mandate.", amount.StringFixed(2))
+	reason := fmt.Sprintf("Reserved %s%s for upcoming bills per mandate.", o.resolveSymbol(ctx, userID), amount.StringFixed(2))
 	receipt := &entities.MiriamDecisionReceipt{
 		ID:         uuid.New(),
 		UserID:     userID,

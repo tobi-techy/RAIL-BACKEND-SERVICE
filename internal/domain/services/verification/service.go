@@ -225,12 +225,10 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 		// The send failed, so the cooldown set by checkSendRateLimits protects
 		// nothing — clear it (best-effort) so the user can retry right away
 		// instead of being locked out for the full cooldown window.
-		cleanupCtx, cleanupCancel := withTimeout(ctx, redisOperationTimeout)
-		if delErr := s.redisClient.Del(cleanupCtx, fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)); delErr != nil {
+		if delErr := s.redisClient.Del(opCtx, fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)); delErr != nil {
 			s.logger.Warn("failed to clear otp cooldown after send failure",
 				zap.String("identifier_type", identifierType), zap.Error(delErr))
 		}
-		cleanupCancel()
 		return "", false, fmt.Errorf("failed to send verification code: %w", err)
 	}
 	return code, false, nil

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	aiobligations "github.com/rail-service/rail_service/internal/domain/services/ai/obligations"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -16,9 +17,8 @@ import (
 const ToolGetMoneyOperatingPlan = "get_money_operating_plan"
 
 // FinancialObligationProvider reads user-entered obligations for monthly planning.
-type FinancialObligationProvider interface {
-	ListActive(ctx context.Context, userID uuid.UUID) ([]entities.FinancialObligation, error)
-}
+// Deprecated: Use aiobligations.FinancialObligationProvider instead.
+type FinancialObligationProvider = aiobligations.FinancialObligationProvider
 
 // CurrencyRateProvider reads latest FX rates for geography-aware planning.
 type CurrencyRateProvider interface {
