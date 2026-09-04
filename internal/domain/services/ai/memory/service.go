@@ -69,14 +69,14 @@ type Result struct {
 
 // Fact is a structured piece of knowledge about a user.
 type Fact struct {
-	ID          uuid.UUID
-	UserID      uuid.UUID
-	Category    string
-	Fact        string
-	Source      string
-	Confidence  decimal.Decimal
-	FirstSeen   time.Time
-	LastSeen    time.Time
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Category   string
+	Fact       string
+	Source     string
+	Confidence decimal.Decimal
+	FirstSeen  time.Time
+	LastSeen   time.Time
 }
 
 // Episode is a past conversation turn retrieved by similarity.
@@ -134,10 +134,10 @@ type ExternalMemoryStore interface {
 
 // MemoryEntry is a single memory to write to Supermemory or Qdrant.
 type MemoryEntry struct {
-	Content         string
-	Metadata        map[string]string
-	DocumentDate    string
-	EventDate       []string
+	Content      string
+	Metadata     map[string]string
+	DocumentDate string
+	EventDate    []string
 }
 
 // VectorStore is a generic vector similarity search interface (Qdrant, PGVector, etc.).

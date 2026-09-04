@@ -87,6 +87,35 @@ type UtilityBillPayer interface {
 	PayUtilityBill(ctx context.Context, userID uuid.UUID, automationID uuid.UUID, category, recipient, networkID, prodID, electID string, amountNGN float64, beneficiaryID *uuid.UUID) (reference string, amountUSDC string, err error)
 }
 
+// IncomeFlowReader reads money flow data for income detection.
+type IncomeFlowReader interface {
+	GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error)
+}
+
+// AnomalyRunner runs the full anomaly detection suite for a user.
+type AnomalyRunner interface {
+	RunAllChecks(ctx context.Context, userID uuid.UUID, now time.Time) []AnomalyResult
+}
+
+// AnomalyResult is a lightweight alias matching ai.AnomalyResult.
+type AnomalyResult struct {
+	Type       string
+	Severity   string
+	Details    map[string]any
+	DetectedAt time.Time
+}
+
+// PaydaySignalReader reads detected payday signals for a user.
+type PaydaySignalReader interface {
+	GetByType(ctx context.Context, userID uuid.UUID, signalType string) ([]entities.UserContextSignal, error)
+}
+
+// LifeEventDetector detects financial life events (income changes, new recurring expenses).
+type LifeEventDetector interface {
+	GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error)
+	GetByType(ctx context.Context, userID uuid.UUID, signalType string) ([]entities.UserContextSignal, error)
+}
+
 // Service manages automation CRUD and execution.
 type Service struct {
 	repo            *repositories.AutomationRepository
@@ -102,6 +131,10 @@ type Service struct {
 	goals           GoalChecker
 	billPayer       BillPayer
 	utilityBills    UtilityBillPayer
+	incomeFlow      IncomeFlowReader
+	anomalyRunner   AnomalyRunner
+	paydaySignals   PaydaySignalReader
+	lifeEvents      LifeEventDetector
 	// depositHook is an optional callback fired after a deposit is split into
 	// spend/stash. The default goals-coaching build wires this to refresh
 	// user_goals progress; nil is a safe no-op.
@@ -154,6 +187,18 @@ func (s *Service) SetBillPayer(b BillPayer) { s.billPayer = b }
 // SetUtilityBillPayer sets the Airbills utility-bill payer for recurring
 // utility auto-pay automations.
 func (s *Service) SetUtilityBillPayer(u UtilityBillPayer) { s.utilityBills = u }
+
+// SetIncomeFlowReader sets the income flow reader for income_detected triggers.
+func (s *Service) SetIncomeFlowReader(r IncomeFlowReader) { s.incomeFlow = r }
+
+// SetAnomalyRunner sets the anomaly runner for spending_spike triggers.
+func (s *Service) SetAnomalyRunner(r AnomalyRunner) { s.anomalyRunner = r }
+
+// SetPaydaySignalReader sets the payday signal reader for payday triggers.
+func (s *Service) SetPaydaySignalReader(r PaydaySignalReader) { s.paydaySignals = r }
+
+// SetLifeEventDetector sets the life event detector for life_event triggers.
+func (s *Service) SetLifeEventDetector(r LifeEventDetector) { s.lifeEvents = r }
 
 // Create creates a new automation rule.
 func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateAutomationRequest) (*entities.MiriamAutomation, error) {
@@ -968,6 +1013,353 @@ func (s *Service) isObligationDueSoon(ctx context.Context, a *entities.MiriamAut
 		return daysUntilDue <= daysWindow
 	}
 	return false
+}
+
+// EvaluateIncomeDetected checks income-triggered automations. Fires when a
+// deposit arrives or when income changes vs the trailing average.
+func (s *Service) EvaluateIncomeDetected(ctx context.Context) error {
+	if s.incomeFlow == nil {
+		return nil
+	}
+	automations, err := s.repo.ListActiveByTrigger(ctx, entities.TriggerIncomeDetected)
+	if err != nil {
+		return err
+	}
+	if len(automations) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	type userIncome struct {
+		current  float64
+		previous float64
+		fetched  bool
+	}
+	userCache := make(map[uuid.UUID]*userIncome)
+
+	for _, a := range automations {
+		automation := a
+		if !s.shouldTriggerCooldown(ctx, &automation, now) {
+			continue
+		}
+
+		ui, ok := userCache[a.UserID]
+		if !ok {
+			ui = &userIncome{}
+			thisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+			lastMonth := thisMonth.AddDate(0, -1, 0)
+
+			currentFlow, err := s.incomeFlow.GetMoneyFlow(ctx, a.UserID, thisMonth, now)
+			if err != nil {
+				s.logger.Warn("income_detected: failed to get current flow", zap.Error(err))
+				userCache[a.UserID] = ui
+				continue
+			}
+			previousFlow, err := s.incomeFlow.GetMoneyFlow(ctx, a.UserID, lastMonth, thisMonth)
+			if err != nil {
+				s.logger.Warn("income_detected: failed to get previous flow", zap.Error(err))
+				userCache[a.UserID] = ui
+				continue
+			}
+
+			ui.current = currentFlow.TotalDeposits.InexactFloat64()
+			ui.previous = previousFlow.TotalDeposits.InexactFloat64()
+			ui.fetched = true
+			userCache[a.UserID] = ui
+		}
+		if !ui.fetched {
+			continue
+		}
+
+		var cfg entities.IncomeDetectedTriggerConfig
+		json.Unmarshal(a.TriggerConfig, &cfg)
+
+		if s.checkIncomeDetected(ui.current, ui.previous, cfg) {
+			go s.execute(context.Background(), &automation)
+		}
+	}
+	return nil
+}
+
+func (s *Service) checkIncomeDetected(current, previous float64, cfg entities.IncomeDetectedTriggerConfig) bool {
+	threshold := cfg.Threshold
+	if threshold <= 0 {
+		threshold = 0.01 // any non-zero change
+	}
+
+	if current <= 0 {
+		return false
+	}
+
+	// No previous income (new user or first deposit) — fire for any deposit
+	if previous <= 0 {
+		return true
+	}
+
+	ratio := current / previous
+
+	switch cfg.EventType {
+	case "income_increase":
+		return ratio >= (1 + threshold)
+	case "income_decrease":
+		return ratio <= (1 - threshold) && ratio > 0
+	default:
+		// Any significant change
+		return ratio >= (1+threshold) || ratio <= (1-threshold)
+	}
+}
+
+// EvaluateSpendingSpikes checks spending-spike automations. Fires when the
+// anomaly engine detects a bill spike or spending acceleration.
+func (s *Service) EvaluateSpendingSpikes(ctx context.Context) error {
+	if s.anomalyRunner == nil {
+		return nil
+	}
+	automations, err := s.repo.ListActiveByTrigger(ctx, entities.TriggerSpendingSpike)
+	if err != nil {
+		return err
+	}
+	if len(automations) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	type userAnomalies struct {
+		results   []AnomalyResult
+		hasSpike  bool
+		fetched   bool
+	}
+	userCache := make(map[uuid.UUID]*userAnomalies)
+
+	for _, a := range automations {
+		automation := a
+		if !s.shouldTriggerCooldown(ctx, &automation, now) {
+			continue
+		}
+
+		ua, ok := userCache[a.UserID]
+		if !ok {
+			ua = &userAnomalies{}
+			raw := s.anomalyRunner.RunAllChecks(ctx, a.UserID, now)
+			ua.results = raw
+			for _, r := range raw {
+				if r.Type == "bill_spike" || r.Type == "spending_acceleration" {
+					ua.hasSpike = true
+					break
+				}
+			}
+			ua.fetched = true
+			userCache[a.UserID] = ua
+		}
+
+		if !ua.fetched || !ua.hasSpike {
+			continue
+		}
+
+		var cfg entities.SpendingSpikeTriggerConfig
+		json.Unmarshal(a.TriggerConfig, &cfg)
+		_ = cfg // spike_ratio filter is future-proofing; any spike fires for now
+
+		go s.execute(context.Background(), &automation)
+	}
+	return nil
+}
+
+// EvaluatePaydayTriggers checks payday-triggered automations. Fires when the
+// current day matches the user's detected payday (within a configurable window).
+func (s *Service) EvaluatePaydayTriggers(ctx context.Context) error {
+	if s.paydaySignals == nil {
+		return nil
+	}
+	automations, err := s.repo.ListActiveByTrigger(ctx, entities.TriggerPayday)
+	if err != nil {
+		return err
+	}
+	if len(automations) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	type userPayday struct {
+		dayOfMonth int
+		detected   bool
+		fetched    bool
+	}
+	userCache := make(map[uuid.UUID]*userPayday)
+
+	for _, a := range automations {
+		automation := a
+		if !s.shouldTriggerCooldown(ctx, &automation, now) {
+			continue
+		}
+
+		up, ok := userCache[a.UserID]
+		if !ok {
+			up = &userPayday{}
+			signals, err := s.paydaySignals.GetByType(ctx, a.UserID, entities.SignalPaydayDetected)
+			if err != nil || len(signals) == 0 {
+				userCache[a.UserID] = up
+				continue
+			}
+			// Use the highest-confidence payday signal
+			var best entities.UserContextSignal
+			for _, sig := range signals {
+				if sig.Confidence.GreaterThan(best.Confidence) {
+					best = sig
+				}
+			}
+			var pd entities.PaydaySignalData
+			if err := json.Unmarshal(best.SignalData, &pd); err == nil && pd.DayOfMonth > 0 {
+				up.dayOfMonth = pd.DayOfMonth
+				up.detected = true
+			}
+			up.fetched = true
+			userCache[a.UserID] = up
+		}
+		if !up.fetched || !up.detected {
+			continue
+		}
+
+		var cfg entities.PaydayTriggerConfig
+		json.Unmarshal(a.TriggerConfig, &cfg)
+
+		if s.checkPaydayMatch(now, up.dayOfMonth, cfg) {
+			go s.execute(context.Background(), &automation)
+		}
+	}
+	return nil
+}
+
+func (s *Service) checkPaydayMatch(now time.Time, paydayDay int, cfg entities.PaydayTriggerConfig) bool {
+	today := now.Day()
+	daysBefore := cfg.DaysBefore
+	if daysBefore < 0 {
+		daysBefore = 0
+	}
+	daysAfter := cfg.DaysAfter
+	if daysAfter < 0 {
+		daysAfter = 0
+	}
+
+	// Check if today is within [payday - daysBefore, payday + daysAfter]
+	low := paydayDay - daysBefore
+	high := paydayDay + daysAfter
+
+	if low <= 0 {
+		// Wraps to previous month
+		lastDayOfPrevMonth := time.Date(now.Year(), now.Month(), 0, 0, 0, 0, 0, time.UTC).Day()
+		if today >= lastDayOfPrevMonth+low || today <= high {
+			return true
+		}
+	} else if high > 31 {
+		// Wraps to next month (months have at most 31 days)
+		if today >= low || today <= high-31 {
+			return true
+		}
+	} else {
+		if today >= low && today <= high {
+			return true
+		}
+	}
+	return false
+}
+
+// EvaluateLifeEvents checks life-event automations. Fires when the system
+// detects income changes, new recurring expenses, or expense removals.
+func (s *Service) EvaluateLifeEvents(ctx context.Context) error {
+	if s.lifeEvents == nil {
+		return nil
+	}
+	automations, err := s.repo.ListActiveByTrigger(ctx, entities.TriggerLifeEvent)
+	if err != nil {
+		return err
+	}
+	if len(automations) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	type userLifeEvents struct {
+		incomeChange     float64 // ratio of current vs previous deposits
+		recurringSignals int     // count of active recurring expense signals
+		fetched          bool
+	}
+	userCache := make(map[uuid.UUID]*userLifeEvents)
+
+	for _, a := range automations {
+		automation := a
+		if !s.shouldTriggerCooldown(ctx, &automation, now) {
+			continue
+		}
+
+		ule, ok := userCache[a.UserID]
+		if !ok {
+			ule = &userLifeEvents{}
+			thisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+			lastMonth := thisMonth.AddDate(0, -1, 0)
+
+			currentFlow, err := s.lifeEvents.GetMoneyFlow(ctx, a.UserID, thisMonth, now)
+			if err == nil {
+				previousFlow, err2 := s.lifeEvents.GetMoneyFlow(ctx, a.UserID, lastMonth, thisMonth)
+				if err2 == nil {
+					prev := previousFlow.TotalDeposits.InexactFloat64()
+					curr := currentFlow.TotalDeposits.InexactFloat64()
+					if prev > 0 {
+						ule.incomeChange = curr/prev - 1 // e.g. +0.35 = 35% increase
+					}
+				}
+			}
+
+			signals, err := s.lifeEvents.GetByType(ctx, a.UserID, entities.SignalRecurringExpense)
+			if err == nil {
+				ule.recurringSignals = len(signals)
+			}
+			ule.fetched = true
+			userCache[a.UserID] = ule
+		}
+		if !ule.fetched {
+			continue
+		}
+
+		var cfg entities.LifeEventTriggerConfig
+		json.Unmarshal(a.TriggerConfig, &cfg)
+
+		threshold := cfg.Threshold
+		if threshold <= 0 {
+			threshold = 0.20 // default 20%
+		}
+
+		matched := false
+		switch cfg.EventType {
+		case "income_increase":
+			matched = ule.incomeChange >= threshold
+		case "income_decrease":
+			matched = ule.incomeChange <= -threshold
+		case "new_recurring_expense":
+			// Fire if there are active recurring expense signals (detected this cycle)
+			matched = ule.recurringSignals > 0
+		case "expense_removed":
+			// Future: compare against previously known recurring count
+			matched = false
+		}
+
+		if matched {
+			go s.execute(context.Background(), &automation)
+		}
+	}
+	return nil
+}
+
+// shouldTriggerCooldown checks cooldown and daily limit for non-schedule triggers.
+func (s *Service) shouldTriggerCooldown(ctx context.Context, a *entities.MiriamAutomation, now time.Time) bool {
+	if a.LastTriggeredAt != nil && now.Sub(*a.LastTriggeredAt) < time.Duration(a.CooldownMinutes)*time.Minute {
+		return false
+	}
+	count, err := s.repo.GetTodayTriggerCount(ctx, a.ID)
+	if err == nil && count >= a.MaxTriggersPerDay {
+		return false
+	}
+	return true
 }
 
 // EvaluateBillShield checks if spend balance covers upcoming obligations for a user.

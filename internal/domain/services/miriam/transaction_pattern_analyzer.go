@@ -307,7 +307,7 @@ func buildPatternSummary(result *PatternAnalysisResult) string {
 		parts = append(parts, fmt.Sprintf("Services: %d recipients", len(result.ServicePayments)))
 	}
 
-	summary := fmt.Sprintf("[TRANSFER PATTERNS — %d transfers to %d recipients. %s]",
+	summary := fmt.Sprintf("[TRANSFER PATTERNS: %d transfers to %d recipients. %s]",
 		result.TotalTransfers, result.TotalRecipients, strings.Join(parts, ". "))
 	return summary
 }

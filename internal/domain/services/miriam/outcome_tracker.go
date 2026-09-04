@@ -41,10 +41,31 @@ func (t *OutcomeTracker) RecordPredictions(ctx context.Context, userID uuid.UUID
 		return
 	}
 
+	// One pending outcome per prediction type. The sweep regenerates similar
+	// predictions every cycle with fresh IDs, so without this gate each sweep
+	// piles on another pending row for the same claim; when horizons expire
+	// they resolve one after another and the user receives the identical
+	// loop-closing message again and again.
+	pending, err := t.repo.GetPendingPredictionOutcomes(ctx, userID)
+	if err != nil {
+		if t.logger != nil {
+			t.logger.Warn("failed to check pending outcomes before recording, skipping predictions",
+				zap.String("user_id", userID.String()), zap.Error(err))
+		}
+		return
+	}
+	alreadyPending := make(map[string]bool, len(pending))
+	for _, p := range pending {
+		alreadyPending[p.PredictionType] = true
+	}
+
 	outcomes := make([]entities.MiriamPredictionOutcome, 0, len(predictions))
 	now := time.Now().UTC()
 
 	for _, p := range predictions {
+		if alreadyPending[p.PredictionType] {
+			continue
+		}
 		thresholdData := map[string]interface{}{
 			"predicted_amount": p.ProjectedAmount.StringFixed(2),
 			"probability":      p.Probability.StringFixed(4),
@@ -69,6 +90,9 @@ func (t *OutcomeTracker) RecordPredictions(ctx context.Context, userID uuid.UUID
 		})
 	}
 
+	if len(outcomes) == 0 {
+		return
+	}
 	if err := t.repo.SavePredictionOutcomes(ctx, outcomes); err != nil && t.logger != nil {
 		t.logger.Warn("failed to record prediction outcomes",
 			zap.String("user_id", userID.String()), zap.Error(err))
@@ -389,24 +413,64 @@ func LoopClosingMessage(o entities.MiriamPredictionOutcome) string {
 	switch o.PredictionType {
 	case entities.PredictionCashShortfall:
 		if materialized {
-			return "Earlier I flagged that Spend might run short this stretch. It did tighten, so worth keeping an eye on the next few days."
+			messages := []string{
+				"i flagged that spend might run short. it did tighten up. keeping an eye on the next few days.",
+				"i had a feeling spend might get tight. it did, so let's keep the next few days light.",
+				"i called out a possible spend squeeze. it showed up, so we'll watch the next few days.",
+			}
+			return messages[randIntn(len(messages))]
 		}
-		return "Earlier I flagged Spend might run short. It held up fine, you handled it."
+		messages := []string{
+			"i flagged that spend might run short. it held up fine, though. nice work.",
+			"i thought spend might get tight, but you kept it steady. good stuff.",
+			"i had spend down as a risk. you got through it without a squeeze.",
+		}
+		return messages[randIntn(len(messages))]
 	case entities.PredictionBillPressure:
 		if materialized {
-			return "I'd warned bills would press on your balance. They did land heavy, but you got through them."
+			messages := []string{
+				"told you bills might squeeze. they did, but you handled it.",
+				"i flagged the bills could press on your balance. they landed heavy, and you got through them.",
+				"i had bills down as a pinch point. they showed up, but you kept things moving.",
+			}
+			return messages[randIntn(len(messages))]
 		}
-		return "I'd warned bills might squeeze you this week. Turned out smoother than I expected. Nicely managed."
+		messages := []string{
+			"told you bills might squeeze, but they came in lighter than expected. nice.",
+			"i flagged bills as a risk this week. they didn't hit as hard as i thought.",
+			"i thought bills might press you. turns out you had them covered.",
+		}
+		return messages[randIntn(len(messages))]
 	case entities.PredictionIncomeGap:
 		if materialized {
-			return "I'd flagged income might come in light this month. It did trail a bit, so I'm factoring that into what's next."
+			messages := []string{
+				"i flagged income might come in light. it did trail a bit, so i'll factor that into what's next.",
+				"i thought this month might be thinner on income. it was, so let's plan around that.",
+				"i had income down as a watchout. it came in light, and i'll keep that in mind.",
+			}
+			return messages[randIntn(len(messages))]
 		}
-		return "I'd flagged income might come in light. It landed where it needed to. Good."
+		messages := []string{
+			"i flagged income might come in light, but it landed where it needed to. good.",
+			"i thought income could dip. it held up, so that's one less thing to worry about.",
+			"i had income down as a risk. you got what you needed this month.",
+		}
+		return messages[randIntn(len(messages))]
 	case entities.PredictionSpendingAnomaly:
 		if materialized {
-			return "I'd noticed spending picking up pace. It did keep climbing, so I'll watch the categories with you."
+			messages := []string{
+				"i noticed spending picking up. it kept climbing, so i'll watch those categories with you.",
+				"i flagged that spending was speeding up. it did, so let's keep an eye on where it's going.",
+				"i saw spending start to edge up. it carried on, and we'll keep tabs on it.",
+			}
+			return messages[randIntn(len(messages))]
 		}
-		return "I'd noticed spending edging up. It settled back down. False alarm, which is the good kind."
+		messages := []string{
+			"i noticed spending edging up. it settled back down, which is the good kind of false alarm.",
+			"i had spending marked as a watchout. it cooled off, so we're good.",
+			"i thought spending might keep climbing, but it eased back. nice.",
+		}
+		return messages[randIntn(len(messages))]
 	default:
 		return ""
 	}

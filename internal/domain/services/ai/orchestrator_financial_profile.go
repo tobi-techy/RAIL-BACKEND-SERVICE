@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -19,10 +20,8 @@ const (
 )
 
 // FinancialProfileProvider reads and writes durable personalization context.
-type FinancialProfileProvider interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.FinancialProfile, error)
-	Upsert(ctx context.Context, userID uuid.UUID, update entities.FinancialProfileUpdate) (*entities.FinancialProfile, error)
-}
+// Deprecated: Use aifinance.FinancialProfileProvider instead.
+type FinancialProfileProvider = aifinance.FinancialProfileProvider
 
 // SetFinancialProfileProvider wires the durable personalization provider.
 // Deprecated: Use NewOrchestratorWithDeps instead.

@@ -14,7 +14,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aifinance "github.com/rail-service/rail_service/internal/domain/services/ai/finance"
+
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/rail-service/rail_service/internal/domain/services/spending"
+
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -28,12 +32,8 @@ const (
 )
 
 // SpendingAnalyzer is the subset of spending.Service the orchestrator needs.
-type SpendingAnalyzer interface {
-	GetSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (*spending.Summary, error)
-	GetTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time, limit int) ([]entities.SpendingTransaction, error)
-	GetMoneyFlow(ctx context.Context, userID uuid.UUID, start, end time.Time) (*entities.MoneyFlowSummary, error)
-	GetDailyTrend(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.SpendingByPeriod, error)
-}
+// Deprecated: Use aifinance.SpendingAnalyzer instead.
+type SpendingAnalyzer = aifinance.SpendingAnalyzer
 
 // SpendingEnricher adds plain-English descriptions to spending transactions.
 type SpendingEnricher interface {
@@ -305,9 +305,9 @@ func (o *AgentAdapter) executeSpendingSummary(ctx context.Context, userID uuid.U
 	}
 
 	// Enrich merchant entries with plain descriptions and context
-	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+	if enrichmentMap := aicontext.EnrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
 		for _, m := range merchants {
-			enrichMerchantEntry(m, enrichmentMap)
+			aicontext.EnrichMerchantEntry(m, enrichmentMap)
 		}
 	}
 

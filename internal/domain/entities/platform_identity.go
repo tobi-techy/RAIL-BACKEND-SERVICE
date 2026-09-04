@@ -12,6 +12,9 @@ const (
 	PlatformIMessage Platform = "imessage"
 	PlatformWhatsApp Platform = "whatsapp"
 	PlatformTelegram Platform = "telegram"
+	PlatformSMS      Platform = "sms"
+	PlatformTerminal Platform = "terminal"
+	PlatformUnknown  Platform = "unknown"
 )
 
 type PlatformIdentity struct {

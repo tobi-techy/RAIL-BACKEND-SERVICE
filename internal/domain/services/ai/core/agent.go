@@ -725,50 +725,7 @@ One helpful question max (e.g. when they get paid next).`}
 		}
 	}
 
-	// Emotion/energy detection (post-process, synchronous)
-	if emotion := detectEmotion(message); emotion != "" {
-		ctxMessages = append(ctxMessages, &ai.Message{Role: "system", Content: emotion})
-	}
-	if energy := detectEnergy(message); energy != "" {
-		ctxMessages = append(ctxMessages, &ai.Message{Role: "system", Content: energy})
-	}
-
 	return memCtx, ctxMessages
-}
-
-// detectEmotion returns a system hint about the user's emotional state based on keywords.
-func detectEmotion(message string) string {
-	lower := strings.ToLower(message)
-	switch {
-	case strings.Contains(lower, "frustrat"), strings.Contains(lower, "annoy"), strings.Contains(lower, "uh"),
-		strings.Contains(lower, "ugh"), strings.Contains(lower, "grr"), strings.Contains(lower, "damn"):
-		return "[Emotion: user sounds frustrated. Acknowledge with empathy before solving the issue.]"
-	case strings.Contains(lower, "anxious"), strings.Contains(lower, "worried"), strings.Contains(lower, "nervous"),
-		strings.Contains(lower, "stressed"), strings.Contains(lower, "scared"), strings.Contains(lower, "afraid"):
-		return "[Emotion: user sounds anxious. Reassure them with clear, calm info and proactive guidance.]"
-	case strings.Contains(lower, "sad"), strings.Contains(lower, "down"), strings.Contains(lower, "depressed"),
-		strings.Contains(lower, "unhappy"), strings.Contains(lower, "miserable"):
-		return "[Emotion: user sounds down. Be warm and human, but don't pry.]"
-	case strings.Contains(lower, "excited"), strings.Contains(lower, "amazing"), strings.Contains(lower, "awesome"),
-		strings.Contains(lower, "incredible"), strings.Contains(lower, "wow"), strings.Contains(lower, "happy"):
-		return "[Emotion: user sounds excited. Match their energy and celebrate with them.]"
-	}
-	return ""
-}
-
-// detectEnergy returns a system hint about the user's message energy based on length.
-func detectEnergy(message string) string {
-	msg := strings.TrimSpace(message)
-	l := len(msg)
-	switch {
-	case l <= 10:
-		return "[Energy: user sent a very short message. Reply in 1 line, brief and to the point.]"
-	case l <= 40:
-		return "[Energy: quick question. Be concise, answer directly.]"
-	case l > 150:
-		return "[Energy: user wrote a lot. They want a thorough response.]"
-	}
-	return ""
 }
 
 // buildMemoryPrompt constructs the "[What you know..." system message.
@@ -875,6 +832,9 @@ var intentActionPatterns = []string{
 	"withdraw $", "withdraw ₦", "withdraw from", "withdraw to", "to my bank",
 	"block", "unblock", "pay my bill", "pay bill", "autopay", "auto-pay",
 	"buy airtime", "buy data", "copy trad", "copy trade", "stop copying", "pause copying", "cancel my",
+	// Bank transfers + crypto sends.
+	"to bank", "bank account", "account number", "gtbank", "send to bank",
+	"send crypto", "send usdc", "to wallet", "to 0x", "wallet address",
 }
 
 var intentAutomationPatterns = []string{
@@ -959,6 +919,7 @@ var alwaysOnTools = map[string]bool{
 	"get_budget": true, "set_budget": true,
 	// Automation
 	"list_automations": true, "create_automation": true,
+	"pause_automation": true, "resume_automation": true, "delete_automation": true,
 	// Action (mutating tools are staged for confirmation by the chat loop,
 	// never executed inline, so offering them every turn is safe).
 	"transfer_funds": true, "initiate_withdrawal": true, "optimize_yield": true,
@@ -968,6 +929,8 @@ var alwaysOnTools = map[string]bool{
 	"mark_obligation_paid": true, "protect_subscription": true, "get_linked_banks": true,
 	"list_bill_providers": true, "get_data_plans": true, "get_cable_packages": true,
 	"validate_meter": true, "detect_network": true,
+	// Bank transfers + crypto sends.
+	"list_banks": true, "resolve_bank_account": true, "send_to_bank": true, "send_crypto": true,
 	// Engagement
 	"celebrate": true, "send_poll": true, "connect_bank": true,
 	// Debt coaching
@@ -1126,19 +1089,20 @@ func (a *Agent) qualityRetry(ctx context.Context, messages []*ai.Message, previo
 	}, nil
 }
 
-// trivialReply returns a canned response for greetings/acks, or empty string.
+// trivialReply returns a canned response for pure acknowledgments, or empty
+// string. Deliberately EXCLUDES greetings ("hi/hey/hello") and thread-tracking
+// acks ("ok/sure/got it"): those must flow through the full pipeline so the
+// system prompt, memory, and conversation history apply — a canned greeting is
+// the same every time and contradicts TRACK THE THREAD when something was just
+// proposed. Everything here is safe to answer without context.
 func (a *Agent) trivialReply(message string) string {
 	msg := strings.TrimSpace(strings.ToLower(message))
 	if len(msg) > 50 || strings.Contains(msg, " ") && len(strings.Split(msg, " ")) > 3 {
 		return ""
 	}
 	switch msg {
-	case "hi", "hey", "hello", "sup", "yo", "hiya":
-		return "Hey! What's up?"
 	case "thanks", "thank you", "ty", "thx", "appreciate it":
-		return "Anytime! Anything else?"
-	case "ok", "okay", "k", "kk", "got it", "sure":
-		return "Got it. Anything else?"
+		return "Anytime!"
 	case "bye", "goodbye", "cya", "see ya", "later":
 		return "Catch you later!"
 	case "lol", "haha":

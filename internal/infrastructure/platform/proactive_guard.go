@@ -13,11 +13,11 @@ import (
 
 // Proactive message categories for category-aware Allow.
 const (
-	ProactiveCategoryBriefing  = "briefing"
-	ProactiveCategoryRisk      = "risk"
-	ProactiveCategoryNudge     = "nudge"
-	ProactiveCategoryFollowup  = "followup"
-	ProactiveCategoryReceipt   = "receipt"
+	ProactiveCategoryBriefing = "briefing"
+	ProactiveCategoryRisk     = "risk"
+	ProactiveCategoryNudge    = "nudge"
+	ProactiveCategoryFollowup = "followup"
+	ProactiveCategoryReceipt  = "receipt"
 )
 
 // ProactivePrefs is the subset of miriam_preferences the guard needs.
@@ -43,14 +43,14 @@ type PreferencesResolver interface {
 // It is Redis-backed and fails open — infrastructure trouble must never silence
 // a genuinely important alert.
 type ProactiveGuard struct {
-	redis         cache.RedisClient
-	tz            UserTimezoneResolver
-	prefs         PreferencesResolver
-	defaultLoc    *time.Location
-	dailyCap      int
-	quietStart    int // inclusive local hour [0-23]
-	quietEnd      int // exclusive local hour [0-23]
-	logger        *zap.Logger
+	redis      cache.RedisClient
+	tz         UserTimezoneResolver
+	prefs      PreferencesResolver
+	defaultLoc *time.Location
+	dailyCap   int
+	quietStart int // inclusive local hour [0-23]
+	quietEnd   int // exclusive local hour [0-23]
+	logger     *zap.Logger
 }
 
 // UserTimezoneResolver returns a user's local timezone. Optional — when nil the

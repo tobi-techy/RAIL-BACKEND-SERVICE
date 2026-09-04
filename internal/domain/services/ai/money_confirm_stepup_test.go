@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/execution"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -146,31 +147,31 @@ func TestRegisterFundMovingAction(t *testing.T) {
 	original := IsFundMovingAction("custom_new_fund_tool")
 	assert.False(t, original)
 
-	RegisterFundMovingAction("custom_new_fund_tool")
+	execution.RegisterFundMovingAction("custom_new_fund_tool")
 	assert.True(t, IsFundMovingAction("custom_new_fund_tool"))
 
 	t.Cleanup(func() {
-		fundMovingActionsMu.Lock()
-		defer fundMovingActionsMu.Unlock()
-		delete(fundMovingActions, "custom_new_fund_tool")
+		execution.FundMovingActionsMu.Lock()
+		defer execution.FundMovingActionsMu.Unlock()
+		delete(execution.FundMovingActions, "custom_new_fund_tool")
 	})
 }
 
 // --- Step-up context helper tests ---
 
 func TestWithStepUpToken_RoundTrip(t *testing.T) {
-	ctx := WithStepUpToken(context.Background(), "abc-123")
-	assert.Equal(t, "abc-123", StepUpTokenFromContext(ctx))
+	ctx := execution.WithStepUpToken(context.Background(), "abc-123")
+	assert.Equal(t, "abc-123", execution.StepUpTokenFromContext(ctx))
 }
 
 func TestStepUpTokenFromContext_Empty(t *testing.T) {
-	assert.Equal(t, "", StepUpTokenFromContext(context.Background()))
+	assert.Equal(t, "", execution.StepUpTokenFromContext(context.Background()))
 }
 
 func TestErrStepUpRequired_IsSentinel(t *testing.T) {
-	assert.True(t, errors.Is(ErrStepUpRequired, ErrStepUpRequired))
-	wrapped := fmt.Errorf("wrapper: %w", ErrStepUpRequired)
-	assert.True(t, errors.Is(wrapped, ErrStepUpRequired))
+	assert.True(t, errors.Is(execution.ErrStepUpRequired, execution.ErrStepUpRequired))
+	wrapped := fmt.Errorf("wrapper: %w", execution.ErrStepUpRequired)
+	assert.True(t, errors.Is(wrapped, execution.ErrStepUpRequired))
 }
 
 // --- ConfirmAction step-up tests ---
@@ -189,7 +190,7 @@ func TestConfirmAction_RefusesFundMoveWithoutStepUpToken(t *testing.T) {
 
 	_, err := o.ConfirmAction(context.Background(), userID, convID)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrStepUpRequired))
+	assert.True(t, errors.Is(err, execution.ErrStepUpRequired))
 
 	// Money should NOT have moved
 	ft := o.fundsTransferer.(*mockFundsTransferer)
@@ -210,10 +211,10 @@ func TestConfirmAction_RefusesFundMoveWithInvalidToken(t *testing.T) {
 	convID := uuid.New()
 	stageTransferAction(t, o, userID, convID, 50)
 
-	ctx := WithStepUpToken(context.Background(), "invalid-token")
+	ctx := execution.WithStepUpToken(context.Background(), "invalid-token")
 	_, err := o.ConfirmAction(ctx, userID, convID)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrStepUpRequired))
+	assert.True(t, errors.Is(err, execution.ErrStepUpRequired))
 
 	ft := o.fundsTransferer.(*mockFundsTransferer)
 	assert.Equal(t, 0, ft.calls, "transfer should not have been called on invalid token")
@@ -233,7 +234,7 @@ func TestConfirmAction_RefusesFundMoveWhenVerifierNil(t *testing.T) {
 
 	_, err := o.ConfirmAction(context.Background(), userID, convID)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrStepUpRequired))
+	assert.True(t, errors.Is(err, execution.ErrStepUpRequired))
 
 	ft := o.fundsTransferer.(*mockFundsTransferer)
 	assert.Equal(t, 0, ft.calls, "transfer should not have been called with nil verifier")
@@ -253,10 +254,10 @@ func TestConfirmAction_RefusesFundMoveWhenVerifierErrors(t *testing.T) {
 	convID := uuid.New()
 	stageTransferAction(t, o, userID, convID, 50)
 
-	ctx := WithStepUpToken(context.Background(), "any-token")
+	ctx := execution.WithStepUpToken(context.Background(), "any-token")
 	_, err := o.ConfirmAction(ctx, userID, convID)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrStepUpRequired))
+	assert.True(t, errors.Is(err, execution.ErrStepUpRequired))
 
 	ft := o.fundsTransferer.(*mockFundsTransferer)
 	assert.Equal(t, 0, ft.calls, "transfer should not have been called when verifier errors")
@@ -276,7 +277,7 @@ func TestConfirmAction_ExecutesFundMoveWithValidStepUp(t *testing.T) {
 	convID := uuid.New()
 	stageTransferAction(t, o, userID, convID, 50)
 
-	ctx := WithStepUpToken(context.Background(), "valid-token")
+	ctx := execution.WithStepUpToken(context.Background(), "valid-token")
 	action, err := o.ConfirmAction(ctx, userID, convID)
 	require.NoError(t, err)
 	assert.NotNil(t, action)
@@ -387,7 +388,7 @@ func TestConfirmAction_CoreRefusesFundMoveEvenWithValidVerifierButNoToken(t *tes
 	// No WithStepUpToken — this is what the platform adapter would look like
 	_, err := o.ConfirmAction(context.Background(), userID, convID)
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrStepUpRequired))
+	assert.True(t, errors.Is(err, execution.ErrStepUpRequired))
 
 	// Verifier should not even have been called (no token to verify)
 	sv := o.stepUpVerifier.(*mockStepUpVerifier)

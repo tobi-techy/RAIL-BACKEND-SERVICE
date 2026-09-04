@@ -239,7 +239,7 @@ func convertCoreSuggestions(suggestions []core.Suggestion) []Suggestion {
 	return result
 }
 
-func convertCoreActionChips(chips []core.ActionChip) []ActionChip {
+func convertCoreActionChips(chips []core.ConversationActionChip) []ActionChip {
 	if chips == nil {
 		return nil
 	}

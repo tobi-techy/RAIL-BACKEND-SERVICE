@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aifx "github.com/rail-service/rail_service/internal/domain/services/ai/fx"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
 )
@@ -25,9 +27,8 @@ func BabyStepsTools() []infraai.Tool {
 }
 
 // ObligationLister lists active obligations for a user.
-type ObligationLister interface {
-	ListActive(ctx context.Context, userID uuid.UUID) ([]entities.FinancialObligation, error)
-}
+// Deprecated: Use aiintelligence.ObligationLister instead.
+type ObligationLister = aiintelligence.ObligationLister
 
 func (o *AgentAdapter) executeBabySteps(ctx context.Context, userID uuid.UUID) (map[string]interface{}, error) {
 	if o.obligations == nil {
@@ -85,7 +86,26 @@ func (o *AgentAdapter) executeBabySteps(ctx context.Context, userID uuid.UUID) (
 	}
 
 	// Build debt list with display amounts
-	display := userDisplayContext(ctx, o, userID)
+	display := aifx.UserDisplayContext(aifx.DisplayDeps{
+		GetFinancialProfile: func(ctx context.Context, userID uuid.UUID) (*entities.FinancialProfile, error) {
+			if o.financialProfile == nil {
+				return nil, nil
+			}
+			return o.financialProfile.GetByUserID(ctx, userID)
+		},
+		GetUserCountry: func(ctx context.Context, userID uuid.UUID) (string, error) {
+			if o.userProfile == nil {
+				return "", nil
+			}
+			return o.userProfile.GetCountry(ctx, userID)
+		},
+		GetLatestRate: func(ctx context.Context, from, to string) (decimal.Decimal, error) {
+			if o.currencyRates == nil {
+				return decimal.Zero, nil
+			}
+			return o.currencyRates.GetLatestRate(ctx, from, to)
+		},
+	}, ctx, userID)
 	debtList := make([]map[string]interface{}, 0, len(debts))
 	for i, d := range debts {
 		item := map[string]interface{}{
@@ -114,7 +134,7 @@ func (o *AgentAdapter) executeBabySteps(ctx context.Context, userID uuid.UUID) (
 		"total_interest":    snowball.TotalInterestCost.StringFixed(2),
 		"months_to_freedom": snowball.MonthsToFreedom,
 		"next_target":       snowball.NextTarget,
-		"display":           display.displayMap(),
+		"display":           display.DisplayMap(),
 	}
 
 	// Emergency fund context
@@ -125,7 +145,7 @@ func (o *AgentAdapter) executeBabySteps(ctx context.Context, userID uuid.UUID) (
 			"progress": emergencyProgressPct(emergencySaved, emergencyTarget),
 			"status":   "in_progress",
 		}
-		result["message"] = fmt.Sprintf("Step 1: Build a starter emergency fund of %s before attacking debt.", display.displayAmount(emergencyTarget))
+		result["message"] = fmt.Sprintf("Step 1: Build a starter emergency fund of %s before attacking debt.", display.DisplayAmount(emergencyTarget))
 	} else {
 		result["emergency_fund"] = map[string]interface{}{
 			"target":  emergencyTarget.StringFixed(2),
@@ -137,23 +157,23 @@ func (o *AgentAdapter) executeBabySteps(ctx context.Context, userID uuid.UUID) (
 
 	// Snowball detail
 	result["snowball"] = map[string]interface{}{
-		"smallest_debt":        snowball.NextTarget,
-		"freed_payment":        snowball.FreedPayment.StringFixed(2),
-		"projected_savings":    snowball.InterestSaved.StringFixed(2),
-		"sprint_allocation":    "80/20 spend/debt during sprint",
-		"post_sprint":          "70/30 spend/stash after all debts cleared",
+		"smallest_debt":     snowball.NextTarget,
+		"freed_payment":     snowball.FreedPayment.StringFixed(2),
+		"projected_savings": snowball.InterestSaved.StringFixed(2),
+		"sprint_allocation": "80/20 spend/debt during sprint",
+		"post_sprint":       "70/30 spend/stash after all debts cleared",
 	}
 
 	return result, nil
 }
 
 type snowballResult struct {
-	TotalDebt        decimal.Decimal
+	TotalDebt         decimal.Decimal
 	TotalInterestCost decimal.Decimal
-	InterestSaved    decimal.Decimal
-	MonthsToFreedom  int
-	NextTarget       string
-	FreedPayment     decimal.Decimal
+	InterestSaved     decimal.Decimal
+	MonthsToFreedom   int
+	NextTarget        string
+	FreedPayment      decimal.Decimal
 }
 
 func calculateSnowball(debts []entities.FinancialObligation) snowballResult {
@@ -168,7 +188,7 @@ func calculateSnowball(debts []entities.FinancialObligation) snowballResult {
 	}
 
 	// Next target = smallest debt
- smallest := debts[0]
+	smallest := debts[0]
 	result.NextTarget = fmt.Sprintf("%s (%s)", smallest.Name, smallest.Amount.StringFixed(2))
 	result.FreedPayment = calculateMinimumPayment(smallest)
 

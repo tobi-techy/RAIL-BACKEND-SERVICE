@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
@@ -14,11 +14,8 @@ const (
 	ToolGetMiriamDecisionReceipts = "get_miriam_decision_receipts"
 )
 
-type MiriamIntelligenceReader interface {
-	GetMoneyState(ctx context.Context, userID uuid.UUID) (*entities.MiriamMoneyState, error)
-	ListMandates(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutopilotMandate, error)
-	ListReceipts(ctx context.Context, userID uuid.UUID, limit int) ([]entities.MiriamDecisionReceipt, error)
-}
+// Deprecated: Use aiintelligence.MiriamIntelligenceReader instead.
+type MiriamIntelligenceReader = aiintelligence.MiriamIntelligenceReader
 
 func MiriamIntelligenceTools() []infraai.Tool {
 	return []infraai.Tool{

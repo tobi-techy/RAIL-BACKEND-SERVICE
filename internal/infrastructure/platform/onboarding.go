@@ -191,7 +191,7 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 		st = onboardingState{Step: stepName}
 		if contact != nil {
 			c.mergeContact(&st, contact)
-			if reply, err := c.afterContact(ctx, key, &st); err != nil {
+			if reply, err := c.afterContact(ctx, key, &st, in); err != nil {
 				return nil, err
 			} else if reply != nil {
 				return reply, nil
@@ -205,7 +205,7 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 
 	if contact != nil {
 		c.mergeContact(&st, contact)
-		if reply, err := c.afterContact(ctx, key, &st); err != nil {
+		if reply, err := c.afterContact(ctx, key, &st, in); err != nil {
 			return nil, err
 		} else if reply != nil {
 			return reply, nil
@@ -214,19 +214,19 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 
 	switch st.Step {
 	case stepName:
-		return c.handleName(ctx, key, &st, text)
+		return c.handleName(ctx, key, &st, in, text)
 	case stepConfirmContact:
-		return c.handleConfirmContact(ctx, key, &st, text)
+		return c.handleConfirmContact(ctx, key, &st, in, text)
 	case stepCountry:
-		return c.handleCountry(ctx, key, &st, text)
+		return c.handleCountry(ctx, key, &st, in, text)
 	case stepEmail:
-		return c.handleEmail(ctx, key, &st, text)
+		return c.handleEmail(ctx, key, &st, in, text)
 	case stepEmailOTP:
-		return c.handleEmailOTP(ctx, key, &st, text)
+		return c.handleEmailOTP(ctx, key, &st, in, text)
 	case stepPhone:
-		return c.handlePhone(ctx, key, &st, text)
+		return c.handlePhone(ctx, key, &st, in, text)
 	case stepOTP:
-		return c.handleOTP(ctx, key, &st, text)
+		return c.handleOTP(ctx, key, &st, in, text)
 	case stepConsent:
 		return c.handleConsent(ctx, key, &st, in, text)
 	default:
@@ -268,19 +268,52 @@ func (c *ChatOnboarder) mergeContact(st *onboardingState, contact *SharedContact
 	}
 }
 
+// senderE164 returns the sender's address as an E.164 number when it is one.
+// Over iMessage this is an Apple-authenticated identifier, so possession is
+// already proven the moment a message arrives.
+func senderE164(in OnboardInput) (string, bool) {
+	return normalizePhone(in.SenderID, "")
+}
+
+// adoptSenderPhone silently defaults the account phone to the number the user
+// is texting from. Onboarding never asks for a phone number anymore: asking
+// someone to type the number they're literally texting from is friction, and
+// verifying it again by SMS burns a Twilio send to prove what Apple already
+// proved. Returns true when adoption happened.
+func (c *ChatOnboarder) adoptSenderPhone(st *onboardingState, in OnboardInput) bool {
+	if st.Phone != "" {
+		return false
+	}
+	if p, ok := senderE164(in); ok {
+		st.Phone = p
+		return true
+	}
+	return false
+}
+
+// willTextCode reports whether SMS verification will actually be sent for the
+// collected phone: only when it differs from the sender's own authenticated
+// number (or the sender isn't a phone at all).
+func willTextCode(st *onboardingState, in OnboardInput) bool {
+	p, ok := senderE164(in)
+	return !(ok && p == st.Phone)
+}
+
 // afterContact jumps the state machine when a shared card filled enough fields.
 // Returns a non-nil reply when the card advanced the conversation on its own.
-func (c *ChatOnboarder) afterContact(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+func (c *ChatOnboarder) afterContact(ctx context.Context, key string, st *onboardingState, in OnboardInput) (*PlatformReply, error) {
 	if st.FirstName == "" {
 		return nil, nil
 	}
+
+	c.adoptSenderPhone(st, in)
 
 	if st.Phone != "" && st.FirstName != "" && st.Step != stepOTP && st.Step != stepConsent && st.Step != stepEmailOTP {
 		st.Step = stepConfirmContact
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 	}
 
 	if st.Country == "" {
@@ -302,16 +335,26 @@ func (c *ChatOnboarder) afterContact(ctx context.Context, key string, st *onboar
 	return nil, nil
 }
 
-func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	if isContactReject(text) {
+		rejected := st.Phone
 		st.Phone = ""
 		st.Email = ""
 		st.PendingEmail = ""
+		// Fall back to the sender's own number — but never the one they just
+		// rejected, that would loop.
+		if p, ok := senderE164(in); ok && p != rejected {
+			st.Phone = p
+			if err := c.save(ctx, key, *st); err != nil {
+				return nil, err
+			}
+			return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
+		}
 		st.Step = stepPhone
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply("Got it. Whose number should I text the code to? Include the country code, like +2348012345678."), nil
+		return textReply("Got it. What number should I use for your account? Include the country code, like +2348012345678."), nil
 	}
 	if text != "" && !isAffirmative(text) && !looksLikeOTP(text) {
 		// They typed something else — treat as a correction of the name.
@@ -322,31 +365,31 @@ func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st
 				if err := c.save(ctx, key, *st); err != nil {
 					return nil, err
 				}
-				return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+				return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 			}
 		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 	}
 	if looksLikeOTP(text) {
-		return c.handleOTP(ctx, key, st, text)
+		return c.handleOTP(ctx, key, st, in, text)
 	}
 	if st.PendingEmail != "" {
 		st.Email = st.PendingEmail
 		st.PendingEmail = ""
 	}
-	if st.Email != "" {
+	if st.Email != "" && !st.EmailVerified {
 		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
-			return c.handleEmail(ctx, key, st, st.Email)
+			return c.handleEmail(ctx, key, st, in, st.Email)
 		}
 	}
-	return c.sendPhoneOTP(ctx, key, st)
+	return c.sendPhoneOTP(ctx, key, st, in)
 }
 
 func looksLikeOTP(text string) bool {
 	return len(digitsOnly(text)) == 6
 }
 
-func (c *ChatOnboarder) handleName(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleName(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	name := parseFirstName(text)
 	if name == "" {
 		return textReply("What should I call you? First name is plenty."), nil
@@ -359,10 +402,10 @@ func (c *ChatOnboarder) handleName(ctx context.Context, key string, st *onboardi
 		}
 		return textReply(c.countryPrompt(name)), nil
 	}
-	return c.advancePastCountry(ctx, key, st)
+	return c.advancePastCountry(ctx, key, st, in)
 }
 
-func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	country := normalizeCountry(text)
 	if country == "" {
 		if st.CountryAttempts >= 1 && strings.TrimSpace(text) != "" {
@@ -377,13 +420,13 @@ func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboa
 		}
 	}
 	st.Country = country
-	return c.advancePastCountry(ctx, key, st)
+	return c.advancePastCountry(ctx, key, st, in)
 }
 
-func (c *ChatOnboarder) advancePastCountry(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+func (c *ChatOnboarder) advancePastCountry(ctx context.Context, key string, st *onboardingState, in OnboardInput) (*PlatformReply, error) {
 	// Contact already gave us an email — run the existing-account check.
 	if st.Email != "" {
-		return c.handleEmail(ctx, key, st, st.Email)
+		return c.handleEmail(ctx, key, st, in, st.Email)
 	}
 	// Keep the optional email beat for typing-path users so we can link an
 	// existing account. Contact-share users without an email skip it.
@@ -392,7 +435,7 @@ func (c *ChatOnboarder) advancePastCountry(ctx context.Context, key string, st *
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 	}
 	st.Step = stepEmail
 	if err := c.save(ctx, key, *st); err != nil {
@@ -401,15 +444,25 @@ func (c *ChatOnboarder) advancePastCountry(ctx context.Context, key string, st *
 	return textReply(c.emailPrompt()), nil
 }
 
-func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	email := normalizeEmail(text)
 	if email == "" && strings.ToLower(strings.TrimSpace(text)) == "skip" {
 		st.Email = ""
-		st.Step = stepPhone
+		// No number ask: default to the number they're texting from and show
+		// the confirm beat. The prompt only appears when the sender isn't a
+		// phone number at all (e.g. email-based Apple ID).
+		if !c.adoptSenderPhone(st, in) {
+			st.Step = stepPhone
+			if err := c.save(ctx, key, *st); err != nil {
+				return nil, err
+			}
+			return textReply(c.phonePrompt()), nil
+		}
+		st.Step = stepConfirmContact
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.phonePrompt()), nil
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 	}
 	if email == "" {
 		return textReply(c.emailPrompt()), nil
@@ -453,12 +506,14 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 		return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", email)), nil
 	}
 
+	// Never ask for a number: default to the one they're texting from.
+	c.adoptSenderPhone(st, in)
 	if st.Phone != "" {
 		st.Step = stepConfirmContact
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 	}
 	st.Step = stepPhone
 	if err := c.save(ctx, key, *st); err != nil {
@@ -467,7 +522,7 @@ func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboard
 	return textReply(c.phonePrompt()), nil
 }
 
-func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	code := digitsOnly(text)
 	if len(code) != 6 {
 		return textReply("That doesn't look like the 6-digit code. Reply with the code I emailed you."), nil
@@ -501,7 +556,14 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onbo
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
+	}
+	if c.adoptSenderPhone(st, in) {
+		st.Step = stepConfirmContact
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone, willTextCode(st, in))), nil
 	}
 	st.Step = stepPhone
 	if err := c.save(ctx, key, *st); err != nil {
@@ -510,16 +572,25 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onbo
 	return textReply(c.phonePrompt()), nil
 }
 
-func (c *ChatOnboarder) handlePhone(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handlePhone(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	phone, ok := normalizePhone(text, st.Country)
 	if !ok {
 		return textReply("That number doesn't look right. Send it with the country code, like +2348012345678."), nil
 	}
 	st.Phone = phone
-	return c.sendPhoneOTP(ctx, key, st)
+	return c.sendPhoneOTP(ctx, key, st, in)
 }
 
-func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboardingState, in OnboardInput) (*PlatformReply, error) {
+	// Possession shortcut: when the number to verify IS the number the user is
+	// texting from, an SMS code adds nothing — the iMessage sender identity is
+	// authenticated by Apple, and account linking already trusts exactly this
+	// signal (LinkVerified binds on sender possession). Asking them to read a
+	// code from the same device they're typing on is pure friction and burns a
+	// Twilio send. Skip straight to account resolution + consent.
+	if senderPhone, ok := normalizePhone(in.SenderID, ""); ok && senderPhone == st.Phone {
+		return c.finishPhoneVerification(ctx, key, st)
+	}
 	code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "phone", st.Phone)
 	if err != nil {
 		c.logger.Warn("onboarding OTP send failed", zap.Error(err))
@@ -536,7 +607,26 @@ func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboar
 	return textReply(fmt.Sprintf("Just texted a code to %s. Drop it here.", maskPhone(st.Phone))), nil
 }
 
-func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+// finishPhoneVerification is the shared tail after phone possession is proven
+// (by SMS OTP or by the sender's own number): resolve or create the account,
+// then move to consent.
+func (c *ChatOnboarder) finishPhoneVerification(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+	if err := c.ensureUser(ctx, st); err != nil {
+		c.logger.Error("onboarding user creation failed", zap.Error(err))
+		if strings.Contains(err.Error(), "inactive") {
+			c.clear(ctx, key)
+			return textReply("That phone number belongs to an inactive account. Please reach out to support@userail.money for help."), nil
+		}
+		return textReply("Something went wrong setting up your account. Mind trying again in a moment?"), nil
+	}
+	st.Step = stepConsent
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	return c.consentReply(), nil
+}
+
+func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
 	code := digitsOnly(text)
 	if len(code) != 6 {
 		return textReply("That doesn't look like the 6-digit code. Reply with the code I texted you."), nil
@@ -554,19 +644,7 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardin
 		return textReply("That code didn't match. Double-check and try again."), nil
 	}
 
-	if err := c.ensureUser(ctx, st); err != nil {
-		c.logger.Error("onboarding user creation failed", zap.Error(err))
-		if strings.Contains(err.Error(), "inactive") {
-			c.clear(ctx, key)
-			return textReply("That phone number belongs to an inactive account. Please reach out to support@userail.money for help."), nil
-		}
-		return textReply("Something went wrong setting up your account. Mind trying that code again in a moment?"), nil
-	}
-	st.Step = stepConsent
-	if err := c.save(ctx, key, *st); err != nil {
-		return nil, err
-	}
-	return c.consentReply(), nil
+	return c.finishPhoneVerification(ctx, key, st)
 }
 
 func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
@@ -678,12 +756,17 @@ func (c *ChatOnboarder) countryPrompt(name string) string {
 	return "Where's home? Nigeria, Ghana, the US, somewhere else?"
 }
 
-func (c *ChatOnboarder) contactConfirmMessage(name, phone string) string {
+func (c *ChatOnboarder) contactConfirmMessage(name, phone string, willText bool) string {
 	who := strings.TrimSpace(name)
 	if who == "" {
 		who = "Okay"
 	}
-	return fmt.Sprintf("%s. Nice. I'll text a code to %s to make sure it's you. Then we're in. Sound right?", who, maskPhone(phone))
+	if willText {
+		return fmt.Sprintf("%s. Nice. I'll text a code to %s to make sure it's you. Then we're in. Sound right?", who, maskPhone(phone))
+	}
+	// The number is the one they're texting from — verified on arrival. No code
+	// beat to announce.
+	return fmt.Sprintf("%s. Nice. Got %s down for your account. Sound right?", who, maskPhone(phone))
 }
 
 func (c *ChatOnboarder) introMessage(plat entities.Platform) string {

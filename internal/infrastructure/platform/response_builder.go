@@ -3,6 +3,7 @@ package platform
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
@@ -22,6 +23,7 @@ const (
 	ContentTypePoll     ContentType = "poll"     // poll() — Confirm/Cancel prompt
 	ContentTypeVoice    ContentType = "voice"    // voice() — spoken note (TTS)
 	ContentTypeCards    ContentType = "cards"    // structured InsightCards (rendered per platform)
+	ContentTypeAttachment ContentType = "attachment" // attachment() — native image/media bubble
 )
 
 // Delivery categories for the bridge's persistent outbound queue.
@@ -77,10 +79,63 @@ type OutboundMessage struct {
 	// in-app canvas; messaging renders them as portable per-platform card text)
 	Cards []entities.InsightCard `json:"cards,omitempty"`
 
+	// attachment image reply (native image bubble on supported platforms)
+	AttachmentURL string `json:"attachment_url,omitempty"`
+	AttachmentName string `json:"attachment_name,omitempty"`
+
 	// Category tells the bridge how long a message may live in the persistent
 	// outbound queue when the Space handle is cold. Critical messages (anomaly
 	// alerts, money-move receipts) survive longer than routine nudges.
 	Category string `json:"category,omitempty"`
+
+	// RenderStrategy tells the bridge how to render this message on the platform.
+	// "text" | "markdown" | "cards" | "plans" | "poll" | "quick_replies" | "trace"
+	RenderStrategy string `json:"render_strategy,omitempty"`
+
+	// MaxBubblesPerReply caps the number of bubbles the bridge may split into.
+	// Set when the backend explicitly wants Miriam to stay within a platform limit.
+	MaxBubblesPerReply int `json:"max_bubbles_per_reply,omitempty"`
+
+	// ActionChips are tappable actions (quick replies / inline keyboard buttons).
+	// The bridge renders these per-platform: quick replies on WhatsApp, inline
+	// keyboards on Telegram, poll options on iMessage.
+	ActionChips []ActionChip `json:"action_chips,omitempty"`
+
+	// PlanData carries multi-step plan information for rendering.
+	PlanData *PlanData `json:"plan_data,omitempty"`
+
+	// TraceData carries reasoning trace information for rendering.
+	TraceData *TraceData `json:"trace_data,omitempty"`
+}
+
+// ActionChip is a tappable action that the bridge renders as a native platform button.
+type ActionChip struct {
+	Label   string `json:"label"`
+	Action  string `json:"action"`
+	Confirm bool   `json:"confirm,omitempty"`
+}
+
+// PlanData carries the executable plan (multi-step actions).
+type PlanData struct {
+	PlanID    string `json:"plan_id"`
+	Steps     []Step `json:"steps"`
+	Status    string `json:"status"` // "draft" | "confirmed" | "running" | "completed" | "failed" | "cancelled"
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// Step is a single unit of work in a plan.
+type Step struct {
+	ID     int    `json:"id"`
+	Tool   string `json:"tool"`
+	Status string `json:"status"` // "pending" | "running" | "done" | "failed"
+	Check  string `json:"check,omitempty"`
+}
+
+// TraceData carries reasoning trace information for the bridge responsive rendering.
+type TraceData struct {
+	TraceID string                 `json:"trace_id"`
+	Content map[string]interface{} `json:"content"`
 }
 
 type ResponseBuilder struct{}
@@ -182,6 +237,25 @@ func (b *ResponseBuilder) CardsResponse(identity *entities.PlatformIdentity, tex
 	m.Text = text
 	m.ContentType = ContentTypeCards
 	m.Cards = cards
+	return m
+}
+
+// AttachmentImageResponse sends a native image attachment, optionally threaded
+// under the user's message and paired with caption text. Primarily for iMessage
+// receipt thumbnails and generated meme images.
+func (b *ResponseBuilder) AttachmentImageResponse(identity *entities.PlatformIdentity, text, threadID, replyTo, imageURL, fileName string) *OutboundMessage {
+	if strings.TrimSpace(imageURL) == "" {
+		return nil
+	}
+	m := b.base(identity, threadID)
+	m.Text = text
+	m.ContentType = ContentTypeAttachment
+	m.ReplyTo = replyTo
+	m.AttachmentURL = imageURL
+	if fileName == "" {
+		fileName = "miriam-image.png"
+	}
+	m.AttachmentName = fileName
 	return m
 }
 

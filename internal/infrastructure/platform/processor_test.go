@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -106,12 +107,16 @@ func (*notFoundErr) Error() string { return "not found" }
 type fakeOrchestrator struct {
 	confirmCalls int
 	cancelCalls  int
+	handleCalls  int
 	lastConvID   string
 	lastMessage  string
 	reply        *PlatformReply // when set, HandlePlatformMessage returns it
 }
 
+func (o *fakeOrchestrator) callCount() int { return o.handleCalls }
+
 func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform) (*PlatformReply, error) {
+	o.handleCalls++
 	o.lastMessage = message
 	if o.reply != nil {
 		return o.reply, nil
@@ -434,6 +439,101 @@ func TestProcess_OrchestratorCardsRenderedInOutbound(t *testing.T) {
 	}
 }
 
+func TestProcess_MemeCardSendsAttachmentOnIMessage(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{
+		reply: &PlatformReply{
+			Text: "Budget discipline?",
+			Cards: []entities.InsightCard{
+				{Type: "meme", Title: "Stash first", Sentiment: "positive", Data: map[string]interface{}{
+					"template": "drake",
+					"top_text": "spending it all",
+					"bottom_text": "stashing 30%",
+					"image_url": "https://cdn.memegen.link/drake/spending_it_all/stashing_30_.png",
+				}},
+			},
+		},
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	msg := InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		SpaceID:  "space-1",
+		MsgID:    "m1",
+		Text:     "send a meme",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal meme message: %v", err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(*sent) < 2 {
+		t.Fatalf("expected cards + attachment sends, got %d", len(*sent))
+	}
+	last := (*sent)[len(*sent)-1]
+	if last.ContentType != ContentTypeAttachment {
+		t.Fatalf("expected attachment for meme card, got %q", last.ContentType)
+	}
+	if last.AttachmentURL != "https://cdn.memegen.link/drake/spending_it_all/stashing_30_.png" {
+		t.Fatalf("unexpected attachment URL: %q", last.AttachmentURL)
+	}
+	if last.AttachmentName != "miriam-drake-meme.png" {
+		t.Fatalf("unexpected attachment name: %q", last.AttachmentName)
+	}
+}
+
+func TestProcess_ReceiptCardSendsAttachmentOnIMessage(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	thumb := "data:image/jpeg;base64,/9j/4AAQ"
+	orch := &fakeOrchestrator{
+		reply: &PlatformReply{
+			Text: "Got it, Shoprite.",
+			Cards: []entities.InsightCard{
+				{Type: "receipt", Title: "Shoprite", Data: map[string]interface{}{
+					"thumbnail": thumb,
+					"total":     "$12.34",
+				}},
+			},
+		},
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	msg := InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		SpaceID:  "space-1",
+		MsgID:    "m1",
+		Text:     "sent a photo",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal receipt message: %v", err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(*sent) < 2 {
+		t.Fatalf("expected cards + attachment sends, got %d", len(*sent))
+	}
+	last := (*sent)[len(*sent)-1]
+	if last.ContentType != ContentTypeAttachment {
+		t.Fatalf("expected attachment for receipt card, got %q", last.ContentType)
+	}
+	if last.AttachmentURL != thumb {
+		t.Fatalf("unexpected attachment URL: %q", last.AttachmentURL)
+	}
+	if last.AttachmentName != "miriam-receipt.jpg" {
+		t.Fatalf("unexpected attachment name: %q", last.AttachmentName)
+	}
+}
+
 func TestProcess_LinkedSenderContactCardNotForwarded(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
@@ -458,5 +558,87 @@ func TestProcess_LinkedSenderContactCardNotForwarded(t *testing.T) {
 	}
 	if len(*sent) == 0 {
 		t.Fatal("expected an ack to the linked sender")
+	}
+}
+
+// fakeDeduper is an in-memory InboundDeduper; failErr simulates a store outage.
+type fakeDeduper struct {
+	seen    map[string]bool
+	failErr error
+}
+
+func newFakeDeduper() *fakeDeduper { return &fakeDeduper{seen: map[string]bool{}} }
+
+func (f *fakeDeduper) SetNX(_ context.Context, k string, _ interface{}, _ time.Duration) (bool, error) {
+	if f.failErr != nil {
+		return false, f.failErr
+	}
+	if f.seen[k] {
+		return false, nil
+	}
+	f.seen[k] = true
+	return true, nil
+}
+
+func TestProcess_DuplicateMsgIDProcessedOnce(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+	p.SetInboundDeduper(newFakeDeduper())
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		Text:     "what's my balance?",
+		MsgID:    "bridge-msg-42",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := p.Process(context.Background(), raw); err != nil {
+			t.Fatalf("Process attempt %d: %v", i+1, err)
+		}
+	}
+	if orch.callCount() != 1 {
+		t.Fatalf("orchestrator must handle the message exactly once, got %d", orch.callCount())
+	}
+	replies := 0
+	for _, m := range *sent {
+		if m.ContentType != ContentTypeTyping {
+			replies++
+		}
+	}
+	if replies != 1 {
+		t.Fatalf("expected exactly one outbound reply (typing indicators excluded), got %d", replies)
+	}
+}
+
+func TestProcess_DeduperOutageFailsOpen(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, _, _ := newTestProcessor(repo, orch)
+	d := newFakeDeduper()
+	d.failErr = errors.New("redis down")
+	p.SetInboundDeduper(d)
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		Text:     "hello there",
+		MsgID:    "bridge-msg-43",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process must not fail when deduper is unavailable: %v", err)
+	}
+	if orch.callCount() != 1 {
+		t.Fatalf("message must still be processed on dedup outage, got %d calls", orch.callCount())
 	}
 }
