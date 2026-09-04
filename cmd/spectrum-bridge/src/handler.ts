@@ -240,6 +240,10 @@ export class MessageHandler {
       }
 
       case "attachment": {
+        if (!msg.attachment_url && !msg.text) {
+          log.warn({ thread_id: msg.thread_id }, "attachment message missing both url and text");
+          return;
+        }
         const attachmentPayload = msg.attachment_url
           ? attachment(msg.attachment_url, {
               id: msg.attachment_name || "miriam-image",
@@ -249,9 +253,13 @@ export class MessageHandler {
               name: msg.attachment_name || "miriam-image.txt",
               mimeType: "text/plain",
             });
-        await space.send(typing());
-        await this.delay(this.typingDurationMs(msg.text));
-        await space.send(attachmentPayload);
+        try {
+          await space.send(typing());
+          await this.delay(this.typingDurationMs(msg.text));
+          await space.send(attachmentPayload);
+        } catch (err) {
+          log.warn({ err, thread_id: msg.thread_id, url: msg.attachment_url }, "attachment send failed");
+        }
         return;
       }
 

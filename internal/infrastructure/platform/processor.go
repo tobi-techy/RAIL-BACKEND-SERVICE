@@ -65,6 +65,15 @@ type InboundMessage struct {
 	ImageB64  string `json:"image_b64,omitempty"`
 	ImageMime string `json:"image_mime,omitempty"`
 
+	// iMessage reply context. Carried so Miriam can thread her response under
+	// the user's tapped reply instead of sending a detached top-level bubble.
+	IsReply bool   `json:"is_reply,omitempty"`
+	ReplyTo string `json:"reply_to,omitempty"`
+
+	// poll vote from an iMessage poll. When true, the text is the selected poll
+	// option title and should be mapped to confirm/cancel when possible.
+	IsPollVote bool `json:"is_poll_vote,omitempty"`
+
 	// iMessage contact card / vCard. Used during chat-first onboarding so the
 	// user can skip typing name/phone/email.
 	IsContact bool           `json:"is_contact,omitempty"`
@@ -344,6 +353,25 @@ func (p *Processor) ProcessAction(ctx context.Context, raw []byte) error {
 	return p.deliverReply(ctx, resolved.Identity, pb.SpaceID, "", reply, false)
 }
 
+// ProcessPollVote handles an inbound iMessage poll vote, which is delivered as
+// a normal inbound text message with the selected option title. This is separate
+// from ProcessAction because iMessage polls do not use the action postback path.
+func (p *Processor) ProcessPollVote(ctx context.Context, raw []byte) error {
+	var msg InboundMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		log.Printf("drop unparseable poll vote: %v", err)
+		return nil
+	}
+
+	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
+	if err != nil {
+		log.Printf("poll vote from unlinked/unknown sender %s: %v", msg.UserID, err)
+		return nil
+	}
+
+	return p.handleNormalMessage(ctx, msg, resolved)
+}
+
 func (p *Processor) tryCompleteHandshake(ctx context.Context, msg InboundMessage) error {
 	// Bind the identity to the ACTUAL sender captured from the inbound message.
 	identity, err := p.linking.ConfirmHandshake(ctx, msg.Text, msg.Platform, msg.UserID)
@@ -381,6 +409,41 @@ var negativeVote = map[string]bool{
 }
 
 func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage, resolved *ResolvedUser) error {
+	// Poll-vote path: if the bridge flagged this inbound as a poll selection,
+	// try to map it to a pending action or reply directly so Miriam responds.
+	if msg.IsPollVote {
+		railUserID := resolved.UserID.String()
+		pidStr := resolved.Identity.ID.String()
+		normalized := strings.ToLower(strings.TrimSpace(msg.Text))
+		switch normalized {
+		case "confirm", "yes", "y", "ok", "okay", "sure":
+			if p.orchestrator.HasPendingPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform) {
+				reply, err := p.orchestrator.ConfirmPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform)
+				if err != nil {
+					log.Printf("poll confirm failed for %s: %v", railUserID, err)
+					return p.sendErrorMessage(ctx, msg, friendlyActionError(err))
+				}
+				return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.ReplyTo, reply, false)
+			}
+		case "cancel", "no", "n", "nope", "stop":
+			if p.orchestrator.HasPendingPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform) {
+				reply, err := p.orchestrator.CancelPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform)
+				if err != nil {
+					log.Printf("poll cancel failed for %s: %v", railUserID, err)
+					return p.sendErrorMessage(ctx, msg, friendlyActionError(err))
+				}
+				return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.ReplyTo, reply, false)
+			}
+		}
+
+		reply, err := p.orchestrator.HandlePlatformMessage(ctx, railUserID, pidStr, msg.Text, msg.ThreadID, msg.Platform)
+		if err != nil {
+			log.Printf("orchestrator error for %s: %v", railUserID, err)
+			return p.sendErrorMessage(ctx, msg, "Sorry, something went wrong on my end. Mind trying that again?")
+		}
+		return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.ReplyTo, reply, false)
+	}
+
 	// Text-vote fallback: on platforms without polls, a bare YES/NO (or similar)
 	// while a pending action is staged is treated as confirm/cancel. Guarded by
 	// HasPendingPlatformAction so ordinary "yes" chatter never fires it.
@@ -418,7 +481,7 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 		return p.sendErrorMessage(ctx, msg, "Sorry, something went wrong on my end. Mind trying that again?")
 	}
 
-	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, msg.IsVoice)
+	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.ReplyTo, reply, msg.IsVoice)
 }
 
 // deliverReply renders a PlatformReply into the appropriate Spectrum content type
@@ -513,10 +576,10 @@ func (p *Processor) sendVisualAttachmentIfAny(ctx context.Context, identity *ent
 				continue
 			}
 			thumb, ok := data["thumbnail"].(string)
-			if !ok {
+			if !ok || thumb == "" {
 				thumb, _ = data["image_url"].(string)
 			}
-			if !ok || thumb == "" {
+			if thumb == "" {
 				continue
 			}
 			attachment := p.responseBuilder.AttachmentImageResponse(identity, "", threadID, replyTo, thumb, "miriam-receipt.jpg")

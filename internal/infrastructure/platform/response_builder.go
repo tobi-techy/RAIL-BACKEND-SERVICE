@@ -3,6 +3,7 @@ package platform
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
@@ -194,6 +195,9 @@ func (b *ResponseBuilder) CardsResponse(identity *entities.PlatformIdentity, tex
 // under the user's message and paired with caption text. Primarily for iMessage
 // receipt thumbnails and generated meme images.
 func (b *ResponseBuilder) AttachmentImageResponse(identity *entities.PlatformIdentity, text, threadID, replyTo, imageURL, fileName string) *OutboundMessage {
+	if strings.TrimSpace(imageURL) == "" {
+		return nil
+	}
 	m := b.base(identity, threadID)
 	m.Text = text
 	m.ContentType = ContentTypeAttachment
