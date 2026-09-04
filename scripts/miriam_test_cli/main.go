@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ai"
+	aiprompt "github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
 	"github.com/rail-service/rail_service/internal/domain/services/spending"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/shopspring/decimal"
@@ -170,8 +171,8 @@ func main() {
 			continue
 		case "/prompt":
 			fmt.Println("\n--- SystemPromptV2 (first 600 chars) ---")
-			fmt.Println(ai.SystemPromptV2[:600] + "...")
-			fmt.Printf("\n  [%d chars total]\n\n", len(ai.SystemPromptV2))
+			fmt.Println(aiprompt.SystemPromptV2[:600] + "...")
+			fmt.Printf("\n  [%d chars total]\n\n", len(aiprompt.SystemPromptV2))
 			continue
 		case "/quality":
 			fmt.Println("\n  Enter a response to test quality gate:")

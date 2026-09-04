@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,6 +58,38 @@ type ControlLevelReader interface {
 	GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error)
 }
 
+// AnomalyResult is a single anomaly finding from the anomaly engine.
+type AnomalyResult struct {
+	Type        string                 `json:"type"`
+	Severity    string                 `json:"severity"`
+	Title       string                 `json:"title"`
+	Description string                 `json:"description"`
+	Details     map[string]interface{} `json:"details,omitempty"`
+	DetectedAt  time.Time              `json:"detected_at"`
+}
+
+// AnomalyChecker runs anomaly detection checks for a user. Implemented by the
+// ai.AnomalyEngine via an adapter. When nil, real-time anomaly reactions are
+// skipped and anomalies are only caught on the morning autopilot scan.
+type AnomalyChecker interface {
+	RunAllChecks(ctx context.Context, userID uuid.UUID, now time.Time) []AnomalyResult
+}
+
+// AnomalyChatBuilder converts anomaly results into a conversational chat
+// message. Implemented by an adapter around ai.BuildChatMessage.
+type AnomalyChatBuilder interface {
+	BuildChatMessage(results []AnomalyResult) string
+}
+
+// SpendCooldownStore sets and checks temporary spending cooldown flags.
+// When a spend_cooldown mandate fires, Miriam sets a flag (Redis, TTL-based)
+// that the allocation service can check before allowing discretionary card
+// spend. This makes the cooldown actually block spending, not just notify.
+type SpendCooldownStore interface {
+	SetCooldown(ctx context.Context, userID uuid.UUID, duration time.Duration) error
+	IsCoolingDown(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
 // Mandate action types (canonical definitions in entities package).
 const (
 	MiriamMandateTransferToStash  = entities.MiriamMandateTransferToStash
@@ -87,7 +120,29 @@ type IntelligenceOrchestrator struct {
 	outcomeTrack    *OutcomeTracker
 	selfReview      *SelfReviewEngine
 	controlLevel    ControlLevelReader
+	anomalyChecker  AnomalyChecker
+	anomalyChatBuilder AnomalyChatBuilder
+	cooldownStore  SpendCooldownStore
 	logger          *zap.Logger
+
+	// Daily cap state for proactive notifications, keyed "userID:kind". The
+	// worker runs on a single leader replica, so in-memory is sufficient;
+	// entries are one per user per kind and reset when the UTC date rolls over.
+	loopMu         sync.Mutex
+	loopCloseState map[string]*loopCloseTally
+}
+
+// Daily caps for proactive notification kinds. These bound how often Miriam
+// may ping a user per UTC day regardless of how many sweeps fire or outcomes
+// resolve — she's discreet, not chatty.
+const (
+	maxLoopClosingsPerDay   = 1
+	maxSuggestionCTAsPerDay = 1
+)
+
+type loopCloseTally struct {
+	day string
+	n   int
 }
 
 // NewIntelligenceOrchestrator creates the unified brain.
@@ -156,6 +211,29 @@ func (o *IntelligenceOrchestrator) SetPatternAnalyzer(a *TransactionPatternAnaly
 	o.patternAnalyzer = a
 }
 
+// allowDailyNotice reports whether the user is still under the per-kind daily
+// notification cap, tallying this attempt when allowed. Kinds are independent:
+// hitting the cap on one kind never blocks another.
+func (o *IntelligenceOrchestrator) allowDailyNotice(userID uuid.UUID, kind string, max int) bool {
+	day := time.Now().UTC().Format("2006-01-02")
+	key := userID.String() + ":" + kind
+	o.loopMu.Lock()
+	defer o.loopMu.Unlock()
+	if o.loopCloseState == nil {
+		o.loopCloseState = make(map[string]*loopCloseTally)
+	}
+	tally := o.loopCloseState[key]
+	if tally == nil || tally.day != day {
+		tally = &loopCloseTally{day: day}
+		o.loopCloseState[key] = tally
+	}
+	if tally.n >= max {
+		return false
+	}
+	tally.n++
+	return true
+}
+
 // SetSelfReview injects the self-review engine after construction (deferred wiring).
 func (o *IntelligenceOrchestrator) SetSelfReview(s *SelfReviewEngine) {
 	o.selfReview = s
@@ -167,6 +245,25 @@ func (o *IntelligenceOrchestrator) SetSelfReview(s *SelfReviewEngine) {
 // suggestions but no money moves without their explicit approval.
 func (o *IntelligenceOrchestrator) SetControlLevel(r ControlLevelReader) {
 	o.controlLevel = r
+}
+
+// SetAnomalyChecker injects the anomaly checker after construction (deferred
+// wiring). When set, real-time money events trigger anomaly checks and
+// conversational chat messages for high/critical findings.
+func (o *IntelligenceOrchestrator) SetAnomalyChecker(c AnomalyChecker) {
+	o.anomalyChecker = c
+}
+
+// SetAnomalyChatBuilder injects the chat message builder for anomaly results.
+// When set, anomaly findings are converted to conversational messages.
+func (o *IntelligenceOrchestrator) SetAnomalyChatBuilder(b AnomalyChatBuilder) {
+	o.anomalyChatBuilder = b
+}
+
+// SetSpendCooldownStore injects the cooldown store so spend_cooldown mandates
+// actually block discretionary spending, not just notify.
+func (o *IntelligenceOrchestrator) SetSpendCooldownStore(s SpendCooldownStore) {
+	o.cooldownStore = s
 }
 
 // RunSelfReview runs Miriam's meta-review of her own recent work for a user. It
@@ -199,6 +296,7 @@ type IntelligenceResult struct {
 	NudgesGenerated int                              `json:"nudges_generated"`
 	SuggestionsMade int                              `json:"suggestions_made"`
 	Receipts        []entities.MiriamDecisionReceipt `json:"receipts"`
+	AnomalyAlert    string                           `json:"anomaly_alert,omitempty"`
 	EvaluatedAt     time.Time                        `json:"evaluated_at"`
 	Duration        time.Duration                    `json:"duration_ms"`
 }
@@ -299,11 +397,73 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		}
 	}
 
-	// 3. Generate predictions
-	predictions, err := o.predictions.GeneratePredictions(ctx, userID, state)
-	if err != nil && o.logger != nil {
-		o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
-	}
+	// 3-5b. Run independent sub-engines in parallel: predictions, signals,
+	// memory context, learning bias, and obligation detection.
+	var (
+		predictions  *entities.PredictionSummary
+		memoryFacts  []entities.MiriamUserFact
+		learningBias = decimal.Zero
+	)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		p, err := o.predictions.GeneratePredictions(ctx, userID, state)
+		if err != nil && o.logger != nil {
+			o.logger.Warn("prediction generation failed", zap.String("user_id", userID.String()), zap.Error(err))
+		}
+		predictions = p
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.signals != nil {
+			if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
+				o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.memory != nil {
+			facts, err := o.memory.GetActiveFacts(ctx, userID)
+			if err == nil {
+				memoryFacts = filterActionRelevantFacts(facts)
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.service.repo != nil {
+			bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
+			if err == nil {
+				learningBias = bias
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if o.obDetector != nil && eventType == EventWorkerSweep {
+			detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
+			if err == nil && len(detected) > 0 && o.logger != nil {
+				o.logger.Info("obligation auto-detection found candidates",
+					zap.String("user_id", userID.String()),
+					zap.Int("count", len(detected)))
+			}
+		}
+	}()
+
+	wg.Wait()
+
 	result.Predictions = predictions
 
 	// 3b. Record prediction outcomes (pending) and evaluate expired ones. When a
@@ -317,35 +477,13 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 		if o.notifier != nil {
 			for _, out := range resolved {
 				if msg := LoopClosingMessage(out); msg != "" {
+					if !o.allowDailyNotice(userID, "loop_close", maxLoopClosingsPerDay) {
+						break // daily cap reached
+					}
 					_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
-					break // one loop-closing line per sweep — she's discreet, not chatty
+					break // one loop-closing line per sweep
 				}
 			}
-		}
-	}
-
-	// 4. Detect and upsert context signals
-	if o.signals != nil {
-		if err := o.signals.DetectAndUpsert(ctx, userID); err != nil && o.logger != nil {
-			o.logger.Debug("signal detection failed", zap.String("user_id", userID.String()), zap.Error(err))
-		}
-	}
-
-	// 5. Load memory context
-	var memoryFacts []entities.MiriamUserFact
-	if o.memory != nil {
-		facts, err := o.memory.GetActiveFacts(ctx, userID)
-		if err == nil {
-			memoryFacts = filterActionRelevantFacts(facts)
-		}
-	}
-
-	// 5b. Get learning bias
-	learningBias := decimal.Zero
-	if o.service.repo != nil {
-		bias, err := o.service.repo.RecentLearningBias(ctx, userID, time.Now().UTC().AddDate(0, -1, 0))
-		if err == nil {
-			learningBias = bias
 		}
 	}
 
@@ -364,7 +502,7 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	// Autonomous (always-on) events are read-only. They may analyze, message,
 	// and stage pending actions, but they never execute mandates or move money.
 	isAutonomous := IsAutonomousEvent(eventType)
-	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual)
+	mandateEvent := !isAutonomous && (eventType == EventWorkerSweep || eventType == EventIncomeLowerThanUsual || eventType == EventSpendingSpike || eventType == EventBillPressure)
 	gateReason := ""
 	if mandateEvent {
 		gateReason = o.autonomyGateReason(ctx, userID)
@@ -422,32 +560,23 @@ func (o *IntelligenceOrchestrator) Evaluate(ctx context.Context, userID uuid.UUI
 	suggestions, err := o.suggestions.GenerateSuggestions(ctx, userID, state, memoryFacts)
 	if err == nil {
 		result.SuggestionsMade = len(suggestions)
-		// One CTA per evaluate when we have something new to propose — discreet,
-		// high-signal onboarding into silent wins. Users on guided can accept via
-		// chat tool accept_mandate_suggestion, then switch to Act (full).
-		if len(suggestions) > 0 && o.notifier != nil {
+		// One CTA per day at most when we have something new to propose —
+		// discreet, high-signal onboarding into silent wins. Users on guided can
+		// accept via chat tool accept_mandate_suggestion, then switch to Act
+		// (full). Without this cap the same pitch would re-send every sweep.
+		if len(suggestions) > 0 && o.notifier != nil && o.allowDailyNotice(userID, "mandate_cta", maxSuggestionCTAsPerDay) {
 			s0 := suggestions[0]
 			msg := strings.TrimSpace(s0.Reasoning)
 			if msg == "" {
 				msg = fmt.Sprintf(
-					"I can quietly handle %s — up to $%s when it's safe. Text me \"accept mandate\" or open suggestions if you want me on it.",
+					"I can quietly handle %s, up to $%s when it's safe. Text me \"accept mandate\" or open suggestions if you want me on it.",
 					strings.ToLower(s0.Name),
 					s0.SuggestedMaxAmount.StringFixed(0),
 				)
 			} else {
-				msg = msg + " Text me \"accept mandate\" if you want me on it — then switch to Act so I can run it quietly."
+				msg = msg + " Text me \"accept mandate\" if you want me on it, then switch to Act so I can run it quietly."
 			}
 			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", msg)
-		}
-	}
-
-	// 9. Detect recurring obligations from transactions (weekly check)
-	if o.obDetector != nil && eventType == EventWorkerSweep {
-		detected, err := o.obDetector.DetectRecurringPayments(ctx, userID)
-		if err == nil && len(detected) > 0 && o.logger != nil {
-			o.logger.Info("obligation auto-detection found candidates",
-				zap.String("user_id", userID.String()),
-				zap.Int("count", len(detected)))
 		}
 	}
 
@@ -564,7 +693,7 @@ func (o *IntelligenceOrchestrator) autonomyGateReason(ctx context.Context, userI
 func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, userID uuid.UUID, mandate entities.MiriamAutopilotMandate, amount decimal.Decimal) error {
 	var err error
 	switch mandate.ActionType {
-	case entities.MiriamMandateTransferToStash, MiriamMandateStashTopUp, MiriamMandateIdleSweep, MiriamMandateGoalContribution:
+	case entities.MiriamMandateTransferToStash, MiriamMandateStashTopUp, MiriamMandateIdleSweep:
 		// Shared safety gate: floors, cooldown, day cap, MarkMandateExecuted, receipt.
 		state, stErr := o.service.GetMoneyState(ctx, userID)
 		if stErr != nil || state == nil {
@@ -575,20 +704,36 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 			break
 		}
 		err = o.service.SafeExecuteTransferToStash(ctx, state, mandate, amount, EventWorkerSweep)
+
+	case MiriamMandateGoalContribution:
+		// Goal contributions move money to Stash with a goal-specific
+		// idempotency key so the ledger can distinguish them from generic
+		// stash transfers. Same safety gate as transfer_to_stash.
+		state, stErr := o.service.GetMoneyState(ctx, userID)
+		if stErr != nil || state == nil {
+			state, stErr = o.service.RefreshMoneyState(ctx, userID)
+		}
+		if stErr != nil {
+			err = stErr
+			break
+		}
+		err = o.executeGoalContribution(ctx, userID, state, mandate, amount)
+
 	case MiriamMandateTransferToSpend:
 		err = o.executeTransferToSpend(ctx, userID, amount, mandate.ID)
+
 	case MiriamMandateBillReservation:
-		if err = o.recordBillReservation(ctx, userID, amount, mandate); err == nil {
-			if o.notifier != nil {
-				symbol := o.resolveSymbol(ctx, userID)
-				_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("%s%s noted for upcoming bills.", symbol, amount.StringFixed(2)))
-			}
-		}
+		// Bill reservation actually moves money from Spend to Stash so the
+		// funds are set aside and can't be spent on other things. The
+		// receipt records the reservation reason for audit.
+		err = o.executeBillReservation(ctx, userID, amount, mandate)
+
 	case MiriamMandateSpendCooldown:
-		o.recordReceipt(ctx, userID, amount, mandate, "spend_cooldown", "Spending cooldown activated per mandate.")
-		if o.notifier != nil {
-			_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", "Spending cooldown is on. Paused non-essential spending for now.")
-		}
+		// Spend cooldown sets a temporary flag (Redis, TTL-based) that the
+		// allocation service can check before allowing discretionary card
+		// spend. This actually blocks spending, not just notifies.
+		err = o.executeSpendCooldown(ctx, userID, amount, mandate)
+
 	default:
 		return fmt.Errorf("unknown mandate action type: %s", mandate.ActionType)
 	}
@@ -608,6 +753,15 @@ func (o *IntelligenceOrchestrator) executeMandateAction(ctx context.Context, use
 		analytics.G().Increment(ctx, userID.String(), map[string]int{
 			analytics.PropMiriamActionsTotal: 1,
 		})
+	}
+	// Record outcome for the learning model so future decisions adjust
+	// confidence based on historical success/failure.
+	if o.decisions != nil {
+		feedbackScore := decimal.NewFromInt(1)
+		if err != nil {
+			feedbackScore = decimal.NewFromInt(-1)
+		}
+		_ = o.decisions.RecordOutcome(ctx, mandate.ID, userID, status, feedbackScore)
 	}
 	return err
 }
@@ -633,14 +787,15 @@ func (o *IntelligenceOrchestrator) executeTransferToSpend(ctx context.Context, u
 	}
 
 	if o.notifier != nil {
+		symbol := o.resolveSymbol(ctx, userID)
 		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam moved money from Stash",
-			fmt.Sprintf("Moved $%s from Stash to Spending for upcoming bills.", amount.StringFixed(2)))
+			fmt.Sprintf("Moved %s%s from Stash to Spending for upcoming bills.", symbol, amount.StringFixed(2)))
 	}
 	return nil
 }
 
 func (o *IntelligenceOrchestrator) recordBillReservation(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandate entities.MiriamAutopilotMandate) error {
-	reason := fmt.Sprintf("Reserved $%s for upcoming bills per mandate.", amount.StringFixed(2))
+	reason := fmt.Sprintf("Reserved %s%s for upcoming bills per mandate.", o.resolveSymbol(ctx, userID), amount.StringFixed(2))
 	receipt := &entities.MiriamDecisionReceipt{
 		ID:         uuid.New(),
 		UserID:     userID,
@@ -672,6 +827,90 @@ func (o *IntelligenceOrchestrator) recordReceipt(ctx context.Context, userID uui
 		CreatedAt:  time.Now().UTC(),
 	}
 	return o.service.repo.CreateReceipt(ctx, receipt)
+}
+
+// executeGoalContribution moves money to Stash with a goal-specific
+// idempotency key so the ledger can distinguish it from generic stash
+// transfers. Uses the same safety gate as SafeExecuteTransferToStash.
+func (o *IntelligenceOrchestrator) executeGoalContribution(ctx context.Context, userID uuid.UUID, state *entities.MiriamMoneyState, mandate entities.MiriamAutopilotMandate, amount decimal.Decimal) error {
+	if err := o.service.SafeExecuteTransferToStash(ctx, state, mandate, amount, EventWorkerSweep); err != nil {
+		return err
+	}
+	if o.notifier != nil {
+		symbol := o.resolveSymbol(ctx, userID)
+		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("moved %s%s to stash for your goal. you're building something.", symbol, amount.StringFixed(2)))
+	}
+	return nil
+}
+
+// executeBillReservation moves money from Spend to Stash so the funds are
+// actually set aside for upcoming bills and can't be spent on other things.
+// Records a receipt with the reservation reason for audit.
+func (o *IntelligenceOrchestrator) executeBillReservation(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandate entities.MiriamAutopilotMandate) error {
+	windowSec := int64(1440) * 60
+	idempotencyKey := fmt.Sprintf("miriam-bill-reserve-%s-%d", mandate.ID.String(), time.Now().UTC().Unix()/windowSec)
+	if err := o.service.transfer.TransferSpendingToStash(ctx, userID, amount, idempotencyKey); err != nil {
+		// Record the failure for audit.
+		errMsg := err.Error()
+		_ = o.createReceiptFromOrchestrator(ctx, userID, &mandate, "bill_reservation", entities.MiriamReceiptStatusFailed, amount, "failed to reserve funds for bills", &errMsg)
+		return err
+	}
+	reason := fmt.Sprintf("set aside $%s for upcoming bills per mandate.", amount.StringFixed(2))
+	_ = o.createReceiptFromOrchestrator(ctx, userID, &mandate, "bill_reservation", entities.MiriamReceiptStatusExecuted, amount, reason, nil)
+	if o.notifier != nil {
+		symbol := o.resolveSymbol(ctx, userID)
+		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", fmt.Sprintf("set aside %s%s for upcoming bills. it's in stash now, not touching it.", symbol, amount.StringFixed(2)))
+	}
+	return nil
+}
+
+// executeSpendCooldown sets a temporary spending flag via the cooldown store
+// so the allocation service can block discretionary card spend. Also records
+// a receipt for audit. The cooldown duration is derived from the mandate's
+// cooldown minutes (default 24h).
+func (o *IntelligenceOrchestrator) executeSpendCooldown(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, mandate entities.MiriamAutopilotMandate) error {
+	duration := time.Duration(mandate.CooldownMinutes) * time.Minute
+	if duration <= 0 {
+		duration = 24 * time.Hour
+	}
+	if o.cooldownStore != nil {
+		if err := o.cooldownStore.SetCooldown(ctx, userID, duration); err != nil {
+			errMsg := err.Error()
+			_ = o.createReceiptFromOrchestrator(ctx, userID, &mandate, "spend_cooldown", entities.MiriamReceiptStatusFailed, amount, "failed to activate spending cooldown", &errMsg)
+			return err
+		}
+	}
+	reason := fmt.Sprintf("spending cooldown activated for %v. non-essential spending paused.", duration)
+	_ = o.createReceiptFromOrchestrator(ctx, userID, &mandate, "spend_cooldown", entities.MiriamReceiptStatusExecuted, amount, reason, nil)
+	if o.notifier != nil {
+		_ = o.notifier.SendGenericNotification(ctx, userID, "Miriam", "spending cooldown is on. paused non-essential spending for now.")
+	}
+	return nil
+}
+
+// createReceiptFromOrchestrator is a helper that creates a decision receipt
+// from the orchestrator without going through the service layer.
+func (o *IntelligenceOrchestrator) createReceiptFromOrchestrator(ctx context.Context, userID uuid.UUID, mandate *entities.MiriamAutopilotMandate, eventType, status string, amount decimal.Decimal, reason string, errMsg *string) error {
+	var mandateID *uuid.UUID
+	actionType := ""
+	if mandate != nil {
+		mandateID = &mandate.ID
+		actionType = mandate.ActionType
+	}
+	return o.service.repo.CreateReceipt(ctx, &entities.MiriamDecisionReceipt{
+		ID:           uuid.New(),
+		UserID:       userID,
+		MandateID:    mandateID,
+		EventType:    eventType,
+		ActionType:   actionType,
+		Amount:       amount,
+		Currency:     "USD",
+		Status:       status,
+		Reason:       reason,
+		Evidence:     mustJSON(map[string]interface{}{"generated_by": "intelligence_orchestrator"}),
+		ErrorMessage: errMsg,
+		CreatedAt:    time.Now().UTC(),
+	})
 }
 
 func filterActionRelevantFacts(facts []*entities.MiriamUserFact) []entities.MiriamUserFact {

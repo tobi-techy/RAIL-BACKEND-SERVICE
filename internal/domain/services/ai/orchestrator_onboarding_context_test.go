@@ -289,6 +289,9 @@ func TestFirstConversationGuidance(t *testing.T) {
 			"connect_bank",
 			"get_bank_statement_analysis",
 			"AHA MOMENT",
+			"repeat-back pattern",
+			"money dial",
+			"What did money feel like growing up?",
 			"send_poll",
 			"get_baby_steps",
 			"just_provisioned",
@@ -309,4 +312,21 @@ func TestFirstConversationGuidance(t *testing.T) {
 			t.Error("first conversation should not interrogate income up front")
 		}
 	})
+}
+
+func TestOnboardingBuildsPersonalCommitmentBeforeCSPCommit(t *testing.T) {
+	guidance := firstConversationGuidance("")
+	for _, want := range []string{
+		"why it matters now",
+		"who benefits",
+		"build_conscious_spending_plan",
+		"biggest mismatch",
+		"protected money dial",
+		"commit_conscious_spending_plan",
+		"moves no money",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("first-conversation guidance missing %q", want)
+		}
+	}
 }

@@ -261,17 +261,17 @@ func TestOnboarding_ContactEmailWaitsForConfirm(t *testing.T) {
 	}
 }
 
-func TestOnboarding_ContactNameOnlyStillAsksPhone(t *testing.T) {
+func TestOnboarding_ContactNameOnlyAdoptsSenderNumber(t *testing.T) {
 	ob, _, _, _, _, _ := newTestOnboarder()
 	sender := "+15551112"
 
 	reply := stepContact(t, ob, sender, SharedContact{FirstName: "Bola"})
-	if !strings.Contains(strings.ToLower(reply), "home") && !strings.Contains(strings.ToLower(reply), "phone") {
-		t.Fatalf("expected country or phone follow-up after name-only card, got: %q", reply)
+	if !strings.Contains(reply, "Sound right?") || !strings.Contains(reply, "1555") {
+		t.Fatalf("expected confirm of sender's own number after name-only card, got: %q", reply)
 	}
 }
 
-func TestOnboarding_ContactRejectFallsBackToTyping(t *testing.T) {
+func TestOnboarding_ContactRejectFallsBackToSenderNumber(t *testing.T) {
 	ob, _, _, _, _, _ := newTestOnboarder()
 	sender := "+15551113"
 
@@ -281,8 +281,8 @@ func TestOnboarding_ContactRejectFallsBackToTyping(t *testing.T) {
 		Country:   "NG",
 	})
 	reply := step(t, ob, sender, "that's not me")
-	if !strings.Contains(strings.ToLower(reply), "number") {
-		t.Fatalf("expected phone fallback after rejecting card, got: %q", reply)
+	if !strings.Contains(reply, "Sound right?") || !strings.Contains(reply, "1555") {
+		t.Fatalf("expected re-confirm with sender's own number after rejecting card, got: %q", reply)
 	}
 }
 
@@ -300,29 +300,24 @@ func TestOnboarding_HappyPath(t *testing.T) {
 
 	step(t, ob, sender, "Ada")
 	step(t, ob, sender, "Nigeria")
-	askPhone := step(t, ob, sender, "ada@example.com")
-	if !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected phone prompt after email, got: %q", askPhone)
+	confirm := step(t, ob, sender, "ada@example.com")
+	if !strings.Contains(confirm, "+15") || !strings.Contains(confirm, "Sound right?") {
+		t.Fatalf("expected confirm of sender's own number after email, got: %q", confirm)
 	}
-	askOTP := step(t, ob, sender, "+2348012345678")
-	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
-		t.Fatalf("expected OTP sent to normalized phone, got: %v", ver.sentTo)
-	}
-	if !strings.Contains(askOTP, "code") {
-		t.Fatalf("expected code prompt, got: %q", askOTP)
-	}
-
-	consent := step(t, ob, sender, "123456")
+	consent := step(t, ob, sender, "yes")
 	if !strings.Contains(consent, "I agree") {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("zero-friction onboarding must not send any OTP, sent: %v", ver.sentTo)
+	}
 	if len(users.created) != 1 || users.created[0].Email != "ada@example.com" {
-		t.Fatalf("expected user created with email after OTP, got %d", len(users.created))
+		t.Fatalf("expected user created with email, got %d", len(users.created))
 	}
 
 	done := step(t, ob, sender, "YES")
-	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
-		t.Fatalf("expected provisioning with Ada/NG/+2348012345678, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
+	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != sender {
+		t.Fatalf("expected provisioning with Ada/NG/%s, got calls=%d name=%q cc=%q phone=%q", sender, prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
 	}
 	if linker.calls != 1 || linker.lastSend != sender {
 		t.Fatalf("expected auto-link to sender, got calls=%d send=%q", linker.calls, linker.lastSend)
@@ -336,18 +331,26 @@ func TestOnboarding_HappyPath(t *testing.T) {
 }
 
 func TestOnboarding_ExistingPhoneAutoLinks(t *testing.T) {
-	ob, _, _, users, prov, linker := newTestOnboarder()
-	sender := "+15550002"
+	ob, _, ver, users, prov, linker := newTestOnboarder()
+	sender := "+15550002" // texting from the phone-first account's number
 	existingID := uuid.New()
-	users.byPhone["+2348012345678"] = &entities.UserProfile{ID: existingID, IsActive: true}
+	users.byPhone[sender] = &entities.UserProfile{ID: existingID, IsActive: true}
 
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Bola")
 	step(t, ob, sender, "NG")
-	step(t, ob, sender, "bola@example.com")
-	step(t, ob, sender, "+2348012345678")
-	step(t, ob, sender, "123456")
-	step(t, ob, sender, "yes")
+	confirm := step(t, ob, sender, "bola@example.com")
+	if !strings.Contains(confirm, "Sound right?") {
+		t.Fatalf("expected confirm of sender's own number after email, got: %q", confirm)
+	}
+	consent := step(t, ob, sender, "yes")
+	if !strings.Contains(consent, "I agree") {
+		t.Fatalf("expected consent prompt, got: %q", consent)
+	}
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("no OTP should be sent when the account matches the sender's number, sent: %v", ver.sentTo)
+	}
+	step(t, ob, sender, "I agree")
 
 	if len(users.created) != 0 {
 		t.Fatalf("should not create a new user when phone already exists, created %d", len(users.created))
@@ -600,11 +603,17 @@ func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
 		t.Fatalf("expected email OTP prompt, got: %q", askEmailOTP)
 	}
 
-	askPhone := step(t, ob, sender, "123456")
-	if !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected phone prompt after email OTP, got: %q", askPhone)
+	confirm := step(t, ob, sender, "123456")
+	if !strings.Contains(confirm, "Sound right?") {
+		t.Fatalf("expected confirm of sender's own number after email OTP, got: %q", confirm)
 	}
 
+	// The sender's number is the default; to use a different one they reject
+	// and type it — that path still SMS-verifies.
+	fallback := step(t, ob, sender, "that's not me")
+	if !strings.Contains(strings.ToLower(fallback), "number") {
+		t.Fatalf("expected typing fallback after rejecting own number, got: %q", fallback)
+	}
 	step(t, ob, sender, "+2348099999999")
 	consent := step(t, ob, sender, "123456")
 	if !strings.Contains(consent, "I agree") {
@@ -643,10 +652,15 @@ func TestOnboarding_SimulatedOTPDisclosesNoSend(t *testing.T) {
 		t.Fatalf("simulated email OTP must disclose no send, got: %q", reply)
 	}
 
-	// Confirm the email code, then the SMS path discloses too.
-	askPhone := step(t, ob, sender, ver.validCode)
-	if !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected phone prompt after email code, got: %q", askPhone)
+	// Confirm the email code, then reject the sender-number default to reach
+	// the SMS path — which discloses too.
+	confirm := step(t, ob, sender, ver.validCode)
+	if !strings.Contains(confirm, "Sound right?") {
+		t.Fatalf("expected confirm of sender's own number after email code, got: %q", confirm)
+	}
+	prompt := step(t, ob, sender, "that's not me")
+	if !strings.Contains(strings.ToLower(prompt), "number") {
+		t.Fatalf("expected typing fallback after rejecting own number, got: %q", prompt)
 	}
 	reply = step(t, ob, sender, "+2348099999998")
 	if !strings.Contains(strings.ToLower(reply), "nothing was actually texted") {
@@ -770,39 +784,52 @@ func TestOnboarding_SkipEmailUsesNoEmail(t *testing.T) {
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Kemi")
 	step(t, ob, sender, "NG")
-	askPhone := step(t, ob, sender, "skip")
-	if !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected phone prompt after skipping email, got: %q", askPhone)
+	confirm := step(t, ob, sender, "skip")
+	if !strings.Contains(confirm, "Sound right?") {
+		t.Fatalf("expected confirm of sender's own number after skipping email, got: %q", confirm)
 	}
-	step(t, ob, sender, "+2348099999999")
-	step(t, ob, sender, "123456")
-	step(t, ob, sender, "yes")
+	consent := step(t, ob, sender, "yes")
+	if !strings.Contains(consent, "I agree") {
+		t.Fatalf("expected consent prompt after confirming sender number, got: %q", consent)
+	}
+	step(t, ob, sender, "I agree")
 	if len(users.created) != 1 {
 		t.Fatalf("expected one user created when email skipped, got %d", len(users.created))
+	}
+	if users.created[0].Phone == nil || *users.created[0].Phone != sender {
+		t.Fatalf("expected sender's number stored as account phone, got %+v", users.created[0].Phone)
 	}
 	got := users.created[0].Email
 	if !strings.HasPrefix(got, "phone+") || !strings.HasSuffix(got, "@placeholder.invalid") {
 		t.Fatalf("expected opaque placeholder email, got %q", got)
 	}
 	// The placeholder must not carry the phone number (no PII duplication).
-	if strings.Contains(got, "2348099999999") {
+	if strings.Contains(got, "15550011") {
 		t.Fatalf("placeholder email leaks the phone number: %q", got)
 	}
 }
 
 func TestOnboarding_NewUserCreatedWithEmail(t *testing.T) {
-	ob, _, _, users, _, _ := newTestOnboarder()
+	ob, _, ver, users, _, _ := newTestOnboarder()
 	sender := "+15550012"
 
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Lola")
 	step(t, ob, sender, "NG")
-	step(t, ob, sender, "lola@example.com")
-	step(t, ob, sender, "+2348099999999")
-	step(t, ob, sender, "123456")
+	confirm := step(t, ob, sender, "lola@example.com")
+	if !strings.Contains(confirm, "Sound right?") {
+		t.Fatalf("expected confirm of sender's own number after email, got: %q", confirm)
+	}
 	step(t, ob, sender, "yes")
+	step(t, ob, sender, "I agree")
 	if len(users.created) != 1 || users.created[0].Email != "lola@example.com" {
 		t.Fatalf("expected new user with email, got %d", len(users.created))
+	}
+	if users.created[0].Phone == nil || *users.created[0].Phone != sender {
+		t.Fatalf("expected sender's number stored as account phone, got %+v", users.created[0].Phone)
+	}
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("no OTP should be sent on the zero-friction path, sent: %v", ver.sentTo)
 	}
 }
 
@@ -887,5 +914,40 @@ func TestNormalizeEmail(t *testing.T) {
 		if got := normalizeEmail(c.in); got != c.want {
 			t.Errorf("normalizeEmail(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestOnboarding_SenderNumberSkipsSMSOTP(t *testing.T) {
+	ob, _, ver, users, prov, linker := newTestOnboarder()
+	sender := "+2348012345678" // texting from the very number being verified
+
+	step(t, ob, sender, "")        // intro -> name
+	step(t, ob, sender, "Tobi")    // -> country
+	step(t, ob, sender, "Nigeria") // -> email (optional)
+	confirm := step(t, ob, sender, "skip")
+	if !strings.Contains(confirm, "Sound right?") || !strings.Contains(confirm, "+23") {
+		t.Fatalf("expected confirm of sender's own number after skipping email, got: %q", confirm)
+	}
+
+	consent := step(t, ob, sender, "yes")
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("SMS OTP must be skipped when verifying the sender's own number, sent to %v", ver.sentTo)
+	}
+	if !strings.Contains(consent, "I agree") {
+		t.Fatalf("expected consent prompt, got: %q", consent)
+	}
+	if prov.calls != 0 {
+		t.Fatalf("provisioner must not run before consent, got %d calls", prov.calls)
+	}
+
+	done := step(t, ob, sender, "I agree")
+	if prov.calls != 1 || linker.calls != 1 {
+		t.Fatalf("expected provision+link after consent, got prov=%d link=%d", prov.calls, linker.calls)
+	}
+	if len(users.created) != 1 || users.created[0].Phone == nil || *users.created[0].Phone != sender {
+		t.Fatalf("expected one user created with sender phone, got %+v", users.created)
+	}
+	if done == "" {
+		t.Fatal("expected completion message")
 	}
 }

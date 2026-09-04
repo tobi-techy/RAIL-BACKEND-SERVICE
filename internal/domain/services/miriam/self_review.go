@@ -147,6 +147,24 @@ func (e *SelfReviewEngine) Run(ctx context.Context, userID uuid.UUID) (*entities
 		}
 	}
 
+	// 4b. Corrective action: when Miriam's actions harmed the user's position,
+	// propose a fix immediately (not gated by the weekly note interval). This
+	// is what makes her accountable — she doesn't just adjust future behavior,
+	// she tries to fix the immediate impact.
+	if actions.correctiveAction != "" && e.notifier != nil {
+		if err := e.notifier.SendGenericNotification(ctx, userID, "Miriam", actions.correctiveAction); err != nil {
+			if e.logger != nil {
+				e.logger.Debug("self-review corrective action send failed",
+					zap.String("user_id", userID.String()), zap.Error(err))
+			}
+		} else if e.logger != nil {
+			e.logger.Info("self-review corrective action sent",
+				zap.String("user_id", userID.String()),
+				zap.String("action", actions.correctiveAction),
+				zap.String("amount", actions.correctiveAmount.StringFixed(2)))
+		}
+	}
+
 	// 5. Persist the audit row.
 	if err := e.repo.CreateSelfReview(ctx, review); err != nil {
 		return nil, fmt.Errorf("persist self review: %w", err)
@@ -176,6 +194,11 @@ type actionGrade struct {
 	// lastReceiptID anchors the aggregate learning signal (FK requires a real
 	// receipt). Zero when no executed/failed receipt exists.
 	lastReceiptID uuid.UUID
+	// correctiveAction is a user-facing message proposing a fix when Miriam's
+	// actions harmed the user's position. Empty when no correction is needed.
+	correctiveAction string
+	// correctiveAmount is the amount to reverse, if applicable.
+	correctiveAmount decimal.Decimal
 }
 
 // gradeActions classifies executed/failed receipts in the window as helped,
@@ -200,6 +223,8 @@ func (e *SelfReviewEngine) gradeActions(ctx context.Context, userID uuid.UUID, w
 	delta := after - before
 
 	var executed int
+	var harmedTransferAmount decimal.Decimal
+	var hasHarmedTransfer bool
 	for _, r := range receipts {
 		switch r.Status {
 		case entities.MiriamReceiptStatusExecuted:
@@ -210,6 +235,11 @@ func (e *SelfReviewEngine) gradeActions(ctx context.Context, userID uuid.UUID, w
 			g.reviewed++
 			g.harmed++
 			g.lastReceiptID = r.ID
+			// Track failed transfer_to_stash for corrective action
+			if r.ActionType == entities.MiriamMandateTransferToStash {
+				hasHarmedTransfer = true
+				harmedTransferAmount = harmedTransferAmount.Add(r.Amount)
+			}
 		default:
 			// suggested / skipped are not "actions taken" — ignore.
 		}
@@ -221,6 +251,14 @@ func (e *SelfReviewEngine) gradeActions(ctx context.Context, userID uuid.UUID, w
 			g.helped += executed
 		case delta <= healthHarmedDelta:
 			g.harmed += executed
+			// If the harmed actions included transfer_to_stash, propose a correction
+			if hasHarmedTransfer && harmedTransferAmount.IsPositive() {
+				g.correctiveAction = fmt.Sprintf(
+					"i moved $%s to stash earlier and that was the wrong call. your spend was too thin. want me to move it back?",
+					harmedTransferAmount.StringFixed(2),
+				)
+				g.correctiveAmount = harmedTransferAmount
+			}
 		default:
 			g.neutral += executed
 		}
@@ -379,7 +417,7 @@ func selfReviewNote(a actionGrade, m messagingGrade) string {
 		return "I reviewed how I've been helping. A couple of my moves didn't land the way I wanted, so I'm being more careful with the next ones."
 	case a.helped > 0 && a.harmed == 0:
 		if reduce {
-			return "I looked back at my moves this week — they landed well. I'll keep them up and ease off on the nudges so I'm not in your ear too much."
+			return "I looked back at my moves this week, they landed well. I'll keep them up and ease off on the nudges so I'm not in your ear too much."
 		}
 		return "I looked back at my moves this week and they landed well. I'll keep doing what's working."
 	case reduce:

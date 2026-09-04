@@ -321,6 +321,42 @@ func (o *AgentAdapter) executeMiriamBrief(ctx context.Context, userID uuid.UUID,
 		})
 	}
 
+	// Portfolio insight — only when the user has investments.
+	if o.portfolioProvider != nil {
+		if stats, err := o.portfolioProvider.GetWeeklyStats(ctx, userID); err == nil && stats != nil && stats.TotalValue.GreaterThan(decimal.Zero) {
+			body := fmt.Sprintf("Your investments are worth $%s.", stats.TotalValue.StringFixed(2))
+			evidence := map[string]interface{}{
+				"total_value": stats.TotalValue.StringFixed(2),
+			}
+			if !stats.TotalGainLoss.IsZero() {
+				evidence["total_gain_loss"] = stats.TotalGainLoss.StringFixed(2)
+			}
+			// Append yield earned if the yield provider is available.
+			if o.yieldProvider != nil {
+				yieldFrom := now.AddDate(0, 0, -30)
+				if snapshots, yErr := o.yieldProvider.GetSnapshotsInWindow(ctx, userID, yieldFrom, now); yErr == nil && len(snapshots) >= 2 {
+					earned := snapshots[len(snapshots)-1].Balance.Sub(snapshots[0].Balance)
+					if earned.LessThan(decimal.Zero) {
+						earned = decimal.Zero
+					}
+					if earned.IsPositive() {
+						body += fmt.Sprintf(" Stash yield earned in the last 30 days: $%s.", earned.StringFixed(2))
+						evidence["yield_earned_30d"] = earned.StringFixed(2)
+					}
+				}
+			}
+			insights = append(insights, miriamInsight{
+				ID:         "portfolio-summary",
+				Type:       "portfolio",
+				Severity:   "info",
+				Importance: 72,
+				Title:      "Portfolio is in the picture",
+				Body:       body,
+				Evidence:   evidence,
+			})
+		}
+	}
+
 	sort.SliceStable(insights, func(i, j int) bool {
 		return insights[i].Importance > insights[j].Importance
 	})

@@ -205,12 +205,16 @@ func (a *platformVoiceAdapter) Transcribe(ctx context.Context, audio []byte, mim
 
 // orchestratorAdapter wraps aiservice.AgentAdapter to implement platform.Orchestrator.
 // It maps a messaging thread to a stable conversation, translates staged pending
-// actions into confirm cards (or an in-app authorization hand-off for fund moves),
+// actions into confirm cards (or an email authorization hand-off for fund moves),
 // and executes confirmations through the orchestrator's authoritative store.
 type orchestratorAdapter struct {
 	orchestrator *aiservice.AgentAdapter
 	convRepo     *repositories.ConversationRepository
 	deepLinkBase string
+	confirmStore *platform.ConfirmTokenStore
+	confirmEmail platform.ConfirmEmailSender
+	userEmail    platform.UserEmailResolver
+	confirmBase  string
 }
 
 const defaultAppDeepLinkBase = "rail://"
@@ -382,18 +386,48 @@ func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID,
 		return nil, fmt.Errorf("resolve conversation: %w", err)
 	}
 
-	// Defence in depth: a fund-moving action must never execute from a messaging
-	// vote — it should have been sent as an in-app card, never a poll.
-	if action, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid); ok && aiservice.IsFundMovingAction(action.Action) {
-		return &platform.PlatformReply{Text: "For your security, moving money has to be done with Face ID in the RAIL app."}, nil
+	action, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid)
+	if !ok {
+		return &platform.PlatformReply{
+			Text: "That action has expired or was already handled. Just ask me again and I'll set it up fresh.",
+		}, nil
 	}
 
-	action, err := a.orchestrator.ConfirmAction(ctx, uid, cid)
+	if aiservice.IsFundMovingAction(action.Action) {
+		if a.confirmStore == nil || a.confirmEmail == nil || a.userEmail == nil {
+			return &platform.PlatformReply{
+				Text: "For your security, moving money needs to be authorized in the RAIL app.",
+			}, nil
+		}
+		token, err := a.confirmStore.Create(ctx, &platform.ConfirmTokenPayload{
+			UserID:   uid,
+			ConvID:   cid,
+			ActionID: action.ID,
+			Action:   action.Action,
+			Params:   action.Params,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create confirm token: %w", err)
+		}
+		email, err := a.userEmail.GetEmailByUserID(ctx, uid)
+		if err != nil || email == "" {
+			return nil, fmt.Errorf("resolve user email: %w", err)
+		}
+		confirmURL := fmt.Sprintf("%s/confirm?token=%s", a.confirmBase, token)
+		if err := a.confirmEmail.SendTransactionConfirmation(ctx, email, action.Description, confirmURL); err != nil {
+			return nil, fmt.Errorf("send confirmation email: %w", err)
+		}
+		return &platform.PlatformReply{
+			Text: "I've sent a confirmation link to your email. Tap it to authorize this transfer.",
+		}, nil
+	}
+
+	result, err := a.orchestrator.ConfirmAction(ctx, uid, cid)
 	if err != nil {
 		return nil, err
 	}
 	return &platform.PlatformReply{
-		Text:   "✅ Done — " + actionSuccessSummary(action),
+		Text:   "✅ Done — " + actionSuccessSummary(result),
 		Effect: platform.EffectCelebration,
 	}, nil
 }

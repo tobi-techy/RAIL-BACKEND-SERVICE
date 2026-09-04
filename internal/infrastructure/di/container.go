@@ -33,6 +33,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/billpay"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
+	"github.com/rail-service/rail_service/internal/domain/services/consciousspending"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/document"
@@ -47,8 +48,8 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
-	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
+	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
 	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
@@ -56,6 +57,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/p2p"
 	"github.com/rail-service/rail_service/internal/domain/services/passcode"
 	"github.com/rail-service/rail_service/internal/domain/services/premium"
+	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	"github.com/rail-service/rail_service/internal/domain/services/security"
@@ -227,30 +229,32 @@ type Container struct {
 	NotificationService            *services.NotificationService
 	// GoalsService is the new Postgres-backed multi-goal service that powers
 	// the v2 savings-goal tools + the goal_progress + spending_coach workers.
-	GoalsService                   *goals.Service
+	GoalsService *goals.Service
 	// UserGoalRepo is the persistence layer behind GoalsService.
-	UserGoalRepo                   *repositories.UserGoalRepository
+	UserGoalRepo                 *repositories.UserGoalRepository
+	ConsciousSpendingPlanService *consciousspending.Service
+	ConsciousSpendingPlanRepo    *repositories.ConsciousSpendingPlanRepository
 	// BabyStepsSeeder seeds the 7-step ladder for first-time users.
-	BabyStepsSeeder                *goals.BabyStepsSeed
+	BabyStepsSeeder *goals.BabyStepsSeed
 	// GoalProgressHooks is the optional deposit-allocated callback wired
 	// into automation.Service.
-	GoalProgressHooks              *GoalProgressHooks
+	GoalProgressHooks *GoalProgressHooks
 	// ProactiveCoordinator is the unified per-user daily-cap enforcer for
 	// all proactive workers (autopilot, ai_insights, daily_pulse,
 	// scheduled_notifications, goal_progress, spending_coach).
-	ProactiveCoordinator           *platform.ProactiveCoordinator
+	ProactiveCoordinator *platform.ProactiveCoordinator
 	// AICostGuard is the fast Redis-backed per-user daily/monthly AI cost
 	// ceiling. Injected into both the Cencori provider (provider-level check)
 	// and core.Agent.Dependencies (agent-level pre-check). nil disables the
 	// guard; Cencori will continue without ceiling enforcement.
-	AICostGuard                    *ai.Guard
-	SocialAuthService              *socialauth.Service
-	WebAuthnService                *webauthn.Service
-	LimitsService                  *limits.Service
-	SpendingCommitmentService      *spendingcommitmentservice.Service
-	DomainAuditService             *audit.Service
-	WithdrawalService              *services.WithdrawalService
-	StashLockService               *stashlock.Service
+	AICostGuard               *ai.Guard
+	SocialAuthService         *socialauth.Service
+	WebAuthnService           *webauthn.Service
+	LimitsService             *limits.Service
+	SpendingCommitmentService *spendingcommitmentservice.Service
+	DomainAuditService        *audit.Service
+	WithdrawalService         *services.WithdrawalService
+	StashLockService          *stashlock.Service
 
 	// AI Financial Manager Services
 	AIProvider               ai.AIProvider
@@ -280,6 +284,7 @@ type Container struct {
 	MiriamPreferencesRepo    *repositories.MiriamPreferencesRepository
 	MiriamPreferencesService *miriamservice.PreferencesService
 	AnomalyStore             aiservice.AnomalyStore
+	AnomalyEngine            *aiservice.AnomalyEngine
 	proactiveGuard           *platform.ProactiveGuard // set during platform init; prefs wired later
 
 	// Additional Repositories
@@ -379,6 +384,7 @@ type Container struct {
 	DepositSweepRepo           *repositories.DepositSweepRepository
 	PajHandlers                *fundinghandlers.PajHandlers
 	RampHandlers               *fundinghandlers.RampHandlers
+	RampService                *rampsvc.Service
 	NGNHandlers                *fundinghandlers.NGNHandlers
 	GraphVirtualAccountService *funding.GraphVirtualAccountService
 	GraphWebhookHandler        *webhooks.GraphWebhookHandler
@@ -452,14 +458,16 @@ type Container struct {
 	AdminAnalyticsService *analyticsservice.Service
 
 	// Platform Messaging (iMessage, WhatsApp, Telegram)
-	PlatformIdentityRepo   *repositories.PlatformIdentityRepository
-	PlatformHandler        *platformhandlers.PlatformHandler
-	platformProcessor      *platform.Processor
-	platformLinking        *platform.LinkingService
-	EvalHandler            *evalhandlers.Handler
+	PlatformIdentityRepo *repositories.PlatformIdentityRepository
+	PlatformHandler      *platformhandlers.PlatformHandler
+	ConfirmTokenStore    *platform.ConfirmTokenStore
+	platformProcessor    *platform.Processor
+	platformLinking      *platform.LinkingService
+	ConfirmHandler       *platform.ConfirmHandler
+	EvalHandler          *evalhandlers.Handler
 
 	// Mono (open-banking data + DirectPay)
-	MonoService *monosvc.Service
+	MonoService        *monosvc.Service
 	MonoWebhookHandler *webhooks.MonoWebhookHandler
 }
 
@@ -674,8 +682,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		BridgeAdapter: bridgeAdapter,
 		CircleAdapter: circleAdapter,
 		UmbraClient:   umbraClient,
-		EmailService:  emailService,
-		SMSService:    smsService,
 		AuditService:  auditService,
 		RedisClient:   redisClient,
 
@@ -685,6 +691,18 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		// Cache & Queue
 		CacheInvalidator: cacheInvalidator,
 		JobQueueInstance: jobqueue.NewJobQueue(redisClient.Client(), zapLog),
+	}
+
+	// Store the optional email/SMS services only when actually constructed.
+	// Assigning a nil *adapters.X pointer directly would create a typed-nil
+	// interface downstream (x != nil is true, calling a method panics on the
+	// nil receiver) — exactly the failure that crashed chat onboarding when
+	// Twilio was unconfigured.
+	if emailService != nil {
+		container.EmailService = emailService
+	}
+	if smsService != nil {
+		container.SMSService = smsService
 	}
 
 	// Initialize Bridge virtual account service and webhook handler
@@ -775,4 +793,24 @@ func (c *Container) GetOpportunityHandlers() *opportunityhandlers.Handlers {
 // GetPlatformProcessor returns the platform message processor, or nil if platform messaging is disabled.
 func (c *Container) GetPlatformProcessor() *platform.Processor {
 	return c.platformProcessor
+}
+
+// GetConfirmHandler returns the email confirmation handler, or nil if platform messaging is disabled.
+func (c *Container) GetConfirmHandler() *platform.ConfirmHandler {
+	return c.ConfirmHandler
+}
+
+// GetConfirmTokenStore returns the confirmation token store.
+func (c *Container) GetConfirmTokenStore() *platform.ConfirmTokenStore {
+	return c.ConfirmTokenStore
+}
+
+// GetEmailService returns the outbound email adapter.
+func (c *Container) GetEmailService() *adapters.EmailService {
+	return c.EmailService
+}
+
+// GetUserRepo returns the user repository.
+func (c *Container) GetUserRepo() *repositories.UserRepository {
+	return c.UserRepo
 }

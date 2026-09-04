@@ -17,6 +17,7 @@ import (
 	platformhandlers "github.com/rail-service/rail_service/internal/api/handlers/platform"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/document"
+	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
@@ -38,10 +39,18 @@ func (c *Container) initializePlatformMessaging() {
 		if c.Config.Platform.BridgeBaseURL != "" {
 			userResolver := platform.NewUserResolver(platformIdentityRepo)
 			respBuilder := platform.NewResponseBuilder()
+			confirmBase := strings.TrimRight(c.Config.Platform.ConfirmBaseURL, "/")
+			if confirmBase == "" {
+				confirmBase = "https://app.userail.money"
+			}
 			platformOrchestrator := &orchestratorAdapter{
 				orchestrator: c.AIOrchestrator,
 				convRepo:     c.ConversationRepo,
 				deepLinkBase: c.Config.Platform.AppDeepLinkBaseURL,
+				confirmStore: platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog),
+				confirmEmail: c.EmailService,
+				userEmail:    adapters.NewUserEmailLookup(c.UserRepo),
+				confirmBase:  confirmBase,
 			}
 
 			bridgeBaseURL := strings.TrimRight(c.Config.Platform.BridgeBaseURL, "/")
@@ -100,6 +109,9 @@ func (c *Container) initializePlatformMessaging() {
 			}
 
 			bridgeDispatcher := platform.NewBridgeDispatcher(sendFunc, c.ConversationRepo, entities.PlatformIMessage, c.ZapLog)
+			if c.Config.AI.ProactiveVoice {
+				bridgeDispatcher.SetComposer(platform.NewProactiveComposer(c.AIProvider, c.ZapLog))
+			}
 
 			// Quiet-hours + daily-frequency guard so Miriam stays a discreet
 			// presence, not a notification machine. Timezone resolved per user
@@ -143,6 +155,11 @@ func (c *Container) initializePlatformMessaging() {
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
 			proc.SetLogger(c.ZapLog)
+			// Effectively-once inbound processing keyed on the bridge's message
+			// id — bridge retries must not make Miriam answer twice.
+			if c.RedisClient != nil {
+				proc.SetInboundDeduper(c.RedisClient)
+			}
 
 			// Receipt photos texted to Miriam: build a lightweight vision pipeline
 			// (OCR -> classify -> extract) so she can summarize and offer to log or
@@ -172,6 +189,12 @@ func (c *Container) initializePlatformMessaging() {
 			// Wired below; the processor + onboarder both need it.
 			c.platformProcessor = proc
 			c.platformLinking = linkingSvc
+
+			if c.EmailService != nil && c.UserRepo != nil {
+				confirmStore := platform.NewConfirmTokenStore(c.RedisClient, c.ZapLog)
+				c.ConfirmHandler = platform.NewConfirmHandler(confirmStore, c.AIOrchestrator, c.ZapLog)
+				c.ConfirmTokenStore = confirmStore
+			}
 
 			c.ZapLog.Info("Platform messaging via HTTP (bridge)",
 				zap.String("bridge_url", bridgeBaseURL),

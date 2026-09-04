@@ -55,6 +55,7 @@ import (
 	engagement_worker "github.com/rail-service/rail_service/internal/workers/engagement_worker"
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
+	goal_progress "github.com/rail-service/rail_service/internal/workers/goal_progress"
 	graph_ngn_recovery "github.com/rail-service/rail_service/internal/workers/graph_ngn_recovery"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
@@ -72,6 +73,7 @@ import (
 	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
 	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
 	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
+	spending_coach "github.com/rail-service/rail_service/internal/workers/spending_coach"
 	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
@@ -124,6 +126,10 @@ type Application struct {
 	autopilotWorker              *autopilot_worker.Worker
 	autopilotCancel              context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
+	spendingCoachWorker          *spending_coach.Worker
+	spendingCoachCancel          context.CancelFunc
+	goalProgressWorker           *goal_progress.Worker
+	goalProgressCancel           context.CancelFunc
 	engagementWorker             *engagement_worker.Worker
 	ledgerOutboxPublisher        *ledger_outbox_publisher.Worker
 	miriamEventWorker            *miriam_event_worker.Worker
@@ -658,18 +664,64 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Miriam daily pulse worker started (iMessage-only)")
 	}
 
-	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
-	var anomalyEngine *aiservice.AnomalyEngine
-	if app.container.LedgerSpendingRepo != nil {
-		anomalyEngine = aiservice.NewAnomalyEngine(
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
+	if app.container.ConsciousSpendingPlanService != nil && app.container.AIOrchestrator != nil {
+		var pushSender spending_coach.PushSender = noopPushSender{}
+		if app.container.MiriamBridgeDispatcher != nil {
+			pushSender = app.container.MiriamBridgeDispatcher
+		}
+		app.spendingCoachWorker = spending_coach.New(
+			pushSender,
+			app.container.ProactiveCoordinator,
+			app.container.RedisClient,
 			app.log.Zap(),
 		)
+		app.spendingCoachWorker.SetConsciousSpendingProviders(
+			app.container.ConsciousSpendingPlanService,
+			app.container.AIOrchestrator,
+		)
+		if app.container.AICostGuard != nil {
+			app.spendingCoachWorker.SetCostGate(app.container.AICostGuard)
+		}
+		coachCtx, coachCancel := context.WithCancel(context.Background())
+		app.spendingCoachCancel = coachCancel
+		go app.spendingCoachWorker.Start(coachCtx)
+		app.log.Info("Miriam conscious spending coach started (iMessage-only)")
+	}
+
+	if app.container.GoalsService != nil {
+		var pushSender goal_progress.PushSender = noopPushSender{}
+		if app.container.MiriamBridgeDispatcher != nil {
+			pushSender = app.container.MiriamBridgeDispatcher
+		}
+		app.goalProgressWorker = goal_progress.New(
+			app.container.GoalsService,
+			pushSender,
+			app.container.ProactiveCoordinator,
+			app.container.RedisClient,
+			nil,
+			app.log.Zap(),
+		)
+		goalCtx, goalCancel := context.WithCancel(context.Background())
+		app.goalProgressCancel = goalCancel
+		go app.goalProgressWorker.Start(goalCtx)
+		app.log.Info("Miriam goal progress worker started (iMessage-only)")
+	}
+
+	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
+	anomalyEngine := app.container.AnomalyEngine
+	if anomalyEngine != nil {
 		if app.container.EvalHandler != nil {
 			app.container.EvalHandler.SetAnomalyEngine(anomalyEngine, app.container.AnomalyStore)
+		}
+		// Wire real-time anomaly reactions into the intelligence orchestrator
+		// so money events trigger immediate conversational alerts.
+		if app.container.MiriamIntelligenceOrchestrator != nil {
+			app.container.MiriamIntelligenceOrchestrator.SetAnomalyChecker(&anomalyCheckerAdapter{engine: anomalyEngine})
+			app.container.MiriamIntelligenceOrchestrator.SetAnomalyChatBuilder(&anomalyChatBuilderAdapter{})
+			// Wire spend cooldown store so spend_cooldown mandates actually block spending.
+			if app.container.RedisClient != nil {
+				app.container.MiriamIntelligenceOrchestrator.SetSpendCooldownStore(&redisSpendCooldownStore{redis: app.container.RedisClient})
+			}
 		}
 	}
 
@@ -697,6 +749,13 @@ func (app *Application) initializeWorkers() error {
 				anomalyEngine,
 				app.container.AnomalyStore,
 			)
+			// Wire event dispatcher so autopilot morning anomalies trigger
+			// orchestrator evaluations for mandate-capable users.
+			if app.container.MiriamIntelligenceOrchestrator != nil {
+				autopilotSvc.SetEventDispatcher(&autopilotEventDispatchAdapter{
+					orchestrator: app.container.MiriamIntelligenceOrchestrator,
+				})
+			}
 			app.autopilotWorker = autopilot_worker.NewWorker(autopilotSvc, app.log.Zap())
 			ctx, cancel := context.WithCancel(context.Background())
 			app.autopilotCancel = cancel
@@ -1422,6 +1481,12 @@ func (app *Application) stopWorkers() {
 	if app.autopilotCancel != nil {
 		app.autopilotCancel()
 	}
+	if app.spendingCoachCancel != nil {
+		app.spendingCoachCancel()
+	}
+	if app.goalProgressCancel != nil {
+		app.goalProgressCancel()
+	}
 
 	app.stopRedisMonitor()
 }
@@ -1572,6 +1637,18 @@ func (a *autopilotTransferAdapter) TransferSpendToStash(ctx context.Context, use
 
 func (a *autopilotTransferAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
 	return a.svc.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+}
+
+// autopilotEventDispatchAdapter bridges the autopilot's anomaly detection to
+// the intelligence orchestrator so spending_spike / bill_pressure events
+// trigger mandate evaluation for full-control users.
+type autopilotEventDispatchAdapter struct {
+	orchestrator *miriamservice.IntelligenceOrchestrator
+}
+
+func (a *autopilotEventDispatchAdapter) DispatchEvent(ctx context.Context, userID uuid.UUID, eventType string) error {
+	_, err := a.orchestrator.Evaluate(ctx, userID, eventType)
+	return err
 }
 
 // WaitForShutdown waits for interrupt signal
@@ -1907,4 +1984,77 @@ func (app *Application) reconcileOrphanedStatements(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// anomalyCheckerAdapter wraps ai.AnomalyEngine to satisfy
+// miriam.AnomalyChecker, converting ai.AnomalyResult to miriam.AnomalyResult.
+type anomalyCheckerAdapter struct {
+	engine *aiservice.AnomalyEngine
+}
+
+func (a *anomalyCheckerAdapter) RunAllChecks(ctx context.Context, userID uuid.UUID, now time.Time) []miriamservice.AnomalyResult {
+	if a.engine == nil {
+		return nil
+	}
+	aiResults := a.engine.RunAllChecks(ctx, userID, now)
+	if len(aiResults) == 0 {
+		return nil
+	}
+	results := make([]miriamservice.AnomalyResult, len(aiResults))
+	for i, r := range aiResults {
+		results[i] = miriamservice.AnomalyResult{
+			Type:        string(r.Type),
+			Severity:    string(r.Severity),
+			Title:       r.Title,
+			Description: r.Description,
+			Details:     r.Details,
+			DetectedAt:  r.DetectedAt,
+		}
+	}
+	return results
+}
+
+// anomalyChatBuilderAdapter wraps ai.BuildChatMessage to satisfy
+// miriam.AnomalyChatBuilder.
+type anomalyChatBuilderAdapter struct{}
+
+func (a *anomalyChatBuilderAdapter) BuildChatMessage(results []miriamservice.AnomalyResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+	// Convert back to ai.AnomalyResult for the chat message builder.
+	aiResults := make([]aiservice.AnomalyResult, len(results))
+	for i, r := range results {
+		aiResults[i] = aiservice.AnomalyResult{
+			Type:        aiservice.AnomalyType(r.Type),
+			Severity:    aiservice.AnomalySeverity(r.Severity),
+			Title:       r.Title,
+			Description: r.Description,
+			Details:     r.Details,
+			DetectedAt:  r.DetectedAt,
+		}
+	}
+	return aiservice.BuildChatMessage(aiResults)
+}
+
+// redisSpendCooldownStore implements miriam.SpendCooldownStore using Redis
+// with TTL-based cooldown flags. When a spend_cooldown mandate fires, a key
+// is set with the cooldown duration as TTL. The allocation service can check
+// IsCoolingDown before allowing discretionary card spend.
+type redisSpendCooldownStore struct {
+	redis cache.RedisClient
+}
+
+func (s *redisSpendCooldownStore) SetCooldown(ctx context.Context, userID uuid.UUID, duration time.Duration) error {
+	key := "miriam:spend_cooldown:" + userID.String()
+	return s.redis.Set(ctx, key, "1", duration)
+}
+
+func (s *redisSpendCooldownStore) IsCoolingDown(ctx context.Context, userID uuid.UUID) (bool, error) {
+	key := "miriam:spend_cooldown:" + userID.String()
+	exists, err := s.redis.Exists(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }

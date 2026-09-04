@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/ai/prompt"
 	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -287,7 +288,7 @@ func (o *AgentAdapter) BuildRealtimeInstructions(ctx context.Context, userID uui
 	}()
 	go func() { localeCh <- o.resolveLocaleStyle(ctx, userID) }()
 
-	parts := []string{SystemPromptV2}
+	parts := []string{prompt.SystemPromptV2}
 	for i := 0; i < 7; i++ {
 		if s := <-ch; s != "" {
 			parts = append(parts, s)

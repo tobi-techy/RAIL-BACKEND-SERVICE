@@ -15,6 +15,73 @@ type ThreadResolver interface {
 	GetLastPlatformThread(ctx context.Context, userID uuid.UUID, platform string) (string, error)
 }
 
+// ChannelCapabilities holds the capabilities of a messaging platform.
+type ChannelCapabilities struct {
+	SupportsPolls         bool
+	SupportsEffects       bool
+	SupportsQuickReplies  bool
+	SupportsInlineActions bool
+	SupportsRichCards     bool
+	SupportsThreading     bool
+	MaxBubblesPerReply    int
+	MaxCharsPerBubble     int
+	PreferredTone         string
+}
+
+// ChannelContext is the full platform context the bridge uses for rendering decisions.
+type ChannelContext struct {
+	Platform     entities.Platform
+	Capabilities ChannelCapabilities
+}
+
+// NewChannelContext returns a ChannelContext for a given platform with sensible defaults.
+func NewChannelContext(platform entities.Platform) ChannelContext {
+	caps := getDefaultCapabilities(platform)
+	return ChannelContext{Platform: platform, Capabilities: caps}
+}
+
+// getDefaultCapabilities returns the default capabilities for a platform.
+func getDefaultCapabilities(platform entities.Platform) ChannelCapabilities {
+	switch platform {
+	case entities.PlatformIMessage:
+		return ChannelCapabilities{
+			SupportsPolls: true, SupportsEffects: true, SupportsQuickReplies: false,
+			SupportsInlineActions: false, SupportsRichCards: true, SupportsThreading: true,
+			MaxBubblesPerReply: 8, MaxCharsPerBubble: 2000, PreferredTone: "warm, concise",
+		}
+	case entities.PlatformWhatsApp:
+		return ChannelCapabilities{
+			SupportsPolls: false, SupportsEffects: false, SupportsQuickReplies: true,
+			SupportsInlineActions: false, SupportsRichCards: true, SupportsThreading: false,
+			MaxBubblesPerReply: 3, MaxCharsPerBubble: 4096, PreferredTone: "warm, concise",
+		}
+	case entities.PlatformTelegram:
+		return ChannelCapabilities{
+			SupportsPolls: true, SupportsEffects: false, SupportsQuickReplies: false,
+			SupportsInlineActions: true, SupportsRichCards: true, SupportsThreading: true,
+			MaxBubblesPerReply: 5, MaxCharsPerBubble: 4096, PreferredTone: "concise, structured",
+		}
+	case entities.PlatformSMS:
+		return ChannelCapabilities{
+			SupportsPolls: false, SupportsEffects: false, SupportsQuickReplies: false,
+			SupportsInlineActions: false, SupportsRichCards: false, SupportsThreading: false,
+			MaxBubblesPerReply: 1, MaxCharsPerBubble: 1600, PreferredTone: "brief, action-oriented",
+		}
+	case entities.PlatformTerminal:
+		return ChannelCapabilities{
+			SupportsPolls: false, SupportsEffects: false, SupportsQuickReplies: false,
+			SupportsInlineActions: false, SupportsRichCards: true, SupportsThreading: false,
+			MaxBubblesPerReply: 10, MaxCharsPerBubble: 4096, PreferredTone: "technical, detailed",
+		}
+	default:
+		return ChannelCapabilities{
+			SupportsPolls: false, SupportsEffects: false, SupportsQuickReplies: false,
+			SupportsInlineActions: false, SupportsRichCards: false, SupportsThreading: false,
+			MaxBubblesPerReply: 1, MaxCharsPerBubble: 1000, PreferredTone: "concise",
+		}
+	}
+}
+
 // BridgeDispatcher is the single delivery path for all of Miriam's proactive
 // output. Every nudge, mandate receipt, briefing, and alert goes to the user's
 // iMessage thread — there is no push fallback. It satisfies the notifier
@@ -25,6 +92,7 @@ type BridgeDispatcher struct {
 	threads  ThreadResolver
 	platform entities.Platform
 	guard    *ProactiveGuard
+	composer ProactiveComposer
 	logger   *zap.Logger
 }
 
@@ -47,6 +115,13 @@ func NewBridgeDispatcher(send SendMessageFunc, threads ThreadResolver, platform 
 // every proactive message is delivered.
 func (d *BridgeDispatcher) SetGuard(g *ProactiveGuard) {
 	d.guard = g
+}
+
+// SetComposer applies the shared Miriam voice to proactive drafts. It is
+// optional so deployments can disable it instantly and retain deterministic
+// notification delivery.
+func (d *BridgeDispatcher) SetComposer(c ProactiveComposer) {
+	d.composer = c
 }
 
 // SendChatMessage delivers a proactive nudge to the user's iMessage thread.
@@ -91,6 +166,9 @@ func (d *BridgeDispatcher) deliver(ctx context.Context, userID uuid.UUID, messag
 	}
 	if d.guard != nil && !d.guard.AllowCategory(ctx, userID, category, critical) {
 		return nil
+	}
+	if d.composer != nil {
+		message = d.composer.Compose(ctx, message)
 	}
 
 	threadID, err := d.threads.GetLastPlatformThread(ctx, userID, string(d.platform))

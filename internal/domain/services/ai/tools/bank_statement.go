@@ -12,7 +12,7 @@ import (
 func RegisterBankStatementTools(r *Registry) {
 	r.Register(NewTool(
 		"get_bank_statement_analysis",
-		`Get a detailed analysis of the user's uploaded bank statements: spending by category with percentages, total income vs total expenses, savings rate, top recurring payments, and a personalized growth plan mapped to their Baby Step. Use this after the user uploads a bank statement and asks "what does it say?", "analyze my spending", "how am I doing", or when they want a spending breakdown from their external bank data. If no statements have been uploaded, tell them to upload one in the app.`,
+		`Get a detailed analysis of transactions from the user's linked Mono bank account or uploaded bank statements: spending by category, income vs expenses, savings rate, recurring payments when available, and a growth plan. Use this after Mono linking or a statement upload when the user asks about external-bank spending. If no data exists, offer connect_bank or a statement upload.`,
 		map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

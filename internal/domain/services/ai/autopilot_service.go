@@ -52,6 +52,13 @@ type AnomalyRunner interface {
 	RunAllChecks(ctx context.Context, userID uuid.UUID, now time.Time) []AnomalyResult
 }
 
+// AutopilotEventDispatcher sends orchestrator-eligible events when the autopilot
+// detects something worth acting on (anomalies, income changes, etc.). The
+// implementation bridges to the intelligence orchestrator for mandate evaluation.
+type AutopilotEventDispatcher interface {
+	DispatchEvent(ctx context.Context, userID uuid.UUID, eventType string) error
+}
+
 // AutopilotMetrics exposes counters for monitoring.
 type AutopilotMetrics struct {
 	MorningAlertsSent     int64
@@ -59,21 +66,23 @@ type AutopilotMetrics struct {
 	EveningTransfersDone  int64
 	EveningAlertsReported int64
 	EveningErrors         int64
+	WeeklyAuditsSent      int64
 }
 
 // AutopilotService runs the 3-phase daily autopilot loop for Full Autopilot users.
 type AutopilotService struct {
-	users      AutopilotUserLister
-	control    ControlLevelReader
-	queue      AutopilotQueue
-	push       MorningPushSender
-	spending   MorningSpender
-	balances   AutopilotBalanceReader
-	budgets    MiddayBudgetReader
-	transferer AutopilotFundsTransferer
-	anomaly      AnomalyRunner
-	anomalyStore AnomalyStore
-	logger       *zap.Logger
+	users         AutopilotUserLister
+	control       ControlLevelReader
+	queue         AutopilotQueue
+	push          MorningPushSender
+	spending      MorningSpender
+	balances      AutopilotBalanceReader
+	budgets       MiddayBudgetReader
+	transferer    AutopilotFundsTransferer
+	anomaly       AnomalyRunner
+	anomalyStore  AnomalyStore
+	eventDispatch AutopilotEventDispatcher
+	logger        *zap.Logger
 
 	redis    cache.RedisClient
 	sentDate map[string]string
@@ -128,6 +137,12 @@ func scaledThreshold(usd decimal.Decimal, country string) decimal.Decimal {
 	return usd.Mul(decimal.NewFromFloat(factor))
 }
 
+// SetEventDispatcher wires the event dispatcher so the autopilot can trigger
+// orchestrator evaluations when anomalies are detected.
+func (s *AutopilotService) SetEventDispatcher(d AutopilotEventDispatcher) {
+	s.eventDispatch = d
+}
+
 func NewAutopilotService(
 	users AutopilotUserLister,
 	control ControlLevelReader,
@@ -143,19 +158,19 @@ func NewAutopilotService(
 	store AnomalyStore,
 ) *AutopilotService {
 	return &AutopilotService{
-		users:      users,
-		control:    control,
-		queue:      queue,
-		push:       push,
-		spending:   spending,
-		balances:   balances,
-		budgets:    budgets,
-		transferer: transferer,
-		anomaly:    anomaly,
+		users:        users,
+		control:      control,
+		queue:        queue,
+		push:         push,
+		spending:     spending,
+		balances:     balances,
+		budgets:      budgets,
+		transferer:   transferer,
+		anomaly:      anomaly,
 		anomalyStore: store,
-		redis:      redis,
-		logger:     logger,
-		sentDate:   make(map[string]string),
+		redis:        redis,
+		logger:       logger,
+		sentDate:     make(map[string]string),
 
 		OvernightAnomalyThreshold: decimal.NewFromInt(500),
 		LowBalanceThreshold:       decimal.NewFromInt(20),
@@ -170,6 +185,7 @@ func (s *AutopilotService) Metrics() AutopilotMetrics {
 		EveningTransfersDone:  atomic.LoadInt64(&s.metrics.EveningTransfersDone),
 		EveningAlertsReported: atomic.LoadInt64(&s.metrics.EveningAlertsReported),
 		EveningErrors:         atomic.LoadInt64(&s.metrics.EveningErrors),
+		WeeklyAuditsSent:      atomic.LoadInt64(&s.metrics.WeeklyAuditsSent),
 	}
 }
 
@@ -229,6 +245,18 @@ func (s *AutopilotService) RunMorningScan(ctx context.Context) {
 			}); err != nil {
 				s.logger.Warn("autopilot morning: push failed", zap.String("user_id", u.ID.String()), zap.Error(err))
 				continue
+			}
+			// Dispatch spending_spike event to the orchestrator so mandate-capable
+			// users get automatic bill-pay / surplus-sweep evaluations.
+			if s.eventDispatch != nil {
+				for _, r := range results {
+					if r.Type == AnomalyBillSpike || r.Type == AnomalySpendingAccel {
+						if err := s.eventDispatch.DispatchEvent(ctx, u.ID, "spending_spike"); err != nil {
+							s.logger.Debug("autopilot: dispatch spending_spike failed", zap.Error(err))
+						}
+						break
+					}
+				}
 			}
 			alerted++
 			atomic.AddInt64(&s.metrics.MorningAlertsSent, 1)
@@ -378,17 +406,35 @@ func (s *AutopilotService) RunEveningReview(ctx context.Context) {
 
 			switch act.Tool {
 			case ToolTransferFunds:
-				// Legacy queued transfers (pre-MVP) are not auto-executed anymore.
-				// Surface as a suggestion so money only moves via mandate + Act.
+				// For full-control users, dispatch to the orchestrator so queued
+				// surplus transfers get evaluated through the mandate pipeline
+				// (decision engine, cooldown, balance floor, day cap). For others,
+				// surface as a suggestion.
 				amount, _ := act.Args["amount"].(float64)
-				alerted++
-				if amount > 0 {
-					summary = append(summary, fmt.Sprintf(
-						"I held off on moving $%.2f to Stash — silent moves need an approved mandate and Act mode",
-						amount,
-					))
+				if s.eventDispatch != nil && amount > 0 {
+					if err := s.eventDispatch.DispatchEvent(ctx, u.ID, "worker_sweep"); err != nil {
+						s.logger.Debug("autopilot evening: dispatch failed", zap.String("user_id", u.ID.String()), zap.Error(err))
+						summary = append(summary, fmt.Sprintf(
+							"I tried to act on $%.2f surplus but the system held back: %v",
+							amount, err,
+						))
+					} else {
+						summary = append(summary, fmt.Sprintf(
+							"Evaluated $%.2f surplus through the mandate pipeline",
+							amount,
+						))
+						executed++
+					}
 				} else {
-					summary = append(summary, "I held a pending surplus transfer until you approve a mandate")
+					alerted++
+					if amount > 0 {
+						summary = append(summary, fmt.Sprintf(
+							"I held off on moving $%.2f to Stash — silent moves need an approved mandate and Act mode",
+							amount,
+						))
+					} else {
+						summary = append(summary, "I held a pending surplus transfer until you approve a mandate")
+					}
 				}
 
 			case "alert_overspend", "alert_surplus":
@@ -419,6 +465,61 @@ func (s *AutopilotService) RunEveningReview(ctx context.Context) {
 
 	atomic.AddInt64(&s.metrics.EveningAlertsReported, int64(alerted))
 	s.logger.Info("autopilot evening review complete", zap.Int("users", len(users)), zap.Int("executed", executed), zap.Int("alerted", alerted))
+}
+
+// RunWeeklyAudit sends each active guided/full user a concise, deterministic
+// seven-day money review. It deliberately reports only measured inflow and
+// outflow. The platform composer can make the wording conversational, but the
+// underlying figures remain independently useful when the composer is off.
+func (s *AutopilotService) RunWeeklyAudit(ctx context.Context) {
+	if !s.tryLockPhase(ctx, "weekly_audit") {
+		s.logger.Debug("autopilot weekly audit: lock held by another replica")
+		return
+	}
+	defer s.unlockPhase(ctx, "weekly_audit")
+
+	users := s.loadUsersAtLevels(ctx, entities.ControlLevelFull, entities.ControlLevelGuided)
+	if len(users) == 0 {
+		return
+	}
+
+	now := time.Now().UTC()
+	year, week := now.ISOWeek()
+	auditKey := fmt.Sprintf("%04d-W%02d", year, week)
+	since := now.AddDate(0, 0, -7)
+	var sent int
+
+	for _, u := range users {
+		if s.alreadySent(ctx, u.ID, "weekly_audit", auditKey) {
+			continue
+		}
+		flow, err := s.spending.GetMoneyFlow(ctx, u.ID, since, now)
+		if err != nil || flow == nil {
+			continue
+		}
+
+		outflow := flow.TotalCardSpend.Add(flow.TotalP2P).Add(flow.TotalWithdrawals)
+		if flow.TotalDeposits.IsZero() && outflow.IsZero() {
+			s.markSent(ctx, u.ID, "weekly_audit", auditKey)
+			continue
+		}
+
+		symbol := entities.CurrencySymbol(u.Country)
+		body := fmt.Sprintf(
+			"your weekly money check: %s%s came in. %s%s went out. net: %s%s.",
+			symbol, flow.TotalDeposits.StringFixed(2),
+			symbol, outflow.StringFixed(2),
+			symbol, flow.TotalDeposits.Sub(outflow).StringFixed(2),
+		)
+		if err := s.push.SendToUser(ctx, u.ID, "", body, map[string]interface{}{"type": "weekly_audit"}); err != nil {
+			s.logger.Warn("autopilot weekly audit: send failed", zap.String("user_id", u.ID.String()), zap.Error(err))
+			continue
+		}
+		s.markSent(ctx, u.ID, "weekly_audit", auditKey)
+		sent++
+	}
+	atomic.AddInt64(&s.metrics.WeeklyAuditsSent, int64(sent))
+	s.logger.Info("autopilot weekly audit complete", zap.Int("users", len(users)), zap.Int("sent", sent))
 }
 
 // --- helpers ---

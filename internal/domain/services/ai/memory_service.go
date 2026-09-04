@@ -94,16 +94,16 @@ func (m *MemoryService) SetEmbedder(e Embedder) { m.embedder = e }
 const factExtractionPrompt = `You are a memory extraction system for a financial coaching AI named Miriam. Analyze the user's message and extract any personal facts worth remembering long-term.
 
 Extract facts in these categories:
-- goal: financial goals, savings targets, things they want to buy/achieve
+- goal: financial goals, the vivid life outcome, why it matters now, who benefits
 - life_event: job changes, moves, marriage, baby, graduation, etc.
-- preference: how they like to be addressed, communication preferences
+- preference: communication preferences, money dial, spending they refuse to cut
 - habit: spending patterns, routines they mention
 - fear: financial anxieties, things they worry about
 - family: mentions of partner, kids, parents, dependents
 - work: job, industry, employer, freelance status, side hustles
 - location: city, country, whether they moved recently
 - identity: name, age, pronouns, cultural background they share
-- financial_behavior: how they relate to money (impulsive, cautious, etc.)
+- financial_behavior: how they relate to money, relevant money scripts, chosen trade-offs
 - income_pattern: irregular income, seasonal work, bonuses, commissions
 - deposit_cadence: how often money hits their account (weekly, biweekly, monthly, irregular)
 - salary_day: specific day of month or day of week they get paid
@@ -112,6 +112,7 @@ Extract facts in these categories:
 - currency_context: which currencies they earn, spend, or save in; multi-currency lifestyle
 - risk_preference: conservative vs aggressive with investments, willingness to try new products
 - stash_behavior: how they treat savings (set-and-forget, frequent adjuster, target-saver)
+- conversation_moment: explicit commitments, check-in preference, and what they want to do after a miss
 
 For EACH fact, assign an importance score (0-10):
 - 0 = trivial filler ("likes pizza", "watched a movie", "hello")
@@ -155,6 +156,7 @@ Return ONLY valid JSON with this structure (no markdown, no explanation):
 
 Rules:
 - Only extract facts the user explicitly stated or strongly implied. Do not invent.
+- Never infer a goal's emotional reason from the assistant's question or response. Save it only when the user supplied it.
 - If no facts are present, return empty "facts" array.
 - Always return tone analysis based on the user's writing style.
 - Keep facts concise (under 100 chars each).

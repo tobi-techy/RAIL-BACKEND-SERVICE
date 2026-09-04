@@ -21,9 +21,9 @@ const (
 	verificationCodeTTL     = 10 * time.Minute
 	maxVerificationAttempts = 3
 	rateLimitWindow         = 1 * time.Minute
-	maxSendAttempts         = 3 // max OTPs per minute
-	maxSendAttemptsHourly   = 8 // max OTPs per hour
-	maxSendAttemptsDaily    = 15 // max OTPs per 24h
+	maxSendAttempts         = 3                // max OTPs per minute
+	maxSendAttemptsHourly   = 8                // max OTPs per hour
+	maxSendAttemptsDaily    = 15               // max OTPs per 24h
 	minResendCooldown       = 30 * time.Second // minimum gap between consecutive sends
 	sendOperationTimeout    = 15 * time.Second
 	redisOperationTimeout   = 2 * time.Second
@@ -182,6 +182,13 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
+	// Validate delivery capability BEFORE consuming rate-limit budget: a
+	// misconfigured sender must fail fast without locking the user into the
+	// resend cooldown.
+	if err := s.validateDelivery(identifierType); err != nil {
+		return "", false, err
+	}
+
 	if err := s.checkSendRateLimits(opCtx, identifierType, identifier); err != nil {
 		return "", false, err
 	}
@@ -193,10 +200,6 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 	}
 
 	if err := s.storeCode(opCtx, identifierType, identifier, code); err != nil {
-		return "", false, err
-	}
-
-	if err := s.validateDelivery(identifierType); err != nil {
 		return "", false, err
 	}
 
@@ -219,6 +222,15 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 			zap.Error(err),
 			zap.String("identifier_type", identifierType),
 			zap.String("identifier", identifier))
+		// The send failed, so the cooldown set by checkSendRateLimits protects
+		// nothing — clear it (best-effort) so the user can retry right away
+		// instead of being locked out for the full cooldown window.
+		cleanupCtx, cleanupCancel := withTimeout(ctx, redisOperationTimeout)
+		if delErr := s.redisClient.Del(cleanupCtx, fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)); delErr != nil {
+			s.logger.Warn("failed to clear otp cooldown after send failure",
+				zap.String("identifier_type", identifierType), zap.Error(delErr))
+		}
+		cleanupCancel()
 		return "", false, fmt.Errorf("failed to send verification code: %w", err)
 	}
 	return code, false, nil

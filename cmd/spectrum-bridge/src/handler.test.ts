@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { renderInsightCard, extractCardRows, type InsightCard } from "./handler";
+import type { Space } from "spectrum-ts";
+import { MessageHandler, renderInsightCard, extractCardRows, type InsightCard, type OutboundMessage } from "./handler";
 
 describe("renderInsightCard", () => {
   it("renders a stat_grid card from StatItem rows", () => {
@@ -89,5 +90,195 @@ describe("renderInsightCard", () => {
   it("extracts items nested under a data.items key", () => {
     const rows = extractCardRows({ items: [{ label: "A", value: "1" }] });
     expect(rows).toEqual([{ label: "A", value: "1" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RULE: no Miriam response goes out without a typing indicator first.
+// Every content type the backend can emit must produce at least one typing
+// signal BEFORE any user-visible content in the space's send order.
+// ---------------------------------------------------------------------------
+
+function recordingSpace(overrides: Record<string, unknown> = {}): { space: Space; events: string[] } {
+  const events: string[] = [];
+  const space = {
+    id: "thread-1",
+    async send(content: unknown) {
+      let built: unknown = content;
+      if (content && typeof (content as { build?: unknown }).build === "function") {
+        built = await (content as { build: () => Promise<unknown> }).build();
+      }
+      const type =
+        typeof built === "string"
+          ? "text"
+          : ((built as { type?: string } | null)?.type ?? "unknown");
+      events.push(type);
+      return { id: `out-${events.length}`, content: built };
+    },
+    async startTyping() {
+      events.push("typing");
+    },
+    async stopTyping() {
+      events.push("typing-stop");
+    },
+    async getMessage() {
+      return undefined;
+    },
+    ...overrides,
+  } as unknown as Space;
+  return { space, events };
+}
+
+function baseMsg(extra: Partial<OutboundMessage> = {}): OutboundMessage {
+  return { platform: "imessage", user_id: "u1", thread_id: "thread-1", text: "Hey there", ...extra };
+}
+
+/** The first user-visible event must be preceded by a typing signal. */
+function expectTypingBeforeContent(events: string[]): void {
+  const idx = events.findIndex((e) => e !== "typing" && e !== "typing-stop");
+  expect(idx).toBeGreaterThan(-1);
+  expect(events.slice(0, idx)).toContain("typing");
+}
+
+describe("typing-before-send rule", () => {
+  it("plain text replies lead with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    const sent = await handler.handleOutbound(space, baseMsg());
+    expect(sent).toBe(true);
+    expectTypingBeforeContent(events);
+  });
+
+  it("markdown replies lead with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(space, baseMsg({ content_type: "markdown" }));
+    expectTypingBeforeContent(events);
+  });
+
+  it("reply without parent leads with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(space, baseMsg({ content_type: "reply" }));
+    expectTypingBeforeContent(events);
+  });
+
+  it("threaded reply leads with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const parent = { id: "parent-1", content: { type: "text", text: "earlier message" } };
+    const { space, events } = recordingSpace({ getMessage: async () => parent });
+    await handler.handleOutbound(
+      space,
+      baseMsg({ content_type: "reply", reply_to: "parent-1" }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("effect sends lead with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({ text: "You did it!", content_type: "effect", effect: "sparkles" }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("iMessage polls lead with a typing indicator (was previously bare)", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({
+        text: "",
+        content_type: "poll",
+        poll_title: "Send ₦5,000 to Chioma?",
+        poll_options: ["Confirm", "Cancel"],
+      }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("poll fallback on platforms without poll support leads with typing", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({ platform: "telegram", content_type: "poll", poll_title: "Confirm?" }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("voice notes lead with a typing indicator (was previously bare)", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({ text: "", content_type: "voice", audio_b64: Buffer.from("fake-audio").toString("base64") }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("card-only appcard sends lead with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({ text: "", content_type: "appcard", card_url: "rail://authorize" }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("appcards preceded by narrative text keep typing before every bubble", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({ content_type: "appcard", card_url: "rail://authorize" }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("richlink sends lead with a typing indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({ content_type: "richlink", card_url: "https://userail.money" }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("insight cards lead with a typing indicator even without narrative text", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    await handler.handleOutbound(
+      space,
+      baseMsg({
+        text: "",
+        content_type: "cards",
+        cards: [{ type: "tip", title: "Tip", data: { message: "Automate your savings." } }],
+      }),
+    );
+    expectTypingBeforeContent(events);
+  });
+
+  it("deduplicated repeats emit nothing and report nothing sent", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    const msg = baseMsg();
+    expect(await handler.handleOutbound(space, msg)).toBe(true);
+    const countAfterFirst = events.length;
+    const sent = await handler.handleOutbound(space, msg);
+    expect(sent).toBe(false);
+    expect(events.length).toBe(countAfterFirst);
+  });
+
+  it("empty payload reports nothing sent so the caller can end the indicator", async () => {
+    const handler = new MessageHandler();
+    const { space, events } = recordingSpace();
+    const sent = await handler.handleOutbound(space, baseMsg({ text: "" }));
+    expect(sent).toBe(false);
+    expect(events).toEqual([]);
   });
 });

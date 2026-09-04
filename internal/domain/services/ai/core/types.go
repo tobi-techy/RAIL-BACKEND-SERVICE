@@ -260,6 +260,11 @@ type ChatOptions struct {
 	// ControlLevel gates action execution: "monitor" blocks all action tools,
 	// "guided"/"full"/"" allow them. Sourced from the user's saved autonomy setting.
 	ControlLevel string
+	// FromVoice indicates the user's message was transcribed from a voice note.
+	// When true, the context builder injects a note telling Miriam to confirm
+	// amounts explicitly before staging money actions (transcription may
+	// garble numbers).
+	FromVoice bool
 }
 
 // ControlLevelMonitor is the autonomy level where Miriam may only observe and
@@ -378,6 +383,11 @@ type Dependencies struct {
 	TradeCopy         TradeCopyProvider
 	Travel            TravelProvider // BRIJ flight booking (travel.brij.fi)
 
+	// Bank transfer + crypto send providers (expose existing ramp/withdrawal
+	// infrastructure to Miriam as action tools with Face ID confirmation).
+	BankTransfer BankTransferProvider
+	CryptoSend   CryptoSendProvider
+
 	// AnomalyContextFn returns a system-prompt string of recent anomaly
 	// detections for context assembly. Returns empty string if none.
 	AnomalyContextFn func(ctx context.Context, userID uuid.UUID) string
@@ -425,6 +435,9 @@ type Dependencies struct {
 	// UserGoals is the new multi-goal store backed by Postgres. Used by the
 	// v2 savings-goal tools and the goal_progress worker.
 	UserGoals UserGoalStore
+
+	// ConsciousSpendingPlans stores the user's four-number monthly commitment.
+	ConsciousSpendingPlans ConsciousSpendingPlanStore
 
 	// ConversationsPersister builds context from and records exchanges to a conversation.
 	ConversationsPersister ConversationPersister
@@ -658,6 +671,9 @@ type ObligationProvider interface {
 type AutomationProvider interface {
 	List(ctx context.Context, userID uuid.UUID) ([]map[string]interface{}, error)
 	Create(ctx context.Context, userID uuid.UUID, data map[string]interface{}) error
+	Pause(ctx context.Context, userID uuid.UUID, automationID string) error
+	Resume(ctx context.Context, userID uuid.UUID, automationID string) error
+	Delete(ctx context.Context, userID uuid.UUID, automationID string) error
 }
 
 type ProfileProvider interface {
@@ -910,6 +926,22 @@ type UserGoalStore interface {
 	HasAny(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
+type ConsciousSpendingPlanInput struct {
+	TakeHomeIncome    string
+	Currency          string
+	FixedCosts        string
+	Investments       string
+	Savings           string
+	GuiltFreeSpending string
+	CheckInCadence    string
+}
+
+type ConsciousSpendingPlanStore interface {
+	Get(ctx context.Context, userID uuid.UUID) (*entities.ConsciousSpendingPlan, error)
+	Commit(ctx context.Context, userID uuid.UUID, in ConsciousSpendingPlanInput) (*entities.ConsciousSpendingPlan, error)
+	Pause(ctx context.Context, userID uuid.UUID, version int) (*entities.ConsciousSpendingPlan, error)
+}
+
 // CreateUserGoalInput is the create payload exposed to the LLM.
 type CreateUserGoalInput struct {
 	Name           string  `json:"name"`
@@ -1021,6 +1053,11 @@ type GameplayProvider interface {
 	GetUserStreaks(ctx context.Context, userID uuid.UUID) ([]*entities.UserStreak, error)
 	GetActiveChallenges(ctx context.Context, userID uuid.UUID) ([]*entities.UserChallenge, error)
 	GetUserAchievements(ctx context.Context, userID uuid.UUID) ([]*entities.Achievement, []*entities.UserAchievement, error)
+}
+
+// MerchantEnricher looks up enrichment data for merchants.
+type MerchantEnricher interface {
+	GetEnrichedByUser(ctx context.Context, userID uuid.UUID, limit int) ([]entities.EnrichedTransaction, error)
 }
 
 // ContributionSummary represents contribution totals.

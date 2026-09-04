@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+
+	aicontext "github.com/rail-service/rail_service/internal/domain/services/ai/context"
 	"github.com/shopspring/decimal"
 )
 
@@ -103,9 +105,9 @@ func (o *AgentAdapter) executeSpendingPatterns(ctx context.Context, userID uuid.
 	}
 
 	// Enrich largest transactions with plain descriptions and context
-	if enrichmentMap := enrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
+	if enrichmentMap := aicontext.EnrichMerchantMap(ctx, o.merchantEnricher, userID); enrichmentMap != nil {
 		for _, tx := range bigTx {
-			enrichMerchantEntry(tx, enrichmentMap)
+			aicontext.EnrichMerchantEntry(tx, enrichmentMap)
 		}
 	}
 

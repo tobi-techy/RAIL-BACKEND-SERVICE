@@ -285,7 +285,7 @@ func (e *PredictiveEngine) detectSpendingAnomaly(ctx context.Context, userID uui
 	if state.ConfidenceLevel == "high" {
 		reasoning += "High confidence based on multiple data points."
 	} else {
-		reasoning += "Moderate confidence — more data would help."
+		reasoning += "Moderate confidence, more data would help."
 	}
 
 	snapshot := map[string]interface{}{
@@ -585,7 +585,7 @@ func billPressureReasoning(count int, obligations, spend, coverageRatio, gap dec
 		b.WriteString(spend.StringFixed(2))
 		b.WriteString(") doesn't cover it")
 		if gap.IsPositive() {
-			b.WriteString(" — $")
+			b.WriteString(", $")
 			b.WriteString(gap.StringFixed(2))
 			b.WriteString(" short")
 		}
@@ -609,7 +609,7 @@ func incomeGapReasoning(cadence string, avgIncome, projectedIncome, totalNeeds, 
 	b.WriteString(")")
 
 	if gap.IsPositive() {
-		b.WriteString(" — gap of $")
+		b.WriteString(", gap of $")
 		b.WriteString(gap.StringFixed(2))
 	}
 	b.WriteString(".")
@@ -681,7 +681,7 @@ func recommendAction(summary *entities.PredictionSummary) string {
 	case entities.PredictionCashShortfall:
 		return "Review spending and consider moving funds from Stash to cover upcoming obligations."
 	case entities.PredictionBillPressure:
-		return "Check upcoming bills — some may not be fully covered by current Spend balance."
+		return "Check upcoming bills, some may not be fully covered by current Spend balance."
 	case entities.PredictionIncomeGap:
 		return "Income projection shows a potential gap. Consider adjusting spending or tapping Stash."
 	case entities.PredictionSpendingAnomaly:

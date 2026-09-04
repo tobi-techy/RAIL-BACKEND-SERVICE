@@ -8,16 +8,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	aiintelligence "github.com/rail-service/rail_service/internal/domain/services/ai/intelligence"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 )
 
 // GameplayProvider reads streaks, challenges, and achievements from the
 // gameplay system so Miriam can reference them conversationally.
-type GameplayProvider interface {
-	GetUserStreaks(ctx context.Context, userID uuid.UUID) ([]*entities.UserStreak, error)
-	GetActiveChallenges(ctx context.Context, userID uuid.UUID) ([]*entities.UserChallenge, error)
-	GetUserAchievements(ctx context.Context, userID uuid.UUID) ([]*entities.Achievement, []*entities.UserAchievement, error)
-}
+// Deprecated: Use aiintelligence.GameplayProvider instead.
+type GameplayProvider = aiintelligence.GameplayProvider
 
 // Tool names for gameplay tools.
 const (
