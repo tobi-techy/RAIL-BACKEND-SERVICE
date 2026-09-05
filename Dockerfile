@@ -16,6 +16,9 @@ COPY go.mod go.sum ./
 # Download dependencies
 RUN go mod download && go mod verify
 
+# Cache bust arg - change to force rebuild of subsequent layers
+ARG CACHE_BUST=1
+
 # Copy source code
 COPY . .
 
