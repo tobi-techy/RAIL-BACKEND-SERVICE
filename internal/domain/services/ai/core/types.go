@@ -467,6 +467,9 @@ type Dependencies struct {
 	// BankStatementAnalysis provides detailed bank statement analysis data
 	// for the get_bank_statement_analysis tool.
 	BankStatementAnalysis BankStatementAnalysisProvider
+	// FundingInstructions reads the user's deposit rails (virtual accounts,
+	// crypto addresses) for the get_funding_instructions tool.
+	FundingInstructions FundingInstructionsProvider
 
 	// MemoryStore provides persistence for long-term memory (tone profiles).
 	MemoryStore MemoryStore
@@ -1003,6 +1006,13 @@ type BankStatementAnalysisProvider interface {
 // the user should open (Mono Connect for Nigeria).
 type BankLinker interface {
 	InitiateLinking(ctx context.Context, userID uuid.UUID, customerName, customerEmail, redirectURL string) (string, error)
+}
+
+// FundingInstructionsProvider reads the rails a user can fund through:
+// fiat virtual accounts and (idempotent) stablecoin deposit addresses.
+type FundingInstructionsProvider interface {
+	GetVirtualAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
+	CreateDepositAddress(ctx context.Context, userID uuid.UUID, chain entities.Chain, currency entities.Stablecoin) (*entities.DepositAddressResponse, error)
 }
 
 // VoiceDailyLimiterer enforces daily voice transfer caps.

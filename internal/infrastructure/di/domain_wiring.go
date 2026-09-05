@@ -1347,6 +1347,17 @@ func (c *Container) wireChatOnboarding() {
 		c.platformProcessor.SetBabyStepsSeeder(c.BabyStepsSeeder)
 		onboarder.SetBabyStepsSeeder(c.BabyStepsSeeder)
 	}
+	// Agent-led guest conversation: the LLM owns the words, the deterministic
+	// executor owns identity verification. Without a provider the onboarder
+	// falls back to its scripted flow, so a nil AIProvider only degrades tone.
+	if c.AIProvider != nil {
+		onboarder.SetGuestCompleter(&guestCompleterAdapter{provider: c.AIProvider})
+	}
+	// Carry the guest read into the authenticated relationship: money type to
+	// the tone profile, transcript to the first platform conversation.
+	if c.MiriamMemoryRepo != nil && c.ConversationRepo != nil {
+		onboarder.SetGuestHandoff(c.MiriamMemoryRepo, &guestTranscriptAdapter{convRepo: c.ConversationRepo})
+	}
 	c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
 }
 

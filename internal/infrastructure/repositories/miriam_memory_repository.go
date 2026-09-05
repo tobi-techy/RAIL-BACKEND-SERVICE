@@ -118,7 +118,7 @@ func (r *MiriamMemoryRepository) GetToneProfile(ctx context.Context, userID uuid
 	var profile entities.MiriamToneProfile
 	err := r.db.GetContext(ctx, &profile, `
 		SELECT user_id, formality, directness, warmth, humor, brevity,
-		       preferred_name, language_style, locale_style, sample_count, created_at, updated_at
+		       preferred_name, language_style, locale_style, money_type, sample_count, created_at, updated_at
 		FROM miriam_tone_profiles
 		WHERE user_id = $1`, userID)
 	if err == sql.ErrNoRows {
@@ -152,6 +152,27 @@ func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID u
 		userID, formality, directness, warmth, humor, brevity, preferredName, languageStyle, localeStyle)
 	if err != nil {
 		return fmt.Errorf("upsert tone profile: %w", err)
+	}
+	return nil
+}
+
+// SetMoneyType records Miriam's read on how the user relates to money
+// (avoider/optimizer/worrier/dreamer). Never overwrites an existing read with
+// an empty value; an empty read is a no-op.
+func (r *MiriamMemoryRepository) SetMoneyType(ctx context.Context, userID uuid.UUID, moneyType string) error {
+	moneyType = strings.ToLower(strings.TrimSpace(moneyType))
+	if !entities.ValidMoneyTypes[moneyType] {
+		return fmt.Errorf("invalid money type: %q", moneyType)
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO miriam_tone_profiles (user_id, money_type)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET
+			money_type = $2,
+			updated_at = NOW()`,
+		userID, moneyType)
+	if err != nil {
+		return fmt.Errorf("set money type: %w", err)
 	}
 	return nil
 }

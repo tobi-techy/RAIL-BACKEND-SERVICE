@@ -70,6 +70,25 @@ type InboundMessage struct {
 	IsContact bool           `json:"is_contact,omitempty"`
 	VCardText string         `json:"vcard_text,omitempty"`
 	Contact   *SharedContact `json:"contact,omitempty"`
+
+	// Poll vote: the selected option title arrives in Text. The bridge marks it
+	// so a stray vote with no pending action is dropped instead of confusing
+	// the orchestrator.
+	IsPollVote bool `json:"is_poll_vote,omitempty"`
+
+	// Tapback reaction on one of our messages. Affirmative reactions confirm a
+	// staged action; anything else is dropped.
+	IsReaction    bool   `json:"is_reaction,omitempty"`
+	ReactionEmoji string `json:"reaction_emoji,omitempty"`
+
+	// Threaded reply context: the user long-pressed one of our messages and
+	// replied. ReplyToText (when the bridge could resolve the target) is folded
+	// into the message so Miriam can see what "that" refers to.
+	ReplyTo     string `json:"reply_to,omitempty"`
+	ReplyToText string `json:"reply_to_text,omitempty"`
+
+	// EditOf marks an edited message; the new text arrives in Text.
+	EditOf string `json:"edit_of,omitempty"`
 }
 
 // ActionPostback is a poll vote — how a user confirms/cancels an action, since
@@ -243,6 +262,17 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, "You're already linked — I don't need the card. What do you want to look at?")
 			return nil
 		}
+		if msg.IsReaction {
+			return p.handleReaction(ctx, msg, resolved)
+		}
+		if msg.IsPollVote && !p.orchestrator.HasPendingPlatformAction(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform) {
+			// A vote on an old poll (or the onboarding consent poll from a now-
+			// linked sender) with nothing staged — feeding bare "Confirm" into
+			// the model would only confuse it.
+			p.logger.Debug("dropping stray poll vote with no pending action",
+				zap.String("thread_id", msg.ThreadID), zap.String("text", msg.Text))
+			return nil
+		}
 		return p.handleNormalMessage(ctx, msg, resolved)
 	}
 
@@ -380,6 +410,38 @@ var negativeVote = map[string]bool{
 	"no": true, "n": true, "cancel": true, "nope": true, "stop": true,
 }
 
+// affirmativeTapback / negativeTapback map iMessage reactions to confirm/cancel
+// when an action is staged. Anything else (or no staged action) is dropped —
+// a random tapback on an old message should never reach the model.
+var affirmativeTapback = map[string]bool{"❤️": true, "👍": true, "💯": true, "🙌": true, "yes": true}
+var negativeTapback = map[string]bool{"👎": true, "no": true}
+
+// handleReaction treats a tapback as a vote on the staged action in the thread,
+// mirroring the bare YES/NO text fallback for poll-less platforms.
+func (p *Processor) handleReaction(ctx context.Context, msg InboundMessage, resolved *ResolvedUser) error {
+	railUserID := resolved.UserID.String()
+	pidStr := resolved.Identity.ID.String()
+	if !p.orchestrator.HasPendingPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform) {
+		return nil
+	}
+	var reply *PlatformReply
+	var err error
+	switch {
+	case affirmativeTapback[msg.ReactionEmoji]:
+		reply, err = p.orchestrator.ConfirmPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform)
+	case negativeTapback[msg.ReactionEmoji]:
+		reply, err = p.orchestrator.CancelPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform)
+	default:
+		return nil
+	}
+	if err != nil {
+		log.Printf("reaction-vote %q failed for %s: %v", msg.ReactionEmoji, railUserID, err)
+		p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, friendlyActionError(err))
+		return nil
+	}
+	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, "", reply, false)
+}
+
 func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage, resolved *ResolvedUser) error {
 	// Text-vote fallback: on platforms without polls, a bare YES/NO (or similar)
 	// while a pending action is staged is treated as confirm/cancel. Guarded by
@@ -411,7 +473,17 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 		log.Printf("typing indicator send failed (non-fatal): %v", err)
 	}
 
-	reply, err := p.orchestrator.HandlePlatformMessage(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.Text, msg.ThreadID, msg.Platform)
+	// A threaded reply carries its quoted message so "that one" / "yes, that"
+	// resolves to what the user actually long-pressed.
+	text := msg.Text
+	if quoted := strings.TrimSpace(msg.ReplyToText); quoted != "" {
+		if len(quoted) > 200 {
+			quoted = quoted[:200]
+		}
+		text = fmt.Sprintf("[replying to your earlier message: %q]\n%s", quoted, msg.Text)
+	}
+
+	reply, err := p.orchestrator.HandlePlatformMessage(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), text, msg.ThreadID, msg.Platform)
 	if err != nil {
 		// Don't requeue: re-running the orchestrator would double-bill AI usage.
 		log.Printf("orchestrator error for %s: %v", resolved.UserID, err)

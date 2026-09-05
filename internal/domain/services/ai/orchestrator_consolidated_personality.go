@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/shopspring/decimal"
 )
@@ -50,6 +51,17 @@ func (o *AgentAdapter) buildConsolidatedPersonalityContext(ctx context.Context, 
 	// --- Personality Mode (user-chosen voice — Roast/Coach/Protector/Celebration/Quiet) ---
 	if pm := o.buildPersonalityModeContext(fetchCtx, userID); pm != "" {
 		parts = append(parts, pm)
+	}
+
+	// --- Money Type (Miriam's read on how they relate to money) ---
+	// Set during the first conversations, so it deliberately bypasses the
+	// SampleCount gate — it exists precisely when the EMA tone profile is thin.
+	if o.memory != nil {
+		if profile, err := o.memory.store.GetToneProfile(fetchCtx, userID); err == nil && profile != nil {
+			if note := moneyTypeNote(profile.MoneyType); note != "" {
+				parts = append(parts, note)
+			}
+		}
 	}
 
 	// --- Tone Calibration (style preferences — language, brevity, locale) ---
@@ -111,6 +123,23 @@ func (o *AgentAdapter) buildConsolidatedPersonalityContext(ctx context.Context, 
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// moneyTypeNote turns the stored money-type read into one tone instruction.
+// The type is never named to the user — it's a lens, not a label.
+func moneyTypeNote(moneyType string) string {
+	switch moneyType {
+	case entities.MoneyTypeAvoider:
+		return "[MONEY READ — money talk makes them anxious. Keep it light and small. One gentle step at a time; never pile on numbers. Celebrate any time they look at their money at all.]"
+	case entities.MoneyTypeOptimizer:
+		return "[MONEY READ — they already track everything. Skip the basics, respect their spreadsheet brain, go straight to the sharper edge they haven't seen yet.]"
+	case entities.MoneyTypeWorrier:
+		return "[MONEY READ — they check constantly and still worry. Reassure with specifics, not vibes. Anchor every answer to one concrete number or fact.]"
+	case entities.MoneyTypeDreamer:
+		return "[MONEY READ — big vision, thin execution. Match the dream's energy, then shrink the next step until it's doable this week.]"
+	default:
+		return ""
+	}
 }
 
 func normalizePersonalityToneMode(mode string) string {

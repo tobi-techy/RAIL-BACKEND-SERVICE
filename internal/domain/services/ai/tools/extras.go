@@ -1057,4 +1057,5 @@ func RegisterAllRemainingTools(r *Registry) {
 	RegisterGameplayTools(r)
 	RegisterBabyStepsTools(r)
 	RegisterBankStatementTools(r)
+	RegisterFundingTools(r)
 }
