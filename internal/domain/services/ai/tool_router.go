@@ -111,6 +111,11 @@ var actionPatterns = []string{
 	// send_money must be in scope for these turns.
 	"airtime", "buy data", "data plan", "nepa", "electricity", "cable tv",
 	"dstv", "gotv", "startimes", "meter", "betting", "top up",
+	// Funding intents — the first deposit must route to Action so
+	// get_funding_instructions is in scope. Bare "deposit" is history
+	// ("show my deposits"), so these stay intent-shaped.
+	"add money", "make a deposit", "deposit $", "deposit ₦", "deposit usdc",
+	"fund my", "fund the", "how do i pay in", "put money in",
 }
 
 var automationPatterns = []string{
@@ -219,32 +224,34 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		// P2P sends — "send 5k to @tobi" previously had no send path in scope.
 		"lookup_recipient": true,
 		"send_money":       true,
+		// First deposit must be completable in chat.
+		ToolGetFundingInstructions: true,
 		// Obligations — "what do I owe / mark it paid" context.
 		ToolListFinancialObligations: true,
 		ToolFindObligationPayments:   true,
 	},
 	CategoryPlanning: {
-		ToolGetUpcomingBills:      true,
-		ToolAuditSubscriptions:    true,
-		ToolGetYieldStatus:        true,
-		ToolGetInvestmentOptions:  true,
-		ToolListTradeConductors:   true,
-		ToolResearchTrader:        true,
-		ToolGetFinancialAudit:     true,
-		ToolGetFinancialHealth:    true,
-		ToolGetFinancialPlan:      true,
-		ToolGetCashFlowForecast:   true,
-		ToolGetMoneyOperatingPlan: true,
-		ToolGetFinancialProfile:   true,
-		ToolGetSavingsSuggestions: true,
-		ToolGetTaxSummary:         true,
-		ToolGetAccountSummary:     true,
-		ToolGetMiriamBrief:        true,
-		ToolSearchKnowledge:       true,
-		ToolGetInvestmentProducts: true,
-		ToolWebSearch:             true,
-		ToolGetBabySteps:              true,
-		ToolGetBankStatementAnalysis:  true,
+		ToolGetUpcomingBills:         true,
+		ToolAuditSubscriptions:       true,
+		ToolGetYieldStatus:           true,
+		ToolGetInvestmentOptions:     true,
+		ToolListTradeConductors:      true,
+		ToolResearchTrader:           true,
+		ToolGetFinancialAudit:        true,
+		ToolGetFinancialHealth:       true,
+		ToolGetFinancialPlan:         true,
+		ToolGetCashFlowForecast:      true,
+		ToolGetMoneyOperatingPlan:    true,
+		ToolGetFinancialProfile:      true,
+		ToolGetSavingsSuggestions:    true,
+		ToolGetTaxSummary:            true,
+		ToolGetAccountSummary:        true,
+		ToolGetMiriamBrief:           true,
+		ToolSearchKnowledge:          true,
+		ToolGetInvestmentProducts:    true,
+		ToolWebSearch:                true,
+		ToolGetBabySteps:             true,
+		ToolGetBankStatementAnalysis: true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,

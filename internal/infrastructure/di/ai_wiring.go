@@ -496,6 +496,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			NairaCtx:            buildNairaContextProvider(c),
 			BankStatement:       buildBankStatementProvider(c),
 			BankLinker:          c.MonoService,
+			FundingInstructions: c.FundingService,
 			Signals:             buildSignalProvider(c),
 			MiriamIntell:        buildMiriamIntelligenceProvider(c),
 			Investment:          buildInvestmentProvider(c),

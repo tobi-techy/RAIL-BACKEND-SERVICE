@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"net/mail"
 	"regexp"
 	"strings"
@@ -14,9 +15,21 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 )
 
-// onboardingSessionTTL bounds how long a half-finished chat onboarding lives in
-// Redis before the user has to start over.
-const onboardingSessionTTL = 30 * time.Minute
+// guestSessionTTL bounds how long a pre-signup conversation lives in Redis.
+// It is a conversation now, not a form — people come back hours later.
+const guestSessionTTL = 24 * time.Hour
+
+// turnLockTTL caps one in-flight guest turn so a crashed worker never wedges
+// a sender. Turns are short (one or two LLM completions).
+const turnLockTTL = 30 * time.Second
+
+// maxGuestTurns caps model turns inside one session before Miriam steers to
+// signup or wraps up. Bounds cost on conversations that never convert.
+const maxGuestTurns = 40
+
+// maxGuestDailyTurns caps model turns per sender per rolling 24h across
+// sessions, so a cleared session cannot reset the meter.
+const maxGuestDailyTurns = 60
 
 // maxOnboardingOTPAttempts caps wrong SMS OTP entries before the session is reset.
 const maxOnboardingOTPAttempts = 5
@@ -24,9 +37,14 @@ const maxOnboardingOTPAttempts = 5
 // maxEmailOTPAttempts caps wrong email OTP entries before the session is reset.
 const maxEmailOTPAttempts = 5
 
+// maxTranscriptTurns is how much of the guest conversation is replayed into the
+// user's first platform conversation at signup.
+const maxTranscriptTurns = 20
+
 // OnboardingStateStore is the subset of the Redis client the onboarder needs.
 type OnboardingStateStore interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
 	Get(ctx context.Context, key string, dest interface{}) error
 	Del(ctx context.Context, key string) error
 	Exists(ctx context.Context, key string) (bool, error)
@@ -65,32 +83,57 @@ type OnboardingLinker interface {
 	LinkVerified(ctx context.Context, userID uuid.UUID, platform entities.Platform, senderUserID string) (*entities.PlatformIdentity, error)
 }
 
-type onboardingStep string
+// GuestMoneyTypeWriter persists the agent's read of the guest's money style so
+// the authenticated Miriam calibrates tone from the first turn. Satisfied by
+// the Miriam memory repository. Optional.
+type GuestMoneyTypeWriter interface {
+	SetMoneyType(ctx context.Context, userID uuid.UUID, moneyType string) error
+}
+
+// GuestTranscriptWriter replays the pre-signup conversation into the user's
+// first platform conversation so the authenticated Miriam continues mid-thread
+// instead of starting cold. Satisfied by a DI adapter over the conversation
+// repository. Optional.
+type GuestTranscriptWriter interface {
+	AppendGuestTranscript(ctx context.Context, userID uuid.UUID, identity *entities.PlatformIdentity, threadID string, turns []GuestMessage) error
+}
+
+type guestPhase string
 
 const (
-	stepName           onboardingStep = "awaiting_name"
-	stepConfirmContact onboardingStep = "awaiting_contact_confirm"
-	stepCountry        onboardingStep = "awaiting_country"
-	stepEmail          onboardingStep = "awaiting_email"
-	stepEmailOTP       onboardingStep = "awaiting_email_otp"
-	stepPhone          onboardingStep = "awaiting_phone"
-	stepOTP            onboardingStep = "awaiting_otp"
-	stepConsent        onboardingStep = "awaiting_consent"
+	// phaseConverse — agent-led conversation. Identity is only collected when
+	// the guest wants something that needs an account.
+	phaseConverse guestPhase = "converse"
+	// phasePhone — signup demanded, waiting for a phone number.
+	phasePhone guestPhase = "awaiting_phone"
+	// phaseOTP — SMS code sent, waiting for the 6-digit entry.
+	phaseOTP guestPhase = "awaiting_otp"
+	// phaseConsent — phone verified, waiting for terms consent.
+	phaseConsent guestPhase = "awaiting_consent"
+	// phaseEmail — existing-account path, waiting for the account email.
+	phaseEmail guestPhase = "awaiting_email"
+	// phaseEmailOTP — existing-account path, email code sent.
+	phaseEmailOTP guestPhase = "awaiting_email_otp"
 )
 
-// onboardingState is the per-sender progress persisted in Redis.
-type onboardingState struct {
-	Step             onboardingStep `json:"step"`
+// guestState is the per-sender pre-signup conversation persisted in Redis.
+type guestState struct {
+	Phase            guestPhase     `json:"phase"`
 	FirstName        string         `json:"first_name,omitempty"`
 	Country          string         `json:"country,omitempty"`
-	CountryAttempts  int            `json:"country_attempts,omitempty"`
+	Goal             string         `json:"goal,omitempty"`
+	MoneyType        string         `json:"money_type,omitempty"`
 	Email            string         `json:"email,omitempty"`
-	PendingEmail     string         `json:"pending_email,omitempty"`
+	Phone            string         `json:"phone,omitempty"`
+	Turns            []GuestMessage `json:"turns,omitempty"`
+	TurnCount        int            `json:"turn_count,omitempty"`
+	LastReplyHash    uint64         `json:"last_reply_hash,omitempty"`
+	OTPAttempts      int            `json:"otp_attempts,omitempty"`
 	EmailOTPAttempts int            `json:"email_otp_attempts,omitempty"`
 	EmailVerified    bool           `json:"email_verified,omitempty"`
-	Phone            string         `json:"phone,omitempty"`
-	OTPAttempts      int            `json:"otp_attempts,omitempty"`
 	UserID           string         `json:"user_id,omitempty"`
+	SignupReason     string         `json:"signup_reason,omitempty"`
+	IntroSent        bool           `json:"intro_sent,omitempty"`
 }
 
 // OnboardInput is a normalized inbound message from an unlinked sender.
@@ -102,8 +145,10 @@ type OnboardInput struct {
 	Contact  *SharedContact
 }
 
-// ChatOnboarder walks an unknown messaging sender through account creation:
-// name → country → phone → SMS OTP → consent → Tier 1 user + wallet + auto-link.
+// ChatOnboarder hosts the pre-signup conversation: Miriam talks first (agent-led
+// via the guest brain) and collects phone + OTP + consent only when the guest
+// wants something that needs an account. Without a completer it degrades to a
+// short deterministic flow so signup can never die with the LLM.
 type ChatOnboarder struct {
 	store       OnboardingStateStore
 	verifier    OnboardingOTPVerifier
@@ -113,6 +158,9 @@ type ChatOnboarder struct {
 	appURL      string
 	logger      *zap.Logger
 	babySteps   BabyStepsSeeder
+	brain       *guestBrain
+	moneyTypes  GuestMoneyTypeWriter
+	transcripts GuestTranscriptWriter
 }
 
 func NewChatOnboarder(
@@ -138,6 +186,22 @@ func NewChatOnboarder(
 	}
 }
 
+// SetGuestCompleter enables the agent-led guest conversation. When unset, the
+// onboarder runs the deterministic fallback flow.
+func (c *ChatOnboarder) SetGuestCompleter(completer GuestCompleter) {
+	if completer == nil {
+		return
+	}
+	c.brain = newGuestBrain(completer, c.logger)
+}
+
+// SetGuestHandoff installs the post-signup writers: the guest's money-type read
+// and the conversation transcript. Both are fired best-effort at provisioning.
+func (c *ChatOnboarder) SetGuestHandoff(moneyTypes GuestMoneyTypeWriter, transcripts GuestTranscriptWriter) {
+	c.moneyTypes = moneyTypes
+	c.transcripts = transcripts
+}
+
 // SetBabyStepsSeeder installs the first-login goal seeder. After a successful
 // chat-first onboarding, the seeder materializes the 7-step Baby Steps ladder
 // for the new user so the goal_progress worker has something to track on the
@@ -148,6 +212,14 @@ func (c *ChatOnboarder) SetBabyStepsSeeder(s BabyStepsSeeder) {
 
 func onboardingKey(platform entities.Platform, senderID string) string {
 	return fmt.Sprintf("onboarding:%s:%s", platform, senderID)
+}
+
+func turnLockKey(platform entities.Platform, senderID string) string {
+	return fmt.Sprintf("onboarding:turn:%s:%s", platform, senderID)
+}
+
+func dailyTurnsKey(platform entities.Platform, senderID string) string {
+	return fmt.Sprintf("onboarding:daily:%s:%s", platform, senderID)
 }
 
 // HasSession reports whether an onboarding conversation is already in progress
@@ -179,295 +251,406 @@ func (c *ChatOnboarder) clear(ctx context.Context, key string) {
 	}
 }
 
-// Handle advances the onboarding conversation by one step and returns the reply
-// to send back. A nil reply means nothing should be sent.
+// Handle advances the guest conversation by one turn and returns the reply to
+// send back. A nil reply means nothing should be sent.
 func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformReply, error) {
 	key := onboardingKey(in.Platform, in.SenderID)
+
+	// Serialize turns per sender: anything that slips past the bridge debounce
+	// cannot interleave two state writes. Contention is transient, so requeue.
+	locked, err := c.store.SetNX(ctx, turnLockKey(in.Platform, in.SenderID), 1, turnLockTTL)
+	if err != nil {
+		c.logger.Warn("onboarding turn lock failed", zap.Error(err))
+		return nil, Retryable(fmt.Errorf("acquire turn lock: %w", err))
+	}
+	if !locked {
+		return nil, Retryable(fmt.Errorf("guest turn already in flight"))
+	}
+	// Lock acquired — ensure it's released on every exit path.
+	defer func() {
+		_ = c.store.Del(ctx, turnLockKey(in.Platform, in.SenderID))
+	}()
+
+	var st guestState
+	if err := c.store.Get(ctx, key, &st); err != nil || st.Phase == "" {
+		st = guestState{Phase: phaseConverse}
+	}
+
+	if in.Contact != nil {
+		c.mergeContact(&st, in.Contact)
+	}
+
 	text := strings.TrimSpace(in.Text)
-	contact := in.Contact
-
-	var st onboardingState
-	if err := c.store.Get(ctx, key, &st); err != nil || st.Step == "" {
-		st = onboardingState{Step: stepName}
-		if contact != nil {
-			c.mergeContact(&st, contact)
-			if reply, err := c.afterContact(ctx, key, &st); err != nil {
-				return nil, err
-			} else if reply != nil {
-				return reply, nil
-			}
-		}
-		if err := c.save(ctx, key, st); err != nil {
-			return nil, err
-		}
-		return textReply(c.introMessage(in.Platform)), nil
+	if in.Contact != nil && text == "" {
+		// Give the model (or the fallback) something to react to.
+		text = "[they shared their contact card]"
 	}
 
-	if contact != nil {
-		c.mergeContact(&st, contact)
-		if reply, err := c.afterContact(ctx, key, &st); err != nil {
-			return nil, err
-		} else if reply != nil {
-			return reply, nil
-		}
-	}
-
-	switch st.Step {
-	case stepName:
-		return c.handleName(ctx, key, &st, text)
-	case stepConfirmContact:
-		return c.handleConfirmContact(ctx, key, &st, text)
-	case stepCountry:
-		return c.handleCountry(ctx, key, &st, text)
-	case stepEmail:
-		return c.handleEmail(ctx, key, &st, text)
-	case stepEmailOTP:
-		return c.handleEmailOTP(ctx, key, &st, text)
-	case stepPhone:
-		return c.handlePhone(ctx, key, &st, text)
-	case stepOTP:
-		return c.handleOTP(ctx, key, &st, text)
-	case stepConsent:
-		return c.handleConsent(ctx, key, &st, in, text)
+	var reply *PlatformReply
+	switch st.Phase {
+	case phaseOTP:
+		reply, err = c.handleOTP(ctx, key, &st, text)
+	case phaseConsent:
+		reply, err = c.handleConsent(ctx, key, &st, in, text)
+	case phaseEmailOTP:
+		reply, err = c.handleEmailOTP(ctx, key, &st, text)
+	case phasePhone, phaseEmail, phaseConverse:
+		reply, err = c.handleConversational(ctx, key, &st, in, text)
 	default:
-		c.clear(ctx, key)
-		return textReply(c.introMessage(in.Platform)), nil
+		reply, err = c.handleConversational(ctx, key, &st, in, text)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return reply, nil
 }
 
-func (c *ChatOnboarder) mergeContact(st *onboardingState, contact *SharedContact) {
-	if st == nil || contact == nil {
-		return
-	}
-	if st.FirstName == "" {
-		if n := contact.FirstNameResolved(); n != "" {
-			st.FirstName = n
+// handleConversational covers every phase where the next move depends on what
+// the person said rather than on a code entry: the open conversation, the
+// phone ask, and the existing-account email ask.
+func (c *ChatOnboarder) handleConversational(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
+	// A bare email address in any of these phases is the existing-account path.
+	if st.Phase != phaseEmail {
+		if email := normalizeEmail(text); email != "" && strings.Contains(text, "@") && len(strings.Fields(text)) <= 2 {
+			return c.handleEmail(ctx, key, st, email)
 		}
 	}
-	if st.Email == "" && st.PendingEmail == "" {
-		st.PendingEmail = contact.PrimaryEmail()
-	}
-	if st.Country == "" {
-		if cc := normalizeCountry(contact.Country); cc != "" {
-			st.Country = cc
-		}
-	}
-	if st.Phone == "" {
-		raw := contact.PrimaryPhone()
-		if st.Country == "" {
-			if inferred := inferCountryFromPhone(raw); inferred != "" {
-				st.Country = inferred
-			}
-		}
-		if phone, ok := normalizePhone(raw, st.Country); ok {
+
+	if st.Phase == phasePhone {
+		if phone, ok := extractPhoneFromText(text, st.Country); ok {
 			st.Phone = phone
 			if st.Country == "" {
 				st.Country = inferCountryFromPhone(phone)
 			}
+			return c.startVerification(ctx, key, st)
 		}
 	}
-}
 
-// afterContact jumps the state machine when a shared card filled enough fields.
-// Returns a non-nil reply when the card advanced the conversation on its own.
-func (c *ChatOnboarder) afterContact(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
-	if st.FirstName == "" {
-		return nil, nil
+	if st.Phase == phaseEmail {
+		email := normalizeEmail(text)
+		if email == "" {
+			return textReply("What's the email on your RAIL account?"), nil
+		}
+		return c.handleEmail(ctx, key, st, email)
 	}
 
-	if st.Phone != "" && st.FirstName != "" && st.Step != stepOTP && st.Step != stepConsent && st.Step != stepEmailOTP {
-		st.Step = stepConfirmContact
+	// Daily abuse cap — checked before spending a model turn.
+	if c.brain != nil {
+		if over, err := c.overDailyCap(ctx, in); err != nil {
+			c.logger.Warn("guest daily cap check failed", zap.Error(err))
+		} else if over {
+			return textReply("I've hit my chat limit for today. Text me tomorrow and we'll pick right back up."), nil
+		}
+	}
+
+	if c.brain != nil {
+		return c.brainTurn(ctx, key, st, in, text)
+	}
+	return c.fallbackTurn(ctx, key, st, in, text)
+}
+
+// brainTurn runs one agent-led turn: the model writes the reply, the executor
+// applies the tool effects.
+func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
+	if st.TurnCount >= maxGuestTurns {
+		// Enough talking without converting — steer to the one useful action.
+		st.Phase = phasePhone
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return textReply("I've enjoyed this, but talking only gets us so far. Drop your number (with the country code) and I'll actually get your money working."), nil
 	}
 
-	if st.Country == "" {
-		st.Step = stepCountry
+	out, err := c.brain.respond(ctx, st, text)
+	if err != nil {
+		c.logger.Warn("guest brain turn failed, using fallback", zap.Error(err))
+		return c.fallbackTurn(ctx, key, st, in, text)
+	}
+
+	for _, n := range out.notes {
+		c.applyNote(st, n)
+	}
+
+	replyText := out.text
+
+	switch {
+	case out.end:
+		c.recordTurn(st, text, replyText)
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply(c.countryPrompt(st.FirstName)), nil
+		// Leave a tombstone-free exit: clear so a future text starts warm-fresh.
+		c.clear(ctx, key)
+		return textReply(replyText), nil
+
+	case out.startSignup:
+		st.SignupReason = out.signupReason
+		return c.beginSignup(ctx, key, st, text, replyText)
 	}
 
-	if st.Phone == "" {
-		st.Step = stepPhone
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.phonePrompt()), nil
-	}
-
-	return nil, nil
-}
-
-func (c *ChatOnboarder) handleConfirmContact(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
-	if isContactReject(text) {
-		st.Phone = ""
-		st.Email = ""
-		st.PendingEmail = ""
-		st.Step = stepPhone
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply("Got it. Whose number should I text the code to? Include the country code, like +2348012345678."), nil
-	}
-	if text != "" && !isAffirmative(text) && !looksLikeOTP(text) {
-		// They typed something else — treat as a correction of the name.
-		if name := parseFirstName(text); name != "" && !strings.Contains(strings.ToLower(text), "yes") {
-			// If it's clearly a short name correction, keep the phone and re-confirm.
-			if len(strings.Fields(text)) == 1 {
-				st.FirstName = name
-				if err := c.save(ctx, key, *st); err != nil {
-					return nil, err
-				}
-				return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
-			}
-		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
-	}
-	if looksLikeOTP(text) {
-		return c.handleOTP(ctx, key, st, text)
-	}
-	if st.PendingEmail != "" {
-		st.Email = st.PendingEmail
-		st.PendingEmail = ""
-	}
-	if st.Email != "" {
-		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
-			return c.handleEmail(ctx, key, st, st.Email)
-		}
-	}
-	return c.sendPhoneOTP(ctx, key, st)
-}
-
-func looksLikeOTP(text string) bool {
-	return len(digitsOnly(text)) == 6
-}
-
-func (c *ChatOnboarder) handleName(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
-	name := parseFirstName(text)
-	if name == "" {
-		return textReply("What should I call you? First name is plenty."), nil
-	}
-	st.FirstName = name
-	if st.Country == "" {
-		st.Step = stepCountry
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.countryPrompt(name)), nil
-	}
-	return c.advancePastCountry(ctx, key, st)
-}
-
-func (c *ChatOnboarder) handleCountry(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
-	country := normalizeCountry(text)
-	if country == "" {
-		if st.CountryAttempts >= 1 && strings.TrimSpace(text) != "" {
-			// Accept a best-effort value rather than looping forever.
-			country = strings.ToUpper(strings.TrimSpace(text))
+	// Plain conversational turn.
+	if hash := hashReply(replyText); hash == st.LastReplyHash && st.LastReplyHash != 0 {
+		if alt, rerr := c.brain.regenerateDifferent(ctx, st, text); rerr == nil && alt != "" && hashReply(alt) != st.LastReplyHash {
+			replyText = alt
 		} else {
-			st.CountryAttempts++
-			if err := c.save(ctx, key, *st); err != nil {
-				return nil, err
-			}
-			return textReply("Where's home? Nigeria, Ghana, the US? Name or code is fine."), nil
+			replyText = variedNudge(st)
 		}
 	}
-	st.Country = country
-	return c.advancePastCountry(ctx, key, st)
-}
 
-func (c *ChatOnboarder) advancePastCountry(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
-	// Contact already gave us an email — run the existing-account check.
-	if st.Email != "" {
-		return c.handleEmail(ctx, key, st, st.Email)
-	}
-	// Keep the optional email beat for typing-path users so we can link an
-	// existing account. Contact-share users without an email skip it.
-	if st.Phone != "" {
-		st.Step = stepConfirmContact
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
-	}
-	st.Step = stepEmail
+	c.recordTurn(st, text, replyText)
+	st.LastReplyHash = hashReply(replyText)
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply(c.emailPrompt()), nil
+
+	reply := &PlatformReply{Text: replyText}
+	if out.poll != nil {
+		reply.Poll = out.poll
+	}
+	return reply, nil
 }
 
-func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
-	email := normalizeEmail(text)
-	if email == "" && strings.ToLower(strings.TrimSpace(text)) == "skip" {
-		st.Email = ""
-		st.Step = stepPhone
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.phonePrompt()), nil
-	}
-	if email == "" {
-		return textReply(c.emailPrompt()), nil
-	}
-	st.Email = email
-
-	if existing, err := c.users.GetByEmail(ctx, email); err == nil && existing != nil {
-		if !existing.IsActive {
-			c.clear(ctx, key)
-			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
-		}
-		// Found an existing account. Prove ownership by sending an OTP to the
-		// registered email before we link this chat to it. Synchronous send:
-		// a provider failure reaches the user instead of dying in the
-		// background worker after we already claimed success.
-		code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "email", email)
-		if err != nil {
-			c.logger.Warn("onboarding email OTP send failed", zap.Error(err))
-			return textReply(otpSendErrorMessage(err)), nil
-		}
-		// Re-verify the account still exists and is active now that the OTP is
-		// in flight, so a deleted or deactivated account can never receive a
-		// code that links a chat to a stale row.
-		recheck, rerr := c.users.GetByEmail(ctx, email)
-		if rerr != nil || recheck == nil {
-			c.clear(ctx, key)
-			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
-		}
-		if !recheck.IsActive {
-			c.clear(ctx, key)
-			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
-		}
-		st.Step = stepEmailOTP
-		st.EmailOTPAttempts = 0
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		if simulated {
-			return textReply(fmt.Sprintf("No email provider is configured here, so nothing was actually sent. Test code: %s.", code)), nil
-		}
-		return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", email)), nil
+// beginSignup transitions the conversation into identity verification. OTP and
+// consent copy stay deterministic — compliance text is not generated.
+func (c *ChatOnboarder) beginSignup(ctx context.Context, key string, st *guestState, userText, replyText string) (*PlatformReply, error) {
+	if st.Phone != "" || (st.Email != "" && !st.EmailVerified) {
+		c.recordTurn(st, userText, replyText)
+		return c.startVerification(ctx, key, st)
 	}
 
+	st.Phase = phasePhone
+	c.recordTurn(st, userText, replyText)
+	st.LastReplyHash = hashReply(replyText)
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(replyText) == "" {
+		replyText = c.phonePrompt()
+	}
+	return textReply(replyText), nil
+}
+
+// startVerification picks the next proof step. An unverified email that matches
+// an existing account must be proven by email OTP before anything links or is
+// created — a shared contact card alone can never substitute for ownership.
+// Otherwise a phone on file gets the SMS code; without one we ask.
+func (c *ChatOnboarder) startVerification(ctx context.Context, key string, st *guestState) (*PlatformReply, error) {
+	if st.Email != "" && !st.EmailVerified {
+		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
+			if !existing.IsActive {
+				c.clear(ctx, key)
+				return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+			}
+			return c.sendEmailOTP(ctx, key, st, existing)
+		}
+	}
 	if st.Phone != "" {
-		st.Step = stepConfirmContact
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return c.sendPhoneOTP(ctx, key, st)
 	}
-	st.Step = stepPhone
+	st.Phase = phasePhone
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
 	return textReply(c.phonePrompt()), nil
 }
 
-func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+// recordTurn appends the exchange to the bounded transcript and ticks the
+// counters.
+func (c *ChatOnboarder) recordTurn(st *guestState, userText, replyText string) {
+	if strings.TrimSpace(userText) != "" {
+		st.Turns = append(st.Turns, GuestMessage{Role: "user", Content: truncate(userText, 500)})
+	}
+	if strings.TrimSpace(replyText) != "" {
+		st.Turns = append(st.Turns, GuestMessage{Role: "assistant", Content: truncate(replyText, 500)})
+	}
+	if len(st.Turns) > maxTranscriptTurns {
+		st.Turns = st.Turns[len(st.Turns)-maxTranscriptTurns:]
+	}
+	st.TurnCount++
+}
+
+// applyNote validates and stores one detail the model extracted.
+func (c *ChatOnboarder) applyNote(st *guestState, n guestNote) {
+	switch n.field {
+	case "first_name":
+		if name := parseFirstName(n.value); name != "" && !isGreeting(name) {
+			st.FirstName = name
+		}
+	case "country":
+		if cc := normalizeCountry(n.value); cc != "" {
+			st.Country = cc
+		}
+	case "goal":
+		if g := truncate(strings.TrimSpace(n.value), 200); g != "" {
+			st.Goal = g
+		}
+	case "money_type":
+		switch strings.ToLower(strings.TrimSpace(n.value)) {
+		case "avoider", "optimizer", "worrier", "dreamer":
+			st.MoneyType = strings.ToLower(strings.TrimSpace(n.value))
+		}
+	case "email":
+		if st.Email == "" {
+			st.Email = normalizeEmail(n.value)
+		}
+	}
+}
+
+func (c *ChatOnboarder) overDailyCap(ctx context.Context, in OnboardInput) (bool, error) {
+	key := dailyTurnsKey(in.Platform, in.SenderID)
+	var n int
+	if err := c.store.Get(ctx, key, &n); err == nil && n >= maxGuestDailyTurns {
+		return true, nil
+	}
+	if err := c.store.Set(ctx, key, n+1, 24*time.Hour); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// fallbackTurn is the no-LLM path: a short deterministic flow with the same
+// verification spine. Used when no completer is configured or the provider is
+// down, so signup never dies with the model.
+func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
+	// A phone number is a phone number, whenever it arrives — even as the very
+	// first message.
+	if st.Phone == "" && st.Phase != phaseOTP {
+		if phone, ok := extractPhoneFromText(text, st.Country); ok {
+			st.Phone = phone
+			if st.Country == "" {
+				st.Country = inferCountryFromPhone(phone)
+			}
+			st.IntroSent = true
+			return c.startVerification(ctx, key, st)
+		}
+	}
+
+	// A contact card answers the questions it answers; never re-ask them.
+	if in.Contact != nil {
+		st.IntroSent = true
+		if st.Phone != "" {
+			return c.startVerification(ctx, key, st)
+		}
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		if st.FirstName != "" {
+			return textReply(fmt.Sprintf("Got it, %s. %s", st.FirstName, c.phonePrompt())), nil
+		}
+		return textReply("Whose card is that? Tell me your first name, and " + c.phonePrompt()), nil
+	}
+
+	// "I already have an account" routes to email-ownership proof.
+	if st.Phase == phaseConverse && looksLikeExistingAccount(text) {
+		st.Phase = phaseEmail
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply("What's the email on your RAIL account?"), nil
+	}
+
+	if !st.IntroSent {
+		st.IntroSent = true
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.introMessage(in.Platform)), nil
+	}
+
+	if st.FirstName == "" {
+		// A greeting is not a name. "Nice to meet you, Hi" was a real bug.
+		if isGreeting(text) || strings.TrimSpace(text) == "" {
+			return textReply("What should I call you? First name is plenty."), nil
+		}
+		if name := parseNameFromText(text); name != "" && !isGreeting(name) {
+			st.FirstName = name
+			if st.Country == "" {
+				if cc := countryFromText(text); cc != "" {
+					st.Country = cc
+				}
+			}
+			if err := c.save(ctx, key, *st); err != nil {
+				return nil, err
+			}
+			return textReply(fmt.Sprintf("Nice to meet you, %s. %s", name, c.phonePrompt())), nil
+		}
+		// Longer messages without a brain can't be understood — be honest.
+		return textReply("I only caught part of that. First name, then your number with the country code, and I'll get you set up."), nil
+	}
+
+	if st.Phone == "" {
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.phonePrompt()), nil
+	}
+
+	return c.startVerification(ctx, key, st)
+}
+
+// countryFromText finds a country mention inside a longer message ("Ada from
+// Nigeria") so the fallback flow doesn't need a dedicated country step.
+func countryFromText(text string) string {
+	for _, word := range strings.Fields(strings.ToLower(text)) {
+		if cc, ok := countryAliases[strings.Trim(word, ".,!?")]; ok {
+			return cc
+		}
+	}
+	return ""
+}
+
+// --- Identity verification (deterministic; never model-generated) ---
+
+// handleEmail starts or continues the existing-account path: the address is
+// looked up, and a live account gets an email OTP to prove ownership.
+func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *guestState, email string) (*PlatformReply, error) {
+	st.Email = email
+
+	existing, err := c.users.GetByEmail(ctx, email)
+	if err != nil || existing == nil {
+		// No account under that email — keep it for creation and move on.
+		reply, rerr := c.startVerification(ctx, key, st)
+		if rerr != nil || st.Phone != "" {
+			return reply, rerr
+		}
+		return textReply("No account under that email, so we'll start fresh. " + c.phonePrompt()), nil
+	}
+	if !existing.IsActive {
+		c.clear(ctx, key)
+		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+	}
+	return c.sendEmailOTP(ctx, key, st, existing)
+}
+
+// sendEmailOTP verifies the account is still live, then sends the ownership
+// code synchronously so a provider failure reaches the user instead of dying
+// in a background worker after we already claimed success.
+func (c *ChatOnboarder) sendEmailOTP(ctx context.Context, key string, st *guestState, existing *entities.UserProfile) (*PlatformReply, error) {
+	code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "email", st.Email)
+	if err != nil {
+		c.logger.Warn("onboarding email OTP send failed", zap.Error(err))
+		return textReply(otpSendErrorMessage(err)), nil
+	}
+	// Re-verify the account still exists and is active now that the OTP is in
+	// flight, so a deleted or deactivated account can never receive a code that
+	// links a chat to a stale row.
+	recheck, rerr := c.users.GetByEmail(ctx, st.Email)
+	if rerr != nil || recheck == nil || !recheck.IsActive {
+		c.clear(ctx, key)
+		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+	}
+	st.Phase = phaseEmailOTP
+	st.EmailOTPAttempts = 0
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	if simulated {
+		return textReply(fmt.Sprintf("No email provider is configured here, so nothing was actually sent. Test code: %s.", code)), nil
+	}
+	return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", st.Email)), nil
+}
+
+func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *guestState, text string) (*PlatformReply, error) {
 	code := digitsOnly(text)
 	if len(code) != 6 {
 		return textReply("That doesn't look like the 6-digit code. Reply with the code I emailed you."), nil
@@ -497,35 +680,32 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *onbo
 	}
 	st.UserID = existing.ID.String()
 	if st.Phone != "" {
-		st.Step = stepConfirmContact
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.contactConfirmMessage(st.FirstName, st.Phone)), nil
+		return c.sendPhoneOTP(ctx, key, st)
 	}
-	st.Step = stepPhone
+	st.Phase = phasePhone
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply(c.phonePrompt()), nil
+	return textReply("Email confirmed. " + c.phonePrompt()), nil
 }
 
-func (c *ChatOnboarder) handlePhone(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
-	phone, ok := normalizePhone(text, st.Country)
-	if !ok {
-		return textReply("That number doesn't look right. Send it with the country code, like +2348012345678."), nil
-	}
-	st.Phone = phone
-	return c.sendPhoneOTP(ctx, key, st)
+// looksLikeExistingAccount catches the "I already have an account" intent so
+// the fallback flow can route to the email-ownership path.
+func looksLikeExistingAccount(text string) bool {
+	s := strings.ToLower(text)
+	return strings.Contains(s, "already have") && (strings.Contains(s, "account") || strings.Contains(s, "rail")) ||
+		strings.Contains(s, "have an account") || strings.Contains(s, "i'm registered") ||
+		strings.Contains(s, "i am registered") || strings.Contains(s, "signed up before") ||
+		strings.Contains(s, "existing account")
 }
 
-func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboardingState) (*PlatformReply, error) {
+func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *guestState) (*PlatformReply, error) {
 	code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "phone", st.Phone)
 	if err != nil {
 		c.logger.Warn("onboarding OTP send failed", zap.Error(err))
 		return textReply(otpSendErrorMessage(err)), nil
 	}
-	st.Step = stepOTP
+	st.Phase = phaseOTP
 	st.OTPAttempts = 0
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
@@ -536,7 +716,19 @@ func (c *ChatOnboarder) sendPhoneOTP(ctx context.Context, key string, st *onboar
 	return textReply(fmt.Sprintf("Just texted a code to %s. Drop it here.", maskPhone(st.Phone))), nil
 }
 
-func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardingState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *guestState, text string) (*PlatformReply, error) {
+	// "That's not me" after a contact-card code send: drop the card details and
+	// ask whose number to use instead.
+	if isContactReject(text) {
+		st.Phone = ""
+		st.Email = ""
+		st.EmailVerified = false
+		st.Phase = phasePhone
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply("Got it. Whose number should I text the code to? Include the country code, like +2348012345678."), nil
+	}
 	code := digitsOnly(text)
 	if len(code) != 6 {
 		return textReply("That doesn't look like the 6-digit code. Reply with the code I texted you."), nil
@@ -562,15 +754,31 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *onboardin
 		}
 		return textReply("Something went wrong setting up your account. Mind trying that code again in a moment?"), nil
 	}
-	st.Step = stepConsent
+	st.Phase = phaseConsent
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
 	return c.consentReply(), nil
 }
 
-func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboardingState, in OnboardInput, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
 	if !isAffirmative(text) {
+		// A question or hesitation instead of consent: answer it with the model
+		// when available (the state block tells it to invite, not pressure).
+		// Without the model, re-send the consent poll.
+		if c.brain != nil && strings.TrimSpace(text) != "" {
+			out, err := c.brain.respond(ctx, st, text)
+			if err == nil && strings.TrimSpace(out.text) != "" {
+				for _, n := range out.notes {
+					c.applyNote(st, n)
+				}
+				c.recordTurn(st, text, out.text)
+				if err := c.save(ctx, key, *st); err != nil {
+					return nil, err
+				}
+				return textReply(out.text), nil
+			}
+		}
 		return c.consentReply(), nil
 	}
 	uid, err := uuid.Parse(st.UserID)
@@ -582,7 +790,8 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 		c.logger.Error("phone-first provisioning failed", zap.Error(err), zap.String("user_id", st.UserID))
 		return textReply("I couldn't finish setting up your account just now. Tap I agree to try again."), nil
 	}
-	if _, err := c.linker.LinkVerified(ctx, uid, in.Platform, in.SenderID); err != nil {
+	identity, err := c.linker.LinkVerified(ctx, uid, in.Platform, in.SenderID)
+	if err != nil {
 		c.logger.Error("phone-first auto-link failed", zap.Error(err), zap.String("user_id", st.UserID))
 		return textReply("I couldn't finish linking this chat just now. Tap I agree to try again."), nil
 	}
@@ -590,17 +799,48 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *onboa
 	// worker has a 7-step ladder to track on its next tick. Async + recover
 	// so a failure here can't fail the onboarding completion.
 	SeedBabyStepsOnLink(c.babySteps, uid, c.logger)
+	c.fireGuestHandoff(uid, identity, in, st)
 	c.clear(ctx, key)
 	return &PlatformReply{
-		Text:   c.completionMessage(st.FirstName, st.Country),
+		Text:   c.completionMessage(st),
 		Effect: EffectCelebration,
 	}, nil
+}
+
+// fireGuestHandoff carries the guest conversation into the authenticated
+// relationship: money-type read to the tone profile, transcript to the first
+// platform conversation. Both async best-effort with bounded contexts.
+func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.PlatformIdentity, in OnboardInput, st *guestState) {
+	if c.moneyTypes != nil && st.MoneyType != "" {
+		moneyType := st.MoneyType
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := c.moneyTypes.SetMoneyType(ctx, uid, moneyType); err != nil {
+				c.logger.Warn("money type handoff failed", zap.Stringer("user_id", uid), zap.Error(err))
+			}
+		}()
+	}
+	if c.transcripts != nil && identity != nil && len(st.Turns) > 0 {
+		turns := make([]GuestMessage, len(st.Turns))
+		copy(turns, st.Turns)
+		threadID := in.ThreadID
+		plat := in.Platform
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := c.transcripts.AppendGuestTranscript(ctx, uid, identity, threadID, turns); err != nil {
+				c.logger.Warn("guest transcript handoff failed",
+					zap.Stringer("user_id", uid), zap.String("platform", plat.String()), zap.Error(err))
+			}
+		}()
+	}
 }
 
 // ensureUser finds an existing user by the verified email (already proven) or
 // verified phone, or creates a new passwordless one. Idempotent across retries
 // via the stored user id.
-func (c *ChatOnboarder) ensureUser(ctx context.Context, st *onboardingState) error {
+func (c *ChatOnboarder) ensureUser(ctx context.Context, st *guestState) error {
 	if st.UserID != "" {
 		return nil
 	}
@@ -648,49 +888,58 @@ func (c *ChatOnboarder) ensureUser(ctx context.Context, st *onboardingState) err
 	return nil
 }
 
-func (c *ChatOnboarder) save(ctx context.Context, key string, st onboardingState) error {
-	if err := c.store.Set(ctx, key, st, onboardingSessionTTL); err != nil {
+func (c *ChatOnboarder) mergeContact(st *guestState, contact *SharedContact) {
+	if st == nil || contact == nil {
+		return
+	}
+	if st.FirstName == "" {
+		if n := contact.FirstNameResolved(); n != "" && !isGreeting(n) {
+			st.FirstName = n
+		}
+	}
+	if st.Email == "" {
+		st.Email = contact.PrimaryEmail()
+	}
+	if st.Country == "" {
+		if cc := normalizeCountry(contact.Country); cc != "" {
+			st.Country = cc
+		}
+	}
+	if st.Phone == "" {
+		raw := contact.PrimaryPhone()
+		if st.Country == "" {
+			if inferred := inferCountryFromPhone(raw); inferred != "" {
+				st.Country = inferred
+			}
+		}
+		if phone, ok := normalizePhone(raw, st.Country); ok {
+			st.Phone = phone
+			if st.Country == "" {
+				st.Country = inferCountryFromPhone(phone)
+			}
+		}
+	}
+}
+
+func (c *ChatOnboarder) save(ctx context.Context, key string, st guestState) error {
+	if err := c.store.Set(ctx, key, st, guestSessionTTL); err != nil {
 		c.logger.Warn("onboarding state save failed", zap.Error(err))
 		return Retryable(fmt.Errorf("save onboarding state: %w", err))
 	}
 	return nil
 }
 
-func (c *ChatOnboarder) appLink() string {
-	if c.appURL == "" {
-		return "the RAIL app"
-	}
-	return c.appURL
-}
-
-func (c *ChatOnboarder) emailPrompt() string {
-	return "Got an email I can use? Same one as a RAIL account if you already have one. Or say skip."
-}
+// --- Copy ---
 
 func (c *ChatOnboarder) phonePrompt() string {
-	return "What's a number I can text a code to? Include the country code, like +2348012345678."
-}
-
-func (c *ChatOnboarder) countryPrompt(name string) string {
-	if strings.TrimSpace(name) != "" {
-		return fmt.Sprintf("Nice to meet you, %s. Where's home? Nigeria, Ghana, the US, somewhere else?", name)
-	}
-	return "Where's home? Nigeria, Ghana, the US, somewhere else?"
-}
-
-func (c *ChatOnboarder) contactConfirmMessage(name, phone string) string {
-	who := strings.TrimSpace(name)
-	if who == "" {
-		who = "Okay"
-	}
-	return fmt.Sprintf("%s. Nice. I'll text a code to %s to make sure it's you. Then we're in. Sound right?", who, maskPhone(phone))
+	return "What's the best number for a quick code? Include the country code, like +2348012345678."
 }
 
 func (c *ChatOnboarder) introMessage(plat entities.Platform) string {
 	if plat == entities.PlatformIMessage {
-		return "Hey! I'm Miriam. I help people actually keep money, not just stare at it.\n\nEasiest way to start: share your contact. Tap the + button, then Share Contact. Or just tell me your first name."
+		return "Hey, I'm Miriam. I help people actually keep money, not just stare at it.\n\nI just shared my card so you can save me. Easiest way to start: share yours back (tap +, then Share Contact), or just tell me your first name."
 	}
-	return "Hey! I'm Miriam. I help people actually keep money, not just stare at it.\n\nWhat should I call you?"
+	return "Hey, I'm Miriam. I help people actually keep money, not just stare at it.\n\nWhat should I call you?"
 }
 
 func (c *ChatOnboarder) consentMessage() string {
@@ -705,14 +954,14 @@ func (c *ChatOnboarder) consentReply() *PlatformReply {
 	}
 }
 
-func (c *ChatOnboarder) completionMessage(name, country string) string {
+func (c *ChatOnboarder) completionMessage(st *guestState) string {
 	who := "You're in"
-	if strings.TrimSpace(name) != "" {
-		who = fmt.Sprintf("You're in, %s", name)
+	if strings.TrimSpace(st.FirstName) != "" {
+		who = fmt.Sprintf("You're in, %s", st.FirstName)
 	}
 
 	countryLine := "Wallet's spinning up."
-	switch strings.ToUpper(strings.TrimSpace(country)) {
+	switch strings.ToUpper(strings.TrimSpace(st.Country)) {
 	case "NG":
 		countryLine = "Wallet's spinning up. I'll keep it in stable dollars until you need naira."
 	case "GH":
@@ -721,23 +970,57 @@ func (c *ChatOnboarder) completionMessage(name, country string) string {
 		countryLine = "Wallet's spinning up. I'll keep it in stable dollars until you need shillings."
 	}
 
-	app := ""
-	if c.appURL != "" {
-		app = " " + c.appURL
+	next := "What's money actually for, for you, right now? A trip, breathing room, something you want, anything."
+	if st.Goal != "" {
+		next = fmt.Sprintf("That goal you mentioned (%s) starts with the first deposit. Want me to walk you through funding it?", truncate(st.Goal, 80))
 	}
-	return fmt.Sprintf("%s. %s%s\n\nWhat's money actually for, for you, right now? A trip, breathing room, something you want, anything.", who, countryLine, app)
+
+	return fmt.Sprintf("%s. %s\n\n%s", who, countryLine, next)
+}
+
+// variedNudge is the last-resort reply when the model repeats itself twice.
+// Verbatim repetition is the worst tell that you're talking to a script.
+func variedNudge(st *guestState) string {
+	variants := []string{
+		"Okay, my turn to ask better. What would you want your money to do for you this year?",
+		"Let me come at it differently. If your money handled one thing for you, what would it be?",
+		"New angle: what's the money thing you keep putting off?",
+	}
+	if st.FirstName != "" {
+		variants[0] = fmt.Sprintf("Okay %s, my turn to ask better. What would you want your money to do for you this year?", st.FirstName)
+	}
+	return variants[st.TurnCount%len(variants)]
 }
 
 func textReply(s string) *PlatformReply {
 	return &PlatformReply{Text: s}
 }
 
+// --- Parsing helpers ---
+
 var (
 	nonDigits     = regexp.MustCompile(`\D`)
 	e164Pattern   = regexp.MustCompile(`^\+[1-9]\d{7,14}$`)
 	nameCleanRe   = regexp.MustCompile(`[^\p{L}'-]`)
 	lettersOnlyRe = regexp.MustCompile(`[^\p{L}]`)
+	phoneInTextRe = regexp.MustCompile(`\+?[\d][\d\s().-]{6,}\d`)
 )
+
+// greetings can never be a name. "Nice to meet you, Hi" was a real bug.
+var greetings = map[string]bool{
+	"hi": true, "hey": true, "hello": true, "yo": true, "sup": true,
+	"hiya": true, "howdy": true, "heyy": true, "heyyy": true, "hii": true,
+	"good morning": true, "good afternoon": true, "good evening": true,
+	"morning": true, "afternoon": true, "evening": true,
+	"hi miriam": true, "hey miriam": true, "hello miriam": true,
+	"start": true, "test": true, "testing": true,
+}
+
+func isGreeting(text string) bool {
+	s := strings.ToLower(strings.TrimSpace(text))
+	s = strings.Trim(s, ".!👋")
+	return greetings[s]
+}
 
 func normalizeEmail(input string) string {
 	s := strings.ToLower(strings.TrimSpace(input))
@@ -785,6 +1068,20 @@ var countryAliases = map[string]string{
 	"canada": "CA", "ca": "CA",
 }
 
+var nameIntroRe = regexp.MustCompile(`(?i)^(?:my name is|i am|i'm|im|it's|its|call me|name'?s)\s+(\S+)`)
+
+// parseNameFromText extracts a first name from natural phrasing ("my name is
+// Oluwatobiloba", "it's Ada") as well as a bare name ("Ada", "Ada Lovelace").
+func parseNameFromText(text string) string {
+	if m := nameIntroRe.FindStringSubmatch(strings.TrimSpace(text)); m != nil {
+		return parseFirstName(m[1])
+	}
+	if len(strings.Fields(text)) <= 3 {
+		return parseFirstName(text)
+	}
+	return ""
+}
+
 func parseFirstName(text string) string {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
@@ -817,6 +1114,21 @@ func normalizeCountry(input string) string {
 
 func digitsOnly(text string) string {
 	return nonDigits.ReplaceAllString(text, "")
+}
+
+// extractPhoneFromText pulls a phone number out of a sentence ("it's
+// +2349164904178", "my number is 0803 123 4567"). Requires at least 9 digits
+// so a stray 6-digit OTP can never be mistaken for a number.
+func extractPhoneFromText(text, country string) (string, bool) {
+	for _, candidate := range phoneInTextRe.FindAllString(text, -1) {
+		if len(digitsOnly(candidate)) < 9 {
+			continue
+		}
+		if phone, ok := normalizePhone(candidate, country); ok {
+			return phone, true
+		}
+	}
+	return "", false
 }
 
 // normalizePhone coerces user input into E.164, using the collected country to
@@ -866,4 +1178,18 @@ func otpSendErrorMessage(err error) string {
 		return "You've asked for a few codes already. Give it a minute, then text me to try again."
 	}
 	return "I couldn't send the code just now. Mind trying again in a moment?"
+}
+
+func hashReply(text string) uint64 {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(normalized))
+	return h.Sum64()
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }

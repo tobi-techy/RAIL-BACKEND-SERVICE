@@ -25,6 +25,8 @@ const (
 	ToolGetWeeklyNews     = "get_weekly_news"
 	ToolGetStreak         = "get_streak"
 	ToolGetAccountSummary = "get_account_summary"
+	// ToolGetFundingInstructions hands the user their deposit rails in chat.
+	ToolGetFundingInstructions = "get_funding_instructions"
 )
 
 // PortfolioDataProvider interface for portfolio data

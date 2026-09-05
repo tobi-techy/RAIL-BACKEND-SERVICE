@@ -9,7 +9,12 @@ import { MessageHandler, OutboundMessage } from "./handler";
 import { getLogger, childLogger } from "./logger";
 import { SpaceStore } from "./space-store";
 import { PersistentOutboundQueue, type QueuedMessage } from "./outbound-queue";
-import { contactFromSpectrum, isVCardMime } from "./contact";
+import {
+  InboundDebouncer,
+  isOutboundEcho,
+  routeInboundContent,
+  type InboundPayload,
+} from "./inbound";
 
 const config = loadConfig();
 const log = getLogger();
@@ -277,6 +282,30 @@ async function postToBackend(path: string, body: unknown): Promise<void> {
   }
 }
 
+// Inbound burst debounce: rapid-fire texts ("Hey" / "Oluwatobiloba" / "Hi")
+// are coalesced into ONE backend turn so onboarding state doesn't race and the
+// user gets one reply instead of three. Non-text content (votes, contacts,
+// voice, images, reactions) flushes the pending buffer first, then posts
+// immediately. The typing keeper starts when the first text enters the buffer
+// so the "..." bubble covers the debounce window.
+const INBOUND_DEBOUNCE_MS = 4_000;
+const INBOUND_MAX_WAIT_MS = 10_000;
+const INBOUND_MAX_BUFFER = 5;
+
+const debouncer = new InboundDebouncer({
+  post: (_key, payload: InboundPayload) => postToBackend("/api/v1/platform/inbound", payload),
+  debounceMs: INBOUND_DEBOUNCE_MS,
+  maxWaitMs: INBOUND_MAX_WAIT_MS,
+  maxBuffer: INBOUND_MAX_BUFFER,
+  onBufferStart: (threadID) => {
+    const space = spaces.get(threadID);
+    if (space) startTypingKeeper(threadID, space);
+  },
+  onError: (threadID, err) => {
+    log.error({ err, thread_id: threadID }, "debounced inbound flush failed");
+  },
+});
+
 // Per-thread typing keepers. iMessage's native indicator expires within
 // seconds, and backend processing (LLM think time, tool calls) regularly takes
 // longer than the old single startTyping() + immediate stopTyping-in-finally.
@@ -453,8 +482,18 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   const threadID = space.id;
   const platform = normalizePlatform(message.platform);
   spaces.set(threadID, space);
-  spaceStore.register(threadID, space.id);
+  const isNewSpace = spaceStore.register(threadID, space.id);
   handler.registerInboundMessage(message);
+
+  // First time we've EVER seen this space (persisted across restarts): share
+  // Miriam's own contact card so she shows up as a named contact instead of a
+  // raw phone number. iMessage-only; fire-and-forget so the debounce window
+  // is never delayed by it.
+  if (isNewSpace && platform === "imessage") {
+    Promise.resolve()
+      .then(() => imessage(space).shareContactCard())
+      .catch((err) => log.warn({ err, thread_id: threadID }, "failed to share contact card"));
+  }
 
   // The space just warmed up. Flush any proactive messages that were queued
   // while the handle was cold (bridge restart or eviction) without blocking
@@ -469,151 +508,26 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   const content = message.content;
   const log = childLogger({ sender: senderId, thread: threadID, msg_type: content.type });
 
-  if ((message as any).isFromMe) {
-    log.debug("skipping self-send echo");
+  // Self-echo guard: Spectrum echoes our own outbound sends (including poll
+  // votes on bot-authored polls) back through the inbound stream. The real
+  // field is message.direction — the old `isFromMe` check never matched.
+  if (isOutboundEcho(message)) {
+    log.debug({ msg_id: message.id }, "skipping outbound-direction echo");
     return;
   }
 
   // Keep the typing indicator alive for as long as backend processing takes.
+  // (For debounced text the keeper is (re)started by the debouncer's
+  // onBufferStart; starting it here is idempotent.)
   startTypingKeeper(threadID, space);
 
   try {
-    // Poll vote — the selected option title is posted as ordinary inbound text
-    // so onboarding, send_poll, and Confirm/Cancel all go through one path.
-    // The Go processor maps Confirm/Cancel to pending actions when one exists.
-    if (content.type === "poll_option") {
-      if (!content.selected) return;
-      const text = content.option?.title?.trim();
-      if (!text) return;
-      const inbound = {
-        platform,
-        user_id: senderId,
-        thread_id: space.id,
-        text,
-        space_id: space.id,
-        msg_id: message.id,
-        is_poll_vote: true,
-      };
-      await postToBackend("/api/v1/platform/inbound", inbound);
-      log.info({ text: text.slice(0, 60) }, "posted poll vote as inbound");
-      return;
-    }
-
-    // Shared contact card (iMessage Share Contact)
-    if (content.type === "contact") {
-      const inbound = {
-        platform,
-        user_id: senderId,
-        thread_id: space.id,
-        text: "",
-        space_id: space.id,
-        msg_id: message.id,
-        is_contact: true,
-        contact: contactFromSpectrum(content),
-      };
-      await postToBackend("/api/v1/platform/inbound", inbound);
-      log.info("posted shared contact to backend");
-      return;
-    }
-
-    // Voice note
-    if (content.type === "voice") {
-      let audioB64: string;
-      try {
-        const buf = await content.read();
-        audioB64 = Buffer.from(buf).toString("base64");
-      } catch (err) {
-        log.error({ err }, "failed to read voice note");
-        return;
-      }
-      const inbound = {
-        platform,
-        user_id: senderId,
-        thread_id: space.id,
-        text: "",
-        space_id: space.id,
-        msg_id: message.id,
-        is_voice: true,
-        audio_b64: audioB64,
-        audio_mime: content.mimeType,
-      };
-      await postToBackend("/api/v1/platform/inbound", inbound);
-      log.info({ audio_len: audioB64.length }, "posted voice note to backend");
-      return;
-    }
-
-    // Image or vCard attachment
-    if (content.type === "attachment") {
-      const filename = (content as { filename?: string; name?: string }).filename
-        || (content as { filename?: string; name?: string }).name;
-      if (isVCardMime(content.mimeType, filename)) {
-        let vcardText = "";
-        try {
-          const buf = await content.read();
-          vcardText = Buffer.from(buf).toString("utf8");
-        } catch (err) {
-          log.error({ err }, "failed to read vcard attachment");
-          return;
-        }
-        const inbound = {
-          platform,
-          user_id: senderId,
-          thread_id: space.id,
-          text: "",
-          space_id: space.id,
-          msg_id: message.id,
-          is_contact: true,
-          vcard_text: vcardText,
-        };
-        await postToBackend("/api/v1/platform/inbound", inbound);
-        log.info({ bytes: vcardText.length }, "posted vcard attachment to backend");
-        return;
-      }
-      if (!content.mimeType?.startsWith("image/")) {
-        log.debug({ mime: content.mimeType }, "ignoring non-image attachment");
-        return;
-      }
-      let imageB64: string;
-      try {
-        const buf = await content.read();
-        imageB64 = Buffer.from(buf).toString("base64");
-      } catch (err) {
-        log.error({ err }, "failed to read attachment");
-        return;
-      }
-      const inbound = {
-        platform,
-        user_id: senderId,
-        thread_id: space.id,
-        text: "",
-        space_id: space.id,
-        msg_id: message.id,
-        is_image: true,
-        image_b64: imageB64,
-        image_mime: content.mimeType,
-      };
-      await postToBackend("/api/v1/platform/inbound", inbound);
-      log.info({ image_len: imageB64.length }, "posted image to backend");
-      return;
-    }
-
-    // Text message. Bare YES/NO is handled by the backend when a pending
-    // action exists, so onboarding consent is not swallowed here.
-    if (content.type === "text") {
-      const text = content.text?.trim();
-      if (!text) return;
-
-      const inbound = {
-        platform,
-        user_id: senderId,
-        thread_id: space.id,
-        text,
-        space_id: space.id,
-        msg_id: message.id,
-      };
-      await postToBackend("/api/v1/platform/inbound", inbound);
-      log.info({ text: text.slice(0, 60) }, "posted inbound message to backend");
-    }
+    await routeInboundContent(
+      { postToBackend, debouncer, log },
+      { platform, senderId, threadID, spaceId: space.id },
+      message,
+      content,
+    );
   } catch (err) {
     // Release the dedup reservation so a redelivered copy of this message can
     // still be processed — the backend never accepted it.

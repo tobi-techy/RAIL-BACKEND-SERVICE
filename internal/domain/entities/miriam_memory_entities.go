@@ -20,23 +20,23 @@ const (
 	FactCategoryIdentity          = "identity"
 	FactCategoryFinancialBehavior = "financial_behavior"
 
-	FactCategoryIncomePattern   = "income_pattern"
-	FactCategoryDepositCadence  = "deposit_cadence"
-	FactCategorySalaryDay       = "salary_day"
+	FactCategoryIncomePattern    = "income_pattern"
+	FactCategoryDepositCadence   = "deposit_cadence"
+	FactCategorySalaryDay        = "salary_day"
 	FactCategoryFreelancePattern = "freelance_pattern"
-	FactCategoryFamilySupport   = "family_support"
-	FactCategoryCurrencyContext = "currency_context"
-	FactCategoryRiskPreference  = "risk_preference"
-	FactCategoryStashBehavior   = "stash_behavior"
-	FactCategoryDebtDetail      = "debt_detail"
+	FactCategoryFamilySupport    = "family_support"
+	FactCategoryCurrencyContext  = "currency_context"
+	FactCategoryRiskPreference   = "risk_preference"
+	FactCategoryStashBehavior    = "stash_behavior"
+	FactCategoryDebtDetail       = "debt_detail"
 )
 
 // Fact sources.
 const (
-	FactSourceConversation      = "conversation"
-	FactSourceInferred          = "inferred"
+	FactSourceConversation       = "conversation"
+	FactSourceInferred           = "inferred"
 	FactSourceTransactionPattern = "transaction_pattern"
-	FactSourceProfile           = "profile"
+	FactSourceProfile            = "profile"
 )
 
 // MiriamUserFact is a single piece of knowledge Miriam remembers about a user.
@@ -84,6 +84,7 @@ type MiriamToneProfile struct {
 	LocaleStyle     string          `json:"locale_style" db:"locale_style"`
 	PersonalityMode string          `json:"personality_mode" db:"personality_mode"` // "default", "roast", "coach", "protector", "celebration", "quiet"
 	ControlLevel    string          `json:"control_level" db:"control_level"`       // "full", "guided", "monitor"
+	MoneyType       string          `json:"money_type" db:"money_type"`             // "", "avoider", "optimizer", "worrier", "dreamer"
 	SampleCount     int             `json:"sample_count" db:"sample_count"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`
@@ -91,13 +92,34 @@ type MiriamToneProfile struct {
 
 // Personality mode constants
 const (
-	PersonalityModeDefault      = "default"
-	PersonalityModeRoast        = "roast"
-	PersonalityModeCoach        = "coach"
-	PersonalityModeProtector    = "protector"
-	PersonalityModeCelebration  = "celebration"
-	PersonalityModeQuiet        = "quiet"
+	PersonalityModeDefault     = "default"
+	PersonalityModeRoast       = "roast"
+	PersonalityModeCoach       = "coach"
+	PersonalityModeProtector   = "protector"
+	PersonalityModeCelebration = "celebration"
+	PersonalityModeQuiet       = "quiet"
 )
+
+// Money types: Miriam's read on how a person relates to money, formed during
+// their first conversations. Stored on the tone profile and used to tune tone
+// before the EMA samples have enough data.
+const (
+	MoneyTypeAvoider   = "avoider"   // money talk makes them anxious; they'd rather not look
+	MoneyTypeOptimizer = "optimizer" // already tracking, wants the sharper edge
+	MoneyTypeWorrier   = "worrier"   // looks constantly, still anxious
+	MoneyTypeDreamer   = "dreamer"   // big vision, thin execution
+)
+
+// ValidMoneyTypes is the closed set Miriam may write to the tone profile.
+// The empty string represents "unclassified" — users who haven't had their
+// money type read yet. It's valid to write, but never injected as a tone hint.
+var ValidMoneyTypes = map[string]bool{
+	"":                 true,
+	MoneyTypeAvoider:   true,
+	MoneyTypeOptimizer: true,
+	MoneyTypeWorrier:   true,
+	MoneyTypeDreamer:   true,
+}
 
 // ControlLevel constants control how autonomous Miriam is for a user.
 // MVP default for new users is ControlLevelGuided (suggest + confirm).
@@ -112,18 +134,18 @@ const (
 
 // EventType constants for miriam_user_events.
 const (
-	EventSalaryReceived     = "salary_received"
-	EventBudgetExceeded     = "budget_exceeded"
-	EventGoalCompleted      = "goal_completed"
-	EventGoalCreated        = "goal_created"
-	EventLargePurchase      = "large_purchase"
-	EventSavingsMilestone   = "savings_milestone"
-	EventBillPaid           = "bill_paid"
+	EventSalaryReceived        = "salary_received"
+	EventBudgetExceeded        = "budget_exceeded"
+	EventGoalCompleted         = "goal_completed"
+	EventGoalCreated           = "goal_created"
+	EventLargePurchase         = "large_purchase"
+	EventSavingsMilestone      = "savings_milestone"
+	EventBillPaid              = "bill_paid"
 	EventSubscriptionCancelled = "subscription_cancelled"
-	EventAccountLinked      = "account_linked"
-	EventInvestmentCreated  = "investment_created"
-	EventStashTransfer      = "stash_transfer"
-	EventAnomalyDetected    = "anomaly_detected"
+	EventAccountLinked         = "account_linked"
+	EventInvestmentCreated     = "investment_created"
+	EventStashTransfer         = "stash_transfer"
+	EventAnomalyDetected       = "anomaly_detected"
 )
 
 // MiriamUserEvent is a structured financial event on the user's timeline.
