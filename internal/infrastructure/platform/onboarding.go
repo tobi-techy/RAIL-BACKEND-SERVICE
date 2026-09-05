@@ -261,14 +261,15 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 	locked, err := c.store.SetNX(ctx, turnLockKey(in.Platform, in.SenderID), 1, turnLockTTL)
 	if err != nil {
 		c.logger.Warn("onboarding turn lock failed", zap.Error(err))
-	} else if !locked {
+		return nil, Retryable(fmt.Errorf("acquire turn lock: %w", err))
+	}
+	if !locked {
 		return nil, Retryable(fmt.Errorf("guest turn already in flight"))
 	}
-	if locked {
-		defer func() {
-			_ = c.store.Del(ctx, turnLockKey(in.Platform, in.SenderID))
-		}()
-	}
+	// Lock acquired — ensure it's released on every exit path.
+	defer func() {
+		_ = c.store.Del(ctx, turnLockKey(in.Platform, in.SenderID))
+	}()
 
 	var st guestState
 	if err := c.store.Get(ctx, key, &st); err != nil || st.Phase == "" {

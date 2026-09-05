@@ -1,6 +1,10 @@
 import type { Content, Message } from "spectrum-ts";
 import type { Logger } from "pino";
-import { contactFromSpectrum, isVCardMime, type SharedContact } from "./contact";
+import {
+  contactFromSpectrum,
+  isVCardMime,
+  type SharedContact,
+} from "./contact";
 
 /**
  * Inbound pipeline: content router + per-space burst debouncer.
@@ -105,7 +109,10 @@ export class InboundDebouncer {
     }
 
     const elapsed = Date.now() - buf.firstAt;
-    if (buf.entries.length >= this.opts.maxBuffer || elapsed >= this.opts.maxWaitMs) {
+    if (
+      buf.entries.length >= this.opts.maxBuffer ||
+      elapsed >= this.opts.maxWaitMs
+    ) {
       // Hard caps hit — flush now, synchronously (async post is fire-and-forget
       // here; callers that need ordering use `await flush(key)`).
       void this.flush(key);
@@ -113,7 +120,12 @@ export class InboundDebouncer {
     }
 
     // Fire at the sooner of the quiet window or the hard max-wait deadline.
-    const wait = Math.min(this.opts.debounceMs, this.opts.maxWaitMs - elapsed);
+    // Clamp to >= 0 so elapsed slightly exceeding maxWaitMs doesn't fire
+    // the timeout immediately with a negative delay.
+    const wait = Math.max(
+      0,
+      Math.min(this.opts.debounceMs, this.opts.maxWaitMs - elapsed),
+    );
     buf.timer = setTimeout(() => void this.flush(key), wait);
   }
 
@@ -189,7 +201,10 @@ export interface InboundContext {
 
 const INBOUND_PATH = "/api/v1/platform/inbound";
 
-function basePayload(ctx: InboundContext, msgId: string | undefined): InboundPayload {
+function basePayload(
+  ctx: InboundContext,
+  msgId: string | undefined,
+): InboundPayload {
   return {
     platform: ctx.platform,
     user_id: ctx.senderId,
@@ -226,18 +241,36 @@ export async function routeInboundContent(
       const next: InboundExtras = { ...extras, reply_to: content.target.id };
       const quoted = textOfContent(content.target.content);
       if (quoted) next.reply_to_text = quoted.slice(0, REPLY_QUOTE_MAX_CHARS);
-      await routeInboundContent(deps, ctx, message, content.content as Content, next);
+      await routeInboundContent(
+        deps,
+        ctx,
+        message,
+        content.content as Content,
+        next,
+      );
       return;
     }
 
     case "edit": {
       const next: InboundExtras = { ...extras, edit_of: content.target.id };
-      await routeInboundContent(deps, ctx, message, content.content as Content, next);
+      await routeInboundContent(
+        deps,
+        ctx,
+        message,
+        content.content as Content,
+        next,
+      );
       return;
     }
 
     case "effect": {
-      await routeInboundContent(deps, ctx, message, content.content as Content, extras);
+      await routeInboundContent(
+        deps,
+        ctx,
+        message,
+        content.content as Content,
+        extras,
+      );
       return;
     }
 
@@ -259,7 +292,15 @@ export async function routeInboundContent(
         reply_to: content.target.id,
       };
       await postToBackend(INBOUND_PATH, inbound);
-      log.info({ sender: ctx.senderId, thread: ctx.threadID, type: "reaction", debounced: false }, "accepted inbound");
+      log.info(
+        {
+          sender: ctx.senderId,
+          thread: ctx.threadID,
+          type: "reaction",
+          debounced: false,
+        },
+        "accepted inbound",
+      );
       return;
     }
 
@@ -278,7 +319,16 @@ export async function routeInboundContent(
         is_poll_vote: true,
       };
       await postToBackend(INBOUND_PATH, inbound);
-      log.info({ sender: ctx.senderId, thread: ctx.threadID, type: "poll_option", debounced: false, text: text.slice(0, 60) }, "accepted inbound");
+      log.info(
+        {
+          sender: ctx.senderId,
+          thread: ctx.threadID,
+          type: "poll_option",
+          debounced: false,
+          text: text.slice(0, 60),
+        },
+        "accepted inbound",
+      );
       return;
     }
 
@@ -291,7 +341,15 @@ export async function routeInboundContent(
         contact: contactFromSpectrum(content),
       };
       await postToBackend(INBOUND_PATH, inbound);
-      log.info({ sender: ctx.senderId, thread: ctx.threadID, type: "contact", debounced: false }, "accepted inbound");
+      log.info(
+        {
+          sender: ctx.senderId,
+          thread: ctx.threadID,
+          type: "contact",
+          debounced: false,
+        },
+        "accepted inbound",
+      );
       return;
     }
 
@@ -313,7 +371,16 @@ export async function routeInboundContent(
         audio_mime: content.mimeType,
       };
       await postToBackend(INBOUND_PATH, inbound);
-      log.info({ sender: ctx.senderId, thread: ctx.threadID, type: "voice", debounced: false, audio_len: audioB64.length }, "accepted inbound");
+      log.info(
+        {
+          sender: ctx.senderId,
+          thread: ctx.threadID,
+          type: "voice",
+          debounced: false,
+          audio_len: audioB64.length,
+        },
+        "accepted inbound",
+      );
       return;
     }
 
@@ -336,7 +403,16 @@ export async function routeInboundContent(
           vcard_text: vcardText,
         };
         await postToBackend(INBOUND_PATH, inbound);
-        log.info({ sender: ctx.senderId, thread: ctx.threadID, type: "attachment", debounced: false, bytes: vcardText.length }, "accepted inbound");
+        log.info(
+          {
+            sender: ctx.senderId,
+            thread: ctx.threadID,
+            type: "attachment",
+            debounced: false,
+            bytes: vcardText.length,
+          },
+          "accepted inbound",
+        );
         return;
       }
       if (!content.mimeType?.startsWith("image/")) {
@@ -359,7 +435,16 @@ export async function routeInboundContent(
         image_mime: content.mimeType,
       };
       await postToBackend(INBOUND_PATH, inbound);
-      log.info({ sender: ctx.senderId, thread: ctx.threadID, type: "attachment", debounced: false, image_len: imageB64.length }, "accepted inbound");
+      log.info(
+        {
+          sender: ctx.senderId,
+          thread: ctx.threadID,
+          type: "attachment",
+          debounced: false,
+          image_len: imageB64.length,
+        },
+        "accepted inbound",
+      );
       return;
     }
 
@@ -374,7 +459,16 @@ export async function routeInboundContent(
         text,
       };
       debouncer.add(ctx.threadID, inbound);
-      log.info({ sender: ctx.senderId, thread: ctx.threadID, type: content.type, debounced: true, text: text.slice(0, 60) }, "accepted inbound");
+      log.info(
+        {
+          sender: ctx.senderId,
+          thread: ctx.threadID,
+          type: content.type,
+          debounced: true,
+          text: text.slice(0, 60),
+        },
+        "accepted inbound",
+      );
       return;
     }
 

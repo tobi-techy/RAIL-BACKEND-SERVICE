@@ -117,7 +117,13 @@ func activeVirtualAccounts(accounts []*entities.VirtualAccount) []map[string]int
 			entry["routing_number"] = a.RoutingNumber
 		}
 		if len(a.PaymentRails) > 0 {
-			entry["payment_rails"] = []string(a.PaymentRails)
+			// pq.StringArray is a []string alias; iterate to avoid any type-alias
+			// conversion issues if the underlying type ever changes.
+			rails := make([]string, 0, len(a.PaymentRails))
+			for _, r := range a.PaymentRails {
+				rails = append(rails, r)
+			}
+			entry["payment_rails"] = rails
 		}
 		out = append(out, entry)
 	}

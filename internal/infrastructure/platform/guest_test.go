@@ -225,6 +225,14 @@ func TestGuestBrain_DailyCapStopsModelTurns(t *testing.T) {
 	if err := store.Set(context.Background(), dailyTurnsKey(entities.PlatformIMessage, sender), maxGuestDailyTurns, 0); err != nil {
 		t.Fatal(err)
 	}
+	// Verify the counter was actually set.
+	var counter int
+	if err := store.Get(context.Background(), dailyTurnsKey(entities.PlatformIMessage, sender), &counter); err != nil {
+		t.Fatalf("verify counter: %v", err)
+	}
+	if counter != maxGuestDailyTurns {
+		t.Fatalf("expected counter=%d, got %d", maxGuestDailyTurns, counter)
+	}
 	callsBefore := len(fc.calls)
 	reply := step(t, ob, sender, "one more thing")
 	if len(fc.calls) != callsBefore {

@@ -77,14 +77,22 @@ func TestFundingTool_ReturnsActiveAccountsAndAddress(t *testing.T) {
 	res := runFundingTool(t, fundingDeps(f), map[string]interface{}{})
 	data := res.Data
 
-	vas, _ := data["virtual_accounts"].([]map[string]interface{})
+	vasRaw, ok := data["virtual_accounts"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("virtual_accounts missing or wrong type: %v", data["virtual_accounts"])
+	}
+	vas := vasRaw
 	if len(vas) != 1 {
 		t.Fatalf("expected only the active account, got %d", len(vas))
 	}
 	if vas[0]["account_number"] != "1234567890" || vas[0]["bank_name"] != "Lead Bank" {
 		t.Fatalf("unexpected account payload: %v", vas[0])
 	}
-	crypto, _ := data["crypto"].(map[string]interface{})
+	cryptoRaw, ok := data["crypto"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("crypto missing or wrong type: %v", data["crypto"])
+	}
+	crypto := cryptoRaw
 	if crypto["address"] != "0xabc" || crypto["chain"] != "BASE" {
 		t.Fatalf("unexpected crypto payload: %v", crypto)
 	}
@@ -103,7 +111,11 @@ func TestFundingTool_ChainParsing(t *testing.T) {
 	if f.gotChain != entities.ChainSOL {
 		t.Fatalf("expected SOL, got %q", f.gotChain)
 	}
-	crypto, _ := data["crypto"].(map[string]interface{})
+	cryptoRaw, ok := data["crypto"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("crypto missing or wrong type: %v", data["crypto"])
+	}
+	crypto := cryptoRaw
 	if crypto["address"] != "soladdr" {
 		t.Fatalf("unexpected crypto payload: %v", crypto)
 	}
@@ -124,7 +136,11 @@ func TestFundingTool_SplitPreview(t *testing.T) {
 	f := &fakeFunding{address: &entities.DepositAddressResponse{Chain: entities.ChainBase, Address: "0xabc", Currency: entities.StablecoinUSDC}}
 	res := runFundingTool(t, fundingDeps(f), map[string]interface{}{"method": "crypto", "amount": "100"})
 	data := res.Data
-	preview, _ := data["split_preview"].(map[string]interface{})
+	previewRaw, ok := data["split_preview"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("split_preview missing or wrong type: %v", data["split_preview"])
+	}
+	preview := previewRaw
 	if preview["to_spend"] != "$70.00" || preview["to_stash"] != "$30.00" {
 		t.Fatalf("bad split preview: %v", preview)
 	}
@@ -152,7 +168,11 @@ func TestFundingTool_PartialFailureStillDelivers(t *testing.T) {
 	if data["virtual_accounts_error"] == nil {
 		t.Fatal("expected the VA error surfaced")
 	}
-	crypto, _ := data["crypto"].(map[string]interface{})
+	cryptoRaw, ok := data["crypto"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("crypto missing or wrong type: %v", data["crypto"])
+	}
+	crypto := cryptoRaw
 	if crypto["address"] != "0xabc" {
 		t.Fatalf("crypto rail must still deliver when VAs fail, got %v", data)
 	}

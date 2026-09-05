@@ -111,7 +111,10 @@ const (
 )
 
 // ValidMoneyTypes is the closed set Miriam may write to the tone profile.
+// The empty string represents "unclassified" — users who haven't had their
+// money type read yet. It's valid to write, but never injected as a tone hint.
 var ValidMoneyTypes = map[string]bool{
+	"":                 true,
 	MoneyTypeAvoider:   true,
 	MoneyTypeOptimizer: true,
 	MoneyTypeWorrier:   true,

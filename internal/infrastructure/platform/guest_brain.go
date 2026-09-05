@@ -204,23 +204,45 @@ func (b *guestBrain) regenerateDifferent(ctx context.Context, st *guestState, us
 func (b *guestBrain) applyToolCall(out *guestOutcome, tc GuestToolCall) {
 	switch tc.Name {
 	case "note_detail":
-		field, _ := tc.Arguments["field"].(string)
-		value, _ := tc.Arguments["value"].(string)
-		field = strings.TrimSpace(field)
-		value = strings.TrimSpace(value)
+		fieldRaw, ok := tc.Arguments["field"].(string)
+		if !ok {
+			b.logger.Warn("note_detail: missing or non-string 'field'", zap.String("tool", tc.Name))
+			return
+		}
+		valueRaw, ok := tc.Arguments["value"].(string)
+		if !ok {
+			b.logger.Warn("note_detail: missing or non-string 'value'", zap.String("tool", tc.Name))
+			return
+		}
+		field := strings.TrimSpace(fieldRaw)
+		value := strings.TrimSpace(valueRaw)
 		if field == "" || value == "" {
 			return
 		}
 		out.notes = append(out.notes, guestNote{field: field, value: value})
 	case "start_signup":
 		out.startSignup = true
-		if r, _ := tc.Arguments["reason"].(string); r != "" {
-			out.signupReason = r
+		if rRaw, ok := tc.Arguments["reason"].(string); ok {
+			r := strings.TrimSpace(rRaw)
+			if r != "" {
+				out.signupReason = r
+			}
+		} else {
+			b.logger.Warn("start_signup: missing or non-string 'reason'", zap.String("tool", tc.Name))
 		}
 	case "send_poll":
-		q, _ := tc.Arguments["question"].(string)
+		qRaw, ok := tc.Arguments["question"].(string)
+		if !ok {
+			b.logger.Warn("send_poll: missing or non-string 'question'", zap.String("tool", tc.Name))
+			return
+		}
+		q := strings.TrimSpace(qRaw)
 		opts := guestStringSlice(tc.Arguments["options"])
-		if q = strings.TrimSpace(q); q == "" || len(opts) < 2 {
+		if opts == nil || len(opts) < 2 {
+			b.logger.Warn("send_poll: invalid or missing 'options' (need at least 2)", zap.String("tool", tc.Name), zap.Int("options_count", len(opts)))
+			return
+		}
+		if q == "" || len(opts) < 2 {
 			return
 		}
 		if len(opts) > 4 {
@@ -229,8 +251,13 @@ func (b *guestBrain) applyToolCall(out *guestOutcome, tc GuestToolCall) {
 		out.poll = &PollRequest{Title: q, Options: opts}
 	case "end_conversation":
 		out.end = true
-		if r, _ := tc.Arguments["reason"].(string); r != "" {
-			out.endReason = r
+		if rRaw, ok := tc.Arguments["reason"].(string); ok {
+			r := strings.TrimSpace(rRaw)
+			if r != "" {
+				out.endReason = r
+			}
+		} else {
+			b.logger.Warn("end_conversation: missing or non-string 'reason'", zap.String("tool", tc.Name))
 		}
 	default:
 		b.logger.Warn("guest model called unknown tool", zap.String("tool", tc.Name))

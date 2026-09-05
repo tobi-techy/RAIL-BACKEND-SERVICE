@@ -161,6 +161,9 @@ func (r *MiriamMemoryRepository) UpsertToneProfile(ctx context.Context, userID u
 // an empty value; an empty read is a no-op.
 func (r *MiriamMemoryRepository) SetMoneyType(ctx context.Context, userID uuid.UUID, moneyType string) error {
 	moneyType = strings.ToLower(strings.TrimSpace(moneyType))
+	if moneyType == "" {
+		return nil // empty read is a no-op
+	}
 	if !entities.ValidMoneyTypes[moneyType] {
 		return fmt.Errorf("invalid money type: %q", moneyType)
 	}
