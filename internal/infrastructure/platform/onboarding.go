@@ -118,49 +118,53 @@ const (
 
 // guestState is the per-sender pre-signup conversation persisted in Redis.
 type guestState struct {
-	Phase            guestPhase     `json:"phase"`
-	FirstName        string         `json:"first_name,omitempty"`
-	Country          string         `json:"country,omitempty"`
-	Goal             string         `json:"goal,omitempty"`
-	MoneyType        string         `json:"money_type,omitempty"`
-	Email            string         `json:"email,omitempty"`
-	Phone            string         `json:"phone,omitempty"`
-	Turns            []GuestMessage `json:"turns,omitempty"`
-	TurnCount        int            `json:"turn_count,omitempty"`
-	LastReplyHash    uint64         `json:"last_reply_hash,omitempty"`
-	OTPAttempts      int            `json:"otp_attempts,omitempty"`
-	EmailOTPAttempts int            `json:"email_otp_attempts,omitempty"`
-	EmailVerified    bool           `json:"email_verified,omitempty"`
-	UserID           string         `json:"user_id,omitempty"`
-	SignupReason     string         `json:"signup_reason,omitempty"`
-	IntroSent        bool           `json:"intro_sent,omitempty"`
+	Phase              guestPhase     `json:"phase"`
+	FirstName          string         `json:"first_name,omitempty"`
+	Country            string         `json:"country,omitempty"`
+	Goal               string         `json:"goal,omitempty"`
+	MoneyType          string         `json:"money_type,omitempty"`
+	Email              string         `json:"email,omitempty"`
+	Phone              string         `json:"phone,omitempty"`
+	Turns              []GuestMessage `json:"turns,omitempty"`
+	TurnCount          int            `json:"turn_count,omitempty"`
+	LastReplyHash      uint64         `json:"last_reply_hash,omitempty"`
+	OTPAttempts        int            `json:"otp_attempts,omitempty"`
+	EmailOTPAttempts   int            `json:"email_otp_attempts,omitempty"`
+	EmailVerified      bool           `json:"email_verified,omitempty"`
+	UserID             string         `json:"user_id,omitempty"`
+	SignupReason       string         `json:"signup_reason,omitempty"`
+	IntroSent          bool           `json:"intro_sent,omitempty"`
+	StatementSummary   string         `json:"statement_summary,omitempty"`
+	PendingStatementID string         `json:"pending_statement_id,omitempty"`
 }
 
 // OnboardInput is a normalized inbound message from an unlinked sender.
 type OnboardInput struct {
-	Platform entities.Platform
-	SenderID string
-	ThreadID string
-	Text     string
-	Contact  *SharedContact
+	Platform  entities.Platform
+	SenderID  string
+	ThreadID  string
+	Text      string
+	Contact   *SharedContact
+	Statement *StatementAttachment
 }
 
 // ChatOnboarder hosts the pre-signup conversation: Miriam talks first (agent-led
 // via the guest brain) and collects phone + OTP + consent only when the guest
-// wants something that needs an account. Without a completer it degrades to a
-// short deterministic flow so signup can never die with the LLM.
+// wants something that needs an account. Without a completer it preserves
+// state and reports the temporary limitation instead of replaying a script.
 type ChatOnboarder struct {
-	store       OnboardingStateStore
-	verifier    OnboardingOTPVerifier
-	users       OnboardingUserStore
-	provisioner OnboardingProvisioner
-	linker      OnboardingLinker
-	appURL      string
-	logger      *zap.Logger
-	babySteps   BabyStepsSeeder
-	brain       *guestBrain
-	moneyTypes  GuestMoneyTypeWriter
-	transcripts GuestTranscriptWriter
+	store            OnboardingStateStore
+	verifier         OnboardingOTPVerifier
+	users            OnboardingUserStore
+	provisioner      OnboardingProvisioner
+	linker           OnboardingLinker
+	appURL           string
+	logger           *zap.Logger
+	babySteps        BabyStepsSeeder
+	brain            *guestBrain
+	moneyTypes       GuestMoneyTypeWriter
+	transcripts      GuestTranscriptWriter
+	statementHandler StatementAttachmentHandler
 }
 
 func NewChatOnboarder(
@@ -187,7 +191,8 @@ func NewChatOnboarder(
 }
 
 // SetGuestCompleter enables the agent-led guest conversation. When unset, the
-// onboarder runs the deterministic fallback flow.
+// onboarder preserves state and asks the sender to retry instead of emitting a
+// scripted onboarding sequence.
 func (c *ChatOnboarder) SetGuestCompleter(completer GuestCompleter) {
 	if completer == nil {
 		return
@@ -200,6 +205,12 @@ func (c *ChatOnboarder) SetGuestCompleter(completer GuestCompleter) {
 func (c *ChatOnboarder) SetGuestHandoff(moneyTypes GuestMoneyTypeWriter, transcripts GuestTranscriptWriter) {
 	c.moneyTypes = moneyTypes
 	c.transcripts = transcripts
+}
+
+// SetStatementAttachmentHandler enables statement scanning for unlinked
+// senders and hands pending documents to the durable pipeline after signup.
+func (c *ChatOnboarder) SetStatementAttachmentHandler(handler StatementAttachmentHandler) {
+	c.statementHandler = handler
 }
 
 // SetBabyStepsSeeder installs the first-login goal seeder. After a successful
@@ -281,6 +292,22 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 	}
 
 	text := strings.TrimSpace(in.Text)
+	if in.Statement != nil && c.statementHandler != nil {
+		scan, scanErr := c.statementHandler.ScanGuest(ctx, in.SenderID, *in.Statement)
+		if scanErr != nil {
+			c.logger.Warn("guest statement scan failed", zap.Error(scanErr))
+			return textReply("I couldn't read that statement just now. Give me a moment and send it again?"), nil
+		}
+		if scan != nil {
+			st.StatementSummary = truncate(scan.Summary, 4000)
+			st.PendingStatementID = scan.PendingID
+			if text == "" {
+				text = "[they shared a bank statement]\n" + st.StatementSummary
+			} else {
+				text = text + "\n[statement scan]\n" + st.StatementSummary
+			}
+		}
+	}
 	if in.Contact != nil && text == "" {
 		// Give the model (or the fallback) something to react to.
 		text = "[they shared their contact card]"
@@ -363,7 +390,7 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 
 	out, err := c.brain.respond(ctx, st, text)
 	if err != nil {
-		c.logger.Warn("guest brain turn failed, using fallback", zap.Error(err))
+		c.logger.Warn("guest brain turn failed; preserving state for retry", zap.Error(err))
 		return c.fallbackTurn(ctx, key, st, in, text)
 	}
 
@@ -508,9 +535,8 @@ func (c *ChatOnboarder) overDailyCap(ctx context.Context, in OnboardInput) (bool
 	return false, nil
 }
 
-// fallbackTurn is the no-LLM path: a short deterministic flow with the same
-// verification spine. Used when no completer is configured or the provider is
-// down, so signup never dies with the model.
+// fallbackTurn is the no-LLM path. Identity verification remains deterministic,
+// but ordinary conversation must not fall back to scripted onboarding copy.
 func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
 	// A phone number is a phone number, whenever it arrives — even as the very
 	// first message.
@@ -549,43 +575,34 @@ func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestS
 		return textReply("What's the email on your RAIL account?"), nil
 	}
 
-	if !st.IntroSent {
-		st.IntroSent = true
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.introMessage(in.Platform)), nil
-	}
-
+	// Keep obvious identity details useful while the model is unavailable, but
+	// do not replay the old scripted introduction.
 	if st.FirstName == "" {
-		// A greeting is not a name. "Nice to meet you, Hi" was a real bug.
-		if isGreeting(text) || strings.TrimSpace(text) == "" {
-			return textReply("What should I call you? First name is plenty."), nil
-		}
-		if name := parseNameFromText(text); name != "" && !isGreeting(name) {
-			st.FirstName = name
-			if st.Country == "" {
-				if cc := countryFromText(text); cc != "" {
-					st.Country = cc
+		if !isGreeting(text) {
+			name := parseNameFromText(text)
+			if name != "" && !isGreeting(name) {
+				st.FirstName = name
+				if st.Country == "" {
+					st.Country = countryFromText(text)
 				}
+				if err := c.save(ctx, key, *st); err != nil {
+					return nil, err
+				}
+				return textReply(fmt.Sprintf("Got it, %s. I'm still reconnecting. If you want to continue setup, send your number with the country code.", name)), nil
 			}
+		} else {
+			// Greeting or empty input without a name yet — ask for it.
 			if err := c.save(ctx, key, *st); err != nil {
 				return nil, err
 			}
-			return textReply(fmt.Sprintf("Nice to meet you, %s. %s", name, c.phonePrompt())), nil
+			return textReply("Hey! What should I call you?"), nil
 		}
-		// Longer messages without a brain can't be understood — be honest.
-		return textReply("I only caught part of that. First name, then your number with the country code, and I'll get you set up."), nil
 	}
 
-	if st.Phone == "" {
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(c.phonePrompt()), nil
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
 	}
-
-	return c.startVerification(ctx, key, st)
+	return textReply("I'm having trouble with my conversation engine right now. Give me a moment and send that again?"), nil
 }
 
 // countryFromText finds a country mention inside a longer message ("Ada from
@@ -835,6 +852,17 @@ func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.Platf
 			}
 		}()
 	}
+	if c.statementHandler != nil && st.PendingStatementID != "" {
+		pendingID := st.PendingStatementID
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := c.statementHandler.CompletePending(ctx, uid, pendingID); err != nil {
+				c.logger.Warn("pending guest statement handoff failed",
+					zap.Stringer("user_id", uid), zap.String("pending_id", pendingID), zap.Error(err))
+			}
+		}()
+	}
 }
 
 // ensureUser finds an existing user by the verified email (already proven) or
@@ -933,13 +961,6 @@ func (c *ChatOnboarder) save(ctx context.Context, key string, st guestState) err
 
 func (c *ChatOnboarder) phonePrompt() string {
 	return "What's the best number for a quick code? Include the country code, like +2348012345678."
-}
-
-func (c *ChatOnboarder) introMessage(plat entities.Platform) string {
-	if plat == entities.PlatformIMessage {
-		return "Hey, I'm Miriam. I help people actually keep money, not just stare at it.\n\nI just shared my card so you can save me. Easiest way to start: share yours back (tap +, then Share Contact), or just tell me your first name."
-	}
-	return "Hey, I'm Miriam. I help people actually keep money, not just stare at it.\n\nWhat should I call you?"
 }
 
 func (c *ChatOnboarder) consentMessage() string {

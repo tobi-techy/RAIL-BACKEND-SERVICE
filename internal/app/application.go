@@ -791,6 +791,13 @@ func (app *Application) initializeWorkers() error {
 				Logger:         app.log.Zap(),
 			})
 
+			app.container.SetPlatformStatementHandler(di.NewPlatformStatementAttachmentHandler(
+				app.container.BankStatementRepo,
+				app.container.JobQueueInstance,
+				pipeline,
+				app.container.RedisClient,
+				app.log.Zap(),
+			))
 			// Build Supermemory writer adapter for statement worker
 			var smWriter statement_processor.SupermemoryWriter
 			if app.container.SupermemoryClient != nil {

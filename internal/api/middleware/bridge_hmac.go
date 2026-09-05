@@ -23,8 +23,9 @@ const (
 	// may drift from server time. The effective replay window is 2× this value.
 	bridgeHMACMaxSkewSeconds = 300
 
-	// bridgeHMACMaxBody caps the body we will read for signing.
-	bridgeHMACMaxBody = 5 * 1024 * 1024
+	// bridgeHMACMaxBody caps the body we will read for signing. Statement
+	// attachments are capped at 4 MiB decoded and base64-expand in JSON.
+	bridgeHMACMaxBody = 8 * 1024 * 1024
 
 	// maxNoncesInMemory caps the number of recent nonces tracked for replay
 	// protection. Emergency eviction removes oldest entries when exceeded.

@@ -179,3 +179,12 @@ func (c *Container) initializePlatformMessaging() {
 		}
 	}
 }
+
+// SetPlatformStatementHandler wires the statement worker pipeline into the
+// already-created platform processor and guest onboarder.
+func (c *Container) SetPlatformStatementHandler(handler platform.StatementAttachmentHandler) {
+	if c.platformProcessor == nil || handler == nil {
+		return
+	}
+	c.platformProcessor.SetStatementAttachmentHandler(handler)
+}
