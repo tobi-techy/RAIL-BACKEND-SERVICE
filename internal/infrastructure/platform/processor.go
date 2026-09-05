@@ -293,7 +293,8 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			reply, handlerErr := p.statementHandler.EnqueueLinked(ctx, resolved.UserID, *statementAttachment)
 			if handlerErr != nil {
 				p.logger.Warn("linked statement enqueue failed", zap.Error(handlerErr))
-				return p.sendErrorMessage(ctx, msg, "I couldn't start that statement scan just now. Please try sending it again.")
+				_ = p.sendErrorMessage(ctx, msg, "I couldn't start that statement scan just now. Please try sending it again.")
+				return Retryable(handlerErr)
 			}
 			return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
 		}
@@ -382,7 +383,7 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 }
 
 func decodeStatementAttachment(msg InboundMessage) (StatementAttachment, error) {
-	if !strings.EqualFold(strings.TrimSpace(msg.DocumentMime), "application/pdf") &&
+	if !strings.EqualFold(strings.TrimSpace(msg.DocumentMime), "application/pdf") ||
 		!strings.HasSuffix(strings.ToLower(strings.TrimSpace(msg.DocumentName)), ".pdf") {
 		return StatementAttachment{}, fmt.Errorf("I can scan PDF statements from chat. Please send a PDF file.")
 	}

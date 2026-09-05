@@ -590,6 +590,12 @@ func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestS
 				}
 				return textReply(fmt.Sprintf("Got it, %s. I'm still reconnecting. If you want to continue setup, send your number with the country code.", name)), nil
 			}
+		} else {
+			// Greeting or empty input without a name yet — ask for it.
+			if err := c.save(ctx, key, *st); err != nil {
+				return nil, err
+			}
+			return textReply("Hey! What should I call you?"), nil
 		}
 	}
 

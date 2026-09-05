@@ -304,8 +304,8 @@ func TestOnboarding_HappyPath(t *testing.T) {
 	sender := "+15550001"
 
 	intro := step(t, ob, sender, "hi")
-	if !strings.Contains(strings.ToLower(intro), "trouble") {
-		t.Fatalf("provider-unavailable reply should be transparent, got: %q", intro)
+	if !strings.Contains(strings.ToLower(intro), "call you") {
+		t.Fatalf("provider-unavailable reply should prompt for name, got: %q", intro)
 	}
 
 	askPhone := step(t, ob, sender, "Ada")
@@ -587,8 +587,8 @@ func TestProcessor_RoutesUnlinkedSenderToOnboarding(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("expected 1 outbound message, got %d", len(*sent))
 	}
-	if !strings.Contains(strings.ToLower((*sent)[0].Text), "trouble") {
-		t.Fatalf("expected transparent onboarding retry, got: %q", (*sent)[0].Text)
+	if !strings.Contains(strings.ToLower((*sent)[0].Text), "call you") {
+		t.Fatalf("expected name prompt, got: %q", (*sent)[0].Text)
 	}
 }
 

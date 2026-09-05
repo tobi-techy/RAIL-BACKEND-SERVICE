@@ -268,13 +268,19 @@ func TestGuestBrain_ProviderDownFallsBack(t *testing.T) {
 	ob, _, _, _, _, _ := newBrainOnboarder(fc)
 	sender := "+15552109"
 
+	// First message is a greeting; fallback should prompt for name.
 	reply := step(t, ob, sender, "hey")
-	if !strings.Contains(strings.ToLower(reply), "trouble") || strings.Contains(strings.ToLower(reply), "share your contact") {
-		t.Fatalf("provider failure should be transparent, not scripted, got: %q", reply)
+	if !strings.Contains(strings.ToLower(reply), "call you") {
+		t.Fatalf("provider failure should prompt for name on greeting, got: %q", reply)
 	}
-	// And the fallback still completes signup.
-	step(t, ob, sender, "Ada")
+	// Provide name.
+	reply = step(t, ob, sender, "Ada")
+	if !strings.Contains(strings.ToLower(reply), "number") {
+		t.Fatalf("expected phone prompt after name, got: %q", reply)
+	}
+	// Provide phone.
 	step(t, ob, sender, "+2348012345678")
+	// Provide OTP.
 	consent := step(t, ob, sender, "123456")
 	if !strings.Contains(consent, "I agree") {
 		t.Fatalf("fallback flow should reach consent, got: %q", consent)

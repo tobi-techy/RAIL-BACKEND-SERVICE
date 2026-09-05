@@ -238,14 +238,11 @@ func (b *guestBrain) applyToolCall(out *guestOutcome, tc GuestToolCall) {
 		}
 		q := strings.TrimSpace(qRaw)
 		opts := guestStringSlice(tc.Arguments["options"])
-if opts == nil || len(opts) < 2 {
-b.logger.Warn("send_poll: invalid or missing 'options' (need at least 2)", zap.String("tool", tc.Name), zap.Int("options_count", len(opts)))
-return
-}
-if q == "" {
-return
-}
-
+		if opts == nil || len(opts) < 2 {
+			b.logger.Warn("send_poll: invalid or missing 'options' (need at least 2)", zap.String("tool", tc.Name), zap.Int("options_count", len(opts)))
+			return
+		}
+		if q == "" {
 			return
 		}
 		if len(opts) > 4 {

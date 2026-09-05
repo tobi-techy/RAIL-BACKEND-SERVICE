@@ -427,6 +427,15 @@ export async function routeInboundContent(
       ) {
         let documentB64: string;
         try {
+          // Check size metadata before reading to avoid buffering huge files.
+          const contentSize = (content as { size?: number }).size;
+          if (typeof contentSize === "number" && contentSize > MAX_STATEMENT_BYTES) {
+            log.warn(
+              { filename, bytes: contentSize },
+              "ignoring oversized statement attachment (size metadata)",
+            );
+            return;
+          }
           const buf = await content.read();
           if (buf.byteLength > MAX_STATEMENT_BYTES) {
             log.warn(
