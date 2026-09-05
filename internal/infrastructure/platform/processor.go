@@ -24,6 +24,8 @@ type VoiceTranscoder interface {
 
 var handshakeTokenPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+const maxStatementAttachmentBytes = 4 * 1024 * 1024
+
 // retryableError marks a failure as transient (infrastructure) so the consumer
 // requeues the delivery. Anything not wrapped this way is treated as permanent
 // and dead-lettered rather than requeued forever.
@@ -64,6 +66,13 @@ type InboundMessage struct {
 	IsImage   bool   `json:"is_image,omitempty"`
 	ImageB64  string `json:"image_b64,omitempty"`
 	ImageMime string `json:"image_mime,omitempty"`
+
+	// bank statement document attachment. Raw bytes are decoded only for the
+	// current request and are never persisted in onboarding state or prompts.
+	IsDocument   bool   `json:"is_document,omitempty"`
+	DocumentB64  string `json:"document_b64,omitempty"`
+	DocumentMime string `json:"document_mime,omitempty"`
+	DocumentName string `json:"document_name,omitempty"`
 
 	// iMessage contact card / vCard. Used during chat-first onboarding so the
 	// user can skip typing name/phone/email.
@@ -147,16 +156,17 @@ type Orchestrator interface {
 }
 
 type Processor struct {
-	resolver        *UserResolver
-	orchestrator    Orchestrator
-	responseBuilder *ResponseBuilder
-	linking         *LinkingService
-	onboarder       *ChatOnboarder
-	babyStepsSeeder BabyStepsSeeder
-	voice           VoiceTranscoder
-	vision          ReceiptVision
-	sendFunc        func(ctx context.Context, msg *OutboundMessage) error
-	logger          *zap.Logger
+	resolver         *UserResolver
+	orchestrator     Orchestrator
+	responseBuilder  *ResponseBuilder
+	linking          *LinkingService
+	onboarder        *ChatOnboarder
+	babyStepsSeeder  BabyStepsSeeder
+	voice            VoiceTranscoder
+	vision           ReceiptVision
+	statementHandler StatementAttachmentHandler
+	sendFunc         func(ctx context.Context, msg *OutboundMessage) error
+	logger           *zap.Logger
 }
 
 func NewProcessor(
@@ -190,6 +200,15 @@ func (p *Processor) SetLogger(l *zap.Logger) {
 // a graceful "I can't look at photos yet" reply.
 func (p *Processor) SetReceiptVision(v ReceiptVision) {
 	p.vision = v
+}
+
+// SetStatementAttachmentHandler enables PDF statement handling for linked and
+// unlinked platform senders.
+func (p *Processor) SetStatementAttachmentHandler(h StatementAttachmentHandler) {
+	p.statementHandler = h
+	if p.onboarder != nil {
+		p.onboarder.SetStatementAttachmentHandler(h)
+	}
 }
 
 func (p *Processor) visionEnabled() bool {
@@ -256,8 +275,28 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		msg.Text = summary
 	}
 
+	var statementAttachment *StatementAttachment
+	if msg.IsDocument {
+		attachment, err := decodeStatementAttachment(msg)
+		if err != nil {
+			return p.sendErrorMessage(ctx, msg, err.Error())
+		}
+		statementAttachment = &attachment
+	}
+
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
 	if err == nil {
+		if statementAttachment != nil {
+			if p.statementHandler == nil {
+				return p.sendErrorMessage(ctx, msg, "I can't scan statements from chat just yet. Please upload it in the RAIL app.")
+			}
+			reply, handlerErr := p.statementHandler.EnqueueLinked(ctx, resolved.UserID, *statementAttachment)
+			if handlerErr != nil {
+				p.logger.Warn("linked statement enqueue failed", zap.Error(handlerErr))
+				return p.sendErrorMessage(ctx, msg, "I couldn't start that statement scan just now. Please try sending it again.")
+			}
+			return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
+		}
 		if isContactPayload(msg) && strings.TrimSpace(msg.Text) == "" {
 			p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, "You're already linked — I don't need the card. What do you want to look at?")
 			return nil
@@ -290,6 +329,10 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		return nil
 	}
 
+	if statementAttachment != nil && p.statementHandler == nil {
+		return p.sendErrorMessage(ctx, msg, "I can't scan statements from chat just yet. Please upload the PDF in the RAIL app.")
+	}
+
 	// No handshake token: chat-first onboarding takes over if enabled.
 	if p.onboarder != nil {
 		return p.handleOnboarding(ctx, msg)
@@ -318,11 +361,12 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 		contact = &parsed
 	}
 	reply, err := p.onboarder.Handle(ctx, OnboardInput{
-		Platform: msg.Platform,
-		SenderID: msg.UserID,
-		ThreadID: msg.ThreadID,
-		Text:     msg.Text,
-		Contact:  contact,
+		Platform:  msg.Platform,
+		SenderID:  msg.UserID,
+		ThreadID:  msg.ThreadID,
+		Text:      msg.Text,
+		Contact:   contact,
+		Statement: statementAttachmentFromMessage(msg),
 	})
 	if err != nil {
 		if IsRetryable(err) {
@@ -335,6 +379,39 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 		return nil
 	}
 	return p.sendOnboardingReply(ctx, msg, reply)
+}
+
+func decodeStatementAttachment(msg InboundMessage) (StatementAttachment, error) {
+	if !strings.EqualFold(strings.TrimSpace(msg.DocumentMime), "application/pdf") &&
+		!strings.HasSuffix(strings.ToLower(strings.TrimSpace(msg.DocumentName)), ".pdf") {
+		return StatementAttachment{}, fmt.Errorf("I can scan PDF statements from chat. Please send a PDF file.")
+	}
+	data, err := base64.StdEncoding.DecodeString(msg.DocumentB64)
+	if err != nil {
+		return StatementAttachment{}, fmt.Errorf("I couldn't read that PDF. Please send it again.")
+	}
+	if len(data) == 0 {
+		return StatementAttachment{}, fmt.Errorf("That PDF was empty. Please send the statement again.")
+	}
+	if len(data) > maxStatementAttachmentBytes {
+		return StatementAttachment{}, fmt.Errorf("That PDF is too large for chat scanning. Please upload it in the RAIL app.")
+	}
+	return StatementAttachment{
+		Name:     strings.TrimSpace(msg.DocumentName),
+		MIMEType: "application/pdf",
+		Data:     data,
+	}, nil
+}
+
+func statementAttachmentFromMessage(msg InboundMessage) *StatementAttachment {
+	if !msg.IsDocument {
+		return nil
+	}
+	attachment, err := decodeStatementAttachment(msg)
+	if err != nil {
+		return nil
+	}
+	return &attachment
 }
 
 func (p *Processor) ProcessAction(ctx context.Context, raw []byte) error {

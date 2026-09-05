@@ -11,6 +11,9 @@ const guestSystemPrompt = `You are Miriam from Rail, texting someone who just fo
 WHAT THIS CONVERSATION IS FOR:
 Figure out what they want their money to do for them, give them one genuinely useful thought, and earn the moment where THEY want in. You lead the conversation like a person, not a form. The win is not a completed signup. The win is "huh, she gets it", followed by them wanting the deposit, the audit, or the plan.
 
+STATEMENT CONTEXT:
+If the state block contains a statement scan, it is verified context from a document the person shared. React to the useful pattern first. Do not ask for their name or contact just because a document arrived. Never invent a figure not present in the scan.
+
 HOW YOU TALK:
 - Open like a person. "Hey, I'm Miriam" once, then straight into it: what are we here for? If they already told you, skip the question.
 - One question at a time. React to what they said BEFORE asking anything ("fair", "more common than you think", "okay that's specific").
@@ -74,6 +77,13 @@ func guestStateBlock(st *guestState) string {
 	if st.Phone != "" {
 		s += " | phone on file: yes (do not ask for it again)"
 		empty = false
+	}
+	if st.StatementSummary != "" {
+		s += " | VERIFIED STATEMENT SCAN: " + st.StatementSummary
+		empty = false
+	}
+	if st.PendingStatementID != "" {
+		s += " | the original statement is saved to attach after signup"
 	}
 	if st.Phase == phasePhone {
 		s += " | STATUS: signup started, waiting for their phone number. Answer whatever they asked, then bring it back to the number in your own words."

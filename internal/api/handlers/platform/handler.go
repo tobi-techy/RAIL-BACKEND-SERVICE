@@ -145,7 +145,7 @@ func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.Handl
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 5*1024*1024))
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 8*1024*1024))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 			return

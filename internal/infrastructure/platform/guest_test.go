@@ -269,8 +269,8 @@ func TestGuestBrain_ProviderDownFallsBack(t *testing.T) {
 	sender := "+15552109"
 
 	reply := step(t, ob, sender, "hey")
-	if !strings.Contains(strings.ToLower(reply), "miriam") {
-		t.Fatalf("provider failure should degrade to the deterministic intro, got: %q", reply)
+	if !strings.Contains(strings.ToLower(reply), "trouble") || strings.Contains(strings.ToLower(reply), "share your contact") {
+		t.Fatalf("provider failure should be transparent, not scripted, got: %q", reply)
 	}
 	// And the fallback still completes signup.
 	step(t, ob, sender, "Ada")

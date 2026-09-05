@@ -1352,6 +1352,9 @@ func (c *Container) wireChatOnboarding() {
 	// falls back to its scripted flow, so a nil AIProvider only degrades tone.
 	if c.AIProvider != nil {
 		onboarder.SetGuestCompleter(&guestCompleterAdapter{provider: c.AIProvider})
+		c.ZapLog.Info("guest onboarding agent enabled", zap.String("provider", c.AIProvider.Name()))
+	} else {
+		c.ZapLog.Warn("guest onboarding agent unavailable; using transparent retry replies")
 	}
 	// Carry the guest read into the authenticated relationship: money type to
 	// the tone profile, transcript to the first platform conversation.

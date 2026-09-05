@@ -126,6 +126,31 @@ type fakeVoice struct {
 	transcribeErr error
 }
 
+type fakeStatementHandler struct {
+	guestCalls  int
+	linkedCalls int
+	lastBytes   []byte
+}
+
+func (h *fakeStatementHandler) ScanGuest(_ context.Context, _ string, attachment StatementAttachment) (*StatementScan, error) {
+	h.guestCalls++
+	h.lastBytes = append([]byte(nil), attachment.Data...)
+	return &StatementScan{
+		PendingID: "pending-1",
+		Summary:   "I found 3 transactions. Spending was highest on groceries.",
+	}, nil
+}
+
+func (h *fakeStatementHandler) EnqueueLinked(_ context.Context, _ uuid.UUID, attachment StatementAttachment) (*PlatformReply, error) {
+	h.linkedCalls++
+	h.lastBytes = append([]byte(nil), attachment.Data...)
+	return &PlatformReply{Text: "Got it. I'm scanning that statement now."}, nil
+}
+
+func (h *fakeStatementHandler) CompletePending(context.Context, uuid.UUID, string) error {
+	return nil
+}
+
 func (f *fakeVoice) Available() bool { return true }
 func (f *fakeVoice) Synthesize(context.Context, string) ([]byte, string, error) {
 	f.synthesized = true
@@ -349,6 +374,78 @@ func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 	}
 	if len(*sent) != 1 || (*sent)[0].ContentType == ContentTypeVoice {
 		t.Fatalf("expected a single text fallback message, got %d messages", len(*sent))
+	}
+}
+
+func TestProcess_LinkedPDFUsesStatementHandler(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := InboundMessage{
+		Platform:     entities.PlatformIMessage,
+		UserID:       "+15551234",
+		ThreadID:     "space-1",
+		IsDocument:   true,
+		DocumentB64:  base64.StdEncoding.EncodeToString([]byte("%PDF-test")),
+		DocumentMime: "application/pdf",
+		DocumentName: "statement.pdf",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if handler.linkedCalls != 1 || string(handler.lastBytes) != "%PDF-test" {
+		t.Fatalf("expected linked statement handoff, calls=%d bytes=%q", handler.linkedCalls, handler.lastBytes)
+	}
+	if orch.lastMessage != "" {
+		t.Fatal("statement attachment must not reach the normal orchestrator")
+	}
+	if len(*sent) == 0 || !strings.Contains((*sent)[len(*sent)-1].Text, "scanning") {
+		t.Fatalf("expected scan acknowledgement, got %#v", sent)
+	}
+}
+
+func TestProcess_UnlinkedPDFProvidesGroundedGuestContext(t *testing.T) {
+	repo := newFakeRepo()
+	p, sent, _ := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	completer := &fakeCompleter{default_: fakeCompletion{text: "I see the groceries pattern. What are you trying to change?"}}
+	ob.SetGuestCompleter(completer)
+	p.SetOnboarder(ob)
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := InboundMessage{
+		Platform:     entities.PlatformIMessage,
+		UserID:       "+15559998",
+		ThreadID:     "space-1",
+		IsDocument:   true,
+		DocumentB64:  base64.StdEncoding.EncodeToString([]byte("%PDF-test")),
+		DocumentMime: "application/pdf",
+		DocumentName: "statement.pdf",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if handler.guestCalls != 1 {
+		t.Fatalf("expected one guest scan, got %d", handler.guestCalls)
+	}
+	if len(completer.calls) != 1 || !strings.Contains(completer.calls[0].systemPrompt, "VERIFIED STATEMENT SCAN") {
+		t.Fatalf("guest model did not receive grounded statement context: %#v", completer.calls)
+	}
+	if len(*sent) == 0 || !strings.Contains((*sent)[len(*sent)-1].Text, "groceries") {
+		t.Fatalf("expected natural statement response, got %#v", sent)
 	}
 }
 

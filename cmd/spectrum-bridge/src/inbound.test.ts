@@ -206,6 +206,44 @@ describe("routeInboundContent", () => {
     debouncer.dispose();
   });
 
+  it("forwards PDF statement attachments with bounded document fields", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+    const pdf = {
+      type: "attachment",
+      name: "NectarFi_Statement.pdf",
+      mimeType: "application/pdf",
+      read: async () => new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+    } as unknown as Content;
+
+    await route(deps, fakeMessage("pdf-1", pdf));
+
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_document).toBe(true);
+    expect(posts[0].document_name).toBe("NectarFi_Statement.pdf");
+    expect(posts[0].document_mime).toBe("application/pdf");
+    expect(posts[0].document_b64).toBe("JVBERi0=");
+    debouncer.dispose();
+  });
+
+  it("drops oversized PDF statement attachments before posting", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+    const oversized = {
+      type: "attachment",
+      name: "large.pdf",
+      mimeType: "application/pdf",
+      read: async () => new Uint8Array(4 * 1024 * 1024 + 1),
+    } as unknown as Content;
+
+    await route(deps, fakeMessage("pdf-2", oversized));
+
+    expect(posts.length).toBe(0);
+    debouncer.dispose();
+  });
+
   it("posts reactions immediately with the reaction payload shape, flushing text first", async () => {
     const posts: InboundPayload[] = [];
     const debouncer = makeDebouncer(posts);

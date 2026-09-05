@@ -304,11 +304,8 @@ func TestOnboarding_HappyPath(t *testing.T) {
 	sender := "+15550001"
 
 	intro := step(t, ob, sender, "hi")
-	if !strings.Contains(strings.ToLower(intro), "miriam") {
-		t.Fatalf("intro should introduce Miriam, got: %q", intro)
-	}
-	if !strings.Contains(strings.ToLower(intro), "first name") {
-		t.Fatalf("intro should offer typing a name, got: %q", intro)
+	if !strings.Contains(strings.ToLower(intro), "trouble") {
+		t.Fatalf("provider-unavailable reply should be transparent, got: %q", intro)
 	}
 
 	askPhone := step(t, ob, sender, "Ada")
@@ -354,7 +351,7 @@ func TestOnboarding_GreetingNeverBecomesName(t *testing.T) {
 	step(t, ob, sender, "hi")
 	for _, g := range []string{"Hi", "hello", "hey there", "good morning"} {
 		reply := step(t, ob, sender, g)
-		if strings.Contains(reply, "Nice to meet you") {
+		if strings.Contains(reply, "Got it") {
 			t.Fatalf("greeting %q must not be captured as a name, got: %q", g, reply)
 		}
 	}
@@ -590,8 +587,8 @@ func TestProcessor_RoutesUnlinkedSenderToOnboarding(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("expected 1 outbound message, got %d", len(*sent))
 	}
-	if !strings.Contains(strings.ToLower((*sent)[0].Text), "miriam") {
-		t.Fatalf("expected onboarding intro, got: %q", (*sent)[0].Text)
+	if !strings.Contains(strings.ToLower((*sent)[0].Text), "trouble") {
+		t.Fatalf("expected transparent onboarding retry, got: %q", (*sent)[0].Text)
 	}
 }
 

@@ -31,6 +31,11 @@ export interface InboundPayload {
   image_b64?: string;
   image_mime?: string;
 
+  is_document?: boolean;
+  document_b64?: string;
+  document_mime?: string;
+  document_name?: string;
+
   is_contact?: boolean;
   vcard_text?: string;
   contact?: SharedContact;
@@ -53,6 +58,7 @@ export interface InboundExtras {
 }
 
 const REPLY_QUOTE_MAX_CHARS = 200;
+const MAX_STATEMENT_BYTES = 4 * 1024 * 1024;
 
 /**
  * Spectrum's Message carries `direction: "inbound" | "outbound"`. Poll votes,
@@ -410,6 +416,47 @@ export async function routeInboundContent(
             type: "attachment",
             debounced: false,
             bytes: vcardText.length,
+          },
+          "accepted inbound",
+        );
+        return;
+      }
+      if (
+        content.mimeType?.toLowerCase() === "application/pdf" ||
+        filename?.toLowerCase().endsWith(".pdf")
+      ) {
+        let documentB64: string;
+        try {
+          const buf = await content.read();
+          if (buf.byteLength > MAX_STATEMENT_BYTES) {
+            log.warn(
+              { filename, bytes: buf.byteLength },
+              "ignoring oversized statement attachment",
+            );
+            return;
+          }
+          documentB64 = Buffer.from(buf).toString("base64");
+        } catch (err) {
+          log.error({ err }, "failed to read statement attachment");
+          return;
+        }
+        const inbound: InboundPayload = {
+          ...basePayload(ctx, message.id),
+          ...extras,
+          is_document: true,
+          document_b64: documentB64,
+          document_mime: "application/pdf",
+          document_name: filename,
+        };
+        await postToBackend(INBOUND_PATH, inbound);
+        log.info(
+          {
+            sender: ctx.senderId,
+            thread: ctx.threadID,
+            type: "attachment",
+            document: "pdf",
+            debounced: false,
+            bytes: documentB64.length,
           },
           "accepted inbound",
         );
