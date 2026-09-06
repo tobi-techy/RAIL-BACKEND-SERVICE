@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	cencori "github.com/cencori/cencori-go"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -153,17 +154,17 @@ func estimateCostUSD(model string, tokens int) float64 {
 // models. Update when provider prices change; the entities layer keeps a
 // parallel table for billing reports.
 var cencoriModelPricing = map[string]float64{
-	"gpt-4o":                       0.00001,    // $10/1M
-	"gpt-4o-mini":                  0.0000006,  // $0.60/1M
-	"claude-haiku-4-5":             0.000001,   // $1/1M
-	"claude-sonnet-4-5":            0.000015,   // $15/1M
-	"claude-sonnet-4-20250514":     0.000015,   // legacy
-	"claude-3-5-haiku-20241022":    0.000001,   // legacy
-	"claude-3-haiku-20240307":      0.00000125, // legacy
-	"gemini-2.0-flash":             0.0000001,  // effectively free
-	"gemini-2.5-flash":             0.00000015,
-	"kimi-k2.6":                    0.000002,
-	"kimi":                         0.000002,
+	"gpt-4o":                    0.00001,    // $10/1M
+	"gpt-4o-mini":               0.0000006,  // $0.60/1M
+	"claude-haiku-4-5":          0.000001,   // $1/1M
+	"claude-sonnet-4-5":         0.000015,   // $15/1M
+	"claude-sonnet-4-20250514":  0.000015,   // legacy
+	"claude-3-5-haiku-20241022": 0.000001,   // legacy
+	"claude-3-haiku-20240307":   0.00000125, // legacy
+	"gemini-2.0-flash":          0.0000001,  // effectively free
+	"gemini-2.5-flash":          0.00000015,
+	"kimi-k2.6":                 0.000002,
+	"kimi":                      0.000002,
 }
 
 // ChatCompletion performs a standard chat completion via Cencori.
@@ -393,8 +394,24 @@ func (p *CencoriProvider) IsAvailable(ctx context.Context) bool {
 		},
 		MaxTokens: intPtr(1),
 	})
-	// We don't care about the response, just that we could connect
-	return err == nil || !errors.Is(err, cencori.ErrInvalidAPIKey)
+	if err == nil {
+		return true
+	}
+
+	// A rejected key or an exhausted balance means every completion will fail,
+	// so reporting "available" here hides the one fact that explains why Miriam
+	// answers with her fallback copy. Everything else (rate limit, upstream
+	// provider blip, a filter tripping on the ping payload) is transient and
+	// says nothing about reachability.
+	switch {
+	case errors.Is(err, cencori.ErrInvalidAPIKey):
+		p.logger.Error("cencori: availability probe failed — API key rejected")
+		return false
+	case errors.Is(err, cencori.ErrInsufficientCredits):
+		p.logger.Error("cencori: availability probe failed — account is out of credits")
+		return false
+	}
+	return true
 }
 
 // resolveModel picks the model ID based on the requested tier.
@@ -594,6 +611,18 @@ func (p *CencoriProvider) handleError(err error) error {
 			Provider:  cencoriName,
 			Code:      ErrorCodeServerError,
 			Message:   "Upstream provider error",
+			Retryable: true,
+		}
+
+	// Cencori gateway internal error (HTTP 500 from the gateway itself,
+	// not an upstream provider). The SDK returns this as a generic error
+	// with message "cencori: internal_error (status: 500)".
+	case strings.Contains(err.Error(), "internal_error") && strings.Contains(err.Error(), "status: 500"):
+		p.logger.Warn("Cencori: gateway internal error (500)")
+		return &ProviderError{
+			Provider:  cencoriName,
+			Code:      ErrorCodeServerError,
+			Message:   "Cencori gateway internal error",
 			Retryable: true,
 		}
 
