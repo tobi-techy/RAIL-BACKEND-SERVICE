@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	cencori "github.com/cencori/cencori-go"
@@ -610,6 +611,18 @@ func (p *CencoriProvider) handleError(err error) error {
 			Provider:  cencoriName,
 			Code:      ErrorCodeServerError,
 			Message:   "Upstream provider error",
+			Retryable: true,
+		}
+
+	// Cencori gateway internal error (HTTP 500 from the gateway itself,
+	// not an upstream provider). The SDK returns this as a generic error
+	// with message "cencori: internal_error (status: 500)".
+	case strings.Contains(err.Error(), "internal_error") && strings.Contains(err.Error(), "status: 500"):
+		p.logger.Warn("Cencori: gateway internal error (500)")
+		return &ProviderError{
+			Provider:  cencoriName,
+			Code:      ErrorCodeServerError,
+			Message:   "Cencori gateway internal error",
 			Retryable: true,
 		}
 
