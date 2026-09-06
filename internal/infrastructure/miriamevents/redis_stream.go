@@ -3,6 +3,7 @@ package miriamevents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -114,16 +115,9 @@ func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEven
 		// been idle for a while (e.g., crashed mid-processing). This ensures
 		// failed money events are redelivered as the MoneyEventConsumer contract
 		// requires.
-		msgs, _, err := s.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-			Stream:   s.stream,
-			Group:    s.group,
-			Consumer: s.consumer,
-			MinIdle:  pendingMinIdle,
-			Start:    "0-0",
-			Count:    10,
-		}).Result()
+		msgs, err := s.autoClaim(ctx, pendingMinIdle, "0-0", 10)
 		if err != nil && err != redis.Nil {
-			if err == context.Canceled || err == context.DeadlineExceeded {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
 			}
 			s.logger.Warn("miriamevents: XAUTOCLAIM failed, will retry", zap.Error(err))
@@ -162,6 +156,79 @@ func (s *RedisStream) Consume(ctx context.Context, handler func(miriam.MoneyEven
 			s.processMessages(ctx, stream.Messages, handler)
 		}
 	}
+}
+
+// autoClaim reclaims pending entries idle for at least minIdle.
+//
+// It issues XAUTOCLAIM as a raw command instead of using the typed helper
+// because go-redis v8 hard-requires a 2-element reply, while Redis 7.0+ returns
+// three (cursor, entries, deleted-ids). Against Redis 7 the typed call fails
+// every cycle with "got 3, wanted 2", so pending money events from a crashed
+// consumer were never redelivered.
+func (s *RedisStream) autoClaim(ctx context.Context, minIdle time.Duration, start string, count int) ([]redis.XMessage, error) {
+	reply, err := s.client.Do(ctx, "XAUTOCLAIM",
+		s.stream, s.group, s.consumer,
+		minIdle.Milliseconds(), start,
+		"COUNT", count,
+	).Result()
+	if err != nil {
+		return nil, err
+	}
+	return parseAutoClaimReply(reply)
+}
+
+// parseAutoClaimReply reads the XAUTOCLAIM reply, accepting both the Redis 6.2
+// shape (cursor, entries) and the Redis 7.0+ shape (cursor, entries,
+// deleted-ids). Entries that no longer exist come back as nil and are skipped.
+func parseAutoClaimReply(reply interface{}) ([]redis.XMessage, error) {
+	outer, ok := reply.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected XAUTOCLAIM reply type %T", reply)
+	}
+	if len(outer) < 2 {
+		return nil, fmt.Errorf("unexpected XAUTOCLAIM reply length %d", len(outer))
+	}
+	entries, ok := outer[1].([]interface{})
+	if !ok {
+		if outer[1] == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("unexpected XAUTOCLAIM entries type %T", outer[1])
+	}
+
+	msgs := make([]redis.XMessage, 0, len(entries))
+	for _, raw := range entries {
+		entry, ok := raw.([]interface{})
+		if !ok || len(entry) != 2 {
+			// A nil entry means the message was trimmed or deleted while
+			// pending; there is nothing to hand the handler.
+			continue
+		}
+		id, ok := entry[0].(string)
+		if !ok {
+			continue
+		}
+		msgs = append(msgs, redis.XMessage{ID: id, Values: parseFieldPairs(entry[1])})
+	}
+	return msgs, nil
+}
+
+// parseFieldPairs converts a flat [field, value, field, value] reply into the
+// map shape go-redis uses for stream entries.
+func parseFieldPairs(raw interface{}) map[string]interface{} {
+	pairs, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	values := make(map[string]interface{}, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		field, ok := pairs[i].(string)
+		if !ok {
+			continue
+		}
+		values[field] = pairs[i+1]
+	}
+	return values
 }
 
 // processMessages parses, handles, and acknowledges a batch of stream messages.
