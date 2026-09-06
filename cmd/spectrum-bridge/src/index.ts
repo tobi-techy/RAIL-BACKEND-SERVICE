@@ -233,9 +233,17 @@ class BackendPostError extends Error {
   }
 }
 
-async function postToBackendOnce(path: string, body: unknown): Promise<void> {
+async function postToBackendOnce(path: string, body: unknown, attempt: number): Promise<void> {
   const url = `${config.RAIL_BACKEND_URL}${path}`;
-  const payload = JSON.stringify(body);
+  // The attempt counter travels inside the signed body, not a header, so the
+  // backend can trust it. It tells the backend whether a redelivery is still
+  // coming: a transient failure can be requeued until the last attempt, where
+  // the backend has to answer the user instead.
+  const payload = JSON.stringify(
+    body && typeof body === "object" && !Array.isArray(body)
+      ? { ...(body as Record<string, unknown>), attempt, max_attempts: BACKEND_MAX_ATTEMPTS }
+      : body,
+  );
   // Fresh timestamp+nonce per attempt: each attempt is an independent signed
   // request; reusing a nonce would trip the bridge/backend replay guards.
   const hmacHeaders = makeHMACHeaders(payload);
@@ -265,7 +273,7 @@ async function postToBackendOnce(path: string, body: unknown): Promise<void> {
 async function postToBackend(path: string, body: unknown): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
-      await postToBackendOnce(path, body);
+      await postToBackendOnce(path, body, attempt);
       return;
     } catch (err) {
       const status = err instanceof BackendPostError ? err.status : undefined;
