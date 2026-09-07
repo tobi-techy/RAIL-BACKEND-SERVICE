@@ -394,3 +394,23 @@ func TestGuestBrain_HandoffCarriesMoneyTypeAndTranscript(t *testing.T) {
 		t.Fatal("expected transcript handoff")
 	}
 }
+
+// TestGuestSystemPrompt_Tone pins the tone contract from the guest-prompt
+// retune: texting-length replies, one question at most, no
+// acknowledgment-then-question rhythm, no filler, plain punctuation.
+func TestGuestSystemPrompt_Tone(t *testing.T) {
+	for _, want := range []string{
+		"no account yet",
+		"1-4 sentences, one question at most",
+		"Never make every reply an acknowledgment followed by a question",
+		"\"That makes sense\"",
+		"Have a point of view",
+	} {
+		if !strings.Contains(guestSystemPrompt, want) {
+			t.Errorf("guestSystemPrompt missing %q from tone retune", want)
+		}
+	}
+	if idx := strings.IndexAny(guestSystemPrompt, "\u2013\u2014"); idx >= 0 {
+		t.Errorf("guestSystemPrompt contains an em/en dash near %q", guestSystemPrompt[max(0, idx-30):idx+30])
+	}
+}
