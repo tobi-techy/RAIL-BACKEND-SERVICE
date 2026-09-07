@@ -146,6 +146,11 @@ type OnboardInput struct {
 	Text      string
 	Contact   *SharedContact
 	Statement *StatementAttachment
+	// Redeliverable reports that the caller will retry this message if the turn
+	// fails, which lets a transient model failure be requeued silently instead
+	// of surfacing an apology. The zero value answers the person immediately,
+	// so a caller that doesn't know about redelivery can never cause silence.
+	Redeliverable bool
 }
 
 // ChatOnboarder hosts the pre-signup conversation: Miriam talks first (agent-led
@@ -301,6 +306,12 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 		if scan != nil {
 			st.StatementSummary = truncate(scan.Summary, 4000)
 			st.PendingStatementID = scan.PendingID
+			// Persist the scan before the phase branches below: the identity
+			// paths (OTP, consent) can return without saving, which would drop
+			// the pending statement id and lose the document after signup.
+			if err := c.save(ctx, key, st); err != nil {
+				return nil, err
+			}
 			if text == "" {
 				text = "[they shared a bank statement]\n" + st.StatementSummary
 			} else {
@@ -361,7 +372,9 @@ func (c *ChatOnboarder) handleConversational(ctx context.Context, key string, st
 		return c.handleEmail(ctx, key, st, email)
 	}
 
-	// Daily abuse cap — checked before spending a model turn.
+	// Daily abuse cap — read before spending a model turn. The counter is only
+	// incremented once a turn actually lands, so provider failures and their
+	// redeliveries don't eat the person's allowance.
 	if c.brain != nil {
 		if over, err := c.overDailyCap(ctx, in); err != nil {
 			c.logger.Warn("guest daily cap check failed", zap.Error(err))
@@ -390,9 +403,20 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 
 	out, err := c.brain.respond(ctx, st, text)
 	if err != nil {
-		c.logger.Warn("guest brain turn failed; preserving state for retry", zap.Error(err))
+		// Nothing was sent and nothing was saved, so a redelivery is free and
+		// invisible to the person: prefer retrying the whole turn over
+		// answering them with an apology.
+		if in.Redeliverable && isTransientGuestErr(err) {
+			c.logger.Warn("guest brain turn failed; requeueing for redelivery", zap.Error(err))
+			return nil, Retryable(fmt.Errorf("guest brain turn: %w", err))
+		}
+		// Out of redeliveries. The deterministic path can still move identity
+		// forward (phone, OTP, consent) even with the model down; only its
+		// terminal message becomes an apology.
+		c.logger.Error("guest brain turn failed; falling back", zap.Error(err))
 		return c.fallbackTurn(ctx, key, st, in, text)
 	}
+	c.bumpDailyCap(ctx, in)
 
 	for _, n := range out.notes {
 		c.applyNote(st, n)
@@ -523,16 +547,65 @@ func (c *ChatOnboarder) applyNote(st *guestState, n guestNote) {
 	}
 }
 
+// overDailyCap reports whether this sender has spent its rolling 24h model
+// allowance. Read-only: see bumpDailyCap for the increment.
 func (c *ChatOnboarder) overDailyCap(ctx context.Context, in OnboardInput) (bool, error) {
 	key := dailyTurnsKey(in.Platform, in.SenderID)
 	var n int
-	if err := c.store.Get(ctx, key, &n); err == nil && n >= maxGuestDailyTurns {
-		return true, nil
+	if err := c.store.Get(ctx, key, &n); err != nil {
+		return false, nil
+	}
+	return n >= maxGuestDailyTurns, nil
+}
+
+// bumpDailyCap charges one model turn against the sender's daily allowance.
+// Called only after a turn produced a reply, so a failed completion and the
+// redeliveries that follow it are free.
+func (c *ChatOnboarder) bumpDailyCap(ctx context.Context, in OnboardInput) {
+	key := dailyTurnsKey(in.Platform, in.SenderID)
+	var n int
+	if err := c.store.Get(ctx, key, &n); err != nil {
+		n = 0
 	}
 	if err := c.store.Set(ctx, key, n+1, 24*time.Hour); err != nil {
-		return false, err
+		c.logger.Warn("guest daily cap increment failed", zap.Error(err))
 	}
-	return false, nil
+}
+
+// transientApology is what the person hears when every redelivery of their
+// message failed. It stays in Miriam's voice and, crucially, re-asks whatever
+// she last asked so the thread survives the blip.
+func transientApology(st *guestState) string {
+	const lead = "My end lagged just then, not you."
+	if st == nil {
+		return lead + " Say that again?"
+	}
+	for i := len(st.Turns) - 1; i >= 0; i-- {
+		if st.Turns[i].Role != "assistant" {
+			continue
+		}
+		if q := lastQuestion(st.Turns[i].Content); q != "" {
+			return lead + " " + q
+		}
+		break
+	}
+	return lead + " Say that again?"
+}
+
+// lastQuestion pulls the final question out of a reply so it can be re-asked
+// verbatim. Returns "" when the reply didn't ask anything.
+func lastQuestion(reply string) string {
+	trimmed := strings.TrimSpace(reply)
+	if !strings.HasSuffix(trimmed, "?") {
+		return ""
+	}
+	// Walk back to the start of the sentence the question mark closes.
+	start := strings.LastIndexAny(trimmed[:len(trimmed)-1], ".!?\n")
+	q := strings.TrimSpace(trimmed[start+1:])
+	if q == "" || len([]rune(q)) < 4 {
+		return ""
+	}
+	return q
 }
 
 // fallbackTurn is the no-LLM path. Identity verification remains deterministic,
@@ -602,7 +675,13 @@ func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestS
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply("I'm having trouble with my conversation engine right now. Give me a moment and send that again?"), nil
+	// Nothing deterministic left to say. A wired-but-failing model is a blip, so
+	// apologise in Miriam's voice and keep her last question alive; no model at
+	// all is a configuration state, so offer the path that still works.
+	if c.brain != nil {
+		return textReply(transientApology(st)), nil
+	}
+	return textReply("I can't chat properly right now, but I can still get you set up. Send your number with the country code and I'll take it from there."), nil
 }
 
 // countryFromText finds a country mention inside a longer message ("Ada from

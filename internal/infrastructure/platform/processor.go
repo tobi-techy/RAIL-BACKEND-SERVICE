@@ -98,6 +98,22 @@ type InboundMessage struct {
 
 	// EditOf marks an edited message; the new text arrives in Text.
 	EditOf string `json:"edit_of,omitempty"`
+
+	// Delivery attempt counters from the bridge's signed body. Attempt is
+	// 1-based. Both are zero on older bridges, which IsFinalAttempt reads as
+	// "no redelivery is coming".
+	Attempt     int `json:"attempt,omitempty"`
+	MaxAttempts int `json:"max_attempts,omitempty"`
+}
+
+// IsFinalAttempt reports whether the bridge is out of redeliveries for this
+// message. Handlers that can requeue a transient failure use it to decide
+// between staying silent for the retry and answering the user now.
+func (m InboundMessage) IsFinalAttempt() bool {
+	if m.Attempt <= 0 || m.MaxAttempts <= 0 {
+		return true
+	}
+	return m.Attempt >= m.MaxAttempts
 }
 
 // ActionPostback is a poll vote — how a user confirms/cancels an action, since
@@ -362,12 +378,13 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 		contact = &parsed
 	}
 	reply, err := p.onboarder.Handle(ctx, OnboardInput{
-		Platform:  msg.Platform,
-		SenderID:  msg.UserID,
-		ThreadID:  msg.ThreadID,
-		Text:      msg.Text,
-		Contact:   contact,
-		Statement: statementAttachmentFromMessage(msg),
+		Platform:      msg.Platform,
+		SenderID:      msg.UserID,
+		ThreadID:      msg.ThreadID,
+		Text:          msg.Text,
+		Contact:       contact,
+		Statement:     statementAttachmentFromMessage(msg),
+		Redeliverable: !msg.IsFinalAttempt(),
 	})
 	if err != nil {
 		if IsRetryable(err) {

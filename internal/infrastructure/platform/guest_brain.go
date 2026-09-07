@@ -2,8 +2,10 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -43,6 +45,35 @@ type GuestResult struct {
 type GuestCompleter interface {
 	CompleteGuest(ctx context.Context, systemPrompt string, messages []GuestMessage, tools []GuestToolDef) (*GuestResult, error)
 }
+
+// guestCompletionTimeout bounds a single completion attempt. Two attempts plus
+// the retry gap must stay under the bridge's 15s inbound POST timeout, or the
+// bridge gives up on a turn we are about to answer.
+const guestCompletionTimeout = 6 * time.Second
+
+// guestCompletionAttempts is how many times one completion is tried before the
+// turn is declared transiently failed. Provider blips on this path cost the
+// user a visible apology, so one retry is worth the latency.
+const guestCompletionAttempts = 2
+
+// guestRetryGap is the pause between completion attempts.
+const guestRetryGap = 400 * time.Millisecond
+
+// errGuestNoReply means the model produced tool calls but never any reply text,
+// even after the follow-up pass. It is transient in the same sense a provider
+// blip is: the same input usually yields text on the next try.
+var errGuestNoReply = errors.New("guest model returned no reply text")
+
+// isTransientGuestErr reports whether a failed turn is worth retrying rather
+// than apologising for. Every completion failure qualifies — the guest
+// conversation has no side effects to unwind, so a retry is always safe.
+func isTransientGuestErr(err error) bool {
+	return err != nil && !errors.Is(err, errNoGuestCompleter)
+}
+
+// errNoGuestCompleter means the guest brain has no provider wired at all. That
+// is a configuration state, not a blip, so retrying it is pointless.
+var errNoGuestCompleter = errors.New("no guest completer configured")
 
 // guestTools are the only tools the guest model can call. The deterministic
 // executor in onboarding.go owns the effects (slot writes, phase transitions);
@@ -144,19 +175,50 @@ func newGuestBrain(completer GuestCompleter, logger *zap.Logger) *guestBrain {
 	return &guestBrain{completer: completer, logger: logger}
 }
 
+// complete runs one completion with a bounded deadline, retrying once on
+// failure. A blip here is otherwise visible to the person as an apology, so the
+// retry happens before the turn is given up on.
+func (b *guestBrain) complete(ctx context.Context, systemPrompt string, messages []GuestMessage, tools []GuestToolDef) (*GuestResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= guestCompletionAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, guestCompletionTimeout)
+		res, err := b.completer.CompleteGuest(attemptCtx, systemPrompt, messages, tools)
+		cancel()
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		// The caller's context being done means the whole turn is over —
+		// another attempt would fail the same way.
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt < guestCompletionAttempts {
+			b.logger.Warn("guest completion failed; retrying",
+				zap.Int("attempt", attempt), zap.Error(err))
+			select {
+			case <-ctx.Done():
+				return nil, lastErr
+			case <-time.After(guestRetryGap):
+			}
+		}
+	}
+	return nil, lastErr
+}
+
 // respond runs one conversational turn. It makes at most two completions: the
 // tool-enabled pass, and one follow-up when the model called tools without
 // producing reply text.
 func (b *guestBrain) respond(ctx context.Context, st *guestState, userText string) (*guestOutcome, error) {
 	if b.completer == nil {
-		return nil, fmt.Errorf("no guest completer configured")
+		return nil, errNoGuestCompleter
 	}
 
 	messages := make([]GuestMessage, 0, len(st.Turns)+1)
 	messages = append(messages, st.Turns...)
 	messages = append(messages, GuestMessage{Role: "user", Content: userText})
 
-	res, err := b.completer.CompleteGuest(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st), messages, guestTools)
+	res, err := b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st), messages, guestTools)
 	if err != nil {
 		return nil, fmt.Errorf("guest completion: %w", err)
 	}
@@ -173,14 +235,25 @@ func (b *guestBrain) respond(ctx context.Context, st *guestState, userText strin
 
 	out.text = strings.TrimSpace(res.Text)
 	if out.text == "" && len(res.ToolCalls) > 0 {
-		followUp, err := b.completer.CompleteGuest(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st)+"\nYour tool calls went through. Now say the reply out loud, in your own words.", messages, nil)
-		if err != nil {
-			return nil, fmt.Errorf("guest follow-up completion: %w", err)
+		// Retry the follow-up on empty text, mirroring the completion retry logic.
+		var followUp *GuestResult
+		var ferr error
+		for attempt := 1; attempt <= guestCompletionAttempts; attempt++ {
+			followUp, ferr = b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st)+"\nYour tool calls went through. Now say the reply out loud, in your own words.", messages, nil)
+			if ferr != nil {
+				continue
+			}
+			out.text = strings.TrimSpace(followUp.Text)
+			if out.text != "" {
+				break
+			}
 		}
-		out.text = strings.TrimSpace(followUp.Text)
+		if ferr != nil {
+			return nil, fmt.Errorf("guest follow-up completion: %w", ferr)
+		}
 	}
 	if out.text == "" {
-		return nil, fmt.Errorf("guest model returned no reply text")
+		return nil, errGuestNoReply
 	}
 	return out, nil
 }
@@ -194,7 +267,7 @@ func (b *guestBrain) regenerateDifferent(ctx context.Context, st *guestState, us
 		GuestMessage{Role: "user", Content: userText},
 		GuestMessage{Role: "user", Content: "[system note: your last reply was identical to the one before it. Say something different — move the conversation forward.]"},
 	)
-	res, err := b.completer.CompleteGuest(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st), messages, nil)
+	res, err := b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st), messages, nil)
 	if err != nil {
 		return "", err
 	}
