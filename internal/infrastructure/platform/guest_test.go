@@ -405,6 +405,7 @@ func TestGuestSystemPrompt_Tone(t *testing.T) {
 		"Never make every reply an acknowledgment followed by a question",
 		"\"That makes sense\"",
 		"Have a point of view",
+		"No em dashes or en dashes",
 	} {
 		if !strings.Contains(guestSystemPrompt, want) {
 			t.Errorf("guestSystemPrompt missing %q from tone retune", want)
