@@ -12,6 +12,7 @@ const (
 	DimJudge       Dimension = "llm_impact"
 	DimPersonality Dimension = "personality"
 	DimMemory      Dimension = "memory"
+	DimConversation Dimension = "conversation"
 )
 
 // dimensionWeights are the additive weights (out of 100) for the composite impact
@@ -25,6 +26,7 @@ var dimensionWeights = map[Dimension]float64{
 	DimJudge:       20,
 	DimPersonality: 10,
 	DimMemory:      10,
+	DimConversation: 10,
 }
 
 // DimensionScore is a single graded axis: 0..100 with human-readable notes.

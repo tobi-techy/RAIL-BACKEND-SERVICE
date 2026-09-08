@@ -3,6 +3,8 @@ package mono
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,7 +79,7 @@ func (s *Service) CompleteLinking(ctx context.Context, userID uuid.UUID, code st
 	}
 
 	entity := &entities.MonoLinkedAccount{
-		UserID:        userID,
+		UserID:        &userID,
 		MonoAccountID: exchangeResp.ID,
 		Institution:   acct.BankName,
 		AccountName:   acct.Name,
@@ -96,6 +98,316 @@ func (s *Service) CompleteLinking(ctx context.Context, userID uuid.UUID, code st
 	}
 
 	return entity, nil
+}
+
+// InitiateGuestLinking starts a Mono Connect flow for a guest (pre-signup)
+// chat session. The guest token is passed as MetaRef so the linking session is
+// tied to the guest conversation, not to a user that does not exist yet.
+func (s *Service) InitiateGuestLinking(ctx context.Context, guestToken, customerName, customerEmail, redirectURL string) (string, error) {
+	if guestToken == "" {
+		return "", fmt.Errorf("guest token is required")
+	}
+	resp, err := s.client.InitiateLinking(ctx, &LinkingRequest{
+		CustomerName:  customerName,
+		CustomerEmail: customerEmail,
+		MetaRef:       guestToken,
+		RedirectURL:   redirectURL,
+	})
+	if err != nil {
+		return "", fmt.Errorf("initiate guest mono linking: %w", err)
+	}
+	return resp, nil
+}
+
+// CompleteGuestLinking exchanges the Mono Connect widget code for a persistent
+// account and stores it as a guest-linked account (user_id NULL, guest_token
+// set). The account is claimed by a real user at signup via
+// AttachLinkedAccountToUser.
+func (s *Service) CompleteGuestLinking(ctx context.Context, guestToken, code string) (*entities.MonoLinkedAccount, error) {
+	if guestToken == "" {
+		return nil, fmt.Errorf("guest token is required")
+	}
+	exchangeResp, err := s.client.ExchangeCode(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("exchange mono code: %w", err)
+	}
+
+	acct, err := s.client.GetAccount(ctx, exchangeResp.ID)
+	if err != nil {
+		s.logger.Warn("Failed to fetch Mono account details after guest linking",
+			zap.String("mono_account_id", exchangeResp.ID),
+			zap.Error(err))
+		acct = &AccountInfo{
+			ID:            exchangeResp.ID,
+			Name:          exchangeResp.Name,
+			AccountNumber: exchangeResp.AccountNumber,
+			Type:          exchangeResp.Type,
+		}
+	}
+
+	accountNumberLast4 := acct.AccountNumber
+	if len(accountNumberLast4) > 4 {
+		accountNumberLast4 = accountNumberLast4[len(accountNumberLast4)-4:]
+	}
+
+	entity := &entities.MonoLinkedAccount{
+		GuestToken:    &guestToken,
+		MonoAccountID: exchangeResp.ID,
+		Institution:   acct.BankName,
+		AccountName:   acct.Name,
+		AccountNumber: accountNumberLast4,
+		AccountType:   acct.Type,
+		Currency:      acct.Currency,
+		Balance:       acct.Balance,
+		Status:        entities.MonoAccountStatusLinked,
+	}
+	if entity.Currency == "" {
+		entity.Currency = "NGN"
+	}
+
+	if err := s.repo.CreateLinkedAccount(ctx, entity); err != nil {
+		return nil, fmt.Errorf("persist guest mono linked account: %w", err)
+	}
+
+	return entity, nil
+}
+
+// AttachGuestAccountToUser claims a guest-linked Mono account for a real user
+// at signup. Returns the claimed account.
+func (s *Service) AttachGuestAccountToUser(ctx context.Context, guestToken string, userID uuid.UUID) (*entities.MonoLinkedAccount, error) {
+	acct, err := s.repo.GetLinkedAccountByGuestToken(ctx, guestToken)
+	if err != nil {
+		return nil, fmt.Errorf("get guest mono account: %w", err)
+	}
+	if err := s.repo.AttachLinkedAccountToUser(ctx, acct.MonoAccountID, userID); err != nil {
+		return nil, fmt.Errorf("attach guest mono account: %w", err)
+	}
+	acct.UserID = &userID
+	acct.GuestToken = nil
+	return acct, nil
+}
+
+// GetGuestSpendingAnalysis computes a spending breakdown for a guest-linked
+// Mono account directly from Mono (the guest has no user row yet, so the
+// imported-transactions tables cannot hold their data). This is the data behind
+// Miriam's conversational "aha" moment before signup.
+func (s *Service) GetGuestSpendingAnalysis(ctx context.Context, guestToken string, days int) (*entities.MonoSpendingAnalysis, error) {
+	if guestToken == "" {
+		return nil, fmt.Errorf("guest token is required")
+	}
+	acct, err := s.repo.GetLinkedAccountByGuestToken(ctx, guestToken)
+	if err != nil {
+		return nil, fmt.Errorf("get guest mono account: %w", err)
+	}
+	if acct.Status == entities.MonoAccountStatusUnlinked {
+		return nil, fmt.Errorf("account is unlinked")
+	}
+	if days <= 0 {
+		days = 30
+	}
+	end := time.Now().UTC()
+	start := end.AddDate(0, 0, -days)
+
+	txns, err := s.client.GetTransactions(ctx, acct.MonoAccountID, &TransactionQuery{Start: start, End: end})
+	if err != nil {
+		return nil, fmt.Errorf("fetch guest mono transactions: %w", err)
+	}
+
+	analysis := &entities.MonoSpendingAnalysis{
+		Period: entities.MonoAnalysisPeriod{Start: start, End: end, Days: days},
+	}
+	byCat := map[string]*entities.MonoCategoryBreakdown{}
+	for _, t := range txns {
+		if t.Type == "credit" {
+			analysis.TotalCredits += t.Amount
+			continue
+		}
+		analysis.TotalDebits += t.Amount
+		cat := t.Category
+		if cat == "" {
+			cat = "Other"
+		}
+		b := byCat[cat]
+		if b == nil {
+			b = &entities.MonoCategoryBreakdown{Category: cat}
+			byCat[cat] = b
+		}
+		b.Amount += t.Amount
+		b.Count++
+	}
+	analysis.TransactionCount = len(txns)
+	analysis.NetCashFlow = analysis.TotalCredits - analysis.TotalDebits
+	if analysis.TotalCredits > 0 {
+		analysis.SavingsRate = float64(analysis.NetCashFlow) / float64(analysis.TotalCredits)
+	}
+	for _, b := range byCat {
+		if analysis.TotalDebits > 0 {
+			b.Percent = float64(b.Amount) / float64(analysis.TotalDebits)
+		}
+		analysis.ByCategory = append(analysis.ByCategory, *b)
+	}
+	enrichAnalysis(analysis, txns)
+	return analysis, nil
+}
+
+// enrichAnalysis fills the deeper financial picture (income stability, income
+// sources, recurring subscriptions, cash-flow forecast) from a transaction list.
+// It is shared by the guest (live Mono fetch) and authenticated (imported rows)
+// paths so both produce the same enriched shape.
+func enrichAnalysis(analysis *entities.MonoSpendingAnalysis, txns []Transaction) {
+	if analysis == nil {
+		return
+	}
+	credits := make([]int64, 0, len(txns))
+	creditByDesc := map[string][]int64{}
+	recurring := map[string]*recurringCharges{}
+	for _, t := range txns {
+		if t.Type == "credit" {
+			credits = append(credits, t.Amount)
+			key := normalizeMerchant(t.Description)
+			if key != "" {
+				creditByDesc[key] = append(creditByDesc[key], t.Amount)
+			}
+			continue
+		}
+		key := normalizeMerchant(t.Description)
+		if key == "" {
+			continue
+		}
+		rc := recurring[key]
+		if rc == nil {
+			rc = &recurringCharges{merchant: t.Description, category: t.Category}
+			recurring[key] = rc
+		}
+		rc.amounts = append(rc.amounts, t.Amount)
+		rc.count++
+	}
+
+	// Income stability: how consistent the credit amounts are. Low spread of
+	// credit amounts (a steady salary) scores high.
+	analysis.IncomeStability = incomeStability(credits)
+	analysis.IncomeSources = len(creditByDesc)
+
+	// Recurring subscriptions: a merchant charged >=2 times with a stable amount.
+	var subs []entities.MonoRecurringSubscription
+	var recurringDebits int64
+	for _, rc := range recurring {
+		if rc.count < 2 {
+			continue
+		}
+		modal := modalAmount(rc.amounts)
+		if modal <= 0 {
+			continue
+		}
+		// Require amounts to be reasonably stable around the modal.
+		if !amountsStable(rc.amounts, modal) {
+			continue
+		}
+		subs = append(subs, entities.MonoRecurringSubscription{
+			Merchant: rc.merchant,
+			Category: rc.category,
+			Amount:   modal,
+			Count:    rc.count,
+		})
+		recurringDebits += modal
+	}
+	analysis.RecurringSubscriptions = subs
+
+	// Cash-flow forecast: typical recurring credit per source minus recurring
+	// debits. Using the modal per source (not the period total) gives a monthly
+	// estimate rather than summing every paycheck.
+	var recurringCredits int64
+	for _, amounts := range creditByDesc {
+		recurringCredits += modalAmount(amounts)
+	}
+	analysis.CashFlowForecast = recurringCredits - recurringDebits
+}
+
+type recurringCharges struct {
+	merchant string
+	category string
+	amounts  []int64
+	count    int
+}
+
+// normalizeMerchant collapses a transaction description to a stable key for
+// grouping recurring charges. Lowercased, stripped of digits and whitespace.
+func normalizeMerchant(desc string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(desc) {
+		if (r >= 'a' && r <= 'z') || r == ' ' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// incomeStability scores credit regularity from 0-1: 1 when there is a clear
+// dominant steady credit, 0 when credits are scattered or absent.
+func incomeStability(credits []int64) float64 {
+	if len(credits) == 0 {
+		return 0
+	}
+	if len(credits) == 1 {
+		return 0.5
+	}
+	modal := modalAmount(credits)
+	if modal <= 0 {
+		return 0
+	}
+	// Fraction of credits close to the modal amount.
+	close := 0
+	for _, c := range credits {
+		if modal > 0 && c > 0 {
+			ratio := float64(c) / float64(modal)
+			if ratio >= 0.8 && ratio <= 1.25 {
+				close++
+			}
+		}
+	}
+	return float64(close) / float64(len(credits))
+}
+
+// modalAmount returns the most frequent amount in a list (a simple majority),
+// falling back to the median when no clear mode exists.
+func modalAmount(vals []int64) int64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	counts := map[int64]int{}
+	var best int64
+	bestN := 0
+	for _, v := range vals {
+		counts[v]++
+		if counts[v] > bestN {
+			bestN = counts[v]
+			best = v
+		}
+	}
+	if bestN >= 2 {
+		return best
+	}
+	// No clear mode: return the median.
+	sorted := make([]int64, len(vals))
+	copy(sorted, vals)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted[len(sorted)/2]
+}
+
+// amountsStable reports whether the charges for one merchant hover near the
+// modal amount (within ~30%), so a subscription is recurring rather than one-off.
+func amountsStable(vals []int64, modal int64) bool {
+	if modal <= 0 {
+		return false
+	}
+	stable := 0
+	for _, v := range vals {
+		ratio := float64(v) / float64(modal)
+		if ratio >= 0.7 && ratio <= 1.3 {
+			stable++
+		}
+	}
+	return float64(stable)/float64(len(vals)) >= 0.6
 }
 
 // --- Account Sync ---
@@ -220,7 +532,7 @@ func (s *Service) GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, day
 		savingsRate = float64(netCashFlow) / float64(totalCredits)
 	}
 
-	return &entities.MonoSpendingAnalysis{
+	analysis := &entities.MonoSpendingAnalysis{
 		TotalCredits:     totalCredits,
 		TotalDebits:      totalDebits,
 		NetCashFlow:      netCashFlow,
@@ -228,7 +540,52 @@ func (s *Service) GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, day
 		ByCategory:       categories,
 		Period:           entities.MonoAnalysisPeriod{Start: start, End: end, Days: days},
 		TransactionCount: txnCount,
-	}, nil
+	}
+
+	// Enrich with income stability, recurring subscriptions, and cash-flow
+	// forecast from the imported transactions, so the authenticated analysis
+	// matches the guest shape (and the subscription follow-up nudge can fire).
+	if recent, err := s.repo.GetRecentTransactions(ctx, userID, start, end); err == nil {
+		enrichAnalysis(analysis, importedTxnsToDomain(recent))
+	}
+
+	return analysis, nil
+}
+
+// importedTxnsToDomain converts imported transactions to the domain Transaction
+// shape used by enrichAnalysis.
+func importedTxnsToDomain(txns []*entities.MonoImportedTransaction) []Transaction {
+	if len(txns) == 0 {
+		return nil
+	}
+	out := make([]Transaction, 0, len(txns))
+	for _, t := range txns {
+		if t == nil {
+			continue
+		}
+		out = append(out, Transaction{
+			ID:          t.MonoTxnID,
+			Amount:      t.Amount,
+			Type:        t.Type,
+			Description: t.Description,
+			Category:    t.Category,
+			SubCategory: t.SubCategory,
+			Date:        t.TransactionDate,
+			Reference:   t.Reference,
+		})
+	}
+	return out
+}
+
+// DetectedSubscriptions returns the recurring subscriptions detected in a
+// user's linked bank data (last 30 days). Satisfies the proactive nudge
+// engine's SubscriptionProvider so Miriam can reopen a charge worth cutting.
+func (s *Service) DetectedSubscriptions(ctx context.Context, userID uuid.UUID) ([]entities.MonoRecurringSubscription, error) {
+	analysis, err := s.GetSpendingAnalysis(ctx, userID, 30)
+	if err != nil {
+		return nil, err
+	}
+	return analysis.RecurringSubscriptions, nil
 }
 
 // --- DirectPay ---

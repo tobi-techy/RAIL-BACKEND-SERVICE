@@ -24,6 +24,7 @@ import (
 	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
+	monohandlers "github.com/rail-service/rail_service/internal/api/handlers/mono"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
 	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
 	"github.com/rail-service/rail_service/internal/api/middleware"
@@ -873,8 +874,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
-		// KYC status utilities (auth required but no KYC gate)
-		kycProtected := protected.Group("/kyc")
+			// KYC status utilities (auth required but no KYC gate)
+			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
@@ -2022,6 +2023,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Register Mono open-banking routes (account linking, transactions, analysis, deposits)
 		if container.MonoService != nil {
 			RegisterMonoRoutes(protected, container.MonoService, container.ZapLog)
+			// Pre-signup (guest) Mono completion — public, since a guest has no
+			// account yet. The guest token is the proof of the chat session.
+			var guestLinker monohandlers.GuestSessionLinker
+			if proc := container.GetPlatformProcessor(); proc != nil {
+				guestLinker = proc.GetOnboarder()
+			}
+			guestMono := v1.Group("/")
+			guestMono.Use(middleware.AuthRateLimit(10))
+			RegisterGuestMonoRoutes(guestMono, container.MonoService, guestLinker, container.ZapLog)
 		}
 
 		// Register opportunity routes

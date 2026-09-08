@@ -33,3 +33,17 @@ func RegisterMonoRoutes(protected *gin.RouterGroup, service *monosvc.Service, lo
 		mono.GET("/deposit/:reference/verify", h.VerifyDeposit)
 	}
 }
+
+// RegisterGuestMonoRoutes registers the pre-signup (guest) Mono completion route
+// on a PUBLIC group — the guest has no account, so the guest token is the proof
+// of the chat session. Rate-limited to blunt abuse.
+//
+//	POST /mono/guest/link/complete — exchange widget code for a guest-linked account
+func RegisterGuestMonoRoutes(public *gin.RouterGroup, service *monosvc.Service, guestLinker monohandlers.GuestSessionLinker, logger *zap.Logger) {
+	h := monohandlers.NewHandlers(service, logger)
+	h.SetGuestSessionLinker(guestLinker)
+	mono := public.Group("/mono")
+	{
+		mono.POST("/guest/link/complete", h.CompleteGuestLink)
+	}
+}

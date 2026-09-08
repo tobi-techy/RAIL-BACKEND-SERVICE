@@ -2,10 +2,10 @@ package miriam
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,22 +15,20 @@ import (
 )
 
 var (
-	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
-	rngMu sync.Mutex
+	// cryptoSource provides cryptographically secure randomness for the nudge
+	// engine's small selection choices.
+	cryptoSource = cryptorand.Reader
 )
 
 func randIntn(n int) int {
-	rngMu.Lock()
-	v := rng.Intn(n)
-	rngMu.Unlock()
-	return v
-}
-
-func randFloat64() float64 {
-	rngMu.Lock()
-	v := rng.Float64()
-	rngMu.Unlock()
-	return v
+	if n <= 0 {
+		return 0
+	}
+	bi, err := cryptorand.Int(cryptoSource, big.NewInt(int64(n)))
+	if err != nil {
+		return 0
+	}
+	return int(bi.Int64())
 }
 
 // ProactiveNudgeStore persists proactive nudges.
@@ -60,7 +58,14 @@ type ProactiveNudgeEngine struct {
 	chatSender       ProactiveChatSender
 	cadence          CadenceReader
 	financialProfile FinancialProfileProvider
+	subscriptions    SubscriptionProvider
 	logger           *zap.Logger
+}
+
+// SubscriptionProvider returns the recurring subscriptions detected in a user's
+// linked bank data. Satisfied by the Mono analysis path. Optional.
+type SubscriptionProvider interface {
+	DetectedSubscriptions(ctx context.Context, userID uuid.UUID) ([]entities.MonoRecurringSubscription, error)
 }
 
 // NewProactiveNudgeEngine creates a proactive nudge engine.
@@ -100,6 +105,12 @@ func (e *ProactiveNudgeEngine) SetCadenceReader(c CadenceReader) {
 // SetFinancialProfile injects a FinancialProfileProvider for country-aware currency display.
 func (e *ProactiveNudgeEngine) SetFinancialProfile(fp FinancialProfileProvider) {
 	e.financialProfile = fp
+}
+
+// SetSubscriptionProvider injects the recurring-subscription source after
+// construction (deferred wiring). Nil-safe.
+func (e *ProactiveNudgeEngine) SetSubscriptionProvider(sp SubscriptionProvider) {
+	e.subscriptions = sp
 }
 
 // resolveSymbol returns the currency symbol for the user's country, defaulting to "$".
@@ -167,6 +178,9 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	if n := e.nudgeFromBills(ctx, userID, state); n != nil {
 		nudges = append(nudges, *n)
 	}
+
+	// 3.5 Subscription follow-up nudges (reopen a recurring charge worth cutting)
+	nudges = append(nudges, e.subscriptionNudges(ctx, userID)...)
 
 	// Select top nudges by priority, capped by voice phase frequency limit.
 	phase := ResolvePhase(state)
@@ -360,6 +374,67 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 	}
 
 	return nil
+}
+
+// subscriptionNudges returns the follow-up nudge for a detected recurring
+// subscription worth cutting, if any. Extracted from generateFromSummary to keep
+// that function's cyclomatic complexity down.
+func (e *ProactiveNudgeEngine) subscriptionNudges(ctx context.Context, userID uuid.UUID) []entities.ProactiveNudge {
+	if e.subscriptions == nil {
+		return nil
+	}
+	subs, err := e.subscriptions.DetectedSubscriptions(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	if n := e.nudgeFromSubscriptions(ctx, userID, subs); n != nil {
+		return []entities.ProactiveNudge{*n}
+	}
+	return nil
+}
+
+// nudgeFromSubscriptions reopens a detected recurring subscription worth
+// surfacing: the highest-annual-cost charge the user keeps paying. This is the
+// persistence loop for a charge Miriam already surfaced — it comes back later
+// and names the real cost.
+func (e *ProactiveNudgeEngine) nudgeFromSubscriptions(ctx context.Context, userID uuid.UUID, subs []entities.MonoRecurringSubscription) *entities.ProactiveNudge {
+	if len(subs) == 0 {
+		return nil
+	}
+	// Pick the subscription with the highest annual cost.
+	var best entities.MonoRecurringSubscription
+	bestAnnual := int64(0)
+	for _, s := range subs {
+		annual := s.Amount * 12
+		if annual > bestAnnual {
+			bestAnnual = annual
+			best = s
+		}
+	}
+	if best.Merchant == "" || best.Amount <= 0 {
+		return nil
+	}
+	symbol := e.resolveSymbol(ctx, userID)
+	// Amount is stored in kobo/cents; divide by 100 for the major-unit display.
+	monthly := best.Amount / 100
+	annual := monthly * 12
+	msg := fmt.Sprintf("You're still paying %s%d a month for %s. That's %s%d a year. Want to look at it?", symbol, monthly, best.Merchant, symbol, annual)
+
+	return &entities.ProactiveNudge{
+		ID:          uuid.New(),
+		UserID:      userID,
+		TriggerType: entities.NudgeTriggerSubscription,
+		Priority:    6,
+		Message:     msg,
+		ActionSuggestion: mustJSON(map[string]interface{}{
+			"type":     "review_subscription",
+			"label":    "Review",
+			"merchant": best.Merchant,
+			"amount":   best.Amount,
+		}),
+		ExpiresAt: time.Now().UTC().Add(48 * time.Hour),
+		CreatedAt: time.Now().UTC(),
+	}
 }
 
 func (e *ProactiveNudgeEngine) buildPredictionMessage(ctx context.Context, userID uuid.UUID, p entities.MiriamPrediction, state *entities.MiriamMoneyState) string {

@@ -237,6 +237,12 @@ func (p *Processor) SetOnboarder(o *ChatOnboarder) {
 	p.onboarder = o
 }
 
+// GetOnboarder returns the chat onboarder, or nil if chat-first onboarding is
+// disabled. Used to wire the guest Mono completion path.
+func (p *Processor) GetOnboarder() *ChatOnboarder {
+	return p.onboarder
+}
+
 // SetBabyStepsSeeder installs the first-login goal seeder. Called after a
 // successful handshake so a freshly-linked iMessage/WhatsApp/Telegram user
 // gets the 7-step Baby Steps ladder materialized into user_goals. Nil-safe:

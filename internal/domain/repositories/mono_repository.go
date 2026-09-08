@@ -22,6 +22,12 @@ type MonoRepository interface {
 	CreateLinkedAccount(ctx context.Context, acct *entities.MonoLinkedAccount) error
 	GetLinkedAccountByID(ctx context.Context, userID, accountID uuid.UUID) (*entities.MonoLinkedAccount, error)
 	GetLinkedAccountByMonoID(ctx context.Context, monoAccountID string) (*entities.MonoLinkedAccount, error)
+	// GetLinkedAccountByGuestToken finds a pre-signup linked account by its guest
+	// session token. Returns an error when none exists.
+	GetLinkedAccountByGuestToken(ctx context.Context, guestToken string) (*entities.MonoLinkedAccount, error)
+	// AttachLinkedAccountToUser claims a guest-linked account for a real user:
+	// sets user_id, clears guest_token, and refreshes updated_at.
+	AttachLinkedAccountToUser(ctx context.Context, monoAccountID string, userID uuid.UUID) error
 	ListLinkedAccounts(ctx context.Context, userID uuid.UUID) ([]*entities.MonoLinkedAccount, error)
 	UpdateLinkedAccountStatus(ctx context.Context, accountID uuid.UUID, status string) error
 	UpdateLinkedAccountBalance(ctx context.Context, accountID uuid.UUID, balance int64) error
@@ -30,6 +36,9 @@ type MonoRepository interface {
 
 	ImportTransactions(ctx context.Context, txns []*entities.MonoImportedTransaction) (int, error)
 	GetTransactions(ctx context.Context, userID, accountID uuid.UUID, limit, offset int) ([]*entities.MonoImportedTransaction, error)
+	// GetRecentTransactions returns imported transactions across all linked
+	// accounts for a user within a date range. Feeds the enriched analysis.
+	GetRecentTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]*entities.MonoImportedTransaction, error)
 	GetSpendingSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (totalCredits, totalDebits int64, txnCount int, err error)
 	GetCategoryBreakdown(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.MonoCategoryBreakdown, error)
 
