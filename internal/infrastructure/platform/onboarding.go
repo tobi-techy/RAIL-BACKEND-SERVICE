@@ -658,8 +658,8 @@ func guestLinkEmail(st *guestState) string {
 }
 
 // summarizeGuestAnalysis turns the guest's spending picture into a compact,
-// injectable state block: the top spending category and how it compares to
-// income. This is the raw material for the conversational aha.
+// injectable state block: the top spending category, income stability, and any
+// recurring subscriptions. This is the raw material for the conversational aha.
 func summarizeGuestAnalysis(a *entities.MonoSpendingAnalysis) string {
 	if a == nil || a.TransactionCount == 0 {
 		return "no transactions in the last 30 days"
@@ -676,6 +676,18 @@ func summarizeGuestAnalysis(a *entities.MonoSpendingAnalysis) string {
 		a.TransactionCount, a.TotalCredits, a.TotalDebits)
 	if top != nil {
 		fmt.Fprintf(&b, "; biggest category: %s at %d across %d txns", top.Category, top.Amount, top.Count)
+	}
+	if a.IncomeStability > 0 {
+		fmt.Fprintf(&b, "; income stability %.0f%% (%d source%s)", a.IncomeStability*100, a.IncomeSources, pluralS(a.IncomeSources))
+	}
+	if len(a.RecurringSubscriptions) > 0 {
+		fmt.Fprintf(&b, "; recurring: ")
+		for i, sub := range a.RecurringSubscriptions {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s at %d", sub.Merchant, sub.Amount)
+		}
 	}
 	return b.String()
 }
@@ -1524,4 +1536,12 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// pluralS appends an "s" for counts > 1, used in generated copy.
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }

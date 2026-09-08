@@ -87,13 +87,33 @@ const (
 // Mono-imported transactions. Used by Miriam's coaching context and the
 // bank statement analysis tool.
 type MonoSpendingAnalysis struct {
-	TotalCredits     int64                   `json:"total_credits"` // kobo
-	TotalDebits      int64                   `json:"total_debits"`  // kobo
-	NetCashFlow      int64                   `json:"net_cash_flow"` // total_credits - total_debits
-	SavingsRate      float64                 `json:"savings_rate"`  // 0-1
-	ByCategory       []MonoCategoryBreakdown `json:"by_category"`
-	Period           MonoAnalysisPeriod      `json:"period"`
-	TransactionCount int                     `json:"transaction_count"`
+	TotalCredits     int64                      `json:"total_credits"` // kobo
+	TotalDebits      int64                      `json:"total_debits"`  // kobo
+	NetCashFlow      int64                      `json:"net_cash_flow"` // total_credits - total_debits
+	SavingsRate      float64                    `json:"savings_rate"`  // 0-1
+	ByCategory       []MonoCategoryBreakdown    `json:"by_category"`
+	Period           MonoAnalysisPeriod         `json:"period"`
+	TransactionCount int                        `json:"transaction_count"`
+	// IncomeStability is a 0-1 score of how regular income is, based on the
+	// spread of credit amounts and cadence. 1 = steady, predictable income.
+	IncomeStability float64 `json:"income_stability"`
+	// IncomeSources is the number of distinct recurring credit sources detected.
+	IncomeSources int `json:"income_sources"`
+	// RecurringSubscriptions lists recurring debits (same merchant, similar
+	// amount, roughly monthly) that Miriam can surface.
+	RecurringSubscriptions []MonoRecurringSubscription `json:"recurring_subscriptions"`
+	// CashFlowForecast is the projected next-month net cash flow from recurring
+	// credits and debits.
+	CashFlowForecast int64 `json:"cash_flow_forecast"`
+}
+
+// MonoRecurringSubscription is a detected recurring debit: a merchant charged a
+// similar amount on a roughly monthly cadence.
+type MonoRecurringSubscription struct {
+	Merchant string `json:"merchant"`
+	Category string `json:"category"`
+	Amount   int64  `json:"amount"` // kobo, the modal monthly amount
+	Count    int    `json:"count"`  // how many charges seen in the period
 }
 
 // MonoCategoryBreakdown is the spending total for a single category.

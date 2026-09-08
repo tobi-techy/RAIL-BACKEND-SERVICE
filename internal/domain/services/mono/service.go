@@ -3,6 +3,8 @@ package mono
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -244,7 +246,168 @@ func (s *Service) GetGuestSpendingAnalysis(ctx context.Context, guestToken strin
 		}
 		analysis.ByCategory = append(analysis.ByCategory, *b)
 	}
+	enrichAnalysis(analysis, txns)
 	return analysis, nil
+}
+
+// enrichAnalysis fills the deeper financial picture (income stability, income
+// sources, recurring subscriptions, cash-flow forecast) from a transaction list.
+// It is shared by the guest (live Mono fetch) and authenticated (imported rows)
+// paths so both produce the same enriched shape.
+func enrichAnalysis(analysis *entities.MonoSpendingAnalysis, txns []Transaction) {
+	if analysis == nil {
+		return
+	}
+	credits := make([]int64, 0, len(txns))
+	creditByDesc := map[string][]int64{}
+	recurring := map[string]*recurringCharges{}
+	for _, t := range txns {
+		if t.Type == "credit" {
+			credits = append(credits, t.Amount)
+			key := normalizeMerchant(t.Description)
+			if key != "" {
+				creditByDesc[key] = append(creditByDesc[key], t.Amount)
+			}
+			continue
+		}
+		key := normalizeMerchant(t.Description)
+		if key == "" {
+			continue
+		}
+		rc := recurring[key]
+		if rc == nil {
+			rc = &recurringCharges{merchant: t.Description, category: t.Category}
+			recurring[key] = rc
+		}
+		rc.amounts = append(rc.amounts, t.Amount)
+		rc.count++
+	}
+
+	// Income stability: how consistent the credit amounts are. Low spread of
+	// credit amounts (a steady salary) scores high.
+	analysis.IncomeStability = incomeStability(credits)
+	analysis.IncomeSources = len(creditByDesc)
+
+	// Recurring subscriptions: a merchant charged >=2 times with a stable amount.
+	var subs []entities.MonoRecurringSubscription
+	var recurringDebits int64
+	for _, rc := range recurring {
+		if rc.count < 2 {
+			continue
+		}
+		modal := modalAmount(rc.amounts)
+		if modal <= 0 {
+			continue
+		}
+		// Require amounts to be reasonably stable around the modal.
+		if !amountsStable(rc.amounts, modal) {
+			continue
+		}
+		subs = append(subs, entities.MonoRecurringSubscription{
+			Merchant: rc.merchant,
+			Category: rc.category,
+			Amount:   modal,
+			Count:    rc.count,
+		})
+		recurringDebits += modal
+	}
+	analysis.RecurringSubscriptions = subs
+
+	// Cash-flow forecast: typical recurring credit per source minus recurring
+	// debits. Using the modal per source (not the period total) gives a monthly
+	// estimate rather than summing every paycheck.
+	var recurringCredits int64
+	for _, amounts := range creditByDesc {
+		recurringCredits += modalAmount(amounts)
+	}
+	analysis.CashFlowForecast = recurringCredits - recurringDebits
+}
+
+type recurringCharges struct {
+	merchant string
+	category string
+	amounts  []int64
+	count    int
+}
+
+// normalizeMerchant collapses a transaction description to a stable key for
+// grouping recurring charges. Lowercased, stripped of digits and whitespace.
+func normalizeMerchant(desc string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(desc) {
+		if (r >= 'a' && r <= 'z') || r == ' ' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// incomeStability scores credit regularity from 0-1: 1 when there is a clear
+// dominant steady credit, 0 when credits are scattered or absent.
+func incomeStability(credits []int64) float64 {
+	if len(credits) == 0 {
+		return 0
+	}
+	if len(credits) == 1 {
+		return 0.5
+	}
+	modal := modalAmount(credits)
+	if modal <= 0 {
+		return 0
+	}
+	// Fraction of credits close to the modal amount.
+	close := 0
+	for _, c := range credits {
+		if modal > 0 && c > 0 {
+			ratio := float64(c) / float64(modal)
+			if ratio >= 0.8 && ratio <= 1.25 {
+				close++
+			}
+		}
+	}
+	return float64(close) / float64(len(credits))
+}
+
+// modalAmount returns the most frequent amount in a list (a simple majority),
+// falling back to the median when no clear mode exists.
+func modalAmount(vals []int64) int64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	counts := map[int64]int{}
+	var best int64
+	bestN := 0
+	for _, v := range vals {
+		counts[v]++
+		if counts[v] > bestN {
+			bestN = counts[v]
+			best = v
+		}
+	}
+	if bestN >= 2 {
+		return best
+	}
+	// No clear mode: return the median.
+	sorted := make([]int64, len(vals))
+	copy(sorted, vals)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	return sorted[len(sorted)/2]
+}
+
+// amountsStable reports whether the charges for one merchant hover near the
+// modal amount (within ~30%), so a subscription is recurring rather than one-off.
+func amountsStable(vals []int64, modal int64) bool {
+	if modal <= 0 {
+		return false
+	}
+	stable := 0
+	for _, v := range vals {
+		ratio := float64(v) / float64(modal)
+		if ratio >= 0.7 && ratio <= 1.3 {
+			stable++
+		}
+	}
+	return float64(stable)/float64(len(vals)) >= 0.6
 }
 
 // --- Account Sync ---

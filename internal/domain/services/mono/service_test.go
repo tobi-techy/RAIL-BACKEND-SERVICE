@@ -194,3 +194,45 @@ func TestEntityStatusConstants(t *testing.T) {
 		t.Error("MonoPaymentStatusPending should be 'pending'")
 	}
 }
+
+func TestEnrichAnalysis_DetectsSubscriptionsAndIncome(t *testing.T) {
+	analysis := &entities.MonoSpendingAnalysis{}
+	txns := []Transaction{
+		// Steady salary: 3 credits of the same amount.
+		{Type: "credit", Amount: 500000, Description: "ACME CORP SALARY"},
+		{Type: "credit", Amount: 500000, Description: "ACME CORP SALARY"},
+		{Type: "credit", Amount: 500000, Description: "ACME CORP SALARY"},
+		// A recurring subscription: gym charged twice at a stable amount.
+		{Type: "debit", Amount: 5000, Description: "FITNESS FIRST GYM", Category: "Fitness"},
+		{Type: "debit", Amount: 5000, Description: "FITNESS FIRST GYM", Category: "Fitness"},
+		// A one-off big debit that should not count as a subscription.
+		{Type: "debit", Amount: 200000, Description: "RENT PAYMENT", Category: "Housing"},
+	}
+	enrichAnalysis(analysis, txns)
+
+	if analysis.IncomeStability <= 0 {
+		t.Errorf("expected steady income to score above 0, got %v", analysis.IncomeStability)
+	}
+	if analysis.IncomeSources != 1 {
+		t.Errorf("expected 1 income source, got %d", analysis.IncomeSources)
+	}
+	if len(analysis.RecurringSubscriptions) != 1 {
+		t.Fatalf("expected 1 recurring subscription, got %d", len(analysis.RecurringSubscriptions))
+	}
+	sub := analysis.RecurringSubscriptions[0]
+	if sub.Merchant == "" || sub.Amount != 5000 || sub.Count != 2 {
+		t.Errorf("unexpected subscription: %+v", sub)
+	}
+	// Forecast = recurring credits (salary) - recurring debits (gym).
+	if analysis.CashFlowForecast != 500000-5000 {
+		t.Errorf("expected cash flow forecast 495000, got %d", analysis.CashFlowForecast)
+	}
+}
+
+func TestEnrichAnalysis_Empty(t *testing.T) {
+	analysis := &entities.MonoSpendingAnalysis{}
+	enrichAnalysis(analysis, nil)
+	if analysis.IncomeStability != 0 || analysis.CashFlowForecast != 0 || len(analysis.RecurringSubscriptions) != 0 {
+		t.Errorf("expected zeroed enrichment for empty input, got %+v", analysis)
+	}
+}
