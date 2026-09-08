@@ -18,10 +18,10 @@ const (
 // The MonoAccountID is the persistent identifier returned by POST /v2/accounts/auth
 // and is used for all subsequent Financial Data API calls.
 type MonoLinkedAccount struct {
-	ID            uuid.UUID  `json:"id" db:"id"`
+	ID uuid.UUID `json:"id" db:"id"`
 	// UserID is nil for a guest-linked account (pre-signup). It is set when the
 	// guest signs up and the account is claimed. See GuestToken.
-	UserID        *uuid.UUID `json:"user_id" db:"user_id"`
+	UserID *uuid.UUID `json:"user_id" db:"user_id"`
 	// GuestToken ties a pre-signup linked account to a guest chat session. It is
 	// cleared when the account is attached to a real user. Exactly one of
 	// UserID or GuestToken is set for a linked account.
@@ -87,13 +87,13 @@ const (
 // Mono-imported transactions. Used by Miriam's coaching context and the
 // bank statement analysis tool.
 type MonoSpendingAnalysis struct {
-	TotalCredits     int64                      `json:"total_credits"` // kobo
-	TotalDebits      int64                      `json:"total_debits"`  // kobo
-	NetCashFlow      int64                      `json:"net_cash_flow"` // total_credits - total_debits
-	SavingsRate      float64                    `json:"savings_rate"`  // 0-1
-	ByCategory       []MonoCategoryBreakdown    `json:"by_category"`
-	Period           MonoAnalysisPeriod         `json:"period"`
-	TransactionCount int                        `json:"transaction_count"`
+	TotalCredits     int64                   `json:"total_credits"` // kobo
+	TotalDebits      int64                   `json:"total_debits"`  // kobo
+	NetCashFlow      int64                   `json:"net_cash_flow"` // total_credits - total_debits
+	SavingsRate      float64                 `json:"savings_rate"`  // 0-1
+	ByCategory       []MonoCategoryBreakdown `json:"by_category"`
+	Period           MonoAnalysisPeriod      `json:"period"`
+	TransactionCount int                     `json:"transaction_count"`
 	// IncomeStability is a 0-1 score of how regular income is, based on the
 	// spread of credit amounts and cadence. 1 = steady, predictable income.
 	IncomeStability float64 `json:"income_stability"`

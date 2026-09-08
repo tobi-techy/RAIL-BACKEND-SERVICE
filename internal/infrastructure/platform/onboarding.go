@@ -494,10 +494,10 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 		return c.beginSignup(ctx, key, st, text, replyText)
 
 	case out.connectBank:
-		return c.handleGuestConnectBank(ctx, key, st, in, text, replyText)
+		return c.handleGuestConnectBank(ctx, key, st, text, replyText)
 
 	case out.analysis:
-		return c.handleGuestAnalysis(ctx, key, st, in, text)
+		return c.handleGuestAnalysis(ctx, key, st, text)
 	}
 
 	// Plain conversational turn.
@@ -526,7 +526,7 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 // can share their real bank before signing up. The link session is tied to the
 // guest token; completion happens through the guest-scoped Mono endpoint, which
 // flips MonoLinked on the session.
-func (c *ChatOnboarder) handleGuestConnectBank(ctx context.Context, key string, st *guestState, in OnboardInput, userText, replyText string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleGuestConnectBank(ctx context.Context, key string, st *guestState, userText, replyText string) (*PlatformReply, error) {
 	if c.monoLinker == nil {
 		c.logger.Warn("guest connect_bank requested but no mono linker wired")
 		replyText = strings.TrimSpace(replyText)
@@ -590,7 +590,7 @@ func (c *ChatOnboarder) handleGuestConnectBank(ctx context.Context, key string, 
 // handleGuestAnalysis fetches the guest's real spending picture from their
 // linked bank, stores it on the session, and re-runs the brain once so the aha
 // is grounded in actual numbers rather than a guess.
-func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st *guestState, in OnboardInput, userText string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st *guestState, userText string) (*PlatformReply, error) {
 	if c.monoLinker == nil || !st.MonoLinked || st.GuestToken == "" {
 		replyText := "I don't have your bank linked yet. Want to connect it so I can show you where your money actually goes?"
 		c.recordTurn(st, userText, replyText)
@@ -1144,7 +1144,8 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *guest
 // fireGuestHandoff carries the guest conversation into the authenticated
 // relationship: money-type read to the tone profile, transcript to the first
 // platform conversation. Both async best-effort with bounded contexts.
-func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.PlatformIdentity, in OnboardInput, st *guestState) {	if c.moneyTypes != nil && st.MoneyType != "" {
+func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.PlatformIdentity, in OnboardInput, st *guestState) {
+	if c.moneyTypes != nil && st.MoneyType != "" {
 		moneyType := st.MoneyType
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

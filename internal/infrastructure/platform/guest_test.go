@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,12 +337,15 @@ func TestGuestBrain_TranscriptBounded(t *testing.T) {
 
 // fakeHandoff records guest-handoff writes.
 type fakeHandoff struct {
+	mu         sync.Mutex
 	moneyTypes []string
 	turns      []GuestMessage
 }
 
 func (f *fakeHandoff) SetMoneyType(_ context.Context, _ uuid.UUID, moneyType string) error {
+	f.mu.Lock()
 	f.moneyTypes = append(f.moneyTypes, moneyType)
+	f.mu.Unlock()
 	return nil
 }
 
@@ -350,7 +354,9 @@ func (f *fakeHandoff) SetMoneyDials(_ context.Context, _ uuid.UUID, dials string
 }
 
 func (f *fakeHandoff) AppendGuestTranscript(_ context.Context, _ uuid.UUID, _ *entities.PlatformIdentity, _ string, turns []GuestMessage) error {
+	f.mu.Lock()
 	f.turns = turns
+	f.mu.Unlock()
 	return nil
 }
 
@@ -386,15 +392,26 @@ func TestGuestBrain_HandoffCarriesMoneyTypeAndTranscript(t *testing.T) {
 	// Handoff is async — poll with a deadline.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(handoff.moneyTypes) > 0 && len(handoff.turns) > 0 {
+		handoff.mu.Lock()
+		ready := len(handoff.moneyTypes) > 0 && len(handoff.turns) > 0
+		handoff.mu.Unlock()
+		if ready {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(handoff.moneyTypes) != 1 || handoff.moneyTypes[0] != "worrier" {
-		t.Fatalf("expected money type handoff, got %v", handoff.moneyTypes)
+	handoff.mu.Lock()
+	mt := len(handoff.moneyTypes)
+	first := ""
+	if mt > 0 {
+		first = handoff.moneyTypes[0]
 	}
-	if len(handoff.turns) == 0 {
+	turnCount := len(handoff.turns)
+	handoff.mu.Unlock()
+	if mt != 1 || first != "worrier" {
+		t.Fatalf("expected money type handoff, got %d entries", mt)
+	}
+	if turnCount == 0 {
 		t.Fatal("expected transcript handoff")
 	}
 }

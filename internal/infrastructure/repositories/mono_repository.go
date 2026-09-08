@@ -49,7 +49,7 @@ func (r *MonoRepository) CreateLinkedAccount(ctx context.Context, acct *entities
 	return err
 }
 
-// nullableStr returns nil for an empty string so the DB stores NULL, not ''.
+// nullableStr returns nil for an empty string so the DB stores NULL, not ”.
 func nullableStr(s string) interface{} {
 	if s == "" {
 		return nil

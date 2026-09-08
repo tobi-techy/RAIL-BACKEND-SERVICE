@@ -10,7 +10,7 @@ func TestGradeConversation_Clean(t *testing.T) {
 }
 
 func TestGradeConversation_PenalizesWallOfTextAndFillers(t *testing.T) {
-	wall := "That makes sense. I understand. Great question. " + repeat("And so the money flows onward through the system, " , 30)
+	wall := "That makes sense. I understand. Great question. " + repeat("And so the money flows onward through the system, ", 30)
 	d := gradeConversation(wall)
 	if d.Score >= 100 {
 		t.Fatalf("expected a wall-of-text filler reply to lose points, got %v", d.Score)

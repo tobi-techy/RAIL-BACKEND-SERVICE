@@ -182,13 +182,7 @@ func (e *ProactiveNudgeEngine) generateFromSummary(ctx context.Context, userID u
 	}
 
 	// 3.5 Subscription follow-up nudges (reopen a recurring charge worth cutting)
-	if e.subscriptions != nil {
-		if subs, err := e.subscriptions.DetectedSubscriptions(ctx, userID); err == nil {
-			if n := e.nudgeFromSubscriptions(ctx, userID, subs); n != nil {
-				nudges = append(nudges, *n)
-			}
-		}
-	}
+	nudges = append(nudges, e.subscriptionNudges(ctx, userID)...)
 
 	// Select top nudges by priority, capped by voice phase frequency limit.
 	phase := ResolvePhase(state)
@@ -381,6 +375,23 @@ func (e *ProactiveNudgeEngine) nudgeFromBills(ctx context.Context, userID uuid.U
 		}
 	}
 
+	return nil
+}
+
+// subscriptionNudges returns the follow-up nudge for a detected recurring
+// subscription worth cutting, if any. Extracted from generateFromSummary to keep
+// that function's cyclomatic complexity down.
+func (e *ProactiveNudgeEngine) subscriptionNudges(ctx context.Context, userID uuid.UUID) []entities.ProactiveNudge {
+	if e.subscriptions == nil {
+		return nil
+	}
+	subs, err := e.subscriptions.DetectedSubscriptions(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	if n := e.nudgeFromSubscriptions(ctx, userID, subs); n != nil {
+		return []entities.ProactiveNudge{*n}
+	}
 	return nil
 }
 
