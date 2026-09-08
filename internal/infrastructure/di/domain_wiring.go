@@ -1595,6 +1595,9 @@ func (c *Container) initializeDomainServices() error {
 	if c.MiriamProactiveChatSender != nil {
 		c.MiriamProactiveNudgeEngine.SetChatSender(c.MiriamProactiveChatSender)
 	}
+	if c.MonoService != nil {
+		c.MiriamProactiveNudgeEngine.SetSubscriptionProvider(c.MonoService)
+	}
 	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
 		suggestionRepo,
 		c.MiriamIntelligenceService, // MandateProvider

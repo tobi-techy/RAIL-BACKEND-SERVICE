@@ -543,10 +543,20 @@ func (s *Service) GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, day
 	}, nil
 }
 
+// DetectedSubscriptions returns the recurring subscriptions detected in a
+// user's linked bank data (last 30 days). Satisfies the proactive nudge
+// engine's SubscriptionProvider so Miriam can reopen a charge worth cutting.
+func (s *Service) DetectedSubscriptions(ctx context.Context, userID uuid.UUID) ([]entities.MonoRecurringSubscription, error) {
+	analysis, err := s.GetSpendingAnalysis(ctx, userID, 30)
+	if err != nil {
+		return nil, err
+	}
+	return analysis.RecurringSubscriptions, nil
+}
+
 // --- DirectPay ---
 
-// InitiateDeposit starts a one-time DirectPay debit from the user's linked
-// bank account. Returns the approval URL the user must visit to authorise
+// InitiateDeposit starts a one-time DirectPay debit from the user's linked// bank account. Returns the approval URL the user must visit to authorise
 // the payment and the payment record ID for tracking.
 func (s *Service) InitiateDeposit(ctx context.Context, userID, accountID uuid.UUID, amountKobo int64, description, reference, redirectURL, customerEmail, customerName string) (*entities.MonoPayment, error) {
 	acct, err := s.repo.GetLinkedAccountByID(ctx, userID, accountID)
