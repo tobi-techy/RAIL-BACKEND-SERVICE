@@ -19,7 +19,13 @@ const (
 // and is used for all subsequent Financial Data API calls.
 type MonoLinkedAccount struct {
 	ID            uuid.UUID  `json:"id" db:"id"`
-	UserID        uuid.UUID  `json:"user_id" db:"user_id"`
+	// UserID is nil for a guest-linked account (pre-signup). It is set when the
+	// guest signs up and the account is claimed. See GuestToken.
+	UserID        *uuid.UUID `json:"user_id" db:"user_id"`
+	// GuestToken ties a pre-signup linked account to a guest chat session. It is
+	// cleared when the account is attached to a real user. Exactly one of
+	// UserID or GuestToken is set for a linked account.
+	GuestToken    string     `json:"guest_token,omitempty" db:"guest_token"`
 	MonoAccountID string     `json:"mono_account_id" db:"mono_account_id"` // Mono's persistent account ID
 	Institution   string     `json:"institution" db:"institution"`         // bank name
 	AccountName   string     `json:"account_name" db:"account_name"`       // account holder name

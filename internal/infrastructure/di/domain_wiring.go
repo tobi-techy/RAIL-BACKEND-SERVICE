@@ -1361,6 +1361,11 @@ func (c *Container) wireChatOnboarding() {
 	if c.MiriamMemoryRepo != nil && c.ConversationRepo != nil {
 		onboarder.SetGuestHandoff(c.MiriamMemoryRepo, &guestTranscriptAdapter{convRepo: c.ConversationRepo})
 	}
+	// Pre-signup bank linking (Mono): lets a guest share their real spending and
+	// get the conversational aha before creating an account.
+	if c.MonoService != nil {
+		onboarder.SetGuestMonoLinker(c.MonoService)
+	}
 	c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
 }
 

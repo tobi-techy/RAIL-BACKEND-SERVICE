@@ -77,7 +77,7 @@ func (s *Service) CompleteLinking(ctx context.Context, userID uuid.UUID, code st
 	}
 
 	entity := &entities.MonoLinkedAccount{
-		UserID:        userID,
+		UserID:        &userID,
 		MonoAccountID: exchangeResp.ID,
 		Institution:   acct.BankName,
 		AccountName:   acct.Name,
@@ -96,6 +96,155 @@ func (s *Service) CompleteLinking(ctx context.Context, userID uuid.UUID, code st
 	}
 
 	return entity, nil
+}
+
+// InitiateGuestLinking starts a Mono Connect flow for a guest (pre-signup)
+// chat session. The guest token is passed as MetaRef so the linking session is
+// tied to the guest conversation, not to a user that does not exist yet.
+func (s *Service) InitiateGuestLinking(ctx context.Context, guestToken, customerName, customerEmail, redirectURL string) (string, error) {
+	if guestToken == "" {
+		return "", fmt.Errorf("guest token is required")
+	}
+	resp, err := s.client.InitiateLinking(ctx, &LinkingRequest{
+		CustomerName:  customerName,
+		CustomerEmail: customerEmail,
+		MetaRef:       guestToken,
+		RedirectURL:   redirectURL,
+	})
+	if err != nil {
+		return "", fmt.Errorf("initiate guest mono linking: %w", err)
+	}
+	return resp, nil
+}
+
+// CompleteGuestLinking exchanges the Mono Connect widget code for a persistent
+// account and stores it as a guest-linked account (user_id NULL, guest_token
+// set). The account is claimed by a real user at signup via
+// AttachLinkedAccountToUser.
+func (s *Service) CompleteGuestLinking(ctx context.Context, guestToken, code string) (*entities.MonoLinkedAccount, error) {
+	if guestToken == "" {
+		return nil, fmt.Errorf("guest token is required")
+	}
+	exchangeResp, err := s.client.ExchangeCode(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("exchange mono code: %w", err)
+	}
+
+	acct, err := s.client.GetAccount(ctx, exchangeResp.ID)
+	if err != nil {
+		s.logger.Warn("Failed to fetch Mono account details after guest linking",
+			zap.String("mono_account_id", exchangeResp.ID),
+			zap.Error(err))
+		acct = &AccountInfo{
+			ID:            exchangeResp.ID,
+			Name:          exchangeResp.Name,
+			AccountNumber: exchangeResp.AccountNumber,
+			Type:          exchangeResp.Type,
+		}
+	}
+
+	accountNumberLast4 := acct.AccountNumber
+	if len(accountNumberLast4) > 4 {
+		accountNumberLast4 = accountNumberLast4[len(accountNumberLast4)-4:]
+	}
+
+	entity := &entities.MonoLinkedAccount{
+		GuestToken:    guestToken,
+		MonoAccountID: exchangeResp.ID,
+		Institution:   acct.BankName,
+		AccountName:   acct.Name,
+		AccountNumber: accountNumberLast4,
+		AccountType:   acct.Type,
+		Currency:      acct.Currency,
+		Balance:       acct.Balance,
+		Status:        entities.MonoAccountStatusLinked,
+	}
+	if entity.Currency == "" {
+		entity.Currency = "NGN"
+	}
+
+	if err := s.repo.CreateLinkedAccount(ctx, entity); err != nil {
+		return nil, fmt.Errorf("persist guest mono linked account: %w", err)
+	}
+
+	return entity, nil
+}
+
+// AttachGuestAccountToUser claims a guest-linked Mono account for a real user
+// at signup. Returns the claimed account.
+func (s *Service) AttachGuestAccountToUser(ctx context.Context, guestToken string, userID uuid.UUID) (*entities.MonoLinkedAccount, error) {
+	acct, err := s.repo.GetLinkedAccountByGuestToken(ctx, guestToken)
+	if err != nil {
+		return nil, fmt.Errorf("get guest mono account: %w", err)
+	}
+	if err := s.repo.AttachLinkedAccountToUser(ctx, acct.MonoAccountID, userID); err != nil {
+		return nil, fmt.Errorf("attach guest mono account: %w", err)
+	}
+	acct.UserID = &userID
+	acct.GuestToken = ""
+	return acct, nil
+}
+
+// GetGuestSpendingAnalysis computes a spending breakdown for a guest-linked
+// Mono account directly from Mono (the guest has no user row yet, so the
+// imported-transactions tables cannot hold their data). This is the data behind
+// Miriam's conversational "aha" moment before signup.
+func (s *Service) GetGuestSpendingAnalysis(ctx context.Context, guestToken string, days int) (*entities.MonoSpendingAnalysis, error) {
+	if guestToken == "" {
+		return nil, fmt.Errorf("guest token is required")
+	}
+	acct, err := s.repo.GetLinkedAccountByGuestToken(ctx, guestToken)
+	if err != nil {
+		return nil, fmt.Errorf("get guest mono account: %w", err)
+	}
+	if acct.Status == entities.MonoAccountStatusUnlinked {
+		return nil, fmt.Errorf("account is unlinked")
+	}
+	if days <= 0 {
+		days = 30
+	}
+	end := time.Now().UTC()
+	start := end.AddDate(0, 0, -days)
+
+	txns, err := s.client.GetTransactions(ctx, acct.MonoAccountID, &TransactionQuery{Start: start, End: end})
+	if err != nil {
+		return nil, fmt.Errorf("fetch guest mono transactions: %w", err)
+	}
+
+	analysis := &entities.MonoSpendingAnalysis{
+		Period: entities.MonoAnalysisPeriod{Start: start, End: end, Days: days},
+	}
+	byCat := map[string]*entities.MonoCategoryBreakdown{}
+	for _, t := range txns {
+		if t.Type == "credit" {
+			analysis.TotalCredits += t.Amount
+			continue
+		}
+		analysis.TotalDebits += t.Amount
+		cat := t.Category
+		if cat == "" {
+			cat = "Other"
+		}
+		b := byCat[cat]
+		if b == nil {
+			b = &entities.MonoCategoryBreakdown{Category: cat}
+			byCat[cat] = b
+		}
+		b.Amount += t.Amount
+		b.Count++
+	}
+	analysis.TransactionCount = len(txns)
+	analysis.NetCashFlow = analysis.TotalCredits - analysis.TotalDebits
+	if analysis.TotalCredits > 0 {
+		analysis.SavingsRate = float64(analysis.NetCashFlow) / float64(analysis.TotalCredits)
+	}
+	for _, b := range byCat {
+		if analysis.TotalDebits > 0 {
+			b.Percent = float64(b.Amount) / float64(analysis.TotalDebits)
+		}
+		analysis.ByCategory = append(analysis.ByCategory, *b)
+	}
+	return analysis, nil
 }
 
 // --- Account Sync ---

@@ -35,13 +35,47 @@ func (r *MonoRepository) CreateLinkedAccount(ctx context.Context, acct *entities
 	if acct.Status == "" {
 		acct.Status = entities.MonoAccountStatusLinked
 	}
+	// user_id is nullable for a guest-linked account; pass a nil-safe value.
+	var userID interface{}
+	if acct.UserID != nil {
+		userID = *acct.UserID
+	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO mono_linked_accounts (id, user_id, mono_account_id, institution, account_name, account_number, account_type, currency, balance, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		acct.ID, acct.UserID, acct.MonoAccountID, acct.Institution, acct.AccountName,
+		INSERT INTO mono_linked_accounts (id, user_id, guest_token, mono_account_id, institution, account_name, account_number, account_type, currency, balance, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		acct.ID, userID, nullableStr(acct.GuestToken), acct.MonoAccountID, acct.Institution, acct.AccountName,
 		acct.AccountNumber, acct.AccountType, acct.Currency, acct.Balance, acct.Status,
 		acct.CreatedAt, acct.UpdatedAt)
 	return err
+}
+
+// nullableStr returns nil for an empty string so the DB stores NULL, not ''.
+func nullableStr(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func (r *MonoRepository) GetLinkedAccountByGuestToken(ctx context.Context, guestToken string) (*entities.MonoLinkedAccount, error) {
+	var acct entities.MonoLinkedAccount
+	err := r.db.GetContext(ctx, &acct, `
+		SELECT * FROM mono_linked_accounts WHERE guest_token = $1`, guestToken)
+	if err != nil {
+		return nil, fmt.Errorf("get mono linked account by guest token: %w", err)
+	}
+	return &acct, nil
+}
+
+func (r *MonoRepository) AttachLinkedAccountToUser(ctx context.Context, monoAccountID string, userID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE mono_linked_accounts
+		SET user_id = $2, guest_token = NULL, updated_at = NOW()
+		WHERE mono_account_id = $1`, monoAccountID, userID)
+	if err != nil {
+		return fmt.Errorf("attach mono linked account to user: %w", err)
+	}
+	return nil
 }
 
 func (r *MonoRepository) GetLinkedAccountByID(ctx context.Context, userID, accountID uuid.UUID) (*entities.MonoLinkedAccount, error) {

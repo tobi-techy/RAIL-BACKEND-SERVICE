@@ -102,18 +102,40 @@ var guestTools = []GuestToolDef{
 	},
 	{
 		Name: "start_signup",
-		Description: "Begin account setup because the person wants something that needs one (the audit, a plan, " +
-			"their first deposit, linking a bank, saving a goal). Your reply text must naturally ask for their " +
-			"phone number unless the state block says you already have it.",
+		Description: "Begin account setup ONLY because the person wants to move real money (their first deposit, a " +
+			"withdrawal, sending money, paying a bill). Do NOT call this for chatting, linking their bank, " +
+			"getting their spending picture, or saving a goal — those need no account. Your reply text must " +
+			"naturally ask for their phone number unless the state block says you already have it.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"reason": map[string]interface{}{
 					"type":        "string",
-					"description": "What they want that needs an account, in a few words.",
+					"description": "What money move they want that needs an account, in a few words.",
 				},
 			},
 			"required": []string{"reason"},
+		},
+	},
+	{
+		Name: "connect_bank",
+		Description: "Send them a tappable link to connect their real bank (Mono) so you can see where their money " +
+			"actually goes. Call it the moment they agree to let you look, or when the picture would make the " +
+			"next step obvious. This needs NO account. Your reply text must hand them the link and set up the " +
+			"aha: one category, one comparison to income, one question.",
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
+		Name: "get_bank_statement_analysis",
+		Description: "Fetch their linked bank's real spending picture. Call it the moment the state block says " +
+			"mono_linked: true, then deliver the aha: one category, one comparison to income, one question. " +
+			"Never dump an audit.",
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
 		},
 	},
 	{
@@ -151,6 +173,8 @@ type guestOutcome struct {
 	poll         *PollRequest
 	startSignup  bool
 	signupReason string
+	connectBank  bool
+	analysis     bool
 	end          bool
 	endReason    string
 	notes        []guestNote
@@ -303,6 +327,10 @@ func (b *guestBrain) applyToolCall(out *guestOutcome, tc GuestToolCall) {
 		} else {
 			b.logger.Warn("start_signup: missing or non-string 'reason'", zap.String("tool", tc.Name))
 		}
+	case "connect_bank":
+		out.connectBank = true
+	case "get_bank_statement_analysis":
+		out.analysis = true
 	case "send_poll":
 		qRaw, ok := tc.Arguments["question"].(string)
 		if !ok {
