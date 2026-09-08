@@ -151,7 +151,7 @@ func (s *Service) CompleteGuestLinking(ctx context.Context, guestToken, code str
 	}
 
 	entity := &entities.MonoLinkedAccount{
-		GuestToken:    guestToken,
+		GuestToken:    &guestToken,
 		MonoAccountID: exchangeResp.ID,
 		Institution:   acct.BankName,
 		AccountName:   acct.Name,
@@ -183,7 +183,7 @@ func (s *Service) AttachGuestAccountToUser(ctx context.Context, guestToken strin
 		return nil, fmt.Errorf("attach guest mono account: %w", err)
 	}
 	acct.UserID = &userID
-	acct.GuestToken = ""
+	acct.GuestToken = nil
 	return acct, nil
 }
 
@@ -532,7 +532,7 @@ func (s *Service) GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, day
 		savingsRate = float64(netCashFlow) / float64(totalCredits)
 	}
 
-	return &entities.MonoSpendingAnalysis{
+	analysis := &entities.MonoSpendingAnalysis{
 		TotalCredits:     totalCredits,
 		TotalDebits:      totalDebits,
 		NetCashFlow:      netCashFlow,
@@ -540,7 +540,41 @@ func (s *Service) GetSpendingAnalysis(ctx context.Context, userID uuid.UUID, day
 		ByCategory:       categories,
 		Period:           entities.MonoAnalysisPeriod{Start: start, End: end, Days: days},
 		TransactionCount: txnCount,
-	}, nil
+	}
+
+	// Enrich with income stability, recurring subscriptions, and cash-flow
+	// forecast from the imported transactions, so the authenticated analysis
+	// matches the guest shape (and the subscription follow-up nudge can fire).
+	if recent, err := s.repo.GetRecentTransactions(ctx, userID, start, end); err == nil {
+		enrichAnalysis(analysis, importedTxnsToDomain(recent))
+	}
+
+	return analysis, nil
+}
+
+// importedTxnsToDomain converts imported transactions to the domain Transaction
+// shape used by enrichAnalysis.
+func importedTxnsToDomain(txns []*entities.MonoImportedTransaction) []Transaction {
+	if len(txns) == 0 {
+		return nil
+	}
+	out := make([]Transaction, 0, len(txns))
+	for _, t := range txns {
+		if t == nil {
+			continue
+		}
+		out = append(out, Transaction{
+			ID:          t.MonoTxnID,
+			Amount:      t.Amount,
+			Type:        t.Type,
+			Description: t.Description,
+			Category:    t.Category,
+			SubCategory: t.SubCategory,
+			Date:        t.TransactionDate,
+			Reference:   t.Reference,
+		})
+	}
+	return out
 }
 
 // DetectedSubscriptions returns the recurring subscriptions detected in a
@@ -556,7 +590,8 @@ func (s *Service) DetectedSubscriptions(ctx context.Context, userID uuid.UUID) (
 
 // --- DirectPay ---
 
-// InitiateDeposit starts a one-time DirectPay debit from the user's linked// bank account. Returns the approval URL the user must visit to authorise
+// InitiateDeposit starts a one-time DirectPay debit from the user's linked
+// bank account. Returns the approval URL the user must visit to authorise
 // the payment and the payment record ID for tracking.
 func (s *Service) InitiateDeposit(ctx context.Context, userID, accountID uuid.UUID, amountKobo int64, description, reference, redirectURL, customerEmail, customerName string) (*entities.MonoPayment, error) {
 	acct, err := s.repo.GetLinkedAccountByID(ctx, userID, accountID)

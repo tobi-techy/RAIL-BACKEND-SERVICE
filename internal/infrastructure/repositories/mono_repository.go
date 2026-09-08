@@ -43,18 +43,10 @@ func (r *MonoRepository) CreateLinkedAccount(ctx context.Context, acct *entities
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO mono_linked_accounts (id, user_id, guest_token, mono_account_id, institution, account_name, account_number, account_type, currency, balance, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		acct.ID, userID, nullableStr(acct.GuestToken), acct.MonoAccountID, acct.Institution, acct.AccountName,
+		acct.ID, userID, acct.GuestToken, acct.MonoAccountID, acct.Institution, acct.AccountName,
 		acct.AccountNumber, acct.AccountType, acct.Currency, acct.Balance, acct.Status,
 		acct.CreatedAt, acct.UpdatedAt)
 	return err
-}
-
-// nullableStr returns nil for an empty string so the DB stores NULL, not ”.
-func nullableStr(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
 }
 
 func (r *MonoRepository) GetLinkedAccountByGuestToken(ctx context.Context, guestToken string) (*entities.MonoLinkedAccount, error) {

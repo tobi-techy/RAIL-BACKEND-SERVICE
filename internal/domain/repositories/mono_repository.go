@@ -36,6 +36,9 @@ type MonoRepository interface {
 
 	ImportTransactions(ctx context.Context, txns []*entities.MonoImportedTransaction) (int, error)
 	GetTransactions(ctx context.Context, userID, accountID uuid.UUID, limit, offset int) ([]*entities.MonoImportedTransaction, error)
+	// GetRecentTransactions returns imported transactions across all linked
+	// accounts for a user within a date range. Feeds the enriched analysis.
+	GetRecentTransactions(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]*entities.MonoImportedTransaction, error)
 	GetSpendingSummary(ctx context.Context, userID uuid.UUID, start, end time.Time) (totalCredits, totalDebits int64, txnCount int, err error)
 	GetCategoryBreakdown(ctx context.Context, userID uuid.UUID, start, end time.Time) ([]entities.MonoCategoryBreakdown, error)
 

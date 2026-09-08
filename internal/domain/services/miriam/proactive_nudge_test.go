@@ -27,7 +27,7 @@ func TestNudgeFromSubscriptions_PicksHighestAnnualCost(t *testing.T) {
 	if n.TriggerType != entities.NudgeTriggerSubscription {
 		t.Fatalf("expected subscription trigger, got %s", n.TriggerType)
 	}
-	if !strings.Contains(n.Message, "Gym") || !strings.Contains(n.Message, "240000") {
+	if !strings.Contains(n.Message, "Gym") || !strings.Contains(n.Message, "$2400") {
 		t.Fatalf("expected the gym at its annual cost in the message, got: %q", n.Message)
 	}
 }

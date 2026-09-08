@@ -417,7 +417,10 @@ func (e *ProactiveNudgeEngine) nudgeFromSubscriptions(ctx context.Context, userI
 		return nil
 	}
 	symbol := e.resolveSymbol(ctx, userID)
-	msg := fmt.Sprintf("You're still paying %s%d a month for %s. That's %s%d a year. Want to look at it?", symbol, best.Amount, best.Merchant, symbol, bestAnnual)
+	// Amount is stored in kobo/cents; divide by 100 for the major-unit display.
+	monthly := best.Amount / 100
+	annual := monthly * 12
+	msg := fmt.Sprintf("You're still paying %s%d a month for %s. That's %s%d a year. Want to look at it?", symbol, monthly, best.Merchant, symbol, annual)
 
 	return &entities.ProactiveNudge{
 		ID:          uuid.New(),

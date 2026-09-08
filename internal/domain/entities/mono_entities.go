@@ -23,9 +23,10 @@ type MonoLinkedAccount struct {
 	// guest signs up and the account is claimed. See GuestToken.
 	UserID *uuid.UUID `json:"user_id" db:"user_id"`
 	// GuestToken ties a pre-signup linked account to a guest chat session. It is
-	// cleared when the account is attached to a real user. Exactly one of
-	// UserID or GuestToken is set for a linked account.
-	GuestToken    string     `json:"guest_token,omitempty" db:"guest_token"`
+	// cleared (NULL) when the account is attached to a real user. Exactly one of
+	// UserID or GuestToken is set for a linked account. *string so the nullable
+	// DB column scans cleanly (a plain string cannot hold NULL).
+	GuestToken    *string    `json:"guest_token,omitempty" db:"guest_token"`
 	MonoAccountID string     `json:"mono_account_id" db:"mono_account_id"` // Mono's persistent account ID
 	Institution   string     `json:"institution" db:"institution"`         // bank name
 	AccountName   string     `json:"account_name" db:"account_name"`       // account holder name
