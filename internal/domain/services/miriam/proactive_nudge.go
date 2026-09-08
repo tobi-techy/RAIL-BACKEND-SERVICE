@@ -2,10 +2,10 @@ package miriam
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,22 +15,20 @@ import (
 )
 
 var (
-	rng   = rand.New(rand.NewSource(time.Now().UnixNano()))
-	rngMu sync.Mutex
+	// cryptoSource provides cryptographically secure randomness for the nudge
+	// engine's small selection choices.
+	cryptoSource = cryptorand.Reader
 )
 
 func randIntn(n int) int {
-	rngMu.Lock()
-	v := rng.Intn(n)
-	rngMu.Unlock()
-	return v
-}
-
-func randFloat64() float64 {
-	rngMu.Lock()
-	v := rng.Float64()
-	rngMu.Unlock()
-	return v
+	if n <= 0 {
+		return 0
+	}
+	bi, err := cryptorand.Int(cryptoSource, big.NewInt(int64(n)))
+	if err != nil {
+		return 0
+	}
+	return int(bi.Int64())
 }
 
 // ProactiveNudgeStore persists proactive nudges.
