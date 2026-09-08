@@ -83,11 +83,12 @@ type OnboardingLinker interface {
 	LinkVerified(ctx context.Context, userID uuid.UUID, platform entities.Platform, senderUserID string) (*entities.PlatformIdentity, error)
 }
 
-// GuestMoneyTypeWriter persists the agent's read of the guest's money style so
-// the authenticated Miriam calibrates tone from the first turn. Satisfied by
-// the Miriam memory repository. Optional.
+// GuestMoneyTypeWriter persists the agent's read of the guest's money style and
+// money dials so the authenticated Miriam calibrates tone from the first turn.
+// Satisfied by the Miriam memory repository. Optional.
 type GuestMoneyTypeWriter interface {
 	SetMoneyType(ctx context.Context, userID uuid.UUID, moneyType string) error
+	SetMoneyDials(ctx context.Context, userID uuid.UUID, dials string) error
 }
 
 // GuestTranscriptWriter replays the pre-signup conversation into the user's
@@ -133,6 +134,7 @@ type guestState struct {
 	Country            string         `json:"country,omitempty"`
 	Goal               string         `json:"goal,omitempty"`
 	MoneyType          string         `json:"money_type,omitempty"`
+	MoneyDial          string         `json:"money_dial,omitempty"`
 	Email              string         `json:"email,omitempty"`
 	Phone              string         `json:"phone,omitempty"`
 	Turns              []GuestMessage `json:"turns,omitempty"`
@@ -771,6 +773,10 @@ func (c *ChatOnboarder) applyNote(st *guestState, n guestNote) {
 		case "avoider", "optimizer", "worrier", "dreamer":
 			st.MoneyType = strings.ToLower(strings.TrimSpace(n.value))
 		}
+	case "money_dial":
+		if d := truncate(strings.TrimSpace(n.value), 200); d != "" {
+			st.MoneyDial = d
+		}
 	case "email":
 		if st.Email == "" {
 			st.Email = normalizeEmail(n.value)
@@ -1145,6 +1151,16 @@ func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.Platf
 			defer cancel()
 			if err := c.moneyTypes.SetMoneyType(ctx, uid, moneyType); err != nil {
 				c.logger.Warn("money type handoff failed", zap.Stringer("user_id", uid), zap.Error(err))
+			}
+		}()
+	}
+	if c.moneyTypes != nil && st.MoneyDial != "" {
+		dial := st.MoneyDial
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := c.moneyTypes.SetMoneyDials(ctx, uid, dial); err != nil {
+				c.logger.Warn("money dials handoff failed", zap.Stringer("user_id", uid), zap.Error(err))
 			}
 		}()
 	}

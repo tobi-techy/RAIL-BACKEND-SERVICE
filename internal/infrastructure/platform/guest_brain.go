@@ -89,8 +89,8 @@ var guestTools = []GuestToolDef{
 			"properties": map[string]interface{}{
 				"field": map[string]interface{}{
 					"type":        "string",
-					"enum":        []string{"first_name", "country", "goal", "money_type", "email"},
-					"description": "Which detail to record. money_type is your silent read: avoider, optimizer, worrier, or dreamer.",
+					"enum":        []string{"first_name", "country", "goal", "money_type", "money_dial", "email"},
+					"description": "Which detail to record. money_type is your silent read: avoider, optimizer, worrier, or dreamer. money_dial is what they love spending on, in their words.",
 				},
 				"value": map[string]interface{}{
 					"type":        "string",

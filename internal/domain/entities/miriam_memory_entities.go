@@ -85,6 +85,7 @@ type MiriamToneProfile struct {
 	PersonalityMode string          `json:"personality_mode" db:"personality_mode"` // "default", "roast", "coach", "protector", "celebration", "quiet"
 	ControlLevel    string          `json:"control_level" db:"control_level"`       // "full", "guided", "monitor"
 	MoneyType       string          `json:"money_type" db:"money_type"`             // "", "avoider", "optimizer", "worrier", "dreamer"
+	MoneyDials      string          `json:"money_dials" db:"money_dials"`           // what they love spending on (comma-separated)
 	SampleCount     int             `json:"sample_count" db:"sample_count"`
 	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`

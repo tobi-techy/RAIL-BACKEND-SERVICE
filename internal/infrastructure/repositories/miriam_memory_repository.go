@@ -180,6 +180,27 @@ func (r *MiriamMemoryRepository) SetMoneyType(ctx context.Context, userID uuid.U
 	return nil
 }
 
+// SetMoneyDials records what a person genuinely loves spending on (their money
+// dials, comma-separated). An empty value is a no-op. Existing dials are only
+// replaced when a non-empty read arrives, so a later read can refine, not wipe.
+func (r *MiriamMemoryRepository) SetMoneyDials(ctx context.Context, userID uuid.UUID, dials string) error {
+	dials = strings.TrimSpace(dials)
+	if dials == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO miriam_tone_profiles (user_id, money_dials)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET
+			money_dials = $2,
+			updated_at = NOW()`,
+		userID, dials)
+	if err != nil {
+		return fmt.Errorf("set money dials: %w", err)
+	}
+	return nil
+}
+
 // SetPersonalityMode updates the personality_mode column for a user's tone profile.
 func (r *MiriamMemoryRepository) SetPersonalityMode(ctx context.Context, userID uuid.UUID, mode string) error {
 	_, err := r.db.ExecContext(ctx, `

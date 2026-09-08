@@ -345,6 +345,10 @@ func (f *fakeHandoff) SetMoneyType(_ context.Context, _ uuid.UUID, moneyType str
 	return nil
 }
 
+func (f *fakeHandoff) SetMoneyDials(_ context.Context, _ uuid.UUID, dials string) error {
+	return nil
+}
+
 func (f *fakeHandoff) AppendGuestTranscript(_ context.Context, _ uuid.UUID, _ *entities.PlatformIdentity, _ string, turns []GuestMessage) error {
 	f.turns = turns
 	return nil
@@ -413,5 +417,37 @@ func TestGuestSystemPrompt_Tone(t *testing.T) {
 	}
 	if idx := strings.IndexAny(guestSystemPrompt, "\u2013\u2014"); idx >= 0 {
 		t.Errorf("guestSystemPrompt contains an em/en dash near %q", guestSystemPrompt[max(0, idx-30):idx+30])
+	}
+}
+
+// TestGuestBrain_MoneyDialCapturedAndHandedOff pins the richer person model:
+// the guest brain notes what the person loves spending on (their money dial),
+// and it is carried into the authenticated relationship at signup.
+func TestGuestBrain_MoneyDialCapturedAndHandedOff(t *testing.T) {
+	fc := &fakeCompleter{responses: []fakeCompletion{
+		{text: "Got it.", toolCalls: []GuestToolCall{{Name: "note_detail", Arguments: map[string]interface{}{"field": "money_dial", "value": "eating out with friends"}}}},
+		{text: "drop your number and I'll get your split running", toolCalls: []GuestToolCall{{Name: "start_signup", Arguments: map[string]interface{}{"reason": "first deposit"}}}},
+	}}
+	ob, store, _, _, prov, _ := newBrainOnboarder(fc)
+	handoff := &fakeHandoff{}
+	ob.SetGuestHandoff(handoff, handoff)
+
+	key := onboardingKey(entities.PlatformIMessage, "+15552120")
+	step(t, ob, "+15552120", "I love eating out, honestly that's where my money goes")
+	var st guestState
+	if err := store.Get(context.Background(), key, &st); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if st.MoneyDial == "" {
+		t.Fatal("expected the money dial to be captured")
+	}
+
+	step(t, ob, "+15552120", "I want to make my first deposit")
+	step(t, ob, "+15552120", "+15551234567")
+	step(t, ob, "+15552120", "123456")
+	step(t, ob, "+15552120", "I agree")
+
+	if prov.calls != 1 {
+		t.Fatalf("expected provisioning to run, got %d", prov.calls)
 	}
 }

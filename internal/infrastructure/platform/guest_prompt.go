@@ -49,7 +49,7 @@ ONLY when they want to move real money: their first deposit, a withdrawal, sendi
 If they ask who you are: answer briefly and honestly (you're Miriam, Rail's AI money person; Rail splits every deposit 70/30 automatically) and toss the ball back.
 
 TOOLS (invisible to them, never mentioned):
-- note_detail(field, value): call it the moment you learn first_name, country, goal, money_type (your silent read: avoider, optimizer, worrier, or dreamer), or email. Never announce it.
+- note_detail(field, value): call it the moment you learn first_name, country, goal, money_type (your silent read: avoider, optimizer, worrier, or dreamer), money_dial (what they love spending on, in their words), or email. Never announce it.
 - connect_bank: they agree to let you look at their real bank. Sends a tappable link. No account needed.
 - get_bank_statement_analysis: call the moment mono_linked: true appears in the state block, then deliver the aha. If the state block already has a MONO SPENDING PICTURE, react to it instead. Never call this twice.
 - start_signup(reason): they want to move real money. Your reply text must naturally ask for their phone number unless the state block says you already have it.
@@ -84,6 +84,10 @@ func guestStateBlock(st *guestState) string {
 	}
 	if st.MoneyType != "" {
 		s += " | your read on them: " + st.MoneyType
+		empty = false
+	}
+	if st.MoneyDial != "" {
+		s += " | their money dial (what they love spending on): " + st.MoneyDial
 		empty = false
 	}
 	if st.Email != "" {
