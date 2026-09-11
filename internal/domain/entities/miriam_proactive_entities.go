@@ -9,13 +9,13 @@ import (
 
 // Proactive nudge trigger types.
 const (
-	NudgeTriggerPrediction  = "prediction_triggered"
-	NudgeTriggerMemory      = "memory_reminder"
-	NudgeTriggerPattern     = "pattern_detected"
-	NudgeTriggerMilestone   = "milestone_approaching"
-	NudgeTriggerBillWarning = "bill_warning"
-	NudgeTriggerIdleMoney   = "idle_money"
-	NudgeTriggerIncomeEvent = "income_detected"
+	NudgeTriggerPrediction   = "prediction_triggered"
+	NudgeTriggerMemory       = "memory_reminder"
+	NudgeTriggerPattern      = "pattern_detected"
+	NudgeTriggerMilestone    = "milestone_approaching"
+	NudgeTriggerBillWarning  = "bill_warning"
+	NudgeTriggerIdleMoney    = "idle_money"
+	NudgeTriggerIncomeEvent  = "income_detected"
 	NudgeTriggerSubscription = "subscription_followup"
 )
 

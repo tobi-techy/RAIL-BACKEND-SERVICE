@@ -42,6 +42,32 @@ func (c *Container) initializePlatformMessaging() {
 				orchestrator: c.AIOrchestrator,
 				convRepo:     c.ConversationRepo,
 				deepLinkBase: c.Config.Platform.AppDeepLinkBaseURL,
+				logger:       c.ZapLog,
+			}
+
+			// Python-agent delegation: MIRIAM's LLM brain owns messaging chat and
+			// all mutations are confirmed via email OTP before the agent executes
+			// them through Go's REST. Go stays the money authority. Requires Redis
+			// for OTP staging — fail closed to the in-process orchestrator if gone.
+			if cfg := c.Config.PythonAgent; cfg.Enabled && cfg.BaseURL != "" && c.RedisClient != nil &&
+				c.Config.JWT.Secret != "" {
+				platformOrchestrator.python = ai.NewPythonAgentClient(ai.PythonAgentClientConfig{
+					BaseURL:   cfg.BaseURL,
+					JWTSecret: c.Config.JWT.Secret,
+					JWTTTL:    time.Duration(cfg.JWTTTLSeconds) * time.Second,
+					Timeout:   time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+				}, c.ZapLog)
+				platformOrchestrator.otpStore = ai.NewOtpStore(
+					c.RedisClient,
+					time.Duration(cfg.OTPTTLSeconds)*time.Second,
+					cfg.OTPMaxAttempts,
+					c.ZapLog,
+				)
+				platformOrchestrator.userRepo = c.UserRepo
+				platformOrchestrator.emailSvc = c.EmailService
+				c.ZapLog.Info("Platform messaging delegated to Python agent (MIRIAM)",
+					zap.String("base_url", cfg.BaseURL),
+				)
 			}
 
 			bridgeBaseURL := strings.TrimRight(c.Config.Platform.BridgeBaseURL, "/")

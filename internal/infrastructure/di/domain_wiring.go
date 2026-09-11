@@ -1694,12 +1694,6 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Info("Revenue sweep worker started",
 			zap.String("treasury_address", c.Config.Circle.TreasuryWalletAddress))
 	} else {
-		// #region agent log
-		writeFeeDebugLog("container.go:initializeServices", "revenue sweep worker disabled", "H1", map[string]interface{}{
-			"treasury_configured": c.Config.Circle.TreasuryWalletAddress != "",
-			"circle_configured":   c.CircleAdapter != nil,
-		})
-		// #endregion
 		c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
 	}
 

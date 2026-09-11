@@ -145,7 +145,7 @@ func (h *CircleWebhookHandler) SetSweepSuppressor(fn func(ctx context.Context, u
 
 // HandleWebhook is the Gin handler for POST /webhooks/circle.
 func (h *CircleWebhookHandler) HandleWebhook(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read Circle webhook body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})

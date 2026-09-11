@@ -2,10 +2,8 @@ package di
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"strconv"
 	"time"
 
@@ -22,6 +20,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 // passcodeStepUpAdapter wraps *passcode.Service to satisfy
@@ -130,62 +129,18 @@ type revenueSweepTransferAdapter struct {
 }
 
 func (a *revenueSweepTransferAdapter) TransferToTreasury(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, reference string) error {
-	// #region agent log
-	writeFeeDebugLog("container.go:TransferToTreasury", "treasury transfer attempt", "H4", map[string]interface{}{
-		"user_id": userID.String(), "amount": amount.StringFixed(2), "reference": reference,
-		"treasury_address_set": a.treasuryAddress != "",
-	})
-	// #endregion
 	walletID, tokenID, _, _, err := a.circle.FindWalletWithUSDC(ctx, userID.String())
 	if err != nil {
-		// #region agent log
-		writeFeeDebugLog("container.go:TransferToTreasury", "find user wallet failed", "H4", map[string]interface{}{
-			"user_id": userID.String(), "error": err.Error(),
-		})
-		// #endregion
 		return fmt.Errorf("find user wallet: %w", err)
 	}
 	tx, err := a.circle.TransferUSDCWithIdempotency(ctx, walletID, tokenID, a.treasuryAddress, amount.StringFixed(2), reference)
 	if err != nil {
-		// #region agent log
-		writeFeeDebugLog("container.go:TransferToTreasury", "circle transfer failed", "H4", map[string]interface{}{
-			"user_id": userID.String(), "wallet_id": walletID, "error": err.Error(),
-		})
-		// #endregion
 		return err
 	}
 	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
-		// #region agent log
-		writeFeeDebugLog("container.go:TransferToTreasury", "circle transfer rejected", "H4", map[string]interface{}{
-			"user_id": userID.String(), "tx_id": tx.ID, "state": tx.State,
-		})
-		// #endregion
 		return fmt.Errorf("transfer %s: %s", tx.State, tx.ID)
 	}
-	// #region agent log
-	writeFeeDebugLog("container.go:TransferToTreasury", "circle transfer accepted", "H4", map[string]interface{}{
-		"user_id": userID.String(), "tx_id": tx.ID, "state": tx.State,
-	})
-	// #endregion
 	return nil
-}
-
-// #region agent log
-func writeFeeDebugLog(location, message, hypothesisID string, data map[string]interface{}) {
-	payload := map[string]interface{}{
-		"sessionId": "b38437", "location": location, "message": message,
-		"hypothesisId": hypothesisID, "data": data, "timestamp": time.Now().UnixMilli(),
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile("/Users/tobi/Development/RAIL_BACKEND/.cursor/debug-b38437.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(append(b, '\n'))
-	_ = f.Close()
 }
 
 // platformVoiceAdapter adapts the ElevenLabs REST client to platform.VoiceTranscoder.
@@ -211,6 +166,14 @@ type orchestratorAdapter struct {
 	orchestrator *aiservice.AgentAdapter
 	convRepo     *repositories.ConversationRepository
 	deepLinkBase string
+	logger       *zap.Logger
+
+	// Python agent delegation (when Enabled, HandlePlatformMessage forwards to
+	// the Python agent and all mutations are confirmed via email OTP).
+	python   *ai.PythonAgentClient
+	otpStore *ai.OtpStore
+	userRepo *repositories.UserRepository // for email + KYC-derived role
+	emailSvc emailOTPSender              // SendCustomEmail for OTP delivery
 }
 
 const defaultAppDeepLinkBase = "rail://"
@@ -266,6 +229,11 @@ func friendlyPlatform(p string) string {
 }
 
 func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+	// Python-agent delegation path: MIRIAM's LLM brain owns the conversation.
+	if a.pythonDelegated() {
+		return a.handlePlatformMessagePython(ctx, userID, platformIdentityID, message, threadID, plat)
+	}
+
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		return nil, fmt.Errorf("parse user id: %w", err)
@@ -382,6 +350,12 @@ func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID,
 		return nil, fmt.Errorf("resolve conversation: %w", err)
 	}
 
+	// Python-delegated confirmation: a bare yes/vote can't pass the email OTP
+	// step-up — ask for the code instead of executing.
+	if reply, handled := a.confirmVoteWhenOTPPending(ctx, uid, cid); handled {
+		return reply, nil
+	}
+
 	// Defence in depth: a fund-moving action must never execute from a messaging
 	// vote — it should have been sent as an in-app card, never a poll.
 	if action, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid); ok && aiservice.IsFundMovingAction(action.Action) {
@@ -410,6 +384,10 @@ func (a *orchestratorAdapter) HasPendingPlatformAction(ctx context.Context, user
 	if err != nil {
 		return false
 	}
+	// Python-delegated confirmations are OTP-staged; report them too.
+	if a.pythonDelegated() && a.otpStore.DryPeek(ctx, cid) {
+		return true
+	}
 	_, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid)
 	return ok
 }
@@ -423,6 +401,9 @@ func (a *orchestratorAdapter) CancelPlatformAction(ctx context.Context, userID, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve conversation: %w", err)
 	}
+	// Drop any Python-staged OTP confirmation; also cancel a Go-native pending
+	// action if one somehow exists for the thread.
+	a.cancelOTPWhenPresent(ctx, cid)
 	if err := a.orchestrator.CancelAction(ctx, uid, cid); err != nil {
 		return nil, err
 	}
@@ -443,5 +424,3 @@ func actionSuccessSummary(action *entities.PendingAction) string {
 	}
 	return "all set"
 }
-
-// #endregion

@@ -6,12 +6,12 @@ import "math"
 type Dimension string
 
 const (
-	DimFinancial   Dimension = "financial_correctness"
-	DimAction      Dimension = "action_correctness"
-	DimProactivity Dimension = "proactivity"
-	DimJudge       Dimension = "llm_impact"
-	DimPersonality Dimension = "personality"
-	DimMemory      Dimension = "memory"
+	DimFinancial    Dimension = "financial_correctness"
+	DimAction       Dimension = "action_correctness"
+	DimProactivity  Dimension = "proactivity"
+	DimJudge        Dimension = "llm_impact"
+	DimPersonality  Dimension = "personality"
+	DimMemory       Dimension = "memory"
 	DimConversation Dimension = "conversation"
 )
 
@@ -20,12 +20,12 @@ const (
 // exercise are dropped and the remaining weights are renormalized, so a scenario is
 // only judged on what it actually tests.
 var dimensionWeights = map[Dimension]float64{
-	DimFinancial:   20,
-	DimAction:      20,
-	DimProactivity: 20,
-	DimJudge:       20,
-	DimPersonality: 10,
-	DimMemory:      10,
+	DimFinancial:    20,
+	DimAction:       20,
+	DimProactivity:  20,
+	DimJudge:        20,
+	DimPersonality:  10,
+	DimMemory:       10,
 	DimConversation: 10,
 }
 

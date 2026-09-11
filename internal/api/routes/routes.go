@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -1724,7 +1725,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Complete stuck PAJ orders (internal key auth)
 			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
 				key := c.GetHeader("X-Internal-Key")
-				if key == "" || key != container.Config.JWT.Secret {
+				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
 					c.JSON(401, gin.H{"error": "unauthorized"})
 					return
 				}
@@ -1813,7 +1814,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		if container.CircleAdapter != nil {
 			v1.POST("/ops/reverse-sol", func(c *gin.Context) {
 				key := c.GetHeader("X-Internal-Key")
-				if key == "" || key != container.Config.JWT.Secret {
+				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
 					c.JSON(401, gin.H{"error": "unauthorized"})
 					return
 				}

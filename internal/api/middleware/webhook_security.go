@@ -17,6 +17,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// maxWebhookBodyBytes caps webhook body reads to prevent memory exhaustion.
+const maxWebhookBodyBytes = 1 << 20 // 1MB
+
 // WebhookSecurityConfig holds webhook security configuration
 type WebhookSecurityConfig struct {
 	// Provider-specific webhook secrets for signature verification
@@ -153,7 +156,7 @@ func WebhookSecurity(
 
 		// 3. Read body for replay protection (preserve for handler)
 		if replayProtection != nil && len(config.Secrets) > 0 {
-			body, err := io.ReadAll(c.Request.Body)
+			body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodyBytes))
 			if err != nil {
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 					"error":   "INVALID_BODY",
@@ -240,7 +243,7 @@ func isUnifiedFundingWebhook(path string) bool {
 // detectProviderFromBody peeks at the request body to identify the webhook provider.
 // It restores the body so downstream handlers can still read it.
 func detectProviderFromBody(c *gin.Context) string {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodyBytes))
 	if err != nil {
 		// Restore body even on read error
 		c.Request.Body = io.NopCloser(bytes.NewBuffer([]byte{}))
@@ -396,7 +399,7 @@ func WebhookSecurityWithRedisV8(
 			ctx := c.Request.Context()
 			signature := extractSignature(c)
 			if signature != "" {
-				body, err := io.ReadAll(c.Request.Body)
+				body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodyBytes))
 				if err != nil {
 					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 						"error":   "INVALID_BODY",

@@ -16,10 +16,10 @@ import (
 
 // WithdrawalSecurityConfig holds withdrawal security settings
 type WithdrawalSecurityConfig struct {
-	MaxRequestsPerDay     int             // Max withdrawal requests per day (default: 3)
-	NewAccountDailyMax    decimal.Decimal // Daily max for accounts <30 days (default: $10,000)
-	EstablishedDailyMax   decimal.Decimal // Daily max for accounts >30 days (default: $100,000)
-	NewAccountAgeDays     int             // Days to be considered "new" (default: 30)
+	MaxRequestsPerDay   int             // Max withdrawal requests per day (default: 3)
+	NewAccountDailyMax  decimal.Decimal // Daily max for accounts <30 days (default: $10,000)
+	EstablishedDailyMax decimal.Decimal // Daily max for accounts >30 days (default: $100,000)
+	NewAccountAgeDays   int             // Days to be considered "new" (default: 30)
 }
 
 // DefaultWithdrawalSecurityConfig returns default security settings
@@ -99,7 +99,7 @@ func WithdrawalSecurityMiddleware(store WithdrawalSecurityStore, cfg WithdrawalS
 		}
 
 		// Read body to validate amount, then restore it for the handler
-		body, err := io.ReadAll(c.Request.Body)
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodyBytes))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": gin.H{"code": "INVALID_BODY", "message": "Failed to read request body"},
