@@ -443,6 +443,14 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 		parsed := ParseVCard(msg.VCardText)
 		contact = &parsed
 	}
+	// Carry the sender through to the guest brain so a Python-backed completer
+	// can key its agent call (and Python's per-sender interview state) on the
+	// same sender the Go funnel is tracking.
+	ctx = ContextWithGuestSender(ctx, GuestSender{
+		Platform: msg.Platform,
+		SenderID: msg.UserID,
+		ThreadID: msg.ThreadID,
+	})
 	reply, err := p.onboarder.Handle(ctx, OnboardInput{
 		Platform:      msg.Platform,
 		SenderID:      msg.UserID,

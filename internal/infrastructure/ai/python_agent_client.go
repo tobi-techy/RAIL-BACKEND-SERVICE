@@ -34,10 +34,14 @@ type PythonChatPoll struct {
 }
 
 // PythonOnboardingStatus mirrors the agent's onboarding marker so Go can log
-// and gate without parsing copy.
+// and gate without parsing copy. Automated distinguishes the plan-consent
+// outcome: consented to standing rules (false fires when the user declined and
+// only the draft was saved), so Go only hands completed-onboarded guests into
+// the account funnel when they actually said "set it up".
 type PythonOnboardingStatus struct {
 	Stage     string `json:"stage"`
 	Completed bool   `json:"completed"`
+	Automated bool   `json:"automated,omitempty"`
 }
 
 // PythonChatResponse mirrors the Python agent's /api/v1/chat response payload.
@@ -135,11 +139,23 @@ func (c *PythonAgentClient) Chat(ctx context.Context, userID uuid.UUID, email, r
 	return c.ChatWithApprovedActions(ctx, userID, email, role, conversationID, message, nil)
 }
 
+// ChatAsGuest advances a pre-signup (guest) conversation on the Python brain.
+// Guests carry a stable synthetic identity plus a unique per-sender username and
+// email (Python's users table enforces uniqueness on both), so the agent can
+// persist their conversation and interview state without ever colliding with a
+// real user row.
+func (c *PythonAgentClient) ChatAsGuest(ctx context.Context, userID uuid.UUID, username, email, role, conversationID, message string) (*PythonChatResponse, error) {
+	return c.doChat(ctx, userID, email, username, role, pythonChatRequest{
+		Message:        message,
+		ConversationID: conversationID,
+	})
+}
+
 // ChatWithApprovedActions is Chat plus the confirmation replay: after the user
 // proves their email OTP, Go sends the staged cards back as approved_actions so
 // the agent executes them (via Go's REST) and returns the final response.
 func (c *PythonAgentClient) ChatWithApprovedActions(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string, approved []PythonApprovedAction) (*PythonChatResponse, error) {
-	return c.doChat(ctx, userID, email, role, pythonChatRequest{
+	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:         message,
 		ConversationID:  conversationID,
 		ApprovedActions: approved,
@@ -150,7 +166,7 @@ func (c *PythonAgentClient) ChatWithApprovedActions(ctx context.Context, userID 
 // that rendered it) so Python can match the option text while being tolerant of
 // bridge truncation of the options.
 func (c *PythonAgentClient) ChatPollVote(ctx context.Context, userID uuid.UUID, email, role, conversationID, message, pollTitle string) (*PythonChatResponse, error) {
-	return c.doChat(ctx, userID, email, role, pythonChatRequest{
+	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:        message,
 		ConversationID: conversationID,
 		IsPollVote:     true,
@@ -161,7 +177,7 @@ func (c *PythonAgentClient) ChatPollVote(ctx context.Context, userID uuid.UUID, 
 // ChatWithDocument forwards a linked statement's scan summary so the Python
 // brain can ground the financial plan in it during onboarding.
 func (c *PythonAgentClient) ChatWithDocument(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string, doc PythonChatDocument) (*PythonChatResponse, error) {
-	return c.doChat(ctx, userID, email, role, pythonChatRequest{
+	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:         message,
 		ConversationID:  conversationID,
 		Document:        &doc,
@@ -169,14 +185,14 @@ func (c *PythonAgentClient) ChatWithDocument(ctx context.Context, userID uuid.UU
 }
 
 // doChat mints the per-user JWT and posts one /api/v1/chat payload.
-func (c *PythonAgentClient) doChat(ctx context.Context, userID uuid.UUID, email, role string, body pythonChatRequest) (*PythonChatResponse, error) {
+func (c *PythonAgentClient) doChat(ctx context.Context, userID uuid.UUID, email, username, role string, body pythonChatRequest) (*PythonChatResponse, error) {
 	// Mint a short-lived per-user "agent" token (not a normal access token):
 	// Python decodes it to recover user_id/email/role for its own RBAC, then
 	// reuses this SAME token to call Go's own REST API on the user's behalf
 	// (get_balance, send_money, etc). Go's Authentication middleware
 	// recognizes the "agent" token type and skips the interactive-session
 	// lookup for it, since this token is never the product of a real login.
-	token, _, err := auth.GenerateAgentToken(userID, email, role, c.jwtSecret, int(c.jwtTTL.Seconds()))
+	token, _, err := auth.GenerateAgentToken(userID, email, username, role, c.jwtSecret, int(c.jwtTTL.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("mint python agent jwt: %w", err)
 	}
@@ -229,7 +245,7 @@ func (c *PythonAgentClient) doChat(ctx context.Context, userID uuid.UUID, email,
 // memory server-side. Fail-open behaviour lives in Python: no data, a disabled
 // feature, or an unreachable model all resolve to "stay quiet".
 func (c *PythonAgentClient) AnalyzeProactive(ctx context.Context, userID uuid.UUID, email, role string) (*PythonProactiveOutcome, error) {
-	token, _, err := auth.GenerateAgentToken(userID, email, role, c.jwtSecret, int(c.jwtTTL.Seconds()))
+	token, _, err := auth.GenerateAgentToken(userID, email, "", role, c.jwtSecret, int(c.jwtTTL.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("mint python agent jwt: %w", err)
 	}

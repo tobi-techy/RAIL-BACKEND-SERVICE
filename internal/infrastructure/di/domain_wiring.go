@@ -1348,11 +1348,25 @@ func (c *Container) wireChatOnboarding() {
 		onboarder.SetBabyStepsSeeder(c.BabyStepsSeeder)
 	}
 	// Agent-led guest conversation: the LLM owns the words, the deterministic
-	// executor owns identity verification. Without a provider the onboarder
-	// falls back to its scripted flow, so a nil AIProvider only degrades tone.
+	// executor owns identity verification. When the platform brain is the Python
+	// MIRIAM agent, the guest conversation rides it too (with the Cencori
+	// provider as a fallback so a Python outage degrades instead of breaking);
+	// otherwise the shared provider drives guests as before. Without any provider
+	// the onboarder falls back to its scripted flow.
 	if c.AIProvider != nil {
-		onboarder.SetGuestCompleter(&guestCompleterAdapter{provider: c.AIProvider})
-		c.ZapLog.Info("guest onboarding agent enabled", zap.String("provider", c.AIProvider.Name()))
+		if c.PythonAgentClient != nil {
+			onboarder.SetGuestCompleter(&pythonGuestCompleterAdapter{
+				python:   c.PythonAgentClient,
+				fallback: &guestCompleterAdapter{provider: c.AIProvider},
+				logger:   c.ZapLog,
+			})
+			c.ZapLog.Info("guest onboarding agent enabled",
+				zap.String("brain", "python-miriam"),
+				zap.String("fallback", c.AIProvider.Name()))
+		} else {
+			onboarder.SetGuestCompleter(&guestCompleterAdapter{provider: c.AIProvider})
+			c.ZapLog.Info("guest onboarding agent enabled", zap.String("provider", c.AIProvider.Name()))
+		}
 	} else {
 		c.ZapLog.Warn("guest onboarding agent unavailable; using transparent retry replies")
 	}

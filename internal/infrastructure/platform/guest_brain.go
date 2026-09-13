@@ -46,6 +46,16 @@ type GuestCompleter interface {
 	CompleteGuest(ctx context.Context, systemPrompt string, messages []GuestMessage, tools []GuestToolDef) (*GuestResult, error)
 }
 
+// CompletionBudget is optionally implemented by a GuestCompleter whose single
+// turn needs more than guestCompletionTimeout — for example a Python brain that
+// runs a full agent turn (agent loop plus model call) rather than one bare model
+// completion. A custom budget trades the default two-short-attempts for one
+// longer, careful attempt so the whole turn still fits the bridge deadline; the
+// adapter is expected to own its own retries/fallback at that point.
+type CompletionBudget interface {
+	CompletionTimeout() time.Duration
+}
+
 // guestCompletionTimeout bounds a single completion attempt. Two attempts plus
 // the retry gap must stay under the bridge's 15s inbound POST timeout, or the
 // bridge gives up on a turn we are about to answer.
@@ -203,9 +213,18 @@ func newGuestBrain(completer GuestCompleter, logger *zap.Logger) *guestBrain {
 // failure. A blip here is otherwise visible to the person as an apology, so the
 // retry happens before the turn is given up on.
 func (b *guestBrain) complete(ctx context.Context, systemPrompt string, messages []GuestMessage, tools []GuestToolDef) (*GuestResult, error) {
+	attempts := guestCompletionAttempts
+	timeout := guestCompletionTimeout
+	if cb, ok := b.completer.(CompletionBudget); ok {
+		if t := cb.CompletionTimeout(); t > timeout {
+			timeout = t
+			attempts = 1 // one long careful attempt; budget adapters own their retries
+		}
+	}
+
 	var lastErr error
-	for attempt := 1; attempt <= guestCompletionAttempts; attempt++ {
-		attemptCtx, cancel := context.WithTimeout(ctx, guestCompletionTimeout)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 		res, err := b.completer.CompleteGuest(attemptCtx, systemPrompt, messages, tools)
 		cancel()
 		if err == nil {
@@ -217,7 +236,7 @@ func (b *guestBrain) complete(ctx context.Context, systemPrompt string, messages
 		if ctx.Err() != nil {
 			break
 		}
-		if attempt < guestCompletionAttempts {
+		if attempt < attempts {
 			b.logger.Warn("guest completion failed; retrying",
 				zap.Int("attempt", attempt), zap.Error(err))
 			select {

@@ -12,6 +12,7 @@ import (
 type Claims struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Email     string    `json:"email"`
+	Username  string    `json:"username,omitempty"`
 	Role      string    `json:"role"`
 	TokenType string    `json:"token_type,omitempty"` // access
 	jwt.RegisteredClaims
@@ -138,13 +139,14 @@ func ValidateToken(tokenString, secret string) (*Claims, error) {
 //   - This does NOT grant any additional privilege over a normal access
 //     token for the same user/role -- RBAC and KYC-capability checks are
 //     unaffected.
-func GenerateAgentToken(userID uuid.UUID, email, role, secret string, accessTTL int) (string, time.Time, error) {
+func GenerateAgentToken(userID uuid.UUID, email, username, role, secret string, accessTTL int) (string, time.Time, error) {
 	now := time.Now()
 	accessExp := now.Add(time.Duration(accessTTL) * time.Second)
 
 	claims := Claims{
 		UserID:    userID,
 		Email:     email,
+		Username:  username,
 		Role:      role,
 		TokenType: "agent",
 		RegisteredClaims: jwt.RegisteredClaims{

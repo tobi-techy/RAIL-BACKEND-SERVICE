@@ -40,7 +40,7 @@ func TestAuthenticationAgentTokenSkipsSessionLookup(t *testing.T) {
 	cfg := &config.Config{JWT: config.JWTConfig{Secret: secret}}
 	userID := uuid.New()
 
-	agentToken, _, err := auth.GenerateAgentToken(userID, "agent@example.com", "verified", secret, 120)
+	agentToken, _, err := auth.GenerateAgentToken(userID, "agent@example.com", "", "verified", secret, 120)
 	require.NoError(t, err)
 	accessToken, _, err := auth.GenerateAccessToken(userID, "user@example.com", "user", secret, 3600)
 	require.NoError(t, err)

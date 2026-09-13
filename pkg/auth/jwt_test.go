@@ -55,7 +55,7 @@ func TestGenerateAgentTokenAndValidateAnyAccessToken(t *testing.T) {
 	userID := uuid.New()
 	secret := "test-secret"
 
-	agentToken, expiresAt, err := GenerateAgentToken(userID, "agent@example.com", "verified", secret, 120)
+	agentToken, expiresAt, err := GenerateAgentToken(userID, "agent@example.com", "", "verified", secret, 120)
 	if err != nil {
 		t.Fatalf("GenerateAgentToken failed: %v", err)
 	}
