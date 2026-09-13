@@ -2,9 +2,7 @@ package revenue_sweep
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,17 +93,8 @@ func (w *Worker) sweep(ctx context.Context) error {
 	defer atomic.StoreInt32(&w.sweeping, 0)
 
 	if w.db == nil {
-		// #region agent log
-		writeAgentDebugLog("revenue_sweep/worker.go:sweep", "revenue sweep skipped: db nil", "H1", map[string]interface{}{"enabled": false})
-		// #endregion
 		return nil
 	}
-
-	// #region agent log
-	writeAgentDebugLog("revenue_sweep/worker.go:sweep", "revenue sweep cycle started", "H2", map[string]interface{}{
-		"interval_hours": w.interval.Hours(), "min_sweep_amount": w.minSweepAmount.String(),
-	})
-	// #endregion
 
 	wSwept, wFailed, wErr := w.sweepWithdrawalFees(ctx)
 	pSwept, pFailed, pErr := w.sweepPajOfframpFees(ctx)
@@ -139,12 +128,6 @@ func (w *Worker) sweepWithdrawalFees(ctx context.Context) (int, int, error) {
 		return 0, 0, nil
 	}
 
-	// #region agent log
-	writeAgentDebugLog("revenue_sweep/worker.go:sweepWithdrawalFees", "unswept withdrawal fees found", "H5", map[string]interface{}{
-		"count": len(fees),
-	})
-	// #endregion
-
 	w.logger.Info("Revenue sweep: found unswept withdrawal fees", zap.Int("count", len(fees)))
 
 	var swept, failed int
@@ -157,11 +140,6 @@ func (w *Worker) sweepWithdrawalFees(ctx context.Context) (int, int, error) {
 		// UUID from the withdrawal ID so retries are idempotent without violating format.
 		ref := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("fee-sweep-%s", f.ID.String()))).String()
 		if err := w.transfer.TransferToTreasury(ctx, f.UserID, f.Amount, ref); err != nil {
-			// #region agent log
-			writeAgentDebugLog("revenue_sweep/worker.go:sweepWithdrawalFees", "treasury transfer failed", "H4", map[string]interface{}{
-				"withdrawal_id": f.ID.String(), "user_id": f.UserID.String(), "amount": f.Amount.String(), "error": err.Error(),
-			})
-			// #endregion
 			w.logger.Warn("Revenue sweep transfer failed",
 				zap.String("withdrawal_id", f.ID.String()),
 				zap.String("user_id", f.UserID.String()),
@@ -169,12 +147,6 @@ func (w *Worker) sweepWithdrawalFees(ctx context.Context) (int, int, error) {
 			failed++
 			continue
 		}
-
-		// #region agent log
-		writeAgentDebugLog("revenue_sweep/worker.go:sweepWithdrawalFees", "treasury transfer succeeded", "H4", map[string]interface{}{
-			"withdrawal_id": f.ID.String(), "user_id": f.UserID.String(), "amount": f.Amount.String(),
-		})
-		// #endregion
 
 		if _, err := w.db.ExecContext(ctx, `UPDATE withdrawals SET fee_swept = TRUE WHERE id = $1`, f.ID); err != nil {
 			// CRITICAL: Fee transfer succeeded but DB mark failed. Money moved but fee
@@ -256,23 +228,3 @@ func (w *Worker) sweepPajOfframpFees(ctx context.Context) (int, int, error) {
 	}
 	return swept, failed, nil
 }
-
-// #region agent log
-func writeAgentDebugLog(location, message, hypothesisID string, data map[string]interface{}) {
-	payload := map[string]interface{}{
-		"sessionId": "b38437", "location": location, "message": message,
-		"hypothesisId": hypothesisID, "data": data, "timestamp": time.Now().UnixMilli(),
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile("/Users/tobi/Development/RAIL_BACKEND/.cursor/debug-b38437.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(append(b, '\n'))
-	_ = f.Close()
-}
-
-// #endregion

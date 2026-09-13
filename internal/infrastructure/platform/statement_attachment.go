@@ -27,6 +27,7 @@ type StatementScan struct {
 // environments where statement workers are disabled.
 type StatementAttachmentHandler interface {
 	ScanGuest(ctx context.Context, senderID string, attachment StatementAttachment) (*StatementScan, error)
+	ScanLinked(ctx context.Context, userID uuid.UUID, attachment StatementAttachment) (*StatementScan, error)
 	EnqueueLinked(ctx context.Context, userID uuid.UUID, attachment StatementAttachment) (*PlatformReply, error)
 	CompletePending(ctx context.Context, userID uuid.UUID, pendingID string) error
 }

@@ -52,6 +52,7 @@ func (h *AutomationHandler) CreateAutomation(c *gin.Context) {
 		if !h.requireTransferAutomationPasscode(c, userID, req.ActionConfig) {
 			return
 		}
+		req.ActionConfig = automation.StampTransferConsent(req.ActionConfig, time.Now().UTC())
 	}
 
 	result, err := h.service.Create(c.Request.Context(), userID, &req)
@@ -132,6 +133,7 @@ func (h *AutomationHandler) UpdateAutomation(c *gin.Context) {
 		if !h.requireTransferAutomationPasscode(c, userID, req.ActionConfig) {
 			return
 		}
+		req.ActionConfig = automation.StampTransferConsent(req.ActionConfig, time.Now().UTC())
 	}
 
 	result, err := h.service.Update(c.Request.Context(), userID, id, &req)
@@ -192,10 +194,17 @@ func (h *AutomationHandler) GetAutomationLogs(c *gin.Context) {
 }
 
 func isTransferAutomation(actionType string) bool {
-	return actionType == "transfer_to_stash" || actionType == "transfer_to_spend"
+	return actionType == "transfer_to_stash" || actionType == "transfer_to_spend" ||
+		actionType == "send_p2p" || actionType == "pay_utility_bill"
 }
 
 func (h *AutomationHandler) requireTransferAutomationPasscode(c *gin.Context, userID uuid.UUID, actionConfig map[string]interface{}) bool {
+	// Agent tokens are minted by Go for the Python MIRIAM agent after the
+	// messaging email-OTP step-up. Chat cannot produce a passcode session, so
+	// the OTP is the proof of identity — same tradeoff as stash↔spending.
+	if isAgent, _ := c.Get("is_agent"); isAgent == true {
+		return true
+	}
 	if h.passcodeValidator == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "PASSCODE_SESSION_UNAVAILABLE", "message": "Passcode session validation is currently unavailable"})
 		return false
@@ -210,7 +219,6 @@ func (h *AutomationHandler) requireTransferAutomationPasscode(c *gin.Context, us
 		c.JSON(http.StatusForbidden, gin.H{"error": "PASSCODE_SESSION_INVALID", "message": "Passcode session is invalid or expired"})
 		return false
 	}
-	automation.StampTransferConsent(actionConfig, time.Now().UTC())
 	if err := h.passcodeValidator.InvalidateSession(c.Request.Context(), userID, token); err != nil {
 		h.logger.Warn("failed to invalidate passcode session after transfer automation consent", zap.Error(err), zap.String("user_id", userID.String()))
 	}

@@ -51,6 +51,115 @@ func TestGenerateAccessTokenCreatesUniqueTokensWithinSameSecond(t *testing.T) {
 	assertTokenID(t, first, "test-secret")
 }
 
+func TestGenerateAgentTokenAndValidateAnyAccessToken(t *testing.T) {
+	userID := uuid.New()
+	secret := "test-secret"
+
+	agentToken, expiresAt, err := GenerateAgentToken(userID, "agent@example.com", "verified", secret, 120)
+	if err != nil {
+		t.Fatalf("GenerateAgentToken failed: %v", err)
+	}
+	if time.Until(expiresAt) <= 0 {
+		t.Fatal("agent token should expire in the future")
+	}
+
+	accessToken, _, err := GenerateAccessToken(userID, "user@example.com", "user", secret, 3600)
+	if err != nil {
+		t.Fatalf("GenerateAccessToken failed: %v", err)
+	}
+
+	refreshPair, err := GenerateTokenPair(userID, "user@example.com", "user", secret, 3600, 86400)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair failed: %v", err)
+	}
+
+	missingType, err := signClaims(Claims{
+		UserID: userID,
+		Email:  "user@example.com",
+		Role:   "user",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "rail_service",
+			Subject:   userID.String(),
+			ID:        uuid.NewString(),
+		},
+	}, secret)
+	if err != nil {
+		t.Fatalf("sign missing-type token: %v", err)
+	}
+
+	garbageType, err := signClaims(Claims{
+		UserID:    userID,
+		Email:     "user@example.com",
+		Role:      "user",
+		TokenType: "not-a-real-type",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "rail_service",
+			Subject:   userID.String(),
+			ID:        uuid.NewString(),
+		},
+	}, secret)
+	if err != nil {
+		t.Fatalf("sign garbage-type token: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		token      string
+		wantAnyErr bool
+		wantAgent  bool
+		wantUserID uuid.UUID
+	}{
+		{name: "agent accepted by ValidateAnyAccessToken", token: agentToken, wantAgent: true, wantUserID: userID},
+		{name: "access accepted by ValidateAnyAccessToken", token: accessToken, wantAgent: false, wantUserID: userID},
+		{name: "missing token_type rejected", token: missingType, wantAnyErr: true},
+		{name: "garbage token_type rejected", token: garbageType, wantAnyErr: true},
+		{name: "refresh rejected by ValidateAnyAccessToken", token: refreshPair.RefreshToken, wantAnyErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claims, isAgent, err := ValidateAnyAccessToken(tt.token, secret)
+			if tt.wantAnyErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ValidateAnyAccessToken: %v", err)
+			}
+			if isAgent != tt.wantAgent {
+				t.Fatalf("isAgent=%v, want %v", isAgent, tt.wantAgent)
+			}
+			if claims.UserID != tt.wantUserID {
+				t.Fatalf("user id %s, want %s", claims.UserID, tt.wantUserID)
+			}
+		})
+	}
+
+	if _, err := ValidateToken(agentToken, secret); err == nil {
+		t.Fatal("ValidateToken must reject agent tokens so interactive-session callers stay strict")
+	}
+	if _, err := ValidateToken(accessToken, secret); err != nil {
+		t.Fatalf("ValidateToken should still accept access tokens: %v", err)
+	}
+	if _, err := ValidateToken(missingType, secret); err == nil {
+		t.Fatal("ValidateToken must reject tokens with missing token_type")
+	}
+	if _, err := ValidateToken(garbageType, secret); err == nil {
+		t.Fatal("ValidateToken must reject tokens with garbage token_type")
+	}
+}
+
+func signClaims(claims Claims, secret string) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
+}
+
 func TestVoiceSessionTokenValidatesOnlyAsVoiceSession(t *testing.T) {
 	userID := uuid.New()
 

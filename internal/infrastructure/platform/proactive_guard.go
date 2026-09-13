@@ -143,6 +143,36 @@ func (g *ProactiveGuard) Allow(ctx context.Context, userID uuid.UUID, critical b
 	return g.AllowCategory(ctx, userID, ProactiveCategoryNudge, critical)
 }
 
+// CanSendCategory reports whether a non-critical proactive message of the given
+// category may be attempted right now WITHOUT consuming the daily cap. It checks
+// per-category flags and quiet hours, so expensive work (an LLM analysis tick)
+// can be gated before any token is spent. The actual send via AllowCategory
+// still enforces the daily cap; this peek intentionally does not increment it.
+func (g *ProactiveGuard) CanSendCategory(ctx context.Context, userID uuid.UUID, category string) bool {
+	p := g.resolvePrefs(ctx, userID)
+
+	if !categoryAllowed(p, category) {
+		if g.logger != nil {
+			g.logger.Debug("proactive peek suppressed: category disabled",
+				zap.Stringer("user_id", userID), zap.String("category", category))
+		}
+		return false
+	}
+
+	loc := g.location(ctx, userID, p)
+	local := time.Now().In(loc)
+
+	if inQuietHoursPrefs(local, p.QuietEnabled, p.QuietStart, p.QuietEnd) {
+		if g.logger != nil {
+			g.logger.Debug("proactive peek suppressed: quiet hours",
+				zap.Stringer("user_id", userID), zap.Int("local_hour", local.Hour()))
+		}
+		return false
+	}
+
+	return true
+}
+
 // AllowCategory is category-aware: checks allow_* flags, quiet hours, daily cap.
 func (g *ProactiveGuard) AllowCategory(ctx context.Context, userID uuid.UUID, category string, critical bool) bool {
 	p := g.resolvePrefs(ctx, userID)

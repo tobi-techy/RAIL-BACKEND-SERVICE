@@ -151,7 +151,7 @@ type BridgeCustomerEvent struct {
 // Bridge applies the configured fallback mode (default: DECLINE).
 // Signature verification uses X-Webhook-Signature header (RSA, same format as standard webhooks).
 func (h *BridgeWebhookHandler) HandleRealTimeAuth(c *gin.Context) {
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot read body"})
 		return
@@ -221,7 +221,7 @@ func (h *BridgeWebhookHandler) HandleRealTimeAuth(c *gin.Context) {
 // POST /webhooks/bridge
 func (h *BridgeWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Read raw body
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})

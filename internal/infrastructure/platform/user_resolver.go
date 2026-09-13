@@ -15,6 +15,7 @@ type PlatformIdentityRepository interface {
 	GetByUserAndPlatform(ctx context.Context, userID uuid.UUID, platform entities.Platform) (*entities.PlatformIdentity, error)
 	GetByHandshakeTokenHash(ctx context.Context, hash string) (*entities.PlatformIdentity, error)
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]*entities.PlatformIdentity, error)
+	ListLinkedByPlatform(ctx context.Context, platform entities.Platform) ([]*entities.PlatformIdentity, error)
 	Create(ctx context.Context, pi *entities.PlatformIdentity) error
 	SetHandshake(ctx context.Context, id uuid.UUID, tokenHash string, expiresAt time.Time) error
 	CompleteHandshake(ctx context.Context, id uuid.UUID, platformUserID string) error

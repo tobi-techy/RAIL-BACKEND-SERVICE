@@ -15,10 +15,10 @@ import (
 // UnifiedFundingWebhookHandler routes funding webhooks from multiple sources
 // POST /webhooks/funding
 type UnifiedFundingWebhookHandler struct {
-	bridgeHandler             *BridgeWebhookHandler
-	alpacaHandler             *AlpacaWebhookHandlers
-	logger *zap.Logger
-	mu     sync.RWMutex
+	bridgeHandler *BridgeWebhookHandler
+	alpacaHandler *AlpacaWebhookHandlers
+	logger        *zap.Logger
+	mu            sync.RWMutex
 }
 
 // NewUnifiedFundingWebhookHandler creates a unified webhook handler
@@ -63,7 +63,7 @@ const (
 // POST /webhooks/funding
 func (h *UnifiedFundingWebhookHandler) HandleFundingWebhook(c *gin.Context) {
 	// Read raw body
-	rawBody, err := io.ReadAll(c.Request.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})

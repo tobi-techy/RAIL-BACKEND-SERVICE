@@ -55,6 +55,14 @@ func (d *BridgeDispatcher) SendChatMessage(ctx context.Context, userID uuid.UUID
 	return d.deliver(ctx, userID, message, ProactiveCategoryNudge, false)
 }
 
+// GuardForPeek exposes the attached proactive guard so callers (e.g. the
+// proactive reacher) can gate expensive work on quiet hours / category flags
+// before burning tokens. Returns nil when no guard is attached — callers that
+// require a guard should treat nil as "delivery will gate instead".
+func (d *BridgeDispatcher) GuardForPeek() *ProactiveGuard {
+	return d.guard
+}
+
 // SendGenericNotification satisfies the Miriam Notifier interface. Title and body
 // are folded into a single iMessage; action receipts (money moved) are treated as
 // important and bypass the daily cap so users always hear about their own money.

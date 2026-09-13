@@ -52,7 +52,7 @@ func NewAlpacaWebhookHandlers(eventProcessor *alpacaService.EventProcessor, logg
 // HandleTradeUpdate handles trade/order update webhooks from Alpaca
 // POST /api/v1/webhooks/alpaca/trade
 func (h *AlpacaWebhookHandlers) HandleTradeUpdate(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", "error", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -130,7 +130,7 @@ func (h *AlpacaWebhookHandlers) HandleTradeUpdate(c *gin.Context) {
 // HandleAccountUpdate handles account status update webhooks
 // POST /api/v1/webhooks/alpaca/account
 func (h *AlpacaWebhookHandlers) HandleAccountUpdate(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", "error", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -190,7 +190,7 @@ func (h *AlpacaWebhookHandlers) HandleAccountUpdate(c *gin.Context) {
 // HandleTransferUpdate handles transfer/funding update webhooks
 // POST /api/v1/webhooks/alpaca/transfer
 func (h *AlpacaWebhookHandlers) HandleTransferUpdate(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", "error", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -223,7 +223,7 @@ func (h *AlpacaWebhookHandlers) HandleTransferUpdate(c *gin.Context) {
 // HandleNonTradeActivity handles non-trade activity webhooks (dividends, fees, etc.)
 // POST /api/v1/webhooks/alpaca/nta
 func (h *AlpacaWebhookHandlers) HandleNonTradeActivity(c *gin.Context) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodySize))
 	if err != nil {
 		h.logger.Error("Failed to read webhook body", "error", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})

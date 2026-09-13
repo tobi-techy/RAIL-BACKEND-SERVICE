@@ -25,6 +25,7 @@ import (
 	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
+	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
@@ -693,6 +694,25 @@ func (c *Container) GetAnalyticsHandlers() *handlers.AnalyticsHandlers {
 		return nil
 	}
 	return handlers.NewAnalyticsHandlers(c.PortfolioAnalyticsService, c.Logger)
+}
+
+// GetFinancialSnapshotHandler returns the ledger-backed financial-snapshot
+// handler used by the delegated Python agent's financial intelligence engine.
+// It degrades field-by-field (zeros / unset) when a provider is missing, so it
+// is safe to construct whenever the container is.
+func (c *Container) GetFinancialSnapshotHandler() *handlers.FinancialSnapshotHandler {
+	if c.LedgerSpendingRepo == nil {
+		return handlers.NewFinancialSnapshotHandler(
+			nil, c.LedgerService, c.BudgetRepo, c.FinancialProfileRepo, c.Logger,
+		)
+	}
+	return handlers.NewFinancialSnapshotHandler(
+		spendingsvc.NewService(c.LedgerSpendingRepo),
+		c.LedgerService,
+		c.BudgetRepo,
+		c.FinancialProfileRepo,
+		c.Logger,
+	)
 }
 
 // GetMarketHandlers returns market data handlers

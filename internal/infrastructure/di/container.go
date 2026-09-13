@@ -218,6 +218,10 @@ type Container struct {
 	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
 	MiriamProactiveChatSender      miriamservice.ProactiveChatSender
 	MiriamBridgeDispatcher         *platform.BridgeDispatcher
+	// PythonAgentClient is the LLM brain client for messaging channels. Also
+	// used by the proactive reacher worker; only set when Python delegation is
+	// enabled (see platform_wiring.go).
+	PythonAgentClient              *ai.PythonAgentClient
 	AutomationService              *automation.Service
 	BillPayService                 *billpay.Service
 	TravelService                  *travel.Service

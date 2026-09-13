@@ -64,6 +64,16 @@ func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]*entities.
 	}
 	return out, nil
 }
+
+func (f *fakeRepo) ListLinkedByPlatform(_ context.Context, p entities.Platform) ([]*entities.PlatformIdentity, error) {
+	var out []*entities.PlatformIdentity
+	for _, pi := range f.byID {
+		if pi.Platform == p && pi.LinkedAt != nil {
+			out = append(out, pi)
+		}
+	}
+	return out, nil
+}
 func (f *fakeRepo) Create(_ context.Context, pi *entities.PlatformIdentity) error {
 	f.byID[pi.ID] = pi
 	f.byPlatUser[key(pi.Platform, pi.PlatformUserID)] = pi.ID
@@ -127,9 +137,10 @@ type fakeVoice struct {
 }
 
 type fakeStatementHandler struct {
-	guestCalls  int
-	linkedCalls int
-	lastBytes   []byte
+	guestCalls      int
+	scanLinkedCalls int
+	linkedCalls     int
+	lastBytes       []byte
 }
 
 func (h *fakeStatementHandler) ScanGuest(_ context.Context, _ string, attachment StatementAttachment) (*StatementScan, error) {
@@ -137,6 +148,15 @@ func (h *fakeStatementHandler) ScanGuest(_ context.Context, _ string, attachment
 	h.lastBytes = append([]byte(nil), attachment.Data...)
 	return &StatementScan{
 		PendingID: "pending-1",
+		Summary:   "I found 3 transactions. Spending was highest on groceries.",
+	}, nil
+}
+
+func (h *fakeStatementHandler) ScanLinked(_ context.Context, _ uuid.UUID, attachment StatementAttachment) (*StatementScan, error) {
+	h.scanLinkedCalls++
+	h.lastBytes = append([]byte(nil), attachment.Data...)
+	return &StatementScan{
+		PendingID: "linked-scan-1",
 		Summary:   "I found 3 transactions. Spending was highest on groceries.",
 	}, nil
 }
@@ -171,6 +191,45 @@ func (o *fakeOrchestrator) HasPendingPlatformAction(_ context.Context, _, _, _ s
 func (o *fakeOrchestrator) CancelPlatformAction(_ context.Context, _, _, _ string, _ entities.Platform) (*PlatformReply, error) {
 	o.cancelCalls++
 	return &PlatformReply{Text: "cancelled"}, nil
+}
+
+// fakeVoteDocOrchestrator adds the optional PollVoteOrchestrator /
+// DocumentOrchestrator surfaces to fakeOrchestrator with settable outcomes.
+type fakeVoteDocOrchestrator struct {
+	fakeOrchestrator
+	voteHandled    bool
+	docHandled     bool
+	optOutOfScan   bool
+	voteReply      *PlatformReply
+	docReply       *PlatformReply
+	voteCalls      int
+	docCalls       int
+	lastVoteOption string
+	lastVoteTitle  string
+	lastDocScan    *StatementScan
+}
+
+func (o *fakeVoteDocOrchestrator) WantsStatementScan(_ context.Context, _ uuid.UUID) bool {
+	return !o.optOutOfScan
+}
+
+func (o *fakeVoteDocOrchestrator) HandlePlatformPollVote(_ context.Context, _, _, _ string, _ entities.Platform, optionText, pollTitle string) (*PlatformReply, bool, error) {
+	o.voteCalls++
+	o.lastVoteOption = optionText
+	o.lastVoteTitle = pollTitle
+	if !o.voteHandled {
+		return nil, false, nil
+	}
+	return o.voteReply, true, nil
+}
+
+func (o *fakeVoteDocOrchestrator) HandlePlatformDocument(_ context.Context, _, _, _ string, _ entities.Platform, scan StatementScan) (*PlatformReply, bool, error) {
+	o.docCalls++
+	o.lastDocScan = &scan
+	if !o.docHandled {
+		return nil, false, nil
+	}
+	return o.docReply, true, nil
 }
 
 func linkedIdentity(f *fakeRepo, platformUserID string) *entities.PlatformIdentity {
@@ -409,6 +468,185 @@ func TestProcess_LinkedPDFUsesStatementHandler(t *testing.T) {
 	}
 	if len(*sent) == 0 || !strings.Contains((*sent)[len(*sent)-1].Text, "scanning") {
 		t.Fatalf("expected scan acknowledgement, got %#v", sent)
+	}
+}
+
+func TestProcess_LinkedPDFGroundsDocumentOrchestrator(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeVoteDocOrchestrator{
+		voteHandled: false,
+		docHandled:  true,
+		docReply:    &PlatformReply{Text: "Plan ready."},
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := InboundMessage{
+		Platform:     entities.PlatformIMessage,
+		UserID:       "+15551234",
+		ThreadID:     "space-1",
+		IsDocument:   true,
+		DocumentB64:  base64.StdEncoding.EncodeToString([]byte("%PDF-test")),
+		DocumentMime: "application/pdf",
+		DocumentName: "statement.pdf",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if handler.scanLinkedCalls != 1 {
+		t.Fatalf("expected one ScanLinked call, got %d", handler.scanLinkedCalls)
+	}
+	if handler.linkedCalls != 1 {
+		t.Fatalf("document orchestrator handled the scan; the durable enqueue must still run, got %d", handler.linkedCalls)
+	}
+	if orch.docCalls != 1 || orch.lastDocScan == nil {
+		t.Fatalf("expected one handled document call: %d", orch.docCalls)
+	}
+	if len(*sent) == 0 || (*sent)[len(*sent)-1].Text != "Plan ready." {
+		t.Fatalf("expected document-orchestrator reply, got %#v", sent)
+	}
+}
+
+func TestProcess_LinkedPDFSkipsSyncScanWhenOrchestratorOptsOut(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeVoteDocOrchestrator{
+		docHandled:   true,
+		optOutOfScan: true,
+		docReply:     &PlatformReply{Text: "Plan ready."},
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := InboundMessage{
+		Platform:     entities.PlatformIMessage,
+		UserID:       "+15551234",
+		ThreadID:     "space-1",
+		IsDocument:   true,
+		DocumentB64:  base64.StdEncoding.EncodeToString([]byte("%PDF-test")),
+		DocumentMime: "application/pdf",
+		DocumentName: "statement.pdf",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if handler.scanLinkedCalls != 0 {
+		t.Fatalf("orchestrator opted out of the sync scan; expected zero ScanLinked calls, got %d", handler.scanLinkedCalls)
+	}
+	if handler.linkedCalls != 1 {
+		t.Fatalf("expected durable EnqueueLinked, got %d", handler.linkedCalls)
+	}
+	if orch.docCalls != 0 {
+		t.Fatalf("orchestrator opted out of the scan; it must not be consulted, got %d calls", orch.docCalls)
+	}
+	if len(*sent) == 0 || !strings.Contains((*sent)[len(*sent)-1].Text, "scanning") {
+		t.Fatalf("expected durable scan acknowledgement, got %#v", sent)
+	}
+}
+
+func TestProcess_LinkedPDFFallsBackToEnqueueWhenOrchestratorDeclines(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeVoteDocOrchestrator{docHandled: false}
+	p, sent, _ := newTestProcessor(repo, orch)
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := InboundMessage{
+		Platform:     entities.PlatformIMessage,
+		UserID:       "+15551234",
+		ThreadID:     "space-1",
+		IsDocument:   true,
+		DocumentB64:  base64.StdEncoding.EncodeToString([]byte("%PDF-test")),
+		DocumentMime: "application/pdf",
+		DocumentName: "statement.pdf",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.docCalls != 1 {
+		t.Fatalf("expected one document orchestrator call, got %d", orch.docCalls)
+	}
+	if handler.linkedCalls != 1 {
+		t.Fatalf("expected fallback EnqueueLinked, got %d", handler.linkedCalls)
+	}
+	if len(*sent) == 0 || !strings.Contains((*sent)[len(*sent)-1].Text, "scanning") {
+		t.Fatalf("expected scan acknowledgement, got %#v", sent)
+	}
+}
+
+func TestProcess_PollVoteRoutedToVoteOrchestrator(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeVoteDocOrchestrator{
+		voteHandled: true,
+		voteReply:   &PlatformReply{Text: "next question"},
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	msg := InboundMessage{
+		Platform:   entities.PlatformIMessage,
+		UserID:     "+15551234",
+		ThreadID:   "space-1",
+		Text:       "Calm",
+		IsPollVote: true,
+		PollTitle:  "How do you feel about money?",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.voteCalls != 1 || orch.lastVoteOption != "Calm" || orch.lastVoteTitle != "How do you feel about money?" {
+		t.Fatalf("unexpected vote orchestration: calls=%d option=%q title=%q", orch.voteCalls, orch.lastVoteOption, orch.lastVoteTitle)
+	}
+	if len(*sent) == 0 || (*sent)[len(*sent)-1].Text != "next question" {
+		t.Fatalf("expected vote-orchestrator reply, got %#v", sent)
+	}
+}
+
+func TestProcess_StrayPollVoteDroppedWhenOrchestratorDeclines(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeVoteDocOrchestrator{voteHandled: false}
+	p, _, _ := newTestProcessor(repo, orch)
+
+	msg := InboundMessage{
+		Platform:   entities.PlatformIMessage,
+		UserID:     "+15551234",
+		ThreadID:   "space-1",
+		Text:       "Cancel",
+		IsPollVote: true,
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.voteCalls != 1 {
+		t.Fatalf("expected one declined vote orchestration, got %d", orch.voteCalls)
+	}
+	if orch.lastVoteOption != "Cancel" {
+		t.Fatalf("orchestrator did not see the vote text: %q", orch.lastVoteOption)
 	}
 }
 

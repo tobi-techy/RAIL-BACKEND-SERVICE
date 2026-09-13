@@ -107,15 +107,21 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		return nil, fmt.Errorf("email provider is required")
 	}
 
-	if provider != "resend" && provider != "unosend" && provider != "ses" {
-		return nil, fmt.Errorf("unsupported email provider: %s (supported: ses, resend, unosend)", provider)
+	svc := &EmailService{logger: logger, config: config}
+
+	// "log" is a dev-only sink that writes the rendered email (including any
+	// OTP code) to the logger instead of sending. It exists so local E2E harnesses
+	// can capture verification codes. Never allowed in production.
+	if provider == "log" {
+		if strings.EqualFold(config.Environment, "production") {
+			return nil, fmt.Errorf("email provider 'log' is not allowed in production")
+		}
+		return svc, nil
 	}
 
 	if strings.TrimSpace(config.FromEmail) == "" {
 		return nil, fmt.Errorf("email from address is required")
 	}
-
-	svc := &EmailService{logger: logger, config: config}
 
 	if provider == "ses" {
 		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion("us-east-1"))
@@ -150,6 +156,9 @@ func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, 
 	defer cancel()
 
 	switch strings.ToLower(e.config.Provider) {
+	case "log":
+		e.logNewLogProviderEmail(to, subject, htmlContent, textContent)
+		return nil
 	case "ses":
 		return e.sendViaSES(ctxWithTimeout, to, subject, htmlContent, textContent)
 	case "resend":
@@ -157,6 +166,19 @@ func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, 
 	default:
 		return e.sendViaUnosend(ctxWithTimeout, to, subject, htmlContent, textContent)
 	}
+}
+
+// logNewLogProviderEmail writes a rendered, sendable email to the logger as a
+// structured event, so dev/test harnesses can read OTP codes without a real
+// delivery provider. Least-privilege: this sink must never be enabled in
+// production (enforced in NewEmailService).
+func (e *EmailService) logNewLogProviderEmail(to, subject, htmlContent, textContent string) {
+	e.logger.Info("EMAIL_LOG_PROVIDER (dev sink, not sent)",
+		zap.String("to", to),
+		zap.String("subject", subject),
+		zap.String("html", htmlContent),
+		zap.String("text", textContent),
+	)
 }
 
 func (e *EmailService) sendViaSES(ctx context.Context, to, subject, htmlContent, textContent string) error {

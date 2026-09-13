@@ -1361,6 +1361,11 @@ func (c *Container) wireChatOnboarding() {
 	if c.MiriamMemoryRepo != nil && c.ConversationRepo != nil {
 		onboarder.SetGuestHandoff(c.MiriamMemoryRepo, &guestTranscriptAdapter{convRepo: c.ConversationRepo})
 	}
+	// Pre-signup bank linking (Mono): lets a guest share their real spending and
+	// get the conversational aha before creating an account.
+	if c.MonoService != nil {
+		onboarder.SetGuestMonoLinker(c.MonoService)
+	}
 	c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
 }
 
@@ -1590,6 +1595,9 @@ func (c *Container) initializeDomainServices() error {
 	if c.MiriamProactiveChatSender != nil {
 		c.MiriamProactiveNudgeEngine.SetChatSender(c.MiriamProactiveChatSender)
 	}
+	if c.MonoService != nil {
+		c.MiriamProactiveNudgeEngine.SetSubscriptionProvider(c.MonoService)
+	}
 	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
 		suggestionRepo,
 		c.MiriamIntelligenceService, // MandateProvider
@@ -1686,12 +1694,6 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Info("Revenue sweep worker started",
 			zap.String("treasury_address", c.Config.Circle.TreasuryWalletAddress))
 	} else {
-		// #region agent log
-		writeFeeDebugLog("container.go:initializeServices", "revenue sweep worker disabled", "H1", map[string]interface{}{
-			"treasury_configured": c.Config.Circle.TreasuryWalletAddress != "",
-			"circle_configured":   c.CircleAdapter != nil,
-		})
-		// #endregion
 		c.ZapLog.Warn("Revenue sweep worker disabled: missing treasury_wallet_address or circle config")
 	}
 

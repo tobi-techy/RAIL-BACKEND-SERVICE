@@ -61,7 +61,7 @@ func NewGenerator(cfg GeneratorConfig) *Generator {
 		arch = AllArchetypes()
 	}
 	return &Generator{
-		rng:        rand.New(rand.NewSource(cfg.Seed)), //nolint:gosec // deterministic sim fuzzing, not security
+		rng:        rand.New(rand.NewSource(cfg.Seed)), //nolint:gosec //nosec G404 -- deterministic sim fuzzing, not security
 		archetypes: arch,
 	}
 }

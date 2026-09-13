@@ -83,11 +83,12 @@ type OnboardingLinker interface {
 	LinkVerified(ctx context.Context, userID uuid.UUID, platform entities.Platform, senderUserID string) (*entities.PlatformIdentity, error)
 }
 
-// GuestMoneyTypeWriter persists the agent's read of the guest's money style so
-// the authenticated Miriam calibrates tone from the first turn. Satisfied by
-// the Miriam memory repository. Optional.
+// GuestMoneyTypeWriter persists the agent's read of the guest's money style and
+// money dials so the authenticated Miriam calibrates tone from the first turn.
+// Satisfied by the Miriam memory repository. Optional.
 type GuestMoneyTypeWriter interface {
 	SetMoneyType(ctx context.Context, userID uuid.UUID, moneyType string) error
+	SetMoneyDials(ctx context.Context, userID uuid.UUID, dials string) error
 }
 
 // GuestTranscriptWriter replays the pre-signup conversation into the user's
@@ -96,6 +97,16 @@ type GuestMoneyTypeWriter interface {
 // repository. Optional.
 type GuestTranscriptWriter interface {
 	AppendGuestTranscript(ctx context.Context, userID uuid.UUID, identity *entities.PlatformIdentity, threadID string, turns []GuestMessage) error
+}
+
+// GuestMonoLinker lets a guest link their real bank (Mono) before they have an
+// account, so the conversational "aha" financial picture can drive the
+// conversation. Satisfied by the mono Service. Optional — without it, the
+// guest brain simply can't offer bank linking.
+type GuestMonoLinker interface {
+	InitiateGuestLinking(ctx context.Context, guestToken, customerName, customerEmail, redirectURL string) (string, error)
+	GetGuestSpendingAnalysis(ctx context.Context, guestToken string, days int) (*entities.MonoSpendingAnalysis, error)
+	AttachGuestAccountToUser(ctx context.Context, guestToken string, userID uuid.UUID) (*entities.MonoLinkedAccount, error)
 }
 
 type guestPhase string
@@ -123,6 +134,7 @@ type guestState struct {
 	Country            string         `json:"country,omitempty"`
 	Goal               string         `json:"goal,omitempty"`
 	MoneyType          string         `json:"money_type,omitempty"`
+	MoneyDial          string         `json:"money_dial,omitempty"`
 	Email              string         `json:"email,omitempty"`
 	Phone              string         `json:"phone,omitempty"`
 	Turns              []GuestMessage `json:"turns,omitempty"`
@@ -136,6 +148,17 @@ type guestState struct {
 	IntroSent          bool           `json:"intro_sent,omitempty"`
 	StatementSummary   string         `json:"statement_summary,omitempty"`
 	PendingStatementID string         `json:"pending_statement_id,omitempty"`
+	// GuestToken is a web-safe token mapping this chat session to a pre-signup
+	// Mono linking session (used as Mono's MetaRef and in the redirect URL).
+	GuestToken string `json:"guest_token,omitempty"`
+	// MonoLinkURL is the pending Mono Connect URL to send the guest.
+	MonoLinkURL string `json:"mono_link_url,omitempty"`
+	// MonoLinked reports that the guest has connected a bank (set by the
+	// guest-scoped Mono complete endpoint).
+	MonoLinked bool `json:"mono_linked,omitempty"`
+	// MonoSummary is the real spending picture fetched from the linked bank,
+	// injected into the state block so the guest brain can deliver the aha.
+	MonoSummary string `json:"mono_summary,omitempty"`
 }
 
 // OnboardInput is a normalized inbound message from an unlinked sender.
@@ -170,6 +193,7 @@ type ChatOnboarder struct {
 	moneyTypes       GuestMoneyTypeWriter
 	transcripts      GuestTranscriptWriter
 	statementHandler StatementAttachmentHandler
+	monoLinker       GuestMonoLinker
 }
 
 func NewChatOnboarder(
@@ -218,6 +242,13 @@ func (c *ChatOnboarder) SetStatementAttachmentHandler(handler StatementAttachmen
 	c.statementHandler = handler
 }
 
+// SetGuestMonoLinker enables pre-signup bank linking (Mono) so the guest can
+// share their real spending and get the conversational aha before signing up.
+// Nil-safe.
+func (c *ChatOnboarder) SetGuestMonoLinker(l GuestMonoLinker) {
+	c.monoLinker = l
+}
+
 // SetBabyStepsSeeder installs the first-login goal seeder. After a successful
 // chat-first onboarding, the seeder materializes the 7-step Baby Steps ladder
 // for the new user so the goal_progress worker has something to track on the
@@ -236,6 +267,30 @@ func turnLockKey(platform entities.Platform, senderID string) string {
 
 func dailyTurnsKey(platform entities.Platform, senderID string) string {
 	return fmt.Sprintf("onboarding:daily:%s:%s", platform, senderID)
+}
+
+// guestTokenKey maps a guest linking token back to its onboarding session key,
+// so the guest-scoped Mono complete endpoint can find and update the session.
+func guestTokenKey(token string) string {
+	return "onboarding:guest:" + token
+}
+
+// MarkGuestMonoLinked flips a guest session's MonoLinked flag once the guest
+// completes a bank link. Called by the guest-scoped Mono complete endpoint.
+func (c *ChatOnboarder) MarkGuestMonoLinked(ctx context.Context, guestToken string) error {
+	if guestToken == "" {
+		return fmt.Errorf("guest token is required")
+	}
+	var key string
+	if err := c.store.Get(ctx, guestTokenKey(guestToken), &key); err != nil || key == "" {
+		return fmt.Errorf("unknown or expired guest token")
+	}
+	var st guestState
+	if err := c.store.Get(ctx, key, &st); err != nil || st.Phase == "" {
+		return fmt.Errorf("onboarding session not found")
+	}
+	st.MonoLinked = true
+	return c.save(ctx, key, st)
 }
 
 // HasSession reports whether an onboarding conversation is already in progress
@@ -437,6 +492,12 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 	case out.startSignup:
 		st.SignupReason = out.signupReason
 		return c.beginSignup(ctx, key, st, text, replyText)
+
+	case out.connectBank:
+		return c.handleGuestConnectBank(ctx, key, st, text, replyText)
+
+	case out.analysis:
+		return c.handleGuestAnalysis(ctx, key, st, text)
 	}
 
 	// Plain conversational turn.
@@ -459,6 +520,178 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 		reply.Poll = out.poll
 	}
 	return reply, nil
+}
+
+// handleGuestConnectBank sends the guest a tappable Mono Connect link so they
+// can share their real bank before signing up. The link session is tied to the
+// guest token; completion happens through the guest-scoped Mono endpoint, which
+// flips MonoLinked on the session.
+func (c *ChatOnboarder) handleGuestConnectBank(ctx context.Context, key string, st *guestState, userText, replyText string) (*PlatformReply, error) {
+	if c.monoLinker == nil {
+		c.logger.Warn("guest connect_bank requested but no mono linker wired")
+		replyText = strings.TrimSpace(replyText)
+		if replyText == "" {
+			replyText = "I can't look at your bank right now, but we can still talk it through. What does your money do for you these days?"
+		}
+		c.recordTurn(st, userText, replyText)
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(replyText), nil
+	}
+
+	if st.GuestToken == "" {
+		st.GuestToken = uuid.NewString()
+	}
+	// Index the token so the guest-scoped Mono complete endpoint can find this
+	// session and flip MonoLinked when the bank link lands.
+	if err := c.store.Set(ctx, guestTokenKey(st.GuestToken), key, guestSessionTTL); err != nil {
+		c.logger.Warn("guest token index save failed", zap.Error(err))
+	}
+	redirectURL := "rail://bank-linked?guest=" + st.GuestToken
+	url, err := c.monoLinker.InitiateGuestLinking(ctx, st.GuestToken, guestLinkName(st), guestLinkEmail(st), redirectURL)
+	if err != nil {
+		c.logger.Warn("guest mono link initiation failed", zap.Error(err))
+		replyText = strings.TrimSpace(replyText)
+		if replyText == "" {
+			replyText = "I couldn't start the bank link just now. We can try again in a moment."
+		}
+		c.recordTurn(st, userText, replyText)
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(replyText), nil
+	}
+	if strings.TrimSpace(url) == "" {
+		replyText = strings.TrimSpace(replyText)
+		if replyText == "" {
+			replyText = "Bank linking isn't available in your country yet, but we can still talk it through."
+		}
+		c.recordTurn(st, userText, replyText)
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(replyText), nil
+	}
+
+	st.MonoLinkURL = url
+	// The model wrote the ask; hand the link over inline so it's tappable.
+	link := "[Connect your bank](" + url + ")"
+	if !strings.Contains(replyText, url) {
+		replyText = strings.TrimSpace(replyText) + "\n\n" + link
+	}
+	c.recordTurn(st, userText, replyText)
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	return textReply(replyText), nil
+}
+
+// handleGuestAnalysis fetches the guest's real spending picture from their
+// linked bank, stores it on the session, and re-runs the brain once so the aha
+// is grounded in actual numbers rather than a guess.
+func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st *guestState, userText string) (*PlatformReply, error) {
+	if c.monoLinker == nil || !st.MonoLinked || st.GuestToken == "" {
+		replyText := "I don't have your bank linked yet. Want to connect it so I can show you where your money actually goes?"
+		c.recordTurn(st, userText, replyText)
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(replyText), nil
+	}
+
+	analysis, err := c.monoLinker.GetGuestSpendingAnalysis(ctx, st.GuestToken, 30)
+	if err != nil {
+		c.logger.Warn("guest mono analysis failed", zap.Error(err))
+		replyText := "I couldn't pull your spending just now. Give me a moment and ask again?"
+		c.recordTurn(st, userText, replyText)
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(replyText), nil
+	}
+
+	st.MonoSummary = summarizeGuestAnalysis(analysis)
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+
+	// One more brain turn so the model sees the real numbers in the state block
+	// and delivers the aha. The state block marks the summary as present, and the
+	// prompt tells it not to re-call the tool.
+	out, err := c.brain.respond(ctx, st, "[the linked bank's spending picture is now available — react to the mono_summary and deliver the aha]")
+	if err != nil {
+		c.logger.Error("guest aha brain turn failed", zap.Error(err))
+		replyText := "See? That's where your money actually goes. Want to talk about what to do with it?"
+		c.recordTurn(st, userText, replyText)
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(replyText), nil
+	}
+	replyText := strings.TrimSpace(out.text)
+	if replyText == "" {
+		replyText = "See? That's where your money actually goes. Want to talk about what to do with it?"
+	}
+	c.recordTurn(st, userText, replyText)
+	if err := c.save(ctx, key, *st); err != nil {
+		return nil, err
+	}
+	return textReply(replyText), nil
+}
+
+// guestLinkName/guestLinkEmail give Mono a display identity for the link
+// session. No account exists yet, so these are best-effort from what the guest
+// already shared, never required.
+func guestLinkName(st *guestState) string {
+	if strings.TrimSpace(st.FirstName) != "" {
+		return strings.TrimSpace(st.FirstName)
+	}
+	return "Rail guest"
+}
+
+func guestLinkEmail(st *guestState) string {
+	if strings.TrimSpace(st.Email) != "" {
+		return strings.TrimSpace(st.Email)
+	}
+	// Mono requires a customer email; use an opaque placeholder when the guest
+	// hasn't shared one. It carries no PII and is never used for delivery.
+	return "guest+" + st.GuestToken + "@placeholder.invalid"
+}
+
+// summarizeGuestAnalysis turns the guest's spending picture into a compact,
+// injectable state block: the top spending category, income stability, and any
+// recurring subscriptions. This is the raw material for the conversational aha.
+func summarizeGuestAnalysis(a *entities.MonoSpendingAnalysis) string {
+	if a == nil || a.TransactionCount == 0 {
+		return "no transactions in the last 30 days"
+	}
+	var top *entities.MonoCategoryBreakdown
+	for i := range a.ByCategory {
+		if top == nil || a.ByCategory[i].Amount > top.Amount {
+			b := a.ByCategory[i]
+			top = &b
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "last 30 days: %d transactions, total in %d, total out %d",
+		a.TransactionCount, a.TotalCredits, a.TotalDebits)
+	if top != nil {
+		fmt.Fprintf(&b, "; biggest category: %s at %d across %d txns", top.Category, top.Amount, top.Count)
+	}
+	if a.IncomeStability > 0 {
+		fmt.Fprintf(&b, "; income stability %.0f%% (%d source%s)", a.IncomeStability*100, a.IncomeSources, pluralS(a.IncomeSources))
+	}
+	if len(a.RecurringSubscriptions) > 0 {
+		fmt.Fprintf(&b, "; recurring: ")
+		for i, sub := range a.RecurringSubscriptions {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s at %d", sub.Merchant, sub.Amount)
+		}
+	}
+	return b.String()
 }
 
 // beginSignup transitions the conversation into identity verification. OTP and
@@ -539,6 +772,10 @@ func (c *ChatOnboarder) applyNote(st *guestState, n guestNote) {
 		switch strings.ToLower(strings.TrimSpace(n.value)) {
 		case "avoider", "optimizer", "worrier", "dreamer":
 			st.MoneyType = strings.ToLower(strings.TrimSpace(n.value))
+		}
+	case "money_dial":
+		if d := truncate(strings.TrimSpace(n.value), 200); d != "" {
+			st.MoneyDial = d
 		}
 	case "email":
 		if st.Email == "" {
@@ -896,6 +1133,7 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *guest
 	// so a failure here can't fail the onboarding completion.
 	SeedBabyStepsOnLink(c.babySteps, uid, c.logger)
 	c.fireGuestHandoff(uid, identity, in, st)
+	c.attachGuestMono(ctx, uid, st)
 	c.clear(ctx, key)
 	return &PlatformReply{
 		Text:   c.completionMessage(st),
@@ -914,6 +1152,16 @@ func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.Platf
 			defer cancel()
 			if err := c.moneyTypes.SetMoneyType(ctx, uid, moneyType); err != nil {
 				c.logger.Warn("money type handoff failed", zap.Stringer("user_id", uid), zap.Error(err))
+			}
+		}()
+	}
+	if c.moneyTypes != nil && st.MoneyDial != "" {
+		dial := st.MoneyDial
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := c.moneyTypes.SetMoneyDials(ctx, uid, dial); err != nil {
+				c.logger.Warn("money dials handoff failed", zap.Stringer("user_id", uid), zap.Error(err))
 			}
 		}()
 	}
@@ -941,6 +1189,19 @@ func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.Platf
 					zap.Stringer("user_id", uid), zap.String("pending_id", pendingID), zap.Error(err))
 			}
 		}()
+	}
+}
+
+// attachGuestMono claims a pre-signup linked Mono account for the new user so
+// the financial picture the guest already saw carries straight into the
+// authenticated relationship. Best-effort: a failure here must not fail signup.
+func (c *ChatOnboarder) attachGuestMono(ctx context.Context, uid uuid.UUID, st *guestState) {
+	if c.monoLinker == nil || st.GuestToken == "" {
+		return
+	}
+	if _, err := c.monoLinker.AttachGuestAccountToUser(ctx, st.GuestToken, uid); err != nil {
+		c.logger.Warn("guest mono attach failed",
+			zap.Stringer("user_id", uid), zap.String("guest_token", st.GuestToken), zap.Error(err))
 	}
 }
 
@@ -1292,4 +1553,12 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// pluralS appends an "s" for counts > 1, used in generated copy.
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }

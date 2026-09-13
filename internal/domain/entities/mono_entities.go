@@ -18,8 +18,15 @@ const (
 // The MonoAccountID is the persistent identifier returned by POST /v2/accounts/auth
 // and is used for all subsequent Financial Data API calls.
 type MonoLinkedAccount struct {
-	ID            uuid.UUID  `json:"id" db:"id"`
-	UserID        uuid.UUID  `json:"user_id" db:"user_id"`
+	ID uuid.UUID `json:"id" db:"id"`
+	// UserID is nil for a guest-linked account (pre-signup). It is set when the
+	// guest signs up and the account is claimed. See GuestToken.
+	UserID *uuid.UUID `json:"user_id" db:"user_id"`
+	// GuestToken ties a pre-signup linked account to a guest chat session. It is
+	// cleared (NULL) when the account is attached to a real user. Exactly one of
+	// UserID or GuestToken is set for a linked account. *string so the nullable
+	// DB column scans cleanly (a plain string cannot hold NULL).
+	GuestToken    *string    `json:"guest_token,omitempty" db:"guest_token"`
 	MonoAccountID string     `json:"mono_account_id" db:"mono_account_id"` // Mono's persistent account ID
 	Institution   string     `json:"institution" db:"institution"`         // bank name
 	AccountName   string     `json:"account_name" db:"account_name"`       // account holder name
@@ -88,6 +95,26 @@ type MonoSpendingAnalysis struct {
 	ByCategory       []MonoCategoryBreakdown `json:"by_category"`
 	Period           MonoAnalysisPeriod      `json:"period"`
 	TransactionCount int                     `json:"transaction_count"`
+	// IncomeStability is a 0-1 score of how regular income is, based on the
+	// spread of credit amounts and cadence. 1 = steady, predictable income.
+	IncomeStability float64 `json:"income_stability"`
+	// IncomeSources is the number of distinct recurring credit sources detected.
+	IncomeSources int `json:"income_sources"`
+	// RecurringSubscriptions lists recurring debits (same merchant, similar
+	// amount, roughly monthly) that Miriam can surface.
+	RecurringSubscriptions []MonoRecurringSubscription `json:"recurring_subscriptions"`
+	// CashFlowForecast is the projected next-month net cash flow from recurring
+	// credits and debits.
+	CashFlowForecast int64 `json:"cash_flow_forecast"`
+}
+
+// MonoRecurringSubscription is a detected recurring debit: a merchant charged a
+// similar amount on a roughly monthly cadence.
+type MonoRecurringSubscription struct {
+	Merchant string `json:"merchant"`
+	Category string `json:"category"`
+	Amount   int64  `json:"amount"` // kobo, the modal monthly amount
+	Count    int    `json:"count"`  // how many charges seen in the period
 }
 
 // MonoCategoryBreakdown is the spending total for a single category.

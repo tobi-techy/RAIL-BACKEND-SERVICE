@@ -16,6 +16,7 @@ func RegisterAdvancedFeaturesRoutes(
 	marketHandlers *handlers.MarketHandlers,
 	scheduledInvestmentHandlers *handlers.ScheduledInvestmentHandlers,
 	rebalancingHandlers *handlers.RebalancingHandlers,
+	financialSnapshotHandler *handlers.FinancialSnapshotHandler,
 	cfg *config.Config,
 	log *logger.Logger,
 	sessionValidator middleware.SessionValidator,
@@ -31,6 +32,7 @@ func RegisterAdvancedFeaturesRoutes(
 		analytics.GET("/diversification", analyticsHandlers.GetDiversificationAnalysis)
 		analytics.GET("/history", analyticsHandlers.GetPortfolioHistory)
 		analytics.POST("/snapshot", analyticsHandlers.TakeSnapshot)
+		analytics.GET("/financial-snapshot", financialSnapshotHandler.GetFinancialSnapshot)
 	}
 
 	// Market data routes (mixed auth)
