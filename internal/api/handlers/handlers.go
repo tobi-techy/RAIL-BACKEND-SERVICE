@@ -55,6 +55,7 @@ type (
 	SpendingCommitmentHandler  = investing.SpendingCommitmentHandler
 	MiriamIntelligenceHandler  = investing.MiriamIntelligenceHandler
 	MiriamPreferencesHandler   = investing.MiriamPreferencesHandler
+	FinancialSnapshotHandler   = investing.FinancialSnapshotHandler
 	StatementUploadHandler     = investing.StatementUploadHandler
 
 	// Trading
@@ -150,6 +151,7 @@ var (
 	NewSpendingCommitmentHandler      = investing.NewSpendingCommitmentHandler
 	NewMiriamIntelligenceHandler      = investing.NewMiriamIntelligenceHandler
 	NewMiriamPreferencesHandler       = investing.NewMiriamPreferencesHandler
+	NewFinancialSnapshotHandler       = investing.NewFinancialSnapshotHandler
 	NewStatementUploadHandler         = investing.NewStatementUploadHandler
 	NewStatementUploadHandlerV2       = investing.NewStatementUploadHandlerV2
 	NewDocumentHandler                = investing.NewDocumentHandler

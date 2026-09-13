@@ -2017,6 +2017,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.GetMarketHandlers(),
 				container.GetScheduledInvestmentHandlers(),
 				container.GetRebalancingHandlers(),
+				container.GetFinancialSnapshotHandler(),
 				container.Config,
 				container.Logger,
 				sessionValidator,
