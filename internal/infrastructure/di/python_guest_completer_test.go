@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	authpkg "github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
+	authpkg "github.com/rail-service/rail_service/pkg/auth"
 	"go.uber.org/zap"
 )
 
@@ -43,7 +43,10 @@ func servePythonChat(t *testing.T, respond *ai.PythonChatResponse) (*httptest.Se
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(respond)
+		if err := json.NewEncoder(w).Encode(respond); err != nil {
+			t.Errorf("serve python response: %v", err)
+			return
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &hit
@@ -79,7 +82,10 @@ func TestPythonGuestCompleter_PollMapping(t *testing.T) {
 	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Name != "send_poll" {
 		t.Fatalf("expected send_poll, got %+v", res.ToolCalls)
 	}
-	q, _ := res.ToolCalls[0].Arguments["question"].(string)
+	q, ok := res.ToolCalls[0].Arguments["question"].(string)
+	if !ok {
+		t.Fatalf("send_poll arguments missing question: %+v", res.ToolCalls[0].Arguments)
+	}
 	if q != "Pick your vibe" {
 		t.Fatalf("unexpected poll question %q", q)
 	}
@@ -218,7 +224,10 @@ func TestPythonGuestCompleter_TokenClaimsArePerSenderUnique(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse token: %v", err)
 		}
-		claims := parsed.Claims.(*authpkg.Claims)
+		claims, ok := parsed.Claims.(*authpkg.Claims)
+		if !ok {
+			t.Fatalf("claims type mismatch for %+v", s)
+		}
 		if seenEmail[claims.Email] || seenUsername[claims.Username] {
 			t.Fatalf("non-unique claim for %+v: email=%q username=%q", s, claims.Email, claims.Username)
 		}
