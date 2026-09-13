@@ -383,7 +383,12 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 		}
 
 		tokenString := tokenParts[1]
-		claims, err := auth.ValidateToken(tokenString, cfg.JWT.Secret)
+		// Accepts either an interactive "access" token (backed by a sessions-table
+		// row, created at login) or an "agent" token (minted for a trusted backend
+		// service such as the Python MIRIAM agent, acting on the user's behalf).
+		// isAgent gates the session-table lookup below -- agent tokens are never
+		// the product of a real login, so no session row will ever exist for them.
+		claims, isAgent, err := auth.ValidateAnyAccessToken(tokenString, cfg.JWT.Secret)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error":      "Invalid token",
@@ -450,7 +455,12 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 		// (ValidateSession is Postgres-backed with Redis only as a cache, so a
 		// Redis outage is a cache miss that still resolves against the DB, not an
 		// error — this does not turn a Redis outage into an auth outage.)
-		if sessionService != nil {
+		//
+		// Agent tokens are exempt: they are never created by a login flow, so no
+		// session row will ever exist for one, and requiring one would make
+		// delegated agent calls permanently impossible rather than more secure.
+		// They still went through full signature/expiry/blacklist checks above.
+		if sessionService != nil && !isAgent {
 			sess, err := sessionService.ValidateSession(c.Request.Context(), tokenString)
 			if err != nil {
 				// Distinguish between a definitively invalid session (force logout)
@@ -484,6 +494,8 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 		c.Set("user_id", claims.UserID)
 		c.Set("user_role", claims.Role)
 		c.Set("user_email", claims.Email)
+		c.Set("token_type", claims.TokenType)
+		c.Set("is_agent", isAgent)
 
 		c.Next()
 	}

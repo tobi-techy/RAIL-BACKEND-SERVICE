@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
@@ -83,7 +84,8 @@ type InboundMessage struct {
 	// Poll vote: the selected option title arrives in Text. The bridge marks it
 	// so a stray vote with no pending action is dropped instead of confusing
 	// the orchestrator.
-	IsPollVote bool `json:"is_poll_vote,omitempty"`
+	IsPollVote bool   `json:"is_poll_vote,omitempty"`
+	PollTitle  string `json:"poll_title,omitempty"`
 
 	// Tapback reaction on one of our messages. Affirmative reactions confirm a
 	// staged action; anything else is dropped.
@@ -169,6 +171,32 @@ type Orchestrator interface {
 	// pending action. Used to interpret bare YES/NO replies as confirm/cancel on
 	// platforms without interactive polls (Telegram, WhatsApp).
 	HasPendingPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform) bool
+}
+
+// PollVoteOrchestrator is optionally implemented by an orchestrator that routes
+// poll votes straight to the agent brain when no pending action is staged —
+// e.g. conversational onboarding answer selections. The bool reports whether
+// the vote was handled; when false the processor keeps the legacy drop behavior.
+type PollVoteOrchestrator interface {
+	HandlePlatformPollVote(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform, optionText, pollTitle string) (*PlatformReply, bool, error)
+}
+
+// DocumentOrchestrator is optionally implemented by an orchestrator that can
+// reason immediately over a linked statement scan (Python-driven onboarding).
+// The processor enqueues every linked statement for the durable pipeline first;
+// a DocumentOrchestrator additionally gets a sync scan it may use to ground an
+// immediate reply. When it reports it did not handle the document, the durable
+// pipeline stands on its own exactly as before.
+type DocumentOrchestrator interface {
+	HandlePlatformDocument(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform, scan StatementScan) (*PlatformReply, bool, error)
+}
+
+// StatementScanGate is optionally implemented alongside DocumentOrchestrator to
+// opt the orchestrator into the synchronous statement-scan fast path. Without
+// it the scan is always attempted; returning false keeps every linked statement
+// on the durable pipeline only (no blocking 25s scan in the inbound path).
+type StatementScanGate interface {
+	WantsStatementScan(ctx context.Context, userID uuid.UUID) bool
 }
 
 type Processor struct {
@@ -309,6 +337,9 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
 	if err == nil {
 		if statementAttachment != nil {
+			// The user's actual statement always lands in the durable pipeline —
+			// their real transactions must persist for long-term insights. The
+			// sync-scan fast path below is an optional accelerant on top of it.
 			if p.statementHandler == nil {
 				return p.sendErrorMessage(ctx, msg, "I can't scan statements from chat just yet. Please upload it in the RAIL app.")
 			}
@@ -317,6 +348,25 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 				p.logger.Warn("linked statement enqueue failed", zap.Error(handlerErr))
 				_ = p.sendErrorMessage(ctx, msg, "I couldn't start that statement scan just now. Please try sending it again.")
 				return Retryable(handlerErr)
+			}
+			// Optional fast path: hand a synchronous scan to the orchestrator so
+			// Python-driven onboarding grounds its plan immediately. Only attempted
+			// when the orchestrator opts in via StatementScanGate; when it declines,
+			// the durable ack we already hold stands on its own.
+			if docOrch, _ := p.orchestrator.(DocumentOrchestrator); docOrch != nil {
+				if gate, ok := p.orchestrator.(StatementScanGate); !ok || gate.WantsStatementScan(ctx, resolved.UserID) {
+					scan, scanErr := p.statementHandler.ScanLinked(ctx, resolved.UserID, *statementAttachment)
+					if scanErr != nil {
+						p.logger.Warn("linked statement scan failed", zap.Error(scanErr))
+					} else if scan != nil {
+						groundedReply, handled, orchErr := docOrch.HandlePlatformDocument(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform, *scan)
+						if orchErr != nil {
+							p.logger.Warn("document orchestrator error", zap.Error(orchErr))
+						} else if handled {
+							return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, groundedReply, false)
+						}
+					}
+				}
 			}
 			return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
 		}
@@ -330,7 +380,17 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		if msg.IsPollVote && !p.orchestrator.HasPendingPlatformAction(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform) {
 			// A vote on an old poll (or the onboarding consent poll from a now-
 			// linked sender) with nothing staged — feeding bare "Confirm" into
-			// the model would only confuse it.
+			// the model would only confuse it. First give the orchestrator a
+			// chance to route it to the agent brain (conversational onboarding
+			// answer selections); if it declines, drop as before.
+			if voteOrch, _ := p.orchestrator.(PollVoteOrchestrator); voteOrch != nil {
+				reply, handled, voteErr := voteOrch.HandlePlatformPollVote(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform, msg.Text, msg.PollTitle)
+				if voteErr != nil {
+					p.logger.Warn("poll vote orchestrator error", zap.Error(voteErr))
+				} else if handled {
+					return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
+				}
+			}
 			p.logger.Debug("dropping stray poll vote with no pending action",
 				zap.String("thread_id", msg.ThreadID), zap.String("text", msg.Text))
 			return nil

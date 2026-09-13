@@ -35,6 +35,132 @@ func pythonRole(kycStatus string) string {
 	return "user"
 }
 
+// pythonTokenClaims loads the email + KYC-derived role used to mint the JWT
+// Python's RBAC expects. Falls back to the base "user" role on lookup failure.
+func (a *orchestratorAdapter) pythonTokenClaims(ctx context.Context, uid uuid.UUID) (email, role string) {
+	role = "user"
+	u, err := a.userRepo.GetByID(ctx, uid)
+	if err != nil {
+		a.logger.Warn("python delegation: user lookup failed", zap.Error(err))
+		return "", role
+	}
+	if u == nil {
+		return "", role
+	}
+	return u.Email, pythonRole(u.KYCStatus)
+}
+
+// costCeilingMessage returns the monthly-AI-limit reply when the user is over
+// the ceiling, mirroring the Go path. The bool reports whether the ceiling hit.
+func (a *orchestratorAdapter) costCeilingMessage(ctx context.Context, uid uuid.UUID) (*platform.PlatformReply, bool) {
+	if a.orchestrator == nil {
+		return nil, false
+	}
+	if !a.orchestrator.IsUserOverCostCeiling(ctx, uid) {
+		return nil, false
+	}
+	nextMonth := time.Now().AddDate(0, 1, 0)
+	resetDate := time.Date(nextMonth.Year(), nextMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
+	daysUntil := int(resetDate.Sub(time.Now()).Hours() / 24)
+	return &platform.PlatformReply{
+		Text: fmt.Sprintf("You've hit your monthly AI limit. Miriam will be back on %s (%d days).",
+			resetDate.Format("Jan 2"), daysUntil),
+	}, true
+}
+
+// mapPythonChatReply projects a Python chat response onto a PlatformReply,
+// carrying any interactive poll through so the processor renders it natively.
+func mapPythonChatReply(resp *ai.PythonChatResponse) *platform.PlatformReply {
+	reply := &platform.PlatformReply{Text: resp.Response}
+	if resp.Poll != nil && len(resp.Poll.Options) > 0 {
+		reply.Poll = &platform.PollRequest{Title: resp.Poll.Title, Options: resp.Poll.Options}
+	}
+	return reply
+}
+
+// HandlePlatformPollVote implements platform.PollVoteOrchestrator: a poll vote
+// with no pending action is forwarded to the Python agent when delegated so
+// conversational onboarding can consume answer selections. handled=false keeps
+// the legacy stray-vote drop behavior (for non-delegated setups and any
+// response that did not originate from the onboarding brain).
+func (a *orchestratorAdapter) HandlePlatformPollVote(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform, optionText, pollTitle string) (*platform.PlatformReply, bool, error) {
+	if !a.pythonDelegated() {
+		return nil, false, nil
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse user id: %w", err)
+	}
+	if reply, over := a.costCeilingMessage(ctx, uid); over {
+		return reply, true, nil
+	}
+	pid, _ := uuid.Parse(platformIdentityID)
+	if _, _, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid); err != nil {
+		return nil, false, fmt.Errorf("resolve platform conversation: %w", err)
+	}
+	email, role := a.pythonTokenClaims(ctx, uid)
+	pyConv := fmt.Sprintf("platform:%s:%s", plat.String(), threadID)
+
+	resp, err := a.python.ChatPollVote(ctx, uid, email, role, pyConv, optionText, pollTitle)
+	if err != nil {
+		a.logger.Warn("python poll vote failed",
+			zap.String("user_id", uid.String()),
+			zap.String("thread_id", threadID),
+			zap.String("option_text", optionText),
+			zap.Error(err))
+		return nil, false, err
+	}
+	if resp.Onboarding == nil {
+		return nil, false, nil
+	}
+	return mapPythonChatReply(resp), true, nil
+}
+
+// HandlePlatformDocument implements platform.DocumentOrchestrator: a linked
+// statement scan is handed to the Python agent so onboarding can ground its
+// plan on it immediately. handled=false tells the processor to fall back to the
+// durable EnqueueLinked pipeline.
+// WantsStatementScan gates the processor's synchronous statement-scan fast
+// path so linked statements only pay the blocking 25s scan when this adapter
+// will actually consume it (python-delegated). All other setups keep the cheap
+// durable-pipeline-only path.
+func (a *orchestratorAdapter) WantsStatementScan(_ context.Context, _ uuid.UUID) bool {
+	return a.pythonDelegated()
+}
+
+func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform, scan platform.StatementScan) (*platform.PlatformReply, bool, error) {
+	if !a.pythonDelegated() {
+		return nil, false, nil
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse user id: %w", err)
+	}
+	if reply, over := a.costCeilingMessage(ctx, uid); over {
+		return reply, true, nil
+	}
+	pid, _ := uuid.Parse(platformIdentityID)
+	if _, _, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid); err != nil {
+		return nil, false, fmt.Errorf("resolve platform conversation: %w", err)
+	}
+	email, role := a.pythonTokenClaims(ctx, uid)
+	pyConv := fmt.Sprintf("platform:%s:%s", plat.String(), threadID)
+
+	doc := ai.PythonChatDocument{Name: "bank_statement.pdf", MIME: "application/pdf", Summary: scan.Summary}
+	resp, err := a.python.ChatWithDocument(ctx, uid, email, role, pyConv, "I sent my bank statement.", doc)
+	if err != nil {
+		a.logger.Warn("python document chat failed",
+			zap.String("user_id", uid.String()),
+			zap.String("thread_id", threadID),
+			zap.Error(err))
+		return nil, false, err
+	}
+	if resp.Onboarding == nil {
+		return nil, false, nil
+	}
+	return mapPythonChatReply(resp), true, nil
+}
+
 // handlePlatformMessagePython is the delegated path for messaging when the
 // Python agent is the brain. Flow:
 //  1. An inbound 6-digit reply while a confirmation is staged is an OTP attempt.
@@ -48,13 +174,8 @@ func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, u
 	}
 
 	// Cost-ceiling guard before hitting the LLM, mirrors the Go path.
-	if a.orchestrator.IsUserOverCostCeiling(ctx, uid) {
-		nextMonth := time.Now().AddDate(0, 1, 0)
-		resetDate := time.Date(nextMonth.Year(), nextMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
-		daysUntil := int(resetDate.Sub(time.Now()).Hours() / 24)
-		msg := fmt.Sprintf("You've hit your monthly AI limit. Miriam will be back on %s (%d days).",
-			resetDate.Format("Jan 2"), daysUntil)
-		return &platform.PlatformReply{Text: msg}, nil
+	if reply, over := a.costCeilingMessage(ctx, uid); over {
+		return reply, nil
 	}
 
 	// Thread → stable conversation id (keys the OTP record).
@@ -69,14 +190,7 @@ func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, u
 	pyConv := fmt.Sprintf("platform:%s:%s", plat.String(), threadID)
 
 	// User profile for the minted token (email + KYC-derived role).
-	email := ""
-	role := "user"
-	if u, uErr := a.userRepo.GetByID(ctx, uid); uErr == nil && u != nil {
-		email = u.Email
-		role = pythonRole(u.KYCStatus)
-	} else if uErr != nil {
-		a.logger.Warn("python delegation: user lookup failed", zap.Error(uErr))
-	}
+	email, role := a.pythonTokenClaims(ctx, uid)
 
 	// (1) OTP attempt: 6-digit reply while a confirmation is staged.
 	if sixDigitCode.MatchString(message) && a.otpStore.DryPeek(ctx, cid) {
@@ -95,7 +209,7 @@ func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, u
 		}, nil
 	}
 
-	reply := &platform.PlatformReply{Text: resp.Response}
+	reply := mapPythonChatReply(resp)
 
 	// (3) Confirmation requested: stage an email OTP, never execute here.
 	if resp.RequiresConfirmation && len(resp.Cards) > 0 {

@@ -57,8 +57,9 @@ Set `JWT_SECRET` to one value in:
 Also confirm Python's `GO_BACKEND_URL` points at the **same Go backend** that
 delegates (in production that is the public AtlasFlow URL, not `localhost`).
 
-> Local gotcha: the running Go docker app and MIRIAM `.env` currently use
-> different JWT secrets — alignment is required before delegation will work.
+> Local note: MIRIAM's `.env` `JWT_SECRET` has been aligned to Go's (the container
+> and Go's `.env` share one value). If you rotate secrets, re-run the alignment —
+> deployment breaks the moment any two of the three diverge.
 
 ## Local E2E
 
@@ -156,3 +157,45 @@ Order matters — verify each line before moving on.
 - Bare YES/poll vote/tapback can never pass step-up — the adapter answers with a
   "reply with the 6-digit code" message instead.
 - `EMAIL_PROVIDER=log` is a development-only sink and is refused in production.
+
+## Proactive reacher (Miriam's 24/7 loop)
+
+On a schedule, the Go reacher asks the Python agent whether **any linked user
+has one genuinely useful thing worth telling them right now**, and delivers the
+drafted message via the iMessage bridge.
+
+```
+tick ── ListLinkedByPlatform(imessage) ──▶ for each user:
+        guard.CanSendCategory(nudge)  // peek quiet hours BEFORE any LLM token (no quota spent)
+        Python POST /api/v1/proactive/analyze  (per-user JWT, same PYTHON_AGENT_URL)
+        if should_reach_out && message: BridgeDispatcher.SendChatMessage (guard enforces daily cap)
+```
+
+Division of labour: **Python decides** (fail-open to "stay quiet"); **Go owns**
+the schedule, quiet hours, per-user daily cap, and iMessage delivery.
+
+Feature switches (Go side):
+
+| Env | Default | Effect |
+|---|---|---|
+| `PROACTIVE_REACHER_ENABLED` | `false` | On enables the worker (also needs Python delegation + bridge wired). |
+| `PROACTIVE_REACHER_INTERVAL_MINUTES` | `30` | Ticker interval between analysis passes. |
+
+Python side mirrors this with `PROACTIVE_ENABLED=true` (default), plus
+`PROACTIVE_MIN_INTERVAL_HOURS` (12), `PROACTIVE_MAX_TOKENS` (700),
+`PROACTIVE_TEMPERATURE` (0.4) in `miriam_agent/config/settings.py` — the analyst
+endpoint stays fail-open: disabled feature, missing data, dead Go backend, or an
+unreachable model all resolve to `should_reach_out: false`.
+
+Runtime prerequisites (same as delegation):
+- `PYTHON_AGENT_ENABLED=true`, `PYTHON_AGENT_URL`, and **aligned `JWT_SECRET`**
+  (see "Secret alignment" above) — the reacher reuses the container's
+  `PythonAgentClient`, which is only built under those conditions.
+- A bridge wired for iMessage delivery (`PLATFORM_BRIDGE_BASE_URL` +
+  `PLATFORM_BRIDGE_HMAC_SECRET`).
+- At least one `platform_identities` row with `linked_at` set, and a last thread
+  on that platform — otherwise nothing is sent (bridge silently skips).
+
+> Local note: with no `platform_identities` rows / no iMessage thread in the dev
+> database the worker runs but delivers nothing — expected until a handshake
+> exists.

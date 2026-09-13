@@ -173,7 +173,7 @@ type orchestratorAdapter struct {
 	python   *ai.PythonAgentClient
 	otpStore *ai.OtpStore
 	userRepo *repositories.UserRepository // for email + KYC-derived role
-	emailSvc emailOTPSender              // SendCustomEmail for OTP delivery
+	emailSvc emailOTPSender               // SendCustomEmail for OTP delivery
 }
 
 const defaultAppDeepLinkBase = "rail://"
@@ -230,6 +230,8 @@ func friendlyPlatform(p string) string {
 
 func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
 	// Python-agent delegation path: MIRIAM's LLM brain owns the conversation.
+	// Must return before touching a.orchestrator — that field is nil when
+	// Python is enabled without a Cencori-backed Go AI system.
 	if a.pythonDelegated() {
 		return a.handlePlatformMessagePython(ctx, userID, platformIdentityID, message, threadID, plat)
 	}
@@ -237,6 +239,11 @@ func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID,
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		return nil, fmt.Errorf("parse user id: %w", err)
+	}
+	if a.orchestrator == nil {
+		return &platform.PlatformReply{
+			Text: "I couldn't reach my finance brain just now. Give me a few seconds and ask me again.",
+		}, nil
 	}
 	if a.orchestrator.IsUserOverCostCeiling(ctx, uid) {
 		nextMonth := time.Now().AddDate(0, 1, 0)
@@ -356,6 +363,10 @@ func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID,
 		return reply, nil
 	}
 
+	if a.orchestrator == nil {
+		return &platform.PlatformReply{Text: "There's nothing waiting on a tap-confirm right now."}, nil
+	}
+
 	// Defence in depth: a fund-moving action must never execute from a messaging
 	// vote — it should have been sent as an in-app card, never a poll.
 	if action, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid); ok && aiservice.IsFundMovingAction(action.Action) {
@@ -388,6 +399,9 @@ func (a *orchestratorAdapter) HasPendingPlatformAction(ctx context.Context, user
 	if a.pythonDelegated() && a.otpStore.DryPeek(ctx, cid) {
 		return true
 	}
+	if a.orchestrator == nil {
+		return false
+	}
 	_, ok := a.orchestrator.PeekPendingAction(ctx, uid, cid)
 	return ok
 }
@@ -404,6 +418,9 @@ func (a *orchestratorAdapter) CancelPlatformAction(ctx context.Context, userID, 
 	// Drop any Python-staged OTP confirmation; also cancel a Go-native pending
 	// action if one somehow exists for the thread.
 	a.cancelOTPWhenPresent(ctx, cid)
+	if a.orchestrator == nil {
+		return &platform.PlatformReply{Text: "No problem — I've cancelled that."}, nil
+	}
 	if err := a.orchestrator.CancelAction(ctx, uid, cid); err != nil {
 		return nil, err
 	}

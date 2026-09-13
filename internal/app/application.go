@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -67,6 +68,7 @@ import (
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
 	portfolio_snapshot_worker "github.com/rail-service/rail_service/internal/workers/portfolio_snapshot_worker"
+	proactive_reacher "github.com/rail-service/rail_service/internal/workers/proactive_reacher"
 	public_trades_worker "github.com/rail-service/rail_service/internal/workers/public_trades_worker"
 	ramphub_offramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_offramp_recovery"
 	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
@@ -124,6 +126,7 @@ type Application struct {
 	autopilotWorker              *autopilot_worker.Worker
 	autopilotCancel              context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
+	proactiveReacherWorker       *proactive_reacher.Worker
 	engagementWorker             *engagement_worker.Worker
 	ledgerOutboxPublisher        *ledger_outbox_publisher.Worker
 	miriamEventWorker            *miriam_event_worker.Worker
@@ -656,6 +659,38 @@ func (app *Application) initializeWorkers() error {
 		}
 		go app.dailyPulseWorker.Start(context.Background())
 		app.log.Info("Miriam daily pulse worker started (iMessage-only)")
+	}
+
+	// Proactive reacher — Miriam's 24/7 loop. Asks the Python agent (LLM brain)
+	// per linked user whether there is one genuinely useful thing to tell them,
+	// and nudges via the iMessage bridge. Go owns quiet hours + daily cap (the
+	// bridge dispatcher's guard) and peeks the guard before the analysis tick so
+	// quiet hours never burn model tokens. Disabled by default.
+	if getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) &&
+		app.container.PythonAgentClient != nil && app.container.MiriamBridgeDispatcher != nil &&
+		app.container.PlatformIdentityRepo != nil {
+		interval := time.Duration(getIntEnvOrDefault("PROACTIVE_REACHER_INTERVAL_MINUTES", 30)) * time.Minute
+		peekGuard := app.container.MiriamBridgeDispatcher.GuardForPeek()
+		var guard proactive_reacher.Guard
+		if peekGuard != nil {
+			guard = peekGuard
+		} else {
+			guard = allowAllReacherGuard{}
+		}
+		app.proactiveReacherWorker = proactive_reacher.NewWorker(
+			app.container.PlatformIdentityRepo,
+			app.container.PythonAgentClient,
+			guard,
+			app.container.MiriamBridgeDispatcher,
+			interval,
+			app.log.Zap(),
+		)
+		go app.proactiveReacherWorker.Start(context.Background())
+		app.log.Info("Proactive reacher worker started",
+			zap.Duration("interval", interval),
+			zap.String("python_agent", app.container.Config.PythonAgent.BaseURL))
+	} else if getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) {
+		app.log.Warn("Proactive reacher worker NOT started — requires Python agent delegation, bridge dispatcher, and platform identity repo")
 	}
 
 	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
@@ -1447,6 +1482,15 @@ func (noopPushSender) SendToUser(ctx context.Context, userID uuid.UUID, title, b
 	return nil
 }
 
+// allowAllReacherGuard replaces the proactive guard for the reacher's pre-LLM
+// peek when no guard is attached (mirrors noopPushSender). Delivery still gates
+// through the bridge — on a guard-less bus, sending is always permitted anyway.
+type allowAllReacherGuard struct{}
+
+func (allowAllReacherGuard) CanSendCategory(ctx context.Context, userID uuid.UUID, category string) bool {
+	return true
+}
+
 // dailyPulsePrefsAdapter bridges PreferencesService → daily pulse worker.
 type dailyPulsePrefsAdapter struct {
 	svc *miriamservice.PreferencesService
@@ -1603,6 +1647,21 @@ func getBoolEnvOrDefault(key string, defaultValue bool) bool {
 	}
 
 	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
+}
+
+// getIntEnvOrDefault returns an environment variable parsed as int, or the
+// default when unset or unparseable.
+func getIntEnvOrDefault(key string, defaultValue int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return defaultValue
 	}

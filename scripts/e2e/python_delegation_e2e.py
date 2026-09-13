@@ -36,6 +36,7 @@ Exit codes: 0 all assertions passed, 1 any assertion failed.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -44,6 +45,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -60,10 +62,18 @@ OTP_LOG_FILE = os.getenv("E2E_OTP_LOG_FILE", "")
 GO_LOG_DOCKER = os.getenv("E2E_GO_LOG_DOCKER", "")
 GREETING = os.getenv("E2E_GREETING", "hi")
 SCRIPT_MSG = os.getenv("E2E_SCRIPT", "send 2.50 to e2e@rail.sim")
+STASH_MSG = os.getenv("E2E_STASH_SCRIPT", "move 1 dollar from spending to stash")
+JWT_SECRET = os.getenv("E2E_JWT_SECRET") or os.getenv("JWT_SECRET", "")
 BRIDGE_URL = os.getenv("MOCK_BRIDGE_URL", "http://127.0.0.1:3100").rstrip("/")
 INBOUND_PATH = "/api/v1/platform/inbound"
 
 OTP_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+# Go's known failure copy when Python execution fails after OTP (must not pass).
+EXECUTION_FAILURE_MARKERS = (
+    "hit an error",
+    "couldn't reach my finance brain",
+    "i can't complete that right now",
+)
 
 passed: list[str] = []
 failed: list[str] = []
@@ -185,11 +195,69 @@ def scrape_otp() -> str | None:
     return matches[-1]
 
 
-def seed_identity() -> str:
-    """Create the linked platform identity. Returns the platform user id used."""
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def mint_agent_token(user_id: str, email: str, role: str, secret: str, ttl: int = 120) -> str:
+    """Mint a Go-compatible HS256 agent JWT (stdlib only)."""
+    now = int(time.time())
+    header = _b64url(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    payload = {
+        "user_id": user_id,
+        "email": email,
+        "role": role,
+        "token_type": "agent",
+        "exp": now + ttl,
+        "iat": now,
+        "nbf": now,
+        "iss": "rail_service",
+        "sub": user_id,
+        "jti": str(uuid.uuid4()),
+    }
+    body = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(secret.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
+    return f"{header}.{body}.{_b64url(sig)}"
+
+
+def fetch_balances(token: str) -> dict:
+    req = urllib.request.Request(
+        GO_URL + "/api/v1/balances",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Requested-With": "RailApp",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        raise RuntimeError(f"GET /api/v1/balances -> {e.code}: {raw[:300]}") from e
+
+
+def _money(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@dataclass
+class SeededUser:
+    platform_user_id: str
+    user_id: str = ""
+    email: str = ""
+    role: str = "user"
+
+
+def seed_identity() -> SeededUser:
+    """Create the linked platform identity."""
+    seeded = SeededUser(platform_user_id=PLATFORM_USER_ID, user_id=USER_ID)
     if not DB_URL:
         print("  [skip] E2E_DATABASE_URL not set — assuming identity already seeded")
-        return PLATFORM_USER_ID
+        return seeded
 
     psql = ["psql", DB_URL, "-tA", "-c"]
     if not USER_ID:
@@ -211,6 +279,18 @@ def seed_identity() -> str:
     else:
         uid = USER_ID
 
+    meta = subprocess.run(
+        psql + [f"select email, kyc_status from users where id='{uid}';"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    email, kyc = "", ""
+    if meta:
+        parts = meta.split("|")
+        email = parts[0].strip() if parts else ""
+        kyc = parts[1].strip() if len(parts) > 1 else ""
+    role = "verified" if kyc == "approved" else "user"
+
     sql = f"""
       insert into platform_identities (user_id, platform, platform_user_id, linked_at)
       values ('{uid}', '{PLATFORM}', '{PLATFORM_USER_ID}', now())
@@ -222,7 +302,76 @@ def seed_identity() -> str:
         print(f"  [warn] identity seed failed: {out.stderr.strip()}")
     else:
         print(f"  [ok] seeded platform identity for user {uid} ({PLATFORM}: {PLATFORM_USER_ID})")
-    return PLATFORM_USER_ID
+    return SeededUser(platform_user_id=PLATFORM_USER_ID, user_id=uid, email=email, role=role)
+
+
+def wait_for_otp() -> str | None:
+    otp = None
+    for _ in range(6):
+        otp = scrape_otp() or otp
+        if otp:
+            break
+        time.sleep(1.5)
+    return otp
+
+
+def assert_execution_reply(label: str, text: str) -> bool:
+    """Fail loudly on Go's known execution-failure copy (previously a false pass)."""
+    lowered = (text or "").lower()
+    if not (text or "").strip():
+        fail(label, "empty outbound text")
+        return False
+    for marker in EXECUTION_FAILURE_MARKERS:
+        if marker in lowered:
+            fail(label, f"Go reported an execution failure: {text!r}")
+            return False
+    ok(label, "final outbound is a real completion, not the failure copy")
+    return True
+
+
+def run_confirmed_action(instruction: str, phase_label: str) -> str | None:
+    """Send a money instruction, collect OTP, submit it. Returns final reply text."""
+    head_count = len(mock_outbound())
+    reply = post_inbound(instruction)
+    if reply["status"] != 200:
+        fail(f"{phase_label} instruction accepted", f"status {reply['status']}: {reply['body']}")
+        return None
+
+    msgs = wait_for_reply(head_count, timeout=120)
+    if not msgs:
+        fail(f"{phase_label} staging reply received", "no outbound after money instruction")
+        return None
+    stage_text = msgs[-1].get("text", "")
+    print(f"  staging reply: {stage_text!r}")
+
+    says_code = "code" in stage_text.lower() or "confirm" in stage_text.lower()
+    if says_code:
+        ok(f"{phase_label} staging asks for confirmation", "reply mentions a code / confirmation")
+    else:
+        fail(f"{phase_label} staging asks for confirmation", f"reply: {stage_text!r}")
+        return None
+
+    otp = wait_for_otp()
+    if otp:
+        ok(f"{phase_label} OTP emitted to emails/logs", f"code {otp}")
+    else:
+        fail(f"{phase_label} OTP emitted to emails/logs", "no 6-digit code found in logs (is EMAIL_PROVIDER=log?)")
+        return None
+
+    head_count2 = len(mock_outbound())
+    reply2 = post_inbound(otp)
+    if reply2["status"] != 200:
+        fail(f"{phase_label} OTP reply accepted", f"status {reply2['status']}: {reply2['body']}")
+        return None
+    msgs2 = wait_for_reply(head_count2, timeout=120)
+    if not msgs2:
+        fail(f"{phase_label} OTP completion replied", "no outbound after OTP submit")
+        return None
+    final_text = msgs2[-1].get("text", "")
+    print(f"  final reply: {final_text!r}")
+    if not assert_execution_reply(f"{phase_label} OTP completion succeeded", final_text):
+        return None
+    return final_text
 
 
 def main() -> int:
@@ -234,8 +383,16 @@ def main() -> int:
         print("ERROR: E2E_HMAC_SECRET (PLATFORM_BRIDGE_HMAC_SECRET) is required")
         return 1
 
-    seed_identity()
+    seeded = seed_identity()
     before = len(mock_outbound())
+
+    agent_token = ""
+    if JWT_SECRET and seeded.user_id:
+        agent_token = mint_agent_token(seeded.user_id, seeded.email, seeded.role, JWT_SECRET)
+    elif not JWT_SECRET:
+        fail("agent JWT available", "E2E_JWT_SECRET/JWT_SECRET is required to prove money moved")
+    elif not seeded.user_id:
+        fail("agent JWT available", "user id unknown; set E2E_USER_ID or E2E_DATABASE_URL")
 
     # ---- Phase 1: plain greeting is answered by the Python agent ----
     print("\n[phase 1] plain message delegated to the Python agent")
@@ -256,56 +413,68 @@ def main() -> int:
     else:
         fail("agent replied", "empty outbound text")
 
-    # ---- Phase 2: money instruction stages an email OTP, then completes ----
+    # ---- Phase 2: money instruction stages an email OTP, then actually moves money ----
     print("\n[phase 2] money instruction gated behind email OTP")
-    head_count = len(mock_outbound())
-    reply2 = post_inbound(SCRIPT_MSG)
-    if reply2["status"] != 200:
-        fail("money instruction accepted", f"status {reply2['status']}: {reply2['body']}")
-        return 1
+    before_balances = None
+    if agent_token:
+        try:
+            before_balances = fetch_balances(agent_token)
+            ok("pre-action balances readable", json.dumps(before_balances))
+        except Exception as e:  # noqa: BLE001
+            fail("pre-action balances readable", str(e))
 
-    msgs2 = wait_for_reply(head_count, timeout=120)
-    if not msgs2:
-        fail("staging reply received", "no outbound after money instruction")
-        return 1
-    stage_text = msgs2[-1].get("text", "")
-    print(f"  staging reply: {stage_text!r}")
+    run_confirmed_action(SCRIPT_MSG, "p2p")
 
-    says_code = "code" in stage_text.lower() or "confirm" in stage_text.lower()
-    if says_code:
-        ok("staging asks for confirmation", "reply mentions a code / confirmation")
-    else:
-        fail("staging asks for confirmation", f"reply: {stage_text!r}")
+    if agent_token and before_balances is not None:
+        try:
+            after_balances = fetch_balances(agent_token)
+            before_spend = _money(before_balances.get("spending_balance"))
+            after_spend = _money(after_balances.get("spending_balance"))
+            if after_spend != before_spend:
+                ok(
+                    "p2p changed spending balance",
+                    f"{before_spend} -> {after_spend}",
+                )
+            else:
+                fail(
+                    "p2p changed spending balance",
+                    f"spending_balance unchanged at {after_spend} (action did not move money)",
+                )
+        except Exception as e:  # noqa: BLE001
+            fail("p2p changed spending balance", str(e))
 
-    # Wait briefly for the OTP to land in logs, then scrape it.
-    otp = None
-    for _ in range(6):
-        otp = scrape_otp() or otp
-        if otp:
-            break
-        time.sleep(1.5)
-    if otp:
-        ok("OTP emitted to emails/logs", f"code {otp}")
-    else:
-        fail("OTP emitted to emails/logs", "no 6-digit code found in logs (is EMAIL_PROVIDER=log?)")
+    # ---- Phase 3: stash transfer via the new OTP-safe endpoints ----
+    print("\n[phase 3] stash transfer via chat-channel endpoints")
+    stash_before = None
+    if agent_token:
+        try:
+            stash_before = fetch_balances(agent_token)
+            ok("pre-stash balances readable", json.dumps(stash_before))
+        except Exception as e:  # noqa: BLE001
+            fail("pre-stash balances readable", str(e))
 
-    if not otp:
-        return (0 if not failed else 1)
+    run_confirmed_action(STASH_MSG, "stash")
 
-    # Submit the code as an ordinary inbound message (mirrors the user replying).
-    head_count3 = len(mock_outbound())
-    reply3 = post_inbound(otp)
-    if reply3["status"] != 200:
-        fail("OTP reply accepted", f"status {reply3['status']}: {reply3['body']}")
-        return 1
-    msgs3 = wait_for_reply(head_count3, timeout=120)
-    if not msgs3:
-        fail("OTP completion replied", "no outbound after OTP submit")
-        return 1
-    final_text = msgs3[-1].get("text", "")
-    print(f"  final reply: {final_text!r}")
-    if final_text.strip():
-        ok("OTP completion replied", "final outbound received")
+    if agent_token and stash_before is not None:
+        try:
+            stash_after = fetch_balances(agent_token)
+            before_spend = _money(stash_before.get("spending_balance"))
+            after_spend = _money(stash_after.get("spending_balance"))
+            before_stash = _money(stash_before.get("stash_balance"))
+            after_stash = _money(stash_after.get("stash_balance"))
+            moved = after_stash > before_stash and after_spend < before_spend
+            if moved:
+                ok(
+                    "stash transfer moved money",
+                    f"spend {before_spend}->{after_spend}, stash {before_stash}->{after_stash}",
+                )
+            else:
+                fail(
+                    "stash transfer moved money",
+                    f"spend {before_spend}->{after_spend}, stash {before_stash}->{after_stash}",
+                )
+        except Exception as e:  # noqa: BLE001
+            fail("stash transfer moved money", str(e))
 
     print("\n=== summary ===")
     print(f"  passed: {len(passed)}  failed: {len(failed)}")

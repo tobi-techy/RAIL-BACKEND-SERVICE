@@ -96,6 +96,24 @@ func (r *PlatformIdentityRepository) ListByUser(ctx context.Context, userID uuid
 	}
 	defer rows.Close()
 
+	return scanPlatformIdentities(rows)
+}
+
+// ListLinkedByPlatform returns identities that completed a handshake on the
+// given platform. Used by the proactive reacher to find users reachable on a
+// channel before running an LLM analysis tick.
+func (r *PlatformIdentityRepository) ListLinkedByPlatform(ctx context.Context, platform entities.Platform) ([]*entities.PlatformIdentity, error) {
+	query := `SELECT * FROM platform_identities WHERE platform = $1 AND linked_at IS NOT NULL ORDER BY last_used_at DESC NULLS LAST`
+	rows, err := r.db.QueryContext(ctx, query, platform)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanPlatformIdentities(rows)
+}
+
+func scanPlatformIdentities(rows *sql.Rows) ([]*entities.PlatformIdentity, error) {
 	var results []*entities.PlatformIdentity
 	for rows.Next() {
 		pi := &entities.PlatformIdentity{}

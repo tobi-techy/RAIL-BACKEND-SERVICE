@@ -985,6 +985,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			funding.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
 				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
+				// Chat-channel stash↔spending moves. Auth (including agent tokens)
+				// plus CSRF, but NOT RequirePasscodeSession: messaging proves
+				// identity via email OTP, then Python calls these with the
+				// agent JWT. Domain methods still enforce the 90-day stash lock.
+				if container.LedgerService != nil {
+					stashTransferHandlers := handlers.NewStashTransferHandlers(container.LedgerService, container.Logger)
+					funding.POST("/stash/from-spending", stashTransferHandlers.TransferSpendingToStash)
+					funding.POST("/stash/to-spending", stashTransferHandlers.TransferStashToSpending)
+				}
 				// Pre-KYC: TOS link needed during onboarding, read-only Paj lookups
 				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
 				if container.PajHandlers != nil {
@@ -1088,6 +1097,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					billpay.POST("/beneficiaries", container.BillPayHandlers.SaveBeneficiary)
 					billpay.GET("/mandates/:category", container.BillPayHandlers.GetMandate)
 					billpay.PUT("/mandates/:category", container.BillPayHandlers.SetMandate)
+					// Chat-safe lookups + pay (messaging email-OTP / in-app chat
+					// confirm). No passcode session — same door for mobile chat-first.
+					billpay.POST("/pay", container.BillPayHandlers.PayBill)
+					billpay.GET("/providers", container.BillPayHandlers.ListProviders)
+					billpay.GET("/data-plans", container.BillPayHandlers.ListDataPlans)
+					billpay.GET("/cable-packages", container.BillPayHandlers.ListCablePackages)
+					billpay.POST("/detect-network", container.BillPayHandlers.DetectNetwork)
+					billpay.POST("/validate-meter", container.BillPayHandlers.ValidateMeter)
+					billpay.GET("/history", container.BillPayHandlers.PaymentHistory)
 				}
 			}
 
@@ -1269,6 +1287,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					obligations.GET("/:id", obligationHandler.Get)
 					obligations.PATCH("/:id", obligationHandler.Update)
 					obligations.DELETE("/:id", obligationHandler.Delete)
+				}
+			}
+
+			// Automations are money-adjacent lasting behavior. They used to live
+			// only inside the AI-orchestrator group, which meant Python MIRIAM
+			// could not list/create them when Cencori was off. Register them on
+			// the normal protected group (agent tokens included). Keep the
+			// /api/v1/ai/automations aliases below for the mobile app.
+			if container.AutomationService != nil {
+				automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
+				automations := protected.Group("/automations")
+				{
+					automations.POST("", automationHandler.CreateAutomation)
+					automations.GET("", automationHandler.ListAutomations)
+					automations.GET("/logs", automationHandler.GetAutomationLogs)
+					automations.GET("/:id", automationHandler.GetAutomation)
+					automations.PATCH("/:id", automationHandler.UpdateAutomation)
+					automations.DELETE("/:id", automationHandler.DeleteAutomation)
 				}
 			}
 
