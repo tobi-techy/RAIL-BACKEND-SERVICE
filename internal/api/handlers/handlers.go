@@ -112,6 +112,7 @@ var (
 	NewWalletHandlers        = wallet.NewWalletHandlers
 	NewWalletFundingHandlers = wallet.NewWalletFundingHandlers
 	NewWithdrawalHandlers    = wallet.NewWithdrawalHandlers
+	NewStashTransferHandlers = wallet.NewStashTransferHandlers
 	NewRecipientHandlers     = wallet.NewRecipientHandlers
 )
 

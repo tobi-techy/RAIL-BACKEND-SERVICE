@@ -3,12 +3,10 @@ package withdrawal
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"math/big"
-	"os"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -19,10 +17,10 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	domainerrors "github.com/rail-service/rail_service/internal/domain/errors"
 	stashlocksvc "github.com/rail-service/rail_service/internal/domain/services/stashlock"
+	blendpkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	bridgepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
-	blendpkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -1145,9 +1143,9 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 					"error", failErr, "withdrawal_id", withdrawal.ID.String())
 			}
 			s.alertAdmin(AdminErrorPayload{
-				UserID:    withdrawal.UserID.String(),
-				Operation: "crypto_withdrawal",
-				Error:     fmt.Errorf("panic: %v", r),
+				UserID:     withdrawal.UserID.String(),
+				Operation:  "crypto_withdrawal",
+				Error:      fmt.Errorf("panic: %v", r),
 				PanicStack: stack,
 				ExtraFields: map[string]string{
 					"withdrawal_id": withdrawal.ID.String(),
@@ -1275,12 +1273,12 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 			Operation: "crypto_withdrawal_transfer",
 			Error:     err,
 			ExtraFields: map[string]string{
-				"withdrawal_id":    withdrawal.ID.String(),
-				"amount":           withdrawal.Amount.String(),
-				"currency":         string(withdrawal.Currency),
-				"dest_chain":       req.DestinationChain,
-				"dest_address":     req.DestinationAddress,
-				"provider_wallet":  withdrawal.ProviderWalletType,
+				"withdrawal_id":   withdrawal.ID.String(),
+				"amount":          withdrawal.Amount.String(),
+				"currency":        string(withdrawal.Currency),
+				"dest_chain":      req.DestinationChain,
+				"dest_address":    req.DestinationAddress,
+				"provider_wallet": withdrawal.ProviderWalletType,
 			},
 		})
 		return
@@ -2991,13 +2989,6 @@ func (s *WithdrawalService) settleCompletedCryptoWithdrawal(ctx context.Context,
 	if s.commitment != nil {
 		_ = s.commitment.RecordOutflow(ctx, withdrawal.UserID, withdrawal.Amount, string(withdrawal.Currency))
 	}
-	// #region agent log
-	writeWithdrawalDebugLog("withdrawal/service.go:settleCompletedCryptoWithdrawal", "withdrawal completed; fee awaits revenue sweep", "H3", map[string]interface{}{
-		"withdrawal_id": withdrawal.ID.String(), "user_id": withdrawal.UserID.String(),
-		"fee_amount": withdrawal.FeeAmount.String(), "provider": withdrawal.ProviderWalletType,
-		"fee_swept_immediate": false,
-	})
-	// #endregion
 	withdrawal.Status = entities.WithdrawalStatusCompleted
 	withdrawal.CompletedAt = &now
 	withdrawal.UpdatedAt = now
@@ -3551,23 +3542,3 @@ func (s *WithdrawalService) VerifyBankAccount(ctx context.Context, userID, bankA
 		"bank_account_id", bankAccountID.String())
 	return nil
 }
-
-// #region agent log
-func writeWithdrawalDebugLog(location, message, hypothesisID string, data map[string]interface{}) {
-	payload := map[string]interface{}{
-		"sessionId": "b38437", "location": location, "message": message,
-		"hypothesisId": hypothesisID, "data": data, "timestamp": time.Now().UnixMilli(),
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile("/Users/tobi/Development/RAIL_BACKEND/.cursor/debug-b38437.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(append(b, '\n'))
-	_ = f.Close()
-}
-
-// #endregion

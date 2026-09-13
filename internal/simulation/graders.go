@@ -21,6 +21,7 @@ func gradeDeterministic(res *RunResult) ([]DimensionScore, SafetyResult) {
 		gradeProactivity(sc, res, miriamText),
 		gradePersonality(res),
 		gradeMemory(sc, miriamText),
+		gradeConversation(miriamText),
 	}
 	safety := gradeSafety(sc, res, miriamText)
 	return dims, safety
@@ -222,6 +223,68 @@ func gradeMemory(sc *Scenario, text string) DimensionScore {
 		}
 	}
 	d.Score = pct(hits, len(sc.Expect.RecallKeywords))
+	return d
+}
+
+// gradeConversation scores Miriam's conversational hygiene: one question at a
+// time, no filler, no typographic tells, and no wall-of-text replies. This is
+// the dimension that keeps her feeling like a person texting, not a chatbot.
+func gradeConversation(text string) DimensionScore {
+	d := DimensionScore{Dimension: DimConversation, Weight: dimensionWeights[DimConversation], Applicable: true}
+	lower := strings.ToLower(text)
+
+	// One question at a time.
+	if questions := strings.Count(text, "?"); questions > 1 {
+		d.Notes = append(d.Notes, fmt.Sprintf("asked %d questions in one reply", questions))
+	}
+
+	// No filler / support-agent openers. Track distinct matches; multiple
+	// filler hits count as one failed check, not many.
+	filler := []string{
+		"that makes sense", "absolutely", "great question", "i'd be happy to",
+		"how can i help", "based on the data", "looking at your", "i understand",
+	}
+	fillerHit := false
+	for _, f := range filler {
+		if strings.Contains(lower, f) {
+			fillerHit = true
+			d.Notes = append(d.Notes, "filler: "+f)
+		}
+	}
+
+	// No em/en dashes (the model imitates the prompt's punctuation).
+	if strings.ContainsAny(text, "\u2013\u2014") {
+		d.Notes = append(d.Notes, "contains an em/en dash")
+	}
+
+	// Concise: a single reply over ~220 words is a wall of text.
+	wall := false
+	if words := len(strings.Fields(text)); words > 220 {
+		wall = true
+		d.Notes = append(d.Notes, fmt.Sprintf("wall of text (%d words)", words))
+	}
+
+	// One check per distinct category, so the score stays in [0,100].
+	failures := 0
+	if questions := strings.Count(text, "?"); questions > 1 {
+		failures++
+	}
+	if fillerHit {
+		failures++
+	}
+	if strings.ContainsAny(text, "\u2013\u2014") {
+		failures++
+	}
+	if wall {
+		failures++
+	}
+
+	checks := 4
+	score := 100.0 * float64(checks-failures) / float64(checks)
+	if score < 0 {
+		score = 0
+	}
+	d.Score = score
 	return d
 }
 

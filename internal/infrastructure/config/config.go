@@ -48,6 +48,7 @@ type Config struct {
 	Eval            EvalConfig           `mapstructure:"eval"`
 	WebAuthn        WebAuthnConfig       `mapstructure:"webauthn"`
 	AI              AIConfig             `mapstructure:"ai"`
+	PythonAgent     PythonAgentConfig    `mapstructure:"python_agent"`
 	SNSPush         SNSPushConfig        `mapstructure:"sns_push"`
 	Push            PushConfig           `mapstructure:"push"`
 	TelegramAlerts  TelegramConfig       `mapstructure:"telegram_alerts"`
@@ -806,6 +807,19 @@ type WebAuthnConfig struct {
 	RPOrigins     []string `mapstructure:"rp_origins"`      // Allowed origins
 }
 
+// PythonAgentConfig configures Go's delegation to the Python MIRIAM agent (the
+// LLM brain for messaging channels). When Enabled, platform inbound messages are
+// forwarded to the Python agent instead of Go's in-process orchestrator; Go stays
+// the identity + money authority and mints short-lived per-user JWTs for Python.
+type PythonAgentConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`                  // Delegate platform chat to the Python agent
+	BaseURL           string `mapstructure:"base_url"`                 // Python agent HTTP base (e.g. http://localhost:8000)
+	JWTTTLSeconds     int    `mapstructure:"jwt_ttl_seconds"`          // Per-user token TTL (default 120)
+	OTPTTLSeconds     int    `mapstructure:"otp_ttl_seconds"`          // Email OTP validity (default 600 = 10 min)
+	OTPMaxAttempts    int    `mapstructure:"otp_max_attempts"`         // Wrong-code attempts before expiry (default 3)
+	HTTPTimeoutSeconds int   `mapstructure:"http_timeout_seconds"`     // Agent call timeout (default 60)
+}
+
 // ZeroGConfig contains configuration for 0G Network integration
 type ZeroGConfig struct {
 	// Storage configuration
@@ -1262,6 +1276,14 @@ func setDefaults() {
 	viper.SetDefault("platform.push_notification_rule", "action_only")
 	viper.SetDefault("platform.onboarding_enabled", false)
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
+
+	// Python agent delegation (the LLM brain for messaging channels).
+	viper.SetDefault("python_agent.enabled", false)
+	viper.SetDefault("python_agent.base_url", "http://localhost:8000")
+	viper.SetDefault("python_agent.jwt_ttl_seconds", 120)
+	viper.SetDefault("python_agent.otp_ttl_seconds", 600)
+	viper.SetDefault("python_agent.otp_max_attempts", 3)
+	viper.SetDefault("python_agent.http_timeout_seconds", 60)
 }
 
 func overrideFromEnv() error {
@@ -1308,6 +1330,32 @@ func overrideFromEnv() error {
 	}
 	if v := os.Getenv("PLATFORM_PUSH_NOTIFICATION_RULE"); v != "" {
 		viper.Set("platform.push_notification_rule", v)
+	}
+	if v := os.Getenv("PYTHON_AGENT_ENABLED"); v == "true" || v == "1" {
+		viper.Set("python_agent.enabled", true)
+	}
+	if v := os.Getenv("PYTHON_AGENT_URL"); v != "" {
+		viper.Set("python_agent.base_url", v)
+	}
+	if v := os.Getenv("PYTHON_AGENT_JWT_TTL_SECONDS"); v != "" {
+		if ttl, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.jwt_ttl_seconds", ttl)
+		}
+	}
+	if v := os.Getenv("PYTHON_AGENT_OTP_TTL_SECONDS"); v != "" {
+		if ttl, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.otp_ttl_seconds", ttl)
+		}
+	}
+	if v := os.Getenv("PYTHON_AGENT_OTP_MAX_ATTEMPTS"); v != "" {
+		if attempts, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.otp_max_attempts", attempts)
+		}
+	}
+	if v := os.Getenv("PYTHON_AGENT_HTTP_TIMEOUT_SECONDS"); v != "" {
+		if timeout, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.http_timeout_seconds", timeout)
+		}
 	}
 
 	// WebAuthn

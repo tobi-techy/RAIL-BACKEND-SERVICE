@@ -27,7 +27,14 @@ func (c *Container) initializePlatformMessaging() {
 	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
 	c.PlatformIdentityRepo = repositories.NewPlatformIdentityRepository(c.DB, c.ZapLog)
 
-	if c.Config.Platform.Enabled && c.AIOrchestrator != nil {
+	pythonReady := c.Config.PythonAgent.Enabled && c.Config.PythonAgent.BaseURL != "" &&
+		c.RedisClient != nil && c.Config.JWT.Secret != ""
+	// Python-agent delegation is the path that replaces the Go-native AI
+	// orchestrator for messaging. It must initialize even when no Cencori key
+	// is set (AIOrchestrator stays nil in that case). Require the python
+	// client to actually be wirable so we never stand up a processor whose
+	// orchestrator AND python client are both nil.
+	if c.Config.Platform.Enabled && (c.AIOrchestrator != nil || pythonReady) {
 		platformIdentityRepo := c.PlatformIdentityRepo
 		linkingSvc := platform.NewLinkingService(
 			platformIdentityRepo,
@@ -42,6 +49,33 @@ func (c *Container) initializePlatformMessaging() {
 				orchestrator: c.AIOrchestrator,
 				convRepo:     c.ConversationRepo,
 				deepLinkBase: c.Config.Platform.AppDeepLinkBaseURL,
+				logger:       c.ZapLog,
+			}
+
+			// Python-agent delegation: MIRIAM's LLM brain owns messaging chat and
+			// all mutations are confirmed via email OTP before the agent executes
+			// them through Go's REST. Go stays the money authority. Requires Redis
+			// for OTP staging — fail closed to the in-process orchestrator if gone.
+			if cfg := c.Config.PythonAgent; cfg.Enabled && cfg.BaseURL != "" && c.RedisClient != nil &&
+				c.Config.JWT.Secret != "" {
+				c.PythonAgentClient = ai.NewPythonAgentClient(ai.PythonAgentClientConfig{
+					BaseURL:   cfg.BaseURL,
+					JWTSecret: c.Config.JWT.Secret,
+					JWTTTL:    time.Duration(cfg.JWTTTLSeconds) * time.Second,
+					Timeout:   time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+				}, c.ZapLog)
+				platformOrchestrator.python = c.PythonAgentClient
+				platformOrchestrator.otpStore = ai.NewOtpStore(
+					c.RedisClient,
+					time.Duration(cfg.OTPTTLSeconds)*time.Second,
+					cfg.OTPMaxAttempts,
+					c.ZapLog,
+				)
+				platformOrchestrator.userRepo = c.UserRepo
+				platformOrchestrator.emailSvc = c.EmailService
+				c.ZapLog.Info("Platform messaging delegated to Python agent (MIRIAM)",
+					zap.String("base_url", cfg.BaseURL),
+				)
 			}
 
 			bridgeBaseURL := strings.TrimRight(c.Config.Platform.BridgeBaseURL, "/")

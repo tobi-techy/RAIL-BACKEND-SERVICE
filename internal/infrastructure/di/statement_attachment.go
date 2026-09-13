@@ -84,6 +84,28 @@ func (h *platformStatementAttachmentHandler) ScanGuest(ctx context.Context, send
 	}, nil
 }
 
+func (h *platformStatementAttachmentHandler) ScanLinked(ctx context.Context, userID uuid.UUID, attachment platform.StatementAttachment) (*platform.StatementScan, error) {
+	if len(attachment.Data) == 0 {
+		return nil, fmt.Errorf("empty statement")
+	}
+	// Synchronous, bounded scan used to ground conversational onboarding in the
+	// statement data immediately. Unlike ScanGuest there is nothing pending to
+	// keep in Redis — the durable job is still enqueued (or already running).
+	scanCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	result, err := h.pipeline.Process(scanCtx, uuid.New(), attachment.Data, attachment.MIMEType, "")
+	if err != nil {
+		return nil, fmt.Errorf("scan statement: %w", err)
+	}
+	if result == nil || result.ParseResult == nil || len(result.ParseResult.Transactions) == 0 {
+		return nil, fmt.Errorf("no transactions found")
+	}
+	return &platform.StatementScan{
+		PendingID: uuid.NewString(),
+		Summary:   summarizeGuestStatement(result.ParseResult),
+	}, nil
+}
+
 func (h *platformStatementAttachmentHandler) EnqueueLinked(ctx context.Context, userID uuid.UUID, attachment platform.StatementAttachment) (*platform.PlatformReply, error) {
 	uploadID, err := h.createAndEnqueue(ctx, userID, attachment)
 	if err != nil {

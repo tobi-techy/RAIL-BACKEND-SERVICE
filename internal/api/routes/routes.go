@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	admin_handlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	kychandlers "github.com/rail-service/rail_service/internal/api/handlers/kyc"
+	monohandlers "github.com/rail-service/rail_service/internal/api/handlers/mono"
 	securityHandlersV2 "github.com/rail-service/rail_service/internal/api/handlers/security"
 	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
 	"github.com/rail-service/rail_service/internal/api/middleware"
@@ -873,8 +875,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				}
 			}
 
-		// KYC status utilities (auth required but no KYC gate)
-		kycProtected := protected.Group("/kyc")
+			// KYC status utilities (auth required but no KYC gate)
+			kycProtected := protected.Group("/kyc")
 			{
 				kycProtected.POST("/sumsub/session", middleware.AuthRateLimit(3), kycEligibilityMiddleware.RequireKYCEligibility(), kycHTTPHandlers.CreateSumsubSession)
 				kycProtected.GET("/sumsub/token", middleware.AuthRateLimit(10), kycHTTPHandlers.RefreshSumsubToken)
@@ -983,6 +985,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			funding.Use(middleware.TimeoutMiddleware(30*time.Second), middleware.SystemPaused())
 			{
 				funding.GET("/transactions", walletFundingHandlers.GetTransactionHistory)
+				// Chat-channel stash↔spending moves. Auth (including agent tokens)
+				// plus CSRF, but NOT RequirePasscodeSession: messaging proves
+				// identity via email OTP, then Python calls these with the
+				// agent JWT. Domain methods still enforce the 90-day stash lock.
+				if container.LedgerService != nil {
+					stashTransferHandlers := handlers.NewStashTransferHandlers(container.LedgerService, container.Logger)
+					funding.POST("/stash/from-spending", stashTransferHandlers.TransferSpendingToStash)
+					funding.POST("/stash/to-spending", stashTransferHandlers.TransferStashToSpending)
+				}
 				// Pre-KYC: TOS link needed during onboarding, read-only Paj lookups
 				funding.GET("/tos-link", walletFundingHandlers.GetBridgeTOSLink)
 				if container.PajHandlers != nil {
@@ -1086,6 +1097,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					billpay.POST("/beneficiaries", container.BillPayHandlers.SaveBeneficiary)
 					billpay.GET("/mandates/:category", container.BillPayHandlers.GetMandate)
 					billpay.PUT("/mandates/:category", container.BillPayHandlers.SetMandate)
+					// Chat-safe lookups + pay (messaging email-OTP / in-app chat
+					// confirm). No passcode session — same door for mobile chat-first.
+					billpay.POST("/pay", container.BillPayHandlers.PayBill)
+					billpay.GET("/providers", container.BillPayHandlers.ListProviders)
+					billpay.GET("/data-plans", container.BillPayHandlers.ListDataPlans)
+					billpay.GET("/cable-packages", container.BillPayHandlers.ListCablePackages)
+					billpay.POST("/detect-network", container.BillPayHandlers.DetectNetwork)
+					billpay.POST("/validate-meter", container.BillPayHandlers.ValidateMeter)
+					billpay.GET("/history", container.BillPayHandlers.PaymentHistory)
 				}
 			}
 
@@ -1267,6 +1287,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					obligations.GET("/:id", obligationHandler.Get)
 					obligations.PATCH("/:id", obligationHandler.Update)
 					obligations.DELETE("/:id", obligationHandler.Delete)
+				}
+			}
+
+			// Automations are money-adjacent lasting behavior. They used to live
+			// only inside the AI-orchestrator group, which meant Python MIRIAM
+			// could not list/create them when Cencori was off. Register them on
+			// the normal protected group (agent tokens included). Keep the
+			// /api/v1/ai/automations aliases below for the mobile app.
+			if container.AutomationService != nil {
+				automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
+				automations := protected.Group("/automations")
+				{
+					automations.POST("", automationHandler.CreateAutomation)
+					automations.GET("", automationHandler.ListAutomations)
+					automations.GET("/logs", automationHandler.GetAutomationLogs)
+					automations.GET("/:id", automationHandler.GetAutomation)
+					automations.PATCH("/:id", automationHandler.UpdateAutomation)
+					automations.DELETE("/:id", automationHandler.DeleteAutomation)
 				}
 			}
 
@@ -1723,7 +1761,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			// Complete stuck PAJ orders (internal key auth)
 			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
 				key := c.GetHeader("X-Internal-Key")
-				if key == "" || key != container.Config.JWT.Secret {
+				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
 					c.JSON(401, gin.H{"error": "unauthorized"})
 					return
 				}
@@ -1812,7 +1850,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		if container.CircleAdapter != nil {
 			v1.POST("/ops/reverse-sol", func(c *gin.Context) {
 				key := c.GetHeader("X-Internal-Key")
-				if key == "" || key != container.Config.JWT.Secret {
+				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
 					c.JSON(401, gin.H{"error": "unauthorized"})
 					return
 				}
@@ -2022,6 +2060,15 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// Register Mono open-banking routes (account linking, transactions, analysis, deposits)
 		if container.MonoService != nil {
 			RegisterMonoRoutes(protected, container.MonoService, container.ZapLog)
+			// Pre-signup (guest) Mono completion — public, since a guest has no
+			// account yet. The guest token is the proof of the chat session.
+			var guestLinker monohandlers.GuestSessionLinker
+			if proc := container.GetPlatformProcessor(); proc != nil {
+				guestLinker = proc.GetOnboarder()
+			}
+			guestMono := v1.Group("/")
+			guestMono.Use(middleware.AuthRateLimit(10))
+			RegisterGuestMonoRoutes(guestMono, container.MonoService, guestLinker, container.ZapLog)
 		}
 
 		// Register opportunity routes

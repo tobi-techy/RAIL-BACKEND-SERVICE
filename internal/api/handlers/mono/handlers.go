@@ -1,6 +1,7 @@
 package mono
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,6 +17,16 @@ import (
 type Handlers struct {
 	service *monosvc.Service
 	logger  *zap.Logger
+	// guestLinker marks a guest chat session as bank-linked after a pre-signup
+	// Mono link completes. Optional; when nil, guest completion still persists
+	// the account but cannot update the chat session.
+	guestLinker GuestSessionLinker
+}
+
+// GuestSessionLinker flips a guest chat session's MonoLinked flag once a
+// pre-signup bank link completes. Satisfied by the platform ChatOnboarder.
+type GuestSessionLinker interface {
+	MarkGuestMonoLinked(ctx context.Context, guestToken string) error
 }
 
 // maxTransactionLimit caps page size on transaction listings.
@@ -23,6 +34,12 @@ const maxTransactionLimit = 200
 
 func NewHandlers(service *monosvc.Service, logger *zap.Logger) *Handlers {
 	return &Handlers{service: service, logger: logger}
+}
+
+// SetGuestSessionLinker installs the guest chat-session linker used by the
+// pre-signup Mono complete endpoint.
+func (h *Handlers) SetGuestSessionLinker(l GuestSessionLinker) {
+	h.guestLinker = l
 }
 
 // --- Request Types ---
@@ -35,6 +52,11 @@ type initiateLinkRequest struct {
 
 type completeLinkRequest struct {
 	Code string `json:"code" binding:"required"`
+}
+
+type completeGuestLinkRequest struct {
+	GuestToken string `json:"guest_token" binding:"required"`
+	Code       string `json:"code" binding:"required"`
 }
 
 type initiateDepositRequest struct {
@@ -114,6 +136,44 @@ func (h *Handlers) CompleteLink(c *gin.Context) {
 		h.logger.Error("Mono complete linking failed", zap.Error(err), zap.String("user_id", userID.String()))
 		common.RespondError(c, http.StatusBadGateway, "MONO_LINK_FAILED", "failed to complete account linking", nil)
 		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"account": account,
+	})
+}
+
+// CompleteGuestLink godoc
+// @Summary Complete a pre-signup (guest) Mono account link
+// @Description Exchanges the Mono Connect widget code for a persistent account
+// tied to a guest chat session (no RAIL account yet). The account is claimed by
+// the user when they sign up. Unauthenticated: the guest token is the proof of
+// the chat session, and the code is single-use via Mono.
+// @Tags mono
+// @Accept json
+// @Produce json
+// @Param body body completeGuestLinkRequest true "Guest token + code from Mono widget"
+// @Router /api/v1/mono/guest/link/complete [post]
+func (h *Handlers) CompleteGuestLink(c *gin.Context) {
+	var req completeGuestLinkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.RespondError(c, http.StatusBadRequest, "BAD_REQUEST", "guest_token and code are required", nil)
+		return
+	}
+
+	account, err := h.service.CompleteGuestLinking(c.Request.Context(), req.GuestToken, req.Code)
+	if err != nil {
+		h.logger.Error("Mono guest complete linking failed", zap.Error(err))
+		common.RespondError(c, http.StatusBadGateway, "MONO_LINK_FAILED", "failed to complete account linking", nil)
+		return
+	}
+
+	// Flip the guest chat session so Miriam knows the bank is connected and can
+	// deliver the aha on the next turn. Best-effort.
+	if h.guestLinker != nil {
+		if err := h.guestLinker.MarkGuestMonoLinked(c.Request.Context(), req.GuestToken); err != nil {
+			h.logger.Warn("Mono guest session link flag failed", zap.Error(err), zap.String("guest_token", req.GuestToken))
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
