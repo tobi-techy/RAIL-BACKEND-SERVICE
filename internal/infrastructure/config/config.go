@@ -1278,8 +1278,10 @@ func setDefaults() {
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
 
 	// Python agent delegation (the LLM brain for messaging channels).
-	viper.SetDefault("python_agent.enabled", false)
-	viper.SetDefault("python_agent.base_url", "http://localhost:8000")
+	// MIRIAM (Python) is the default brain; the old in-process orchestrator is
+	// only a fallback when the Python agent is explicitly unavailable.
+	viper.SetDefault("python_agent.enabled", true)
+	viper.SetDefault("python_agent.base_url", "")
 	viper.SetDefault("python_agent.jwt_ttl_seconds", 120)
 	viper.SetDefault("python_agent.otp_ttl_seconds", 600)
 	viper.SetDefault("python_agent.otp_max_attempts", 3)
@@ -1333,6 +1335,8 @@ func overrideFromEnv() error {
 	}
 	if v := os.Getenv("PYTHON_AGENT_ENABLED"); v == "true" || v == "1" {
 		viper.Set("python_agent.enabled", true)
+	} else if v == "false" || v == "0" {
+		viper.Set("python_agent.enabled", false)
 	}
 	if v := os.Getenv("PYTHON_AGENT_URL"); v != "" {
 		viper.Set("python_agent.base_url", v)

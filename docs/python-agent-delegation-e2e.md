@@ -29,8 +29,8 @@ answer text, and executes confirmed cards through Go's REST with the JWT Go mint
 
 | Config | Env | Default | Effect |
 |---|---|---|---|
-| `python_agent.enabled` | `PYTHON_AGENT_ENABLED` | `false` | Off = old in-process Cencori brain. On = delegate to Python. |
-| `python_agent.base_url` | `PYTHON_AGENT_URL` | `http://localhost:8000` | Python agent reachable from Go. |
+| `python_agent.enabled` | `PYTHON_AGENT_ENABLED` | `true` (MIRIAM default) | Delegate to Python. Off = old in-process Cencori brain (explicit only). |
+| `python_agent.base_url` | `PYTHON_AGENT_URL` | `` (must be set when enabled) | Python agent reachable from Go. |
 | `python_agent.jwt_ttl_seconds` | `PYTHON_AGENT_JWT_TTL_SECONDS` | `120` | Life of the per-turn JWT Go mints for Python. |
 | `python_agent.otp_ttl_seconds` | `PYTHON_AGENT_OTP_TTL_SECONDS` | `600` | OTP code validity. |
 | `python_agent.otp_max_attempts` | `PYTHON_AGENT_OTP_MAX_ATTEMPTS` | `3` | Wrong-code attempts before the confirmation is cancelled. |
