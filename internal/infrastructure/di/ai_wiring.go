@@ -33,6 +33,14 @@ import (
 )
 
 func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *repositories.PositionRepository, allocationRepo *repositories.AllocationRepository, basketRepo *repositories.BasketRepository) error {
+	// The conversation repository is needed by the platform delegation path
+	// even when Go's own AI (Cencori) is not configured — with Python-agent
+	// delegation the Python MIRIAM agent is the LLM brain, so there is no
+	// Cencori key and this function would otherwise bail before creating it.
+	if c.ConversationRepo == nil {
+		c.ConversationRepo = repositories.NewConversationRepository(c.DB, c.ZapLog)
+	}
+
 	// Check if AI is configured
 	if c.Config.AI.Cencori.APIKey == "" {
 		return fmt.Errorf("no AI provider configured")
