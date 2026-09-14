@@ -3,7 +3,11 @@ package di
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
 	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -70,12 +74,66 @@ func (a *orchestratorAdapter) costCeilingMessage(ctx context.Context, uid uuid.U
 
 // mapPythonChatReply projects a Python chat response onto a PlatformReply,
 // carrying any interactive poll through so the processor renders it natively.
+// Reactions, wrapper bubbles, and shares ride along too, all validated: the
+// reaction must be on the tapback whitelist, the share URL must pass the host
+// allowlist, and extra bubbles are capped.
 func mapPythonChatReply(resp *ai.PythonChatResponse) *platform.PlatformReply {
 	reply := &platform.PlatformReply{Text: resp.Response}
 	if resp.Poll != nil && len(resp.Poll.Options) > 0 {
 		reply.Poll = &platform.PollRequest{Title: resp.Poll.Title, Options: resp.Poll.Options}
 	}
+	if emoji := strings.TrimSpace(resp.Reaction); emoji != "" && platform.ValidReaction(emoji) {
+		reply.Reaction = emoji
+	}
+	for i, m := range resp.Messages {
+		if i >= platform.MaxExtraMessages {
+			break
+		}
+		if text := strings.TrimSpace(m); text != "" {
+			reply.ExtraTexts = append(reply.ExtraTexts, text)
+		}
+	}
+	if resp.Share != nil {
+		if u := strings.TrimSpace(resp.Share.URL); u != "" && shareHostAllowed(u) {
+			reply.Share = &platform.ShareRequest{
+				Kind:  strings.TrimSpace(resp.Share.Kind),
+				Title: strings.TrimSpace(resp.Share.Title),
+				URL:   u,
+			}
+		}
+	}
 	return reply
+}
+
+// shareAllowlist stores the decoded MIRIAM_SHARE_ALLOWED_HOSTS allowlist (read
+// once). An empty allowlist admits nothing — a share URL must be on the list to
+// reach a user on any path, guest or linked.
+var (
+	shareAllowlistOnce sync.Once
+	shareAllowlist     map[string]bool
+)
+
+// shareHostAllowed reports whether a share URL's host is on the allowlist. The
+// var is the same one the guest onboarder uses, so both delivery paths agree.
+func shareHostAllowed(raw string) bool {
+	shareAllowlistOnce.Do(func() {
+		shareAllowlist = map[string]bool{}
+		for _, h := range strings.Split(os.Getenv("MIRIAM_SHARE_ALLOWED_HOSTS"), ",") {
+			h = strings.ToLower(strings.TrimSpace(h))
+			if h == "" {
+				continue
+			}
+			shareAllowlist[strings.TrimPrefix(h, "www.")] = true
+		}
+	})
+	if len(shareAllowlist) == 0 {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return shareAllowlist[strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")]
 }
 
 // HandlePlatformPollVote implements platform.PollVoteOrchestrator: a poll vote

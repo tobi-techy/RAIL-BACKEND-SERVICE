@@ -127,6 +127,39 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 			},
 		})
 	}
+
+	// Chatty turn: pass through up to two extra short bubbles, one tapback
+	// reaction, and one share — all re-validated by the deterministic executor
+	// (whitelist, budget, URL allowlist) before anything is sent.
+	for i, m := range resp.Messages {
+		if i >= platform.MaxExtraMessages {
+			break
+		}
+		text := strings.TrimSpace(m)
+		if text == "" {
+			continue
+		}
+		res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
+			Name:      "send_message",
+			Arguments: map[string]interface{}{"text": text},
+		})
+	}
+	if emoji := strings.TrimSpace(resp.Reaction); emoji != "" {
+		res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
+			Name:      "send_reaction",
+			Arguments: map[string]interface{}{"emoji": emoji},
+		})
+	}
+	if resp.Share != nil && strings.TrimSpace(resp.Share.URL) != "" {
+		res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
+			Name: "share_artifact",
+			Arguments: map[string]interface{}{
+				"kind":  resp.Share.Kind,
+				"title": resp.Share.Title,
+				"url":   resp.Share.URL,
+			},
+		})
+	}
 	return res, nil
 }
 

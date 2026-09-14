@@ -22,6 +22,7 @@ const (
 	ContentTypePoll     ContentType = "poll"     // poll() — Confirm/Cancel prompt
 	ContentTypeVoice    ContentType = "voice"    // voice() — spoken note (TTS)
 	ContentTypeCards    ContentType = "cards"    // structured InsightCards (rendered per platform)
+	ContentTypeReaction ContentType = "reaction" // react() — tapback on the user's message
 )
 
 // Delivery categories for the bridge's persistent outbound queue.
@@ -56,6 +57,10 @@ type OutboundMessage struct {
 
 	// reply
 	ReplyTo string `json:"reply_to,omitempty"`
+
+	// reaction (tapback on the inbound message threaded under reply_to; the
+	// bridge resolves the target and calls react())
+	ReactionEmoji string `json:"reaction_emoji,omitempty"`
 
 	// effect (iMessage only — Spectrum ignores on other platforms)
 	Effect string `json:"effect,omitempty"`
@@ -111,11 +116,24 @@ func (b *ResponseBuilder) MarkdownResponse(identity *entities.PlatformIdentity, 
 	return m
 }
 
+// ReplyResponse threads a reply under the user's own message. The bridge sends a
+// typing beat, then a markdown bubble nested under the parent.
 func (b *ResponseBuilder) ReplyResponse(identity *entities.PlatformIdentity, text, threadID, replyTo string) *OutboundMessage {
 	m := b.base(identity, threadID)
 	m.Text = text
 	m.ContentType = ContentTypeReply
 	m.ReplyTo = replyTo
+	return m
+}
+
+// ReactionResponse taps back on the user's own message (the inbound thread id).
+// The bridge resolves the target by reply_to and calls react() on it; on
+// platforms without reaction support the bridge no-ops silently.
+func (b *ResponseBuilder) ReactionResponse(identity *entities.PlatformIdentity, threadID, replyTo, emoji string) *OutboundMessage {
+	m := b.base(identity, threadID)
+	m.ContentType = ContentTypeReaction
+	m.ReplyTo = replyTo
+	m.ReactionEmoji = emoji
 	return m
 }
 

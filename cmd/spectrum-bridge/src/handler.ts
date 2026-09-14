@@ -28,10 +28,15 @@ export interface OutboundMessage {
     | "poll"
     | "voice"
     | "cards"
+    | "reaction"
     | "text";
 
   // reply
   reply_to?: string;
+
+  // reaction (tapback on the user's message — iMessage renders universal emoji
+  // as native tapbacks; other platforms no-op silently)
+  reaction_emoji?: string;
 
   // effect (iMessage only)
   effect?: string;
@@ -157,6 +162,36 @@ export class MessageHandler {
           duration: msg.duration_sec,
         }),
       );
+      return;
+    }
+
+    // Reactions are native tapbacks on a specific inbound message. We resolve the
+    // target from the stored inbound message (or a provider fetch) and call
+    // react() on that handle — on platforms without reaction support this is a
+    // silent no-op, so it never blocks the rest of the turn.
+    if (contentType === "reaction") {
+      if (!msg.reaction_emoji) {
+        log.warn({ thread_id: msg.thread_id }, "reaction message with no emoji");
+        return;
+      }
+      let target: Message | undefined;
+      if (msg.reply_to) {
+        target = await this.resolveParentMessage(space, msg.reply_to);
+      } else {
+        target = this.getLastInboundMessage(msg.thread_id);
+      }
+      if (!target) {
+        log.warn(
+          { thread_id: msg.thread_id, reply_to: msg.reply_to || undefined },
+          "reaction target message not found",
+        );
+        return;
+      }
+      try {
+        await target.react(msg.reaction_emoji);
+      } catch (err) {
+        log.warn({ err, emoji: msg.reaction_emoji }, "reaction send failed");
+      }
       return;
     }
 

@@ -17,6 +17,9 @@ func TestHumanizeText(t *testing.T) {
 		{"spaced en dash", "Rent is due \u2013 Friday", "Rent is due, Friday"},
 		{"unspaced em dash", "No\u2014build the net first", "No, build the net first"},
 		{"dash before period", "You're at 720k\u2014.", "You're at 720k."},
+		{"curly quotes", "She said \u201cI\u2019m saving\u201d", "She said \"I'm saving\""},
+		{"ellipsis", "And then\u2026 it dipped", "And then... it dipped"},
+		{"non-breaking space", "balance\u00a0is\u00a0fine", "balance is fine"},
 		{"plain hyphen preserved", "call +234-801-234-5678 or e-mail me", "call +234-801-234-5678 or e-mail me"},
 	}
 	for _, tt := range tests {

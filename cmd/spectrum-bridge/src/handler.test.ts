@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { renderInsightCard, extractCardRows, type InsightCard } from "./handler";
+import {
+  MessageHandler,
+  renderInsightCard,
+  extractCardRows,
+  type InsightCard,
+  type OutboundMessage,
+} from "./handler";
 
 describe("renderInsightCard", () => {
   it("renders a stat_grid card from StatItem rows", () => {
@@ -89,5 +95,69 @@ describe("renderInsightCard", () => {
   it("extracts items nested under a data.items key", () => {
     const rows = extractCardRows({ items: [{ label: "A", value: "1" }] });
     expect(rows).toEqual([{ label: "A", value: "1" }]);
+  });
+});
+
+describe("MessageHandler reaction content type", () => {
+  function base(overrides: Partial<OutboundMessage>): OutboundMessage {
+    return {
+      platform: "imessage",
+      user_id: "u1",
+      thread_id: "t1",
+      text: "",
+      ...overrides,
+    };
+  }
+
+  it("reacts natively on the stored inbound message", async () => {
+    const reacts: Array<[string, string]> = [];
+    const handler = new MessageHandler();
+    handler.registerInboundMessage({
+      id: "in-1",
+      direction: "inbound",
+      react: (emoji: string) => {
+        reacts.push(["in-1", emoji]);
+        return Promise.resolve(undefined);
+      },
+    } as never);
+
+    await handler.handleOutbound(
+      { send: async () => {} } as never,
+      base({ content_type: "reaction", reply_to: "in-1", reaction_emoji: "❤️" }),
+    );
+
+    expect(reacts).toEqual([["in-1", "❤️"]]);
+  });
+
+  it("falls back to the last inbound message per thread when no reply_to", async () => {
+    const reacts: Array<[string, string]> = [];
+    const handler = new MessageHandler();
+    handler.registerInboundMessage({
+      id: "in-2",
+      direction: "inbound",
+      space: { id: "t1" },
+      react: (emoji: string) => {
+        reacts.push(["in-2", emoji]);
+        return Promise.resolve(undefined);
+      },
+    } as never);
+
+    await handler.handleOutbound(
+      { send: async () => {} } as never,
+      base({ content_type: "reaction", reaction_emoji: "👍" }),
+    );
+
+    expect(reacts).toEqual([["in-2", "👍"]]);
+  });
+
+  it("no-ops silently when the target message is unavailable", async () => {
+    const handler = new MessageHandler();
+    let sends = 0;
+    const err = await handler.handleOutbound(
+      { send: async () => { sends++; } } as never,
+      base({ content_type: "reaction", reply_to: "missing", reaction_emoji: "😂" }),
+    );
+    expect(err).toBeUndefined();
+    expect(sends).toBe(0);
   });
 });

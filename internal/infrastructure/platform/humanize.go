@@ -4,12 +4,13 @@ import "strings"
 
 // humanizeText strips the typographic tells that make Miriam read like a
 // document instead of a person texting. Em and en dashes are the biggest one:
-// LLMs overuse them and nobody texts with them. Plain hyphens are untouched
-// (phone numbers, compound words). Applied at the outbound serialization choke
-// point so every bridge-bound message benefits: chat replies, onboarding copy,
-// proactive nudges, and briefings.
+// LLMs overuse them and nobody texts with them. Curly quotes and the single-char
+// ellipsis are the same tell in a different font, so they go straight too.
+// Plain hyphens are untouched (phone numbers, compound words). Applied at the
+// outbound serialization choke point so every bridge-bound message benefits:
+// chat replies, onboarding copy, proactive nudges, and briefings.
 func humanizeText(text string) string {
-	if !strings.ContainsAny(text, "\u2013\u2014") { // – —
+	if !strings.ContainsAny(text, "\u2013\u2014\u2018\u2019\u201c\u201d\u2026\u00a0") { // – — ' ' " " … NBSP
 		return text
 	}
 	out := strings.NewReplacer(
@@ -17,6 +18,12 @@ func humanizeText(text string) string {
 		" \u2013 ", ", ",
 		"\u2014", ", ", // unspaced fallback so words never fuse
 		"\u2013", ", ",
+		"\u2018", "'", // curly single quotes → straight
+		"\u2019", "'",
+		"\u201c", "\"", // curly double quotes → straight
+		"\u201d", "\"",
+		"\u2026", "...", // single-char ellipsis → three dots
+		"\u00a0", " ", // non-breaking space → space
 	).Replace(text)
 
 	// Clean up punctuation left behind by the replacements.

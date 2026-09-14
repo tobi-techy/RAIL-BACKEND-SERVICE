@@ -407,6 +407,75 @@ func TestProcessor_HandshakeTokenDuringOnboardingCompletesLink(t *testing.T) {
 	}
 }
 
+// TestProcessor_OnboardingChattyReplySequence pins the outbound flush order for
+// a chatty onboarding turn: reaction on the user's message first, then the main
+// bubble, wrapper bubbles, and the share link last.
+func TestProcessor_OnboardingChattyReplySequence(t *testing.T) {
+	repo := newFakeRepo()
+	proc, sent, _ := newTestProcessor(repo, &fakeOrchestrator{})
+	fc := &fakeCompleter{default_: fakeCompletion{
+		text: "Ok, let's set that up.",
+		toolCalls: []GuestToolCall{
+			{Name: "send_reaction", Arguments: map[string]interface{}{"emoji": "❤️"}},
+			{Name: "send_message", Arguments: map[string]interface{}{"text": "First bit."}},
+			{Name: "share_artifact", Arguments: map[string]interface{}{"kind": "plan", "title": "Your plan", "url": "https://miriam.example/p/a"}},
+		},
+	}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+	ob.SetShareAllowlist([]string{"miriam.example"})
+	proc.SetOnboarder(ob)
+
+	raw, err := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15559999",
+		SpaceID:  "space-9",
+		MsgID:    "msg-9",
+		Text:     "lets do it",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := proc.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	type want struct {
+		ct      ContentType
+		replyTo string
+		text    string
+		emoji   string
+		url     string
+	}
+	wants := []want{
+		{ct: ContentTypeReaction, replyTo: "msg-9", emoji: "❤️"},
+		{ct: ContentTypeText, text: "Ok, let's set that up."},
+		{ct: ContentTypeMarkdown, text: "First bit."},
+		{ct: ContentTypeRichLink, text: "Your plan", url: "https://miriam.example/p/a"},
+	}
+	if len(*sent) != len(wants) {
+		t.Fatalf("expected %d outbound messages, got %d: %#v", len(wants), len(*sent), *sent)
+	}
+	t.Logf("sent: %#v", *sent)
+	for i, w := range wants {
+		got := (*sent)[i]
+		if got.ContentType != w.ct {
+			t.Errorf("msg %d content_type: got %q want %q", i, got.ContentType, w.ct)
+		}
+		if got.ReplyTo != w.replyTo {
+			t.Errorf("msg %d reply_to: got %q want %q", i, got.ReplyTo, w.replyTo)
+		}
+		if got.Text != w.text {
+			t.Errorf("msg %d text: got %q want %q", i, got.Text, w.text)
+		}
+		if got.ReactionEmoji != w.emoji {
+			t.Errorf("msg %d emoji: got %q want %q", i, got.ReactionEmoji, w.emoji)
+		}
+		if got.CardURL != w.url {
+			t.Errorf("msg %d url: got %q want %q", i, got.CardURL, w.url)
+		}
+	}
+}
+
 func TestProcess_VoiceNoteWithoutTranscoderFallsBackToText(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")

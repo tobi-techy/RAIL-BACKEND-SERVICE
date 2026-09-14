@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/mail"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -194,6 +195,7 @@ type ChatOnboarder struct {
 	transcripts      GuestTranscriptWriter
 	statementHandler StatementAttachmentHandler
 	monoLinker       GuestMonoLinker
+	shareAllowlist   map[string]bool
 }
 
 func NewChatOnboarder(
@@ -247,6 +249,55 @@ func (c *ChatOnboarder) SetStatementAttachmentHandler(handler StatementAttachmen
 // Nil-safe.
 func (c *ChatOnboarder) SetGuestMonoLinker(l GuestMonoLinker) {
 	c.monoLinker = l
+}
+
+// SetShareAllowlist enables Miriam's share_artifact tool by listing the hosts a
+// shared link may point at. Only hosts on this list are delivered — an empty
+// (or unset) allowlist admits nothing, so a wild model URL can never reach the
+// user. Hosts are compared case-insensitively with a leading "www." stripped.
+func (c *ChatOnboarder) SetShareAllowlist(hosts []string) {
+	list := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" {
+			continue
+		}
+		list[strings.TrimPrefix(h, "www.")] = true
+	}
+	c.shareAllowlist = list
+}
+
+// shareHostAllowed reports whether a share URL's host passes the allowlist. The
+// syntactic http(s) gate already ran in the executor; this is the delivery gate.
+func (c *ChatOnboarder) shareHostAllowed(raw string) bool {
+	if len(c.shareAllowlist) == 0 {
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return c.shareAllowlist[strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")]
+}
+
+// outcomeReply projects a brain outcome onto a PlatformReply, applying the share
+// host allowlist so only approved links are ever delivered. Reactions and extra
+// bubbles pass through as-is (both were whitelisted/bounded by the executor).
+func (c *ChatOnboarder) outcomeReply(out *guestOutcome) *PlatformReply {
+	reply := &PlatformReply{Text: out.text}
+	if out.poll != nil {
+		reply.Poll = out.poll
+	}
+	if out.reaction != "" {
+		reply.Reaction = out.reaction
+	}
+	if len(out.extraTexts) > 0 {
+		reply.ExtraTexts = append([]string(nil), out.extraTexts...)
+	}
+	if out.share != nil && c.shareHostAllowed(out.share.url) {
+		reply.Share = &ShareRequest{Kind: out.share.kind, Title: out.share.title, URL: out.share.url}
+	}
+	return reply
 }
 
 // SetBabyStepsSeeder installs the first-login goal seeder. After a successful
@@ -515,11 +566,8 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 		return nil, err
 	}
 
-	reply := &PlatformReply{Text: replyText}
-	if out.poll != nil {
-		reply.Poll = out.poll
-	}
-	return reply, nil
+	out.text = replyText
+	return c.outcomeReply(out), nil
 }
 
 // handleGuestConnectBank sends the guest a tappable Mono Connect link so they
@@ -637,7 +685,8 @@ func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st 
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply(replyText), nil
+	out.text = replyText
+	return c.outcomeReply(out), nil
 }
 
 // guestLinkName/guestLinkEmail give Mono a display identity for the link

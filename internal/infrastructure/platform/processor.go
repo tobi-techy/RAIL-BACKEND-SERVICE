@@ -133,12 +133,24 @@ type ActionPostback struct {
 // PlatformReply is a structured response Miriam wants delivered over a platform.
 // The processor turns it into the appropriate Spectrum content type(s).
 type PlatformReply struct {
-	Text    string                 // markdown body
-	Effect  string                 // optional iMessage effect id (e.g. "celebration")
-	Confirm *ConfirmRequest        // if set, render a Confirm/Cancel poll
-	Poll    *PollRequest           // if set, render a custom-option poll (onboarding, send_poll)
-	OpenApp *OpenAppRequest        // if set, action must be authorized in-app (fund moves)
-	Cards   []entities.InsightCard // structured insight cards to render after the text
+	Text       string                 // markdown body
+	Effect     string                 // optional iMessage effect id (e.g. "celebration")
+	Confirm    *ConfirmRequest        // if set, render a Confirm/Cancel poll
+	Poll       *PollRequest           // if set, render a custom-option poll (onboarding, send_poll)
+	OpenApp    *OpenAppRequest        // if set, action must be authorized in-app (fund moves)
+	Cards      []entities.InsightCard // structured insight cards to render after the text
+	Reaction   string                 // whitelisted tapback emoji on the user's message
+	ExtraTexts []string               // additional short bubbles after the main text (≤2)
+	Share      *ShareRequest          // if set, render a rich-link preview of a chart/plan
+}
+
+// ShareRequest is a rich link Miriam wants to hand over (a chart, the plan
+// page). The URL must already have passed the host allowlist before reaching
+// the processor.
+type ShareRequest struct {
+	Kind  string // what it is: "chart", "plan", ...
+	Title string // one short line sent with the link
+	URL   string // absolute http(s) link
 }
 
 // ConfirmRequest describes a Confirm/Cancel prompt rendered as a poll.
@@ -670,7 +682,8 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		return nil
 	}
 
-	// Interactive prompts stay visual — a poll or app card can't be a voice note.
+	// Interactive prompts stay visual and unambiguous — a confirm/app hand-off
+	// must never be buried under extra bubbles or tapbacks.
 	switch {
 	case reply.Confirm != nil:
 		// iMessage has no buttons — render a Confirm/Cancel poll. The vote comes
@@ -682,14 +695,20 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		return p.send(ctx, p.responseBuilder.PollResponse(identity, title, threadID, []string{"Confirm", "Cancel"}))
 	case reply.OpenApp != nil:
 		return p.send(ctx, p.responseBuilder.AppCardResponse(identity, reply.Text, threadID, replyTo, reply.OpenApp.Title, reply.OpenApp.URL))
-	case reply.Poll != nil && len(reply.Poll.Options) > 0:
+	}
+
+	// The tapback on the user's message is the instant ack; Miriam's own bubbles
+	// land after it, then wrapper bubbles, then the poll to tap — a decision
+	// surface is never a bare card, so any surrounding signals ride with it.
+	if err := p.sendReaction(ctx, identity, threadID, replyTo, reply.Reaction); err != nil {
+		return err
+	}
+
+	if reply.Poll != nil && len(reply.Poll.Options) > 0 {
 		title := reply.Poll.Title
 		if title == "" {
 			title = reply.Text
 		}
-		// A poll is a decision surface, never a replacement for the words. Send
-		// the reply text as a real message first so a bare card can never be the
-		// whole reply, then hand them the poll to tap.
 		if strings.TrimSpace(reply.Text) != "" {
 			var words *OutboundMessage
 			if replyTo != "" {
@@ -701,13 +720,19 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 				return err
 			}
 		}
+		if err := p.sendGestures(ctx, identity, threadID, replyTo, reply); err != nil {
+			return err
+		}
 		return p.send(ctx, p.responseBuilder.PollResponse(identity, title, threadID, reply.Poll.Options))
 	}
 
 	// Mirror modality: a voice note in gets a voice note back when TTS is available.
 	if voiceReply && p.voiceEnabled() && strings.TrimSpace(reply.Text) != "" {
 		if out, err := p.synthesizeVoice(ctx, identity, threadID, reply.Text); err == nil {
-			return p.send(ctx, out)
+			if err := p.send(ctx, out); err != nil {
+				return err
+			}
+			return p.sendGestures(ctx, identity, threadID, replyTo, reply)
 		} else {
 			log.Printf("voice synthesis failed, falling back to text: %v", err)
 		}
@@ -730,7 +755,51 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 	if len(reply.Cards) > 0 && reply.Confirm == nil && reply.OpenApp == nil {
 		out = p.responseBuilder.CardsResponse(identity, reply.Text, threadID, reply.Cards)
 	}
-	return p.send(ctx, out)
+
+	// Reaction already fired; now the words, then any wrapper bubbles and the
+	// share. Skip the main bubble only when there is genuinely nothing to say.
+	if strings.TrimSpace(reply.Text) != "" {
+		if err := p.send(ctx, out); err != nil {
+			return err
+		}
+	} else if len(reply.Cards) == 0 {
+		// No text and no cards — send gestures only, if any.
+		return p.sendGestures(ctx, identity, threadID, replyTo, reply)
+	}
+	return p.sendGestures(ctx, identity, threadID, replyTo, reply)
+}
+
+// sendReaction fires the tapback on the user's message — the instant ack that
+// lands before Miriam's own bubbles appear. Interactive prompts (confirm/app)
+// never carry one.
+func (p *Processor) sendReaction(ctx context.Context, identity *entities.PlatformIdentity, threadID, replyTo, emoji string) error {
+	if replyTo == "" || emoji == "" {
+		return nil
+	}
+	return p.send(ctx, p.responseBuilder.ReactionResponse(identity, threadID, replyTo, emoji))
+}
+
+// sendGestures emits the remaining turn signals after the main bubble: wrapper
+// bubbles, then the share link. The tapback reaction is sent first by
+// sendReaction. All are best-effort and bounded — a failure delivering an extra
+// bubble fails the turn so nothing is silently dropped mid-reply.
+func (p *Processor) sendGestures(ctx context.Context, identity *entities.PlatformIdentity, threadID, replyTo string, reply *PlatformReply) error {
+	for _, extra := range reply.ExtraTexts {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		if err := p.send(ctx, p.responseBuilder.MarkdownResponse(identity, extra, threadID)); err != nil {
+			return err
+		}
+	}
+	if reply.Share != nil && strings.TrimSpace(reply.Share.URL) != "" {
+		link := p.responseBuilder.RichLinkResponse(identity, strings.TrimSpace(reply.Share.Title), threadID, strings.TrimSpace(reply.Share.URL))
+		if err := p.send(ctx, link); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *Processor) send(ctx context.Context, out *OutboundMessage) error {
@@ -810,10 +879,25 @@ func (p *Processor) sendToSender(ctx context.Context, msg InboundMessage, text s
 }
 
 // sendOnboardingReply delivers a structured onboarder reply (text, poll, effect)
-// to an unlinked sender.
+// to an unlinked sender. The tapback reaction lands first, then the words or the
+// decision surface, with wrapper bubbles and the share last so the choice is the
+// final thing on screen.
 func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage, reply *PlatformReply) error {
 	if reply == nil {
 		return nil
+	}
+	if msg.MsgID != "" && reply.Reaction != "" {
+		out := &OutboundMessage{
+			Platform:      msg.Platform,
+			UserID:        msg.UserID,
+			ThreadID:      msg.ThreadID,
+			ContentType:   ContentTypeReaction,
+			ReplyTo:       msg.MsgID,
+			ReactionEmoji: reply.Reaction,
+		}
+		if err := p.send(ctx, out); err != nil {
+			return err
+		}
 	}
 	if reply.Poll != nil && len(reply.Poll.Options) > 0 {
 		title := reply.Poll.Title
@@ -829,7 +913,10 @@ func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage,
 			PollTitle:   title,
 			PollOptions: reply.Poll.Options,
 		}
-		return p.send(ctx, out)
+		if err := p.send(ctx, out); err != nil {
+			return err
+		}
+		return p.sendOnboardingGestures(ctx, msg, reply)
 	}
 	if reply.Effect != "" {
 		out := &OutboundMessage{
@@ -840,9 +927,53 @@ func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage,
 			ContentType: ContentTypeEffect,
 			Effect:      reply.Effect,
 		}
-		return p.send(ctx, out)
+		if err := p.send(ctx, out); err != nil {
+			return err
+		}
+		return p.sendOnboardingGestures(ctx, msg, reply)
 	}
-	return p.sendToSender(ctx, msg, reply.Text)
+	if strings.TrimSpace(reply.Text) != "" {
+		if err := p.sendToSender(ctx, msg, reply.Text); err != nil {
+			return err
+		}
+	}
+	return p.sendOnboardingGestures(ctx, msg, reply)
+}
+
+// sendOnboardingGestures emits the wrapper bubbles and the share link for an
+// unlinked-sender reply. No identity exists yet, so messages are built directly
+// from the inbound msg. The tapback reaction is sent first by sendOnboardingReply.
+func (p *Processor) sendOnboardingGestures(ctx context.Context, msg InboundMessage, reply *PlatformReply) error {
+	for _, extra := range reply.ExtraTexts {
+		extra = strings.TrimSpace(extra)
+		if extra == "" {
+			continue
+		}
+		out := &OutboundMessage{
+			Platform:    msg.Platform,
+			UserID:      msg.UserID,
+			ThreadID:    msg.ThreadID,
+			Text:        extra,
+			ContentType: ContentTypeMarkdown,
+		}
+		if err := p.send(ctx, out); err != nil {
+			return err
+		}
+	}
+	if reply.Share != nil && strings.TrimSpace(reply.Share.URL) != "" {
+		out := &OutboundMessage{
+			Platform:    msg.Platform,
+			UserID:      msg.UserID,
+			ThreadID:    msg.ThreadID,
+			Text:        strings.TrimSpace(reply.Share.Title),
+			ContentType: ContentTypeRichLink,
+			CardURL:     strings.TrimSpace(reply.Share.URL),
+		}
+		if err := p.send(ctx, out); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // friendlyActionError converts an execution error into user-facing copy without

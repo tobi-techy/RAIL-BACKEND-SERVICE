@@ -416,6 +416,116 @@ func TestGuestBrain_HandoffCarriesMoneyTypeAndTranscript(t *testing.T) {
 	}
 }
 
+// stepFull returns the full structured reply so tests can assert on the
+// reaction/extra-bubbles/share the executor projected.
+func stepFull(t *testing.T, ob *ChatOnboarder, sender, text string) *PlatformReply {
+	t.Helper()
+	reply, err := ob.Handle(context.Background(), OnboardInput{
+		Platform: entities.PlatformIMessage,
+		SenderID: sender,
+		Text:     text,
+	})
+	if err != nil {
+		t.Fatalf("Handle(%q) error: %v", text, err)
+	}
+	return reply
+}
+
+func TestGuestBrain_ChattyGesturesFlowThrough(t *testing.T) {
+	fc := &fakeCompleter{default_: fakeCompletion{
+		text: "That genuinely helps. Let's get it moving.",
+		toolCalls: []GuestToolCall{
+			{Name: "send_reaction", Arguments: map[string]interface{}{"emoji": "❤️"}},
+			{Name: "send_message", Arguments: map[string]interface{}{"text": "One thing at a time though."}},
+			{Name: "send_message", Arguments: map[string]interface{}{"text": "Your number and we're off."}},
+			{Name: "share_artifact", Arguments: map[string]interface{}{"kind": "plan", "title": "Your plan", "url": "https://miriam.example/plans/abc"}},
+		},
+	}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+	ob.SetShareAllowlist([]string{"miriam.example"})
+	sender := "+15552130"
+
+	reply := stepFull(t, ob, sender, "ok let's do it")
+	if reply.Reaction != "❤️" {
+		t.Fatalf("expected the tapback reaction, got %q", reply.Reaction)
+	}
+	if len(reply.ExtraTexts) != 2 || reply.ExtraTexts[0] != "One thing at a time though." || reply.ExtraTexts[1] != "Your number and we're off." {
+		t.Fatalf("expected the two extra bubbles, got %#v", reply.ExtraTexts)
+	}
+	if reply.Share == nil || reply.Share.URL != "https://miriam.example/plans/abc" || reply.Share.Kind != "plan" {
+		t.Fatalf("expected the share, got %#v", reply.Share)
+	}
+}
+
+func TestGuestBrain_ReactionWhitelistApplied(t *testing.T) {
+	fc := &fakeCompleter{default_: fakeCompletion{
+		text: "Solid.",
+		toolCalls: []GuestToolCall{
+			{Name: "send_reaction", Arguments: map[string]interface{}{"emoji": "🎉"}},
+			{Name: "send_reaction", Arguments: map[string]interface{}{"emoji": "👍"}},
+		},
+	}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+	sender := "+15552131"
+
+	reply := stepFull(t, ob, sender, "nice")
+	if reply.Reaction != "👍" {
+		t.Fatalf("off-whitelist emoji must be dropped in favor of the whitelisted one, got %q", reply.Reaction)
+	}
+}
+
+func TestGuestBrain_ExtraMessageBudgetCapped(t *testing.T) {
+	toolCalls := make([]GuestToolCall, 0, 5)
+	for i := 0; i < 5; i++ {
+		toolCalls = append(toolCalls, GuestToolCall{Name: "send_message", Arguments: map[string]interface{}{"text": fmt.Sprintf("bubble %d", i)}})
+	}
+	fc := &fakeCompleter{default_: fakeCompletion{text: "Here's the thing.", toolCalls: toolCalls}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+	sender := "+15552132"
+
+	reply := stepFull(t, ob, sender, "go on")
+	if len(reply.ExtraTexts) != MaxExtraMessages {
+		t.Fatalf("extra bubbles must be capped at %d, got %d (%#v)", MaxExtraMessages, len(reply.ExtraTexts), reply.ExtraTexts)
+	}
+}
+
+func TestGuestBrain_ShareGatedByHostAllowlist(t *testing.T) {
+	share := GuestToolCall{Name: "share_artifact", Arguments: map[string]interface{}{"kind": "chart", "title": "Spending", "url": "https://evil.example/phish"}}
+
+	t.Run("no allowlist admits nothing", func(t *testing.T) {
+		fc := &fakeCompleter{default_: fakeCompletion{text: "Here's your picture.", toolCalls: []GuestToolCall{share}}}
+		ob, _, _, _, _, _ := newBrainOnboarder(fc)
+		if reply := stepFull(t, ob, "+15552133", "show me"); reply.Share != nil {
+			t.Fatalf("share must be dropped without an allowlist, got %#v", reply.Share)
+		}
+	})
+	t.Run("host not on allowlist is dropped", func(t *testing.T) {
+		fc := &fakeCompleter{default_: fakeCompletion{text: "Here's your picture.", toolCalls: []GuestToolCall{share}}}
+		ob, _, _, _, _, _ := newBrainOnboarder(fc)
+		ob.SetShareAllowlist([]string{"miriam.example"})
+		if reply := stepFull(t, ob, "+15552134", "show me"); reply.Share != nil {
+			t.Fatalf("off-allowlist host must be dropped, got %#v", reply.Share)
+		}
+	})
+	t.Run("host on allowlist is delivered", func(t *testing.T) {
+		fc := &fakeCompleter{default_: fakeCompletion{text: "Here's your picture.", toolCalls: []GuestToolCall{share}}}
+		ob, _, _, _, _, _ := newBrainOnboarder(fc)
+		ob.SetShareAllowlist([]string{"evil.example"})
+		if reply := stepFull(t, ob, "+15552135", "show me"); reply.Share == nil || reply.Share.URL != "https://evil.example/phish" {
+			t.Fatalf("allowlisted host must be delivered, got %#v", reply.Share)
+		}
+	})
+	t.Run("non-http URL is syntactically rejected", func(t *testing.T) {
+		bad := GuestToolCall{Name: "share_artifact", Arguments: map[string]interface{}{"url": "javascript:alert(1)"}}
+		fc := &fakeCompleter{default_: fakeCompletion{text: "Here.", toolCalls: []GuestToolCall{bad}}}
+		ob, _, _, _, _, _ := newBrainOnboarder(fc)
+		ob.SetShareAllowlist([]string{"javascript"})
+		if reply := stepFull(t, ob, "+15552136", "show me"); reply.Share != nil {
+			t.Fatalf("non-http URL must never be shared, got %#v", reply.Share)
+		}
+	})
+}
+
 // TestGuestSystemPrompt_Tone pins the tone contract from the guest-prompt
 // retune: texting-length replies, one question at most, no
 // acknowledgment-then-question rhythm, no filler, plain punctuation.

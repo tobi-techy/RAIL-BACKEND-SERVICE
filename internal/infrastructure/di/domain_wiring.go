@@ -1380,6 +1380,9 @@ func (c *Container) wireChatOnboarding() {
 	if c.MonoService != nil {
 		onboarder.SetGuestMonoLinker(c.MonoService)
 	}
+	// Share allowlist for the guest executor's share_artifact tool — same env
+	// variable the linked path uses, so both delivery paths admit the same hosts.
+	onboarder.SetShareAllowlist(strings.Split(os.Getenv("MIRIAM_SHARE_ALLOWED_HOSTS"), ","))
 	c.ZapLog.Info("Chat-first onboarding enabled for platform messaging")
 }
 

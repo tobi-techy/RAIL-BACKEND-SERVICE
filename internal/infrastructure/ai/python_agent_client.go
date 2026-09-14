@@ -33,6 +33,15 @@ type PythonChatPoll struct {
 	Options []string `json:"options"`
 }
 
+// PythonChatShare is a rich link Miriam wants to hand over (e.g. a chart or the
+// plan page). Go validates the URL against an allowlist before sending; the
+// bridge renders it as a native rich-link preview where supported.
+type PythonChatShare struct {
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
 // PythonOnboardingStatus mirrors the agent's onboarding marker so Go can log
 // and gate without parsing copy. Automated distinguishes the plan-consent
 // outcome: consented to standing rules (false fires when the user declined and
@@ -53,6 +62,9 @@ type PythonChatResponse struct {
 	Poll                 *PythonChatPoll         `json:"poll,omitempty"`
 	Onboarding           *PythonOnboardingStatus `json:"onboarding,omitempty"`
 	Name                 string                  `json:"name,omitempty"`
+	Messages             []string                `json:"messages,omitempty"`
+	Reaction             string                  `json:"reaction,omitempty"`
+	Share                *PythonChatShare        `json:"share,omitempty"`
 }
 
 // PythonApprovedAction is one card replayed back to Python for execution after

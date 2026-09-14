@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -165,6 +166,48 @@ var guestTools = []GuestToolDef{
 		},
 	},
 	{
+		Name: "send_reaction",
+		Description: "Tap back on their last message with one emoji: ❤️ (love), 👍 (like), 👎 (dislike), " +
+			"😂 (laugh), ‼️ (emphasize), or ❓ (question). One reaction at most per reply, and only " +
+			"as punctuation for what you already said, never instead of it.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"emoji": map[string]interface{}{
+					"type": "string",
+					"enum": []string{"❤️", "👍", "👎", "😂", "‼️", "❓"},
+				},
+			},
+			"required": []string{"emoji"},
+		},
+	},
+	{
+		Name: "send_message",
+		Description: "Send one more short bubble of a follow-up thought. At most two extra messages per " +
+			"reply, each a sentence or two. Two short bursts of energy beat one wall of text.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"text": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"text"},
+		},
+	},
+	{
+		Name: "share_artifact",
+		Description: "Share a single tappable link to a chart or the plan page when it would actually " +
+			"help, once per reply. Never invent a URL — the link must be one you were given or built.",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"kind":  map[string]interface{}{"type": "string", "description": "what it is: chart or plan"},
+				"title": map[string]interface{}{"type": "string", "description": "one short line to send with the link"},
+				"url":   map[string]interface{}{"type": "string", "description": "the absolute http(s) link"},
+			},
+			"required": []string{"kind", "title", "url"},
+		},
+	},
+	{
 		Name:        "end_conversation",
 		Description: "The person clearly wants out. Close warmly, no guilt trip.",
 		Parameters: map[string]interface{}{
@@ -174,6 +217,55 @@ var guestTools = []GuestToolDef{
 			},
 		},
 	},
+}
+
+const (
+	// MaxExtraMessages caps the extra short bubbles one turn may emit beyond
+	// the main reply. Bounded so a buggy model (or a relayed Python turn) can
+	// never spam a thread. Shared with the DI adapter that projects Python
+	// responses, so both delivery paths agree on the wire budget.
+	MaxExtraMessages = 2
+)
+
+// validReactions is the outbound reaction whitelist. It mirrors exactly the six
+// universal emoji that iMessage converts to native tapbacks (love, like,
+// dislike, laugh, emphasize, question); anything else would render as a sticker
+// or a plain message, so it is dropped rather than surfaced.
+var validReactions = map[string]bool{
+	"❤️": true,
+	"👍":  true,
+	"👎":  true,
+	"😂":  true,
+	"‼️": true,
+	"❓":  true,
+}
+
+// ValidReaction reports whether an emoji is on the outbound tapback whitelist.
+// Used by the executor and by the DI adapter that projects Python responses.
+func ValidReaction(emoji string) bool {
+	return validReactions[strings.TrimSpace(emoji)]
+}
+
+// guestShare is a rich link Miriam wants to hand over (a chart, the plan page).
+// The host allowlist is applied by the onboarder before anything is sent.
+type guestShare struct {
+	kind  string
+	title string
+	url   string
+}
+
+// isSafeShareURL accepts only absolute http(s) links with a real host. It is the
+// syntactic gate; the onboarder additionally enforces the configured allowlist.
+func isSafeShareURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
 }
 
 // guestOutcome is what one brain turn decided: the reply to send plus the
@@ -188,6 +280,9 @@ type guestOutcome struct {
 	end          bool
 	endReason    string
 	notes        []guestNote
+	reaction     string
+	extraTexts   []string
+	share        *guestShare
 }
 
 type guestNote struct {
@@ -369,6 +464,49 @@ func (b *guestBrain) applyToolCall(out *guestOutcome, tc GuestToolCall) {
 			opts = opts[:4]
 		}
 		out.poll = &PollRequest{Title: q, Options: opts}
+	case "send_reaction":
+		emojiRaw, ok := tc.Arguments["emoji"].(string)
+		if !ok {
+			b.logger.Warn("send_reaction: missing or non-string 'emoji'", zap.String("tool", tc.Name))
+			return
+		}
+		emoji := strings.TrimSpace(emojiRaw)
+		if !validReactions[emoji] {
+			b.logger.Warn("send_reaction: emoji not on the tapback whitelist", zap.String("emoji", emoji))
+			return
+		}
+		if out.reaction == "" {
+			out.reaction = emoji
+		}
+	case "send_message":
+		textRaw, ok := tc.Arguments["text"].(string)
+		if !ok {
+			b.logger.Warn("send_message: missing or non-string 'text'", zap.String("tool", tc.Name))
+			return
+		}
+		text := strings.TrimSpace(textRaw)
+		if text == "" {
+			return
+		}
+		if len(out.extraTexts) < MaxExtraMessages {
+			out.extraTexts = append(out.extraTexts, text)
+		} else {
+			b.logger.Warn("send_message: extra message budget exhausted", zap.String("tool", tc.Name))
+		}
+	case "share_artifact":
+		urlRaw, _ := tc.Arguments["url"].(string)
+		kind, _ := tc.Arguments["kind"].(string)
+		title, _ := tc.Arguments["title"].(string)
+		if !isSafeShareURL(urlRaw) {
+			b.logger.Warn("share_artifact: not a safe absolute http(s) URL, dropping",
+				zap.String("tool", tc.Name), zap.String("url", urlRaw))
+			return
+		}
+		out.share = &guestShare{
+			kind:  strings.TrimSpace(kind),
+			title: strings.TrimSpace(title),
+			url:   strings.TrimSpace(urlRaw),
+		}
 	case "end_conversation":
 		out.end = true
 		if rRaw, ok := tc.Arguments["reason"].(string); ok {
