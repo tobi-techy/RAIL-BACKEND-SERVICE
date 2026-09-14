@@ -864,3 +864,119 @@ func TestProcess_LinkedSenderContactCardNotForwarded(t *testing.T) {
 		t.Fatal("expected an ack to the linked sender")
 	}
 }
+
+// A poll is never the whole turn: a lead-in that adds words beyond the poll
+// question always ships as its own bubble BEFORE the poll, and a reply whose
+// text is just the question ships as the poll only (no duplicate bubble). The
+// bare poll bug happened because the onboarding path bundled the lead-in text
+// onto the poll payload, which the iMessage bridge drops (a rendered poll is
+// title + options only) — so the person saw a poll with no words at all.
+func TestProcessor_OnboardingPollAlwaysCarriesWords(t *testing.T) {
+	repo := newFakeRepo()
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+	msg := InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+1555guest",
+		ThreadID: "space-1",
+		MsgID:    "user-msg-1",
+	}
+	reset := func() { *sent = (*sent)[:0] }
+
+	t.Run("distinct lead-in ships as its own bubble before the poll", func(t *testing.T) {
+		reset()
+		reply := &PlatformReply{
+			Text: "No worries, we go with what you told me.",
+			Poll: &PollRequest{
+				Title:   "Send me a bank statement for a real deep dive?",
+				Options: []string{"Yes, send it now", "Skip for now"},
+			},
+		}
+		if err := p.sendOnboardingReply(context.Background(), msg, reply); err != nil {
+			t.Fatalf("sendOnboardingReply: %v", err)
+		}
+		if len(*sent) != 2 {
+			t.Fatalf("expected 2 outbound messages (lead-in + poll), got %d", len(*sent))
+		}
+		words, pollMsg := (*sent)[0], (*sent)[1]
+		if words.ContentType != ContentTypeText {
+			t.Fatalf("first message must be the lead-in text bubble, got content type %q", words.ContentType)
+		}
+		if words.Text != "No worries, we go with what you told me." {
+			t.Fatalf("lead-in text wrong: %q", words.Text)
+		}
+		if pollMsg.ContentType != ContentTypePoll {
+			t.Fatalf("expected a poll after the lead-in, got %q", pollMsg.ContentType)
+		}
+		if pollMsg.PollTitle != "Send me a bank statement for a real deep dive?" {
+			t.Fatalf("unexpected poll title %q", pollMsg.PollTitle)
+		}
+		// The poll payload must never carry the text: an iMessage poll renders
+		// title + options only, so embedded text is what caused the bare poll.
+		if strings.TrimSpace(pollMsg.Text) != "" {
+			t.Fatalf("poll payload must not embed the lead-in text, got %q", pollMsg.Text)
+		}
+	})
+
+	t.Run("reply text that is the question ships as the poll only", func(t *testing.T) {
+		reset()
+		title := "Last thing: RAIL's terms and privacy policy. Tap I agree and I'll finish setting you up."
+		reply := &PlatformReply{
+			Text: title,
+			Poll: &PollRequest{Title: title, Options: []string{"I agree", "Not yet"}},
+		}
+		if err := p.sendOnboardingReply(context.Background(), msg, reply); err != nil {
+			t.Fatalf("sendOnboardingReply: %v", err)
+		}
+		if len(*sent) != 1 {
+			t.Fatalf("expected only the poll (text == title), got %d messages", len(*sent))
+		}
+		got := (*sent)[0]
+		if got.ContentType != ContentTypePoll || got.PollTitle != title {
+			t.Fatalf("expected the consent poll only, got %+v", got)
+		}
+	})
+
+	t.Run("no title and no text never sends a bare poll", func(t *testing.T) {
+		reset()
+		reply := &PlatformReply{
+			Poll: &PollRequest{Title: "", Options: []string{"Let's do it", "Maybe later"}},
+		}
+		if err := p.sendOnboardingReply(context.Background(), msg, reply); err != nil {
+			t.Fatalf("sendOnboardingReply: %v", err)
+		}
+		if len(*sent) != 0 {
+			t.Fatalf("a poll without a question is a bare poll and must be dropped, got %d message(s)", len(*sent))
+		}
+	})
+}
+
+func TestProcessor_LinkedPollAlwaysCarriesWords(t *testing.T) {
+	repo := newFakeRepo()
+	identity := linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	reply := &PlatformReply{
+		Text: "Send one over, or just say skip.",
+		Poll: &PollRequest{
+			Title:   "Send me a bank statement for a real deep dive?",
+			Options: []string{"Yes, send it now", "Skip for now"},
+		},
+	}
+	if err := p.deliverReply(context.Background(), identity, "space-1", "", reply, false); err != nil {
+		t.Fatalf("deliverReply: %v", err)
+	}
+	if len(*sent) != 2 {
+		t.Fatalf("expected lead-in + poll, got %d messages", len(*sent))
+	}
+	if (*sent)[0].Text != "Send one over, or just say skip." {
+		t.Fatalf("lead-in must be the first message, got %q", (*sent)[0].Text)
+	}
+	if (*sent)[1].ContentType != ContentTypePoll {
+		t.Fatalf("poll must follow the lead-in, got %q", (*sent)[1].ContentType)
+	}
+	if strings.TrimSpace((*sent)[1].Text) != "" {
+		t.Fatalf("poll payload must not embed text, got %q", (*sent)[1].Text)
+	}
+}

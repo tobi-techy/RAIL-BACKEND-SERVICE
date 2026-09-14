@@ -217,7 +217,17 @@ export class MessageHandler {
           return;
         }
         const options = msg.poll_options?.length ? msg.poll_options : ["Confirm", "Cancel"];
-        await space.send(poll(msg.poll_title || msg.text, options));
+        const title = msg.poll_title || msg.text || "Your call";
+        // Never drop words next to a poll. A rendered iMessage poll is just the
+        // question + options, so any lead-in text the backend attached to the
+        // payload becomes a normal bubble first. Backends are expected to send
+        // the words as their own message and leave the poll payload bare — this
+        // branch only ever fires for a payload that still carries text, and it
+        // no-ops when the text is just the question again (the title).
+        if (msg.text && msg.text !== title) {
+          await this.sendWithPacing(space, msg.text, "text");
+        }
+        await space.send(poll(title, options));
         return;
       }
 

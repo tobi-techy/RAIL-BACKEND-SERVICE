@@ -161,3 +161,82 @@ describe("MessageHandler reaction content type", () => {
     expect(sends).toBe(0);
   });
 });
+
+describe("MessageHandler poll content type", () => {
+  function collector() {
+    const sends: unknown[] = [];
+    const space = { send: async (m: unknown) => { sends.push(m); } };
+    return { space, sends };
+  }
+
+  it("sends a lead-in bubble before the poll when the payload carries distinct text", async () => {
+    const { space, sends } = collector();
+    const handler = new MessageHandler();
+    await handler.handleOutbound(space as never, {
+      platform: "imessage",
+      user_id: "u1",
+      thread_id: "t1",
+      text: "No worries, we go with what you told me.",
+      content_type: "poll",
+      poll_title: "Send me a bank statement for a real deep dive?",
+      poll_options: ["Yes, send it now", "Skip for now"],
+    });
+
+    // typing() + the lead-in bubble + the poll object, poll last.
+    const textBubbles = sends.filter((s) => typeof s === "string");
+    expect(textBubbles).toContain("No worries, we go with what you told me.");
+    expect(sends.length).toBe(3);
+    expect(typeof sends[sends.length - 1]).toBe("object");
+  });
+
+  it("does not echo the question when text equals the poll title", async () => {
+    const { space, sends } = collector();
+    const handler = new MessageHandler();
+    const question = "Last thing: RAIL's terms and privacy policy. Tap I agree and I'll finish setting you up.";
+    await handler.handleOutbound(space as never, {
+      platform: "imessage",
+      user_id: "u1",
+      thread_id: "t1",
+      text: question,
+      content_type: "poll",
+      poll_title: question,
+      poll_options: ["I agree", "Not yet"],
+    });
+
+    // Just the poll — the question is its title, so re-sending it as a bubble
+    // would double the message.
+    expect(sends.length).toBe(1);
+  });
+
+  it("sends only the poll when no text is attached", async () => {
+    const { space, sends } = collector();
+    const handler = new MessageHandler();
+    await handler.handleOutbound(space as never, {
+      platform: "imessage",
+      user_id: "u1",
+      thread_id: "t1",
+      text: "",
+      content_type: "poll",
+      poll_title: "Send me a statement?",
+      poll_options: ["Yes, send it now", "Skip for now"],
+    });
+    expect(sends.length).toBe(1);
+    expect(typeof sends[0]).toBe("object");
+  });
+
+  it("falls back to a YES/NO prompt on platforms without polls", async () => {
+    const { space, sends } = collector();
+    const handler = new MessageHandler();
+    await handler.handleOutbound(space as never, {
+      platform: "whatsapp",
+      user_id: "u1",
+      thread_id: "t1",
+      text: "Do it?",
+      content_type: "poll",
+      poll_title: "Do it?",
+      poll_options: ["Yes", "No"],
+    });
+    const textBubbles = sends.filter((s) => typeof s === "string") as string[];
+    expect(textBubbles.some((b) => b.includes("Reply YES to confirm"))).toBe(true);
+  });
+});

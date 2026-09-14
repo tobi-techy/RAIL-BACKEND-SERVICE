@@ -705,16 +705,20 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 	}
 
 	if reply.Poll != nil && len(reply.Poll.Options) > 0 {
-		title := reply.Poll.Title
+		title, leadIn := pollWords(reply)
 		if title == "" {
-			title = reply.Text
+			p.logger.Warn("dropping poll with no title and no text",
+				zap.String("platform", string(identity.Platform)),
+				zap.String("user_id", identity.UserID.String()),
+			)
+			return nil
 		}
-		if strings.TrimSpace(reply.Text) != "" {
+		if leadIn != "" {
 			var words *OutboundMessage
 			if replyTo != "" {
-				words = p.responseBuilder.ReplyResponse(identity, reply.Text, threadID, replyTo)
+				words = p.responseBuilder.ReplyResponse(identity, leadIn, threadID, replyTo)
 			} else {
-				words = p.responseBuilder.MarkdownResponse(identity, reply.Text, threadID)
+				words = p.responseBuilder.MarkdownResponse(identity, leadIn, threadID)
 			}
 			if err := p.send(ctx, words); err != nil {
 				return err
@@ -879,9 +883,11 @@ func (p *Processor) sendToSender(ctx context.Context, msg InboundMessage, text s
 }
 
 // sendOnboardingReply delivers a structured onboarder reply (text, poll, effect)
-// to an unlinked sender. The tapback reaction lands first, then the words or the
-// decision surface, with wrapper bubbles and the share last so the choice is the
-// final thing on screen.
+// to an unlinked sender. Send order is always reaction (instant ack) -> the
+// words -> wrapper bubbles and the share -> the poll last, so a decision
+// surface is never a bare poll and the final thing on screen is the choice to
+// tap. The poll payload never carries the lead-in text (see pollWords); the
+// bridge renders a poll as title + options only, so bundled text would vanish.
 func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage, reply *PlatformReply) error {
 	if reply == nil {
 		return nil
@@ -900,23 +906,30 @@ func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage,
 		}
 	}
 	if reply.Poll != nil && len(reply.Poll.Options) > 0 {
-		title := reply.Poll.Title
+		title, leadIn := pollWords(reply)
 		if title == "" {
-			title = reply.Text
+			p.logger.Warn("dropping poll with no title and no text",
+				zap.String("platform", string(msg.Platform)),
+				zap.String("user_id", msg.UserID),
+			)
+			return nil
 		}
-		out := &OutboundMessage{
+		if leadIn != "" {
+			if err := p.sendToSender(ctx, msg, leadIn); err != nil {
+				return err
+			}
+		}
+		if err := p.sendOnboardingGestures(ctx, msg, reply); err != nil {
+			return err
+		}
+		return p.send(ctx, &OutboundMessage{
 			Platform:    msg.Platform,
 			UserID:      msg.UserID,
 			ThreadID:    msg.ThreadID,
-			Text:        reply.Text,
 			ContentType: ContentTypePoll,
 			PollTitle:   title,
 			PollOptions: reply.Poll.Options,
-		}
-		if err := p.send(ctx, out); err != nil {
-			return err
-		}
-		return p.sendOnboardingGestures(ctx, msg, reply)
+		})
 	}
 	if reply.Effect != "" {
 		out := &OutboundMessage{
@@ -974,6 +987,30 @@ func (p *Processor) sendOnboardingGestures(ctx context.Context, msg InboundMessa
 		}
 	}
 	return nil
+}
+
+// pollWords resolves how a poll reply is delivered: the effective title that
+// renders inside the poll, and any lead-in text that deserves its own bubble
+// BEFORE the poll. A poll is never the whole turn — a distinct lead-in always
+// ships as its own message (the bridge renders a poll as title + options only,
+// so anything bundled onto the poll message would be silently dropped). When
+// the reply text is just the poll question, the title IS the message and no
+// separate bubble is emitted, which keeps tap-poll turns terse instead of
+// double-saying the question. With neither a title nor any text the poll is
+// undeliverable — a bare poll with no question is only ever dropped by callers.
+func pollWords(reply *PlatformReply) (title, leadIn string) {
+	title = strings.TrimSpace(reply.Poll.Title)
+	text := strings.TrimSpace(reply.Text)
+	if title != "" {
+		if text != "" && text != title {
+			leadIn = text
+		}
+		return title, leadIn
+	}
+	if text != "" {
+		title = text
+	}
+	return title, ""
 }
 
 // friendlyActionError converts an execution error into user-facing copy without
