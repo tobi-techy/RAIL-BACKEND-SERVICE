@@ -323,3 +323,96 @@ func TestPythonGuestCompleter_EmptyTextUsesFallback(t *testing.T) {
 		t.Fatalf("unexpected text %q", res.Text)
 	}
 }
+
+// pythonChatBody is the subset of the /api/v1/chat request the guest completer's
+// tests assert on.
+type pythonChatBody struct {
+	Message    string `json:"message"`
+	IsPollVote bool   `json:"is_poll_vote"`
+	PollTitle  string `json:"poll_title"`
+}
+
+// servePythonChatCapturing records the request bodies the adapter posts.
+func servePythonChatCapturing(t *testing.T, respond *ai.PythonChatResponse) (*httptest.Server, *[]pythonChatBody) {
+	t.Helper()
+	var bodies []pythonChatBody
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body pythonChatBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode python request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(respond); err != nil {
+			t.Errorf("serve python response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &bodies
+}
+
+func newGuestCompleterAdapter(srv *httptest.Server, fallback *stubGuestCompleter) *pythonGuestCompleterAdapter {
+	return &pythonGuestCompleterAdapter{
+		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		fallback: fallback,
+		logger:   zap.NewNop(),
+	}
+}
+
+// A tap on an interactive poll carries only the option title, so the vote flag
+// and the question it answered must reach the Python interview — otherwise a
+// deliberate selection is answered by re-asking the same question with a fresh
+// poll, which is what a dead tap looks like to the person who tapped.
+func TestPythonGuestCompleter_PollVoteForwardsVoteFlag(t *testing.T) {
+	srv, bodies := servePythonChatCapturing(t, &ai.PythonChatResponse{
+		Response: "Savings it is. Where would you like that money to live?",
+	})
+	adapter := newGuestCompleterAdapter(srv, &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}})
+
+	const pollTitle = "What's been bothering you about money lately?"
+	ctx := platform.ContextWithGuestVote(guestTurn(context.Background(), platform.GuestSender{
+		Platform: entities.PlatformIMessage, SenderID: "user-7A", ThreadID: "thread-9",
+	}), platform.GuestVote{IsPollVote: true, PollTitle: pollTitle})
+
+	res, err := adapter.CompleteGuest(ctx, "sys",
+		[]platform.GuestMessage{{Role: "user", Content: "Savings or investments"}}, nil)
+	if err != nil {
+		t.Fatalf("CompleteGuest failed: %v", err)
+	}
+	if res.Text != "Savings it is. Where would you like that money to live?" {
+		t.Fatalf("unexpected text %q", res.Text)
+	}
+	if len(*bodies) != 1 {
+		t.Fatalf("expected one python call, got %d", len(*bodies))
+	}
+	body := (*bodies)[0]
+	if !body.IsPollVote {
+		t.Fatalf("expected is_poll_vote on the python request, got %+v", body)
+	}
+	if body.PollTitle != pollTitle {
+		t.Fatalf("expected poll title %q, got %q", pollTitle, body.PollTitle)
+	}
+	if body.Message != "Savings or investments" {
+		t.Fatalf("expected the option title as the message, got %q", body.Message)
+	}
+}
+
+func TestPythonGuestCompleter_PlainTextIsNotAVote(t *testing.T) {
+	srv, bodies := servePythonChatCapturing(t, &ai.PythonChatResponse{Response: "Tell me more."})
+	adapter := newGuestCompleterAdapter(srv, &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}})
+
+	_, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
+		Platform: entities.PlatformIMessage, SenderID: "user-7A", ThreadID: "thread-9",
+	}), "sys", []platform.GuestMessage{{Role: "user", Content: "I want to save more"}}, nil)
+	if err != nil {
+		t.Fatalf("CompleteGuest failed: %v", err)
+	}
+	if len(*bodies) != 1 {
+		t.Fatalf("expected one python call, got %d", len(*bodies))
+	}
+	if body := (*bodies)[0]; body.IsPollVote || body.PollTitle != "" {
+		t.Fatalf("plain text must not be sent as a vote, got %+v", body)
+	}
+}

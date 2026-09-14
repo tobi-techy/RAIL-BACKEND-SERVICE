@@ -26,6 +26,10 @@ import (
 // if a card slipped through we drop it rather than stage a code no one can
 // receive.
 //
+// A tap on one of Miriam's polls is forwarded as a vote (is_poll_vote + the
+// question it answered) so a bare option title reaches the interview as the
+// answer it is, not as fresh chat.
+//
 // Each guest gets a stable synthetic identity with per-sender unique username
 // and email (Python's users table enforces uniqueness on both) so interview
 // state survives across turns without ever colliding with a real user.
@@ -63,12 +67,25 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 	}
 
 	uid := guestSyntheticID(sender)
-	resp, err := a.python.ChatAsGuest(ctx, uid, guestUsername(uid), guestEmail(uid), "guest",
-		fmt.Sprintf("platform:%s:%s", sender.Platform.String(), sender.ThreadID), text)
+	conversationID := fmt.Sprintf("platform:%s:%s", sender.Platform.String(), sender.ThreadID)
+	vote := platform.GuestVoteFromContext(ctx)
+	var resp *ai.PythonChatResponse
+	var err error
+	if vote.IsPollVote {
+		// The guest tapped an option rather than typing: send it as a vote with
+		// the question it answered so the interview resolves it against that poll
+		// instead of treating the option title as a brand-new message (which made
+		// Miriam re-ask her own question with a fresh poll).
+		resp, err = a.python.ChatAsGuestPollVote(ctx, uid, guestUsername(uid), guestEmail(uid), "guest",
+			conversationID, text, vote.PollTitle)
+	} else {
+		resp, err = a.python.ChatAsGuest(ctx, uid, guestUsername(uid), guestEmail(uid), "guest", conversationID, text)
+	}
 	if err != nil {
 		a.logger.Warn("python guest turn failed; using fallback completer",
 			zap.String("sender", sender.SenderID),
 			zap.String("platform", sender.Platform.String()),
+			zap.Bool("is_poll_vote", vote.IsPollVote),
 			zap.Error(err))
 		return a.fallbackTurn(ctx, systemPrompt, messages, tools)
 	}

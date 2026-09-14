@@ -41,6 +41,9 @@ export interface InboundPayload {
   contact?: SharedContact;
 
   is_poll_vote?: boolean;
+  /** The poll's question title (the poll_option content carries the originating
+   *  poll so downstream option matching survives bridge truncation). */
+  poll_title?: string;
 
   is_reaction?: boolean;
   reaction_emoji?: string;
@@ -323,6 +326,7 @@ export async function routeInboundContent(
         ...extras,
         text,
         is_poll_vote: true,
+        poll_title: content.poll?.title?.trim() || content.title,
       };
       await postToBackend(INBOUND_PATH, inbound);
       log.info(

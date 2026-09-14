@@ -756,6 +756,47 @@ func TestProcess_UnlinkedPDFProvidesGroundedGuestContext(t *testing.T) {
 	}
 }
 
+func TestProcess_GuestPollVoteReachesBrainFlagged(t *testing.T) {
+	// The tester's exact failure: an unlinked guest taps a poll option and the
+	// JSON bridge payload must carry the vote flag all the way to the brain, or
+	// Python reads the bare option title as a fresh topic and re-asks its
+	// question with a new poll.
+	repo := newFakeRepo()
+	p, _, _ := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	completer := &fakeCompleter{default_: fakeCompletion{text: "Savings it is. Where does that money live?"}}
+	ob.SetGuestCompleter(completer)
+	p.SetOnboarder(ob)
+
+	msg := InboundMessage{
+		Platform:   entities.PlatformIMessage,
+		UserID:     "+15559876",
+		ThreadID:   "space-1",
+		Text:       "Savings or investments",
+		IsPollVote: true,
+		PollTitle:  "What's been bothering you about money lately?",
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(completer.calls) != 1 {
+		t.Fatalf("expected one brain turn, got %d", len(completer.calls))
+	}
+	last := completer.calls[0].messages[len(completer.calls[0].messages)-1]
+	if last.Role != "user" || last.Content != "Savings or investments" {
+		t.Fatalf("expected the option title as the user turn, got %+v", last)
+	}
+	prompt := completer.calls[0].systemPrompt
+	if !strings.Contains(prompt, "tapped one of the options on a poll you sent") ||
+		!strings.Contains(prompt, "What's been bothering you about money lately?") {
+		t.Fatalf("guest poll vote not flagged in the brain prompt:\n%s", prompt)
+	}
+}
+
 func TestProcessAction_UnlinkedSenderIgnored(t *testing.T) {
 	repo := newFakeRepo()
 	orch := &fakeOrchestrator{}

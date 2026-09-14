@@ -164,6 +164,7 @@ describe("routeInboundContent", () => {
     expect(posts[0].msg_id).toBe("m1");
     expect(posts[1].is_poll_vote).toBe(true);
     expect(posts[1].text).toBe("Confirm");
+    expect(posts[1].poll_title).toBe("Confirm?");
     expect(posts[1].msg_id).toBe("m2");
     debouncer.dispose();
   });

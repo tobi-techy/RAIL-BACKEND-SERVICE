@@ -168,10 +168,39 @@ func (a *orchestratorAdapter) HandlePlatformPollVote(ctx context.Context, userID
 			zap.Error(err))
 		return nil, false, err
 	}
-	if resp.Onboarding == nil {
+	if voteReplyIsDroppable(resp) {
 		return nil, false, nil
 	}
 	return mapPythonChatReply(resp), true, nil
+}
+
+// voteReplyIsDroppable reports whether a Python vote response should be
+// silently swallowed: an onboarding turn always carries its marker, but when
+// the marker is absent and the payload is empty the tap resolved to a decline
+// with nothing to surface. Any surviving content is worth delivering so a poll
+// tap never reads as a dead tap.
+func voteReplyIsDroppable(resp *ai.PythonChatResponse) bool {
+	return resp.Onboarding == nil && isEmptyVoteReply(resp)
+}
+
+// isEmptyVoteReply reports whether a Python chat response carries nothing
+// deliverable (a content-only check; marker presence is the caller's concern).
+// A reaction only counts as content when it would survive the tapback
+// whitelist in mapPythonChatReply — off-whitelist emojis are stripped there
+// and must not prevent the response from being dropped.
+func isEmptyVoteReply(resp *ai.PythonChatResponse) bool {
+	return strings.TrimSpace(resp.Response) == "" &&
+		resp.Poll == nil &&
+		len(resp.Messages) == 0 &&
+		!isDeliverableReaction(resp.Reaction) &&
+		resp.Share == nil
+}
+
+// isDeliverableReaction reports whether a reaction would survive
+// mapPythonChatReply and actually be surfaced as a tapback.
+func isDeliverableReaction(emoji string) bool {
+	trimmed := strings.TrimSpace(emoji)
+	return trimmed != "" && platform.ValidReaction(trimmed)
 }
 
 // HandlePlatformDocument implements platform.DocumentOrchestrator: a linked

@@ -356,7 +356,8 @@ func (b *guestBrain) respond(ctx context.Context, st *guestState, userText strin
 	messages = append(messages, st.Turns...)
 	messages = append(messages, GuestMessage{Role: "user", Content: userText})
 
-	res, err := b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st), messages, guestTools)
+	systemPrompt := guestSystemPrompt + "\n\n" + guestStateBlock(st) + guestVoteNote(ctx)
+	res, err := b.complete(ctx, systemPrompt, messages, guestTools)
 	if err != nil {
 		return nil, fmt.Errorf("guest completion: %w", err)
 	}
@@ -377,7 +378,7 @@ func (b *guestBrain) respond(ctx context.Context, st *guestState, userText strin
 		var followUp *GuestResult
 		var ferr error
 		for attempt := 1; attempt <= guestCompletionAttempts; attempt++ {
-			followUp, ferr = b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st)+"\nYour tool calls went through. Now say the reply out loud, in your own words.", messages, nil)
+			followUp, ferr = b.complete(ctx, systemPrompt+"\nYour tool calls went through. Now say the reply out loud, in your own words.", messages, nil)
 			if ferr != nil {
 				continue
 			}
@@ -405,7 +406,7 @@ func (b *guestBrain) regenerateDifferent(ctx context.Context, st *guestState, us
 		GuestMessage{Role: "user", Content: userText},
 		GuestMessage{Role: "user", Content: "[system note: your last reply was identical to the one before it. Say something different — move the conversation forward.]"},
 	)
-	res, err := b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st), messages, nil)
+	res, err := b.complete(ctx, guestSystemPrompt+"\n\n"+guestStateBlock(st)+guestVoteNote(ctx), messages, nil)
 	if err != nil {
 		return "", err
 	}

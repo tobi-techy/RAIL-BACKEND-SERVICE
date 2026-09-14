@@ -578,3 +578,107 @@ func TestGuestBrain_MoneyDialCapturedAndHandedOff(t *testing.T) {
 		t.Fatalf("expected provisioning to run, got %d", prov.calls)
 	}
 }
+
+// A tap on one of Miriam's polls arrives as a bare option title, which is
+// indistinguishable from fresh chatter. It used to slip through the guest path
+// unflagged, so the interview answered a deliberate selection by re-asking its
+// question with a brand-new poll. These tests lock the flag in place.
+
+func TestGuestPollVote_ReachesCompleterAndIsFlaggedInPrompt(t *testing.T) {
+	fc := &fakeCompleter{default_: fakeCompletion{text: "Got it - savings and investments."}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+
+	const (
+		sender    = "+15552177"
+		option    = "Savings or investments"
+		pollTitle = "What's been bothering you about money lately?"
+	)
+	reply, err := ob.Handle(context.Background(), OnboardInput{
+		Platform:   entities.PlatformIMessage,
+		SenderID:   sender,
+		Text:       option,
+		IsPollVote: true,
+		PollTitle:  pollTitle,
+	})
+	if err != nil {
+		t.Fatalf("Handle(poll vote) error: %v", err)
+	}
+	if reply == nil || reply.Text != "Got it - savings and investments." {
+		t.Fatalf("unexpected reply: %+v", reply)
+	}
+	if len(fc.calls) != 1 {
+		t.Fatalf("expected one completion, got %d", len(fc.calls))
+	}
+	// The tapped option is the turn's user message...
+	last := fc.calls[0].messages[len(fc.calls[0].messages)-1]
+	if last.Role != "user" || last.Content != option {
+		t.Fatalf("expected the option title as the user turn, got %+v", last)
+	}
+	// ...and the tap is flagged to whoever answers, so the fragment is read as
+	// the answer to the poll rather than a brand-new topic.
+	prompt := fc.calls[0].systemPrompt
+	if !strings.Contains(prompt, "tapped one of the options on a poll you sent") {
+		t.Fatalf("poll vote not flagged in the system prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, pollTitle) {
+		t.Fatalf("poll question missing from the system prompt:\n%s", prompt)
+	}
+}
+
+func TestGuestPlainText_IsNotFlaggedAsPollVote(t *testing.T) {
+	fc := &fakeCompleter{default_: fakeCompletion{text: "Tell me more."}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+
+	if reply := step(t, ob, "+15552178", "I want to save more this year"); reply != "Tell me more." {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(fc.calls) != 1 {
+		t.Fatalf("expected one completion, got %d", len(fc.calls))
+	}
+	if strings.Contains(fc.calls[0].systemPrompt, "tapped one of the options on a poll") {
+		t.Fatalf("ordinary text must not be flagged as a poll vote:\n%s", fc.calls[0].systemPrompt)
+	}
+}
+
+func TestGuestPollVoteWithoutTitle_StillFlagsTheTap(t *testing.T) {
+	fc := &fakeCompleter{default_: fakeCompletion{text: "Noted."}}
+	ob, _, _, _, _, _ := newBrainOnboarder(fc)
+
+	// A poll whose question the bridge couldn't resolve still has to flag the
+	// tap: an indistinguishable fragment is what made the interview re-ask.
+	if _, err := ob.Handle(context.Background(), OnboardInput{
+		Platform:   entities.PlatformIMessage,
+		SenderID:   "+15552179",
+		Text:       "Something else",
+		IsPollVote: true,
+	}); err != nil {
+		t.Fatalf("Handle(poll vote without title) error: %v", err)
+	}
+	if len(fc.calls) != 1 {
+		t.Fatalf("expected one completion, got %d", len(fc.calls))
+	}
+	if !strings.Contains(fc.calls[0].systemPrompt, "tapped one of the options on a poll you sent") {
+		t.Fatalf("untitled poll vote not flagged:\n%s", fc.calls[0].systemPrompt)
+	}
+}
+
+func TestGuestVoteContext_ZeroValueIsNoOp(t *testing.T) {
+	// An ordinary turn must not grow a context entry (nor a prompt note), so
+	// nothing changes for the common case.
+	ctx := ContextWithGuestVote(context.Background(), GuestVote{})
+	if vote := GuestVoteFromContext(ctx); vote.IsPollVote {
+		t.Fatalf("expected no vote, got %+v", vote)
+	}
+	if note := guestVoteNote(ctx); note != "" {
+		t.Fatalf("expected no note for a plain turn, got %q", note)
+	}
+
+	vote := GuestVote{IsPollVote: true, PollTitle: "Pick one"}
+	ctx = ContextWithGuestVote(context.Background(), vote)
+	if got := GuestVoteFromContext(ctx); got != vote {
+		t.Fatalf("expected %+v, got %+v", vote, got)
+	}
+	if note := guestVoteNote(ctx); !strings.Contains(note, "Pick one") {
+		t.Fatalf("expected the poll question in the note, got %q", note)
+	}
+}

@@ -164,6 +164,19 @@ func (c *PythonAgentClient) ChatAsGuest(ctx context.Context, userID uuid.UUID, u
 	})
 }
 
+// ChatAsGuestPollVote is the guest equivalent of ChatPollVote: the tapped option
+// title plus the question it answered, so the onboarding interview can resolve a
+// deliberate selection instead of reading a bare option fragment as a fresh
+// topic (which made it re-ask the question with yet another poll).
+func (c *PythonAgentClient) ChatAsGuestPollVote(ctx context.Context, userID uuid.UUID, username, email, role, conversationID, message, pollTitle string) (*PythonChatResponse, error) {
+	return c.doChat(ctx, userID, email, username, role, pythonChatRequest{
+		Message:        message,
+		ConversationID: conversationID,
+		IsPollVote:     true,
+		PollTitle:      pollTitle,
+	})
+}
+
 // ChatWithApprovedActions is Chat plus the confirmation replay: after the user
 // proves their email OTP, Go sends the staged cards back as approved_actions so
 // the agent executes them (via Go's REST) and returns the final response.

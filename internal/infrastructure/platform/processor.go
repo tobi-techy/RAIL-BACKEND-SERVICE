@@ -398,8 +398,12 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			if voteOrch, _ := p.orchestrator.(PollVoteOrchestrator); voteOrch != nil {
 				reply, handled, voteErr := voteOrch.HandlePlatformPollVote(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform, msg.Text, msg.PollTitle)
 				if voteErr != nil {
+					// A transient orchestrator failure must never read as a
+					// quietly-dead tap. Tell the user it didn't go through.
 					p.logger.Warn("poll vote orchestrator error", zap.Error(voteErr))
-				} else if handled {
+					return p.sendErrorMessage(ctx, msg, "That vote didn't go through - mind tapping it again?")
+				}
+				if handled {
 					return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
 				}
 			}
@@ -470,6 +474,8 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 		Text:          msg.Text,
 		Contact:       contact,
 		Statement:     statementAttachmentFromMessage(msg),
+		IsPollVote:    msg.IsPollVote,
+		PollTitle:     msg.PollTitle,
 		Redeliverable: !msg.IsFinalAttempt(),
 	})
 	if err != nil {

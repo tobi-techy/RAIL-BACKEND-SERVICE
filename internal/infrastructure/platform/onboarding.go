@@ -170,6 +170,12 @@ type OnboardInput struct {
 	Text      string
 	Contact   *SharedContact
 	Statement *StatementAttachment
+	// IsPollVote reports that Text is the option title the guest tapped on an
+	// interactive poll Miriam sent, and PollTitle the question that poll asked.
+	// The pair is what lets the brain treat a bare option fragment as an answer
+	// instead of a new topic.
+	IsPollVote bool
+	PollTitle  string
 	// Redeliverable reports that the caller will retry this message if the turn
 	// fails, which lets a transient model failure be requeued silently instead
 	// of surfacing an apology. The zero value answers the person immediately,
@@ -377,6 +383,14 @@ func (c *ChatOnboarder) clear(ctx context.Context, key string) {
 // send back. A nil reply means nothing should be sent.
 func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformReply, error) {
 	key := onboardingKey(in.Platform, in.SenderID)
+
+	// A tap on one of Miriam's polls is a deliberate answer to a question she
+	// asked, but all it carries is the option title ("Savings or investments").
+	// Ride that through the turn's context so the brain's completer can flag it
+	// downstream — without the flag the interview reads the fragment as a fresh
+	// topic and answers by re-asking its question with a brand-new poll, which is
+	// exactly what a dead tap looks like to the person who tapped.
+	ctx = ContextWithGuestVote(ctx, GuestVote{IsPollVote: in.IsPollVote, PollTitle: in.PollTitle})
 
 	// Serialize turns per sender: anything that slips past the bridge debounce
 	// cannot interleave two state writes. Contention is transient, so requeue.
