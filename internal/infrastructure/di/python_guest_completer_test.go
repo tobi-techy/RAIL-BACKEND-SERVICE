@@ -91,6 +91,74 @@ func TestPythonGuestCompleter_PollMapping(t *testing.T) {
 	}
 }
 
+func TestPythonGuestCompleter_NameMapsToNoteDetail(t *testing.T) {
+	srv, hit := servePythonChat(t, &ai.PythonChatResponse{
+		Response: "Nice to meet you, Tola! How is money feeling?",
+		Name:     "Tola",
+	})
+	adapter := &pythonGuestCompleterAdapter{
+		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		fallback: &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}},
+		logger:   zap.NewNop(),
+	}
+
+	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
+		Platform: entities.PlatformIMessage, SenderID: "user-7A", ThreadID: "thread-9",
+	}), "sys", []platform.GuestMessage{{Role: "user", Content: "my name is tola"}}, nil)
+	if err != nil {
+		t.Fatalf("CompleteGuest failed: %v", err)
+	}
+	if hit.Load() != 1 {
+		t.Fatalf("expected one python call, got %d", hit.Load())
+	}
+	if res.Text != "Nice to meet you, Tola! How is money feeling?" {
+		t.Fatalf("unexpected text %q", res.Text)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Name != "note_detail" {
+		t.Fatalf("expected note_detail tool call, got %+v", res.ToolCalls)
+	}
+	field, _ := res.ToolCalls[0].Arguments["field"].(string)
+	value, _ := res.ToolCalls[0].Arguments["value"].(string)
+	if field != "first_name" || value != "Tola" {
+		t.Fatalf("unexpected note_detail args: field=%q value=%q", field, value)
+	}
+}
+
+func TestPythonGuestCompleter_PollAddsTextFallback(t *testing.T) {
+	srv, hit := servePythonChat(t, &ai.PythonChatResponse{
+		Poll: &ai.PythonChatPoll{Title: "When money gets tight, what's behind it?", Options: []string{"Timing", "Spending", "Debt", "Not sure"}},
+	})
+	adapter := &pythonGuestCompleterAdapter{
+		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		fallback: &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}},
+		logger:   zap.NewNop(),
+	}
+
+	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
+		Platform: entities.PlatformIMessage, SenderID: "user-7A", ThreadID: "thread-9",
+	}), "sys", []platform.GuestMessage{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("CompleteGuest failed: %v", err)
+	}
+	if hit.Load() != 1 {
+		t.Fatalf("expected one python call, got %d", hit.Load())
+	}
+	// A poll must never be the whole reply: text always rides along.
+	if res.Text != "When money gets tight, what's behind it?" {
+		t.Fatalf("expected poll title as text fallback, got %q", res.Text)
+	}
+	found := false
+	for _, tc := range res.ToolCalls {
+		if tc.Name == "send_poll" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected send_poll tool call, got %+v", res.ToolCalls)
+	}
+}
+
 func TestPythonGuestCompleter_ConsentToSetupMapsToStartSignup(t *testing.T) {
 	srv, _ := servePythonChat(t, &ai.PythonChatResponse{
 		Response:   "I've got your full picture.",

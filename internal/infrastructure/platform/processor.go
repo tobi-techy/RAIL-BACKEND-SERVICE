@@ -687,6 +687,20 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 		if title == "" {
 			title = reply.Text
 		}
+		// A poll is a decision surface, never a replacement for the words. Send
+		// the reply text as a real message first so a bare card can never be the
+		// whole reply, then hand them the poll to tap.
+		if strings.TrimSpace(reply.Text) != "" {
+			var words *OutboundMessage
+			if replyTo != "" {
+				words = p.responseBuilder.ReplyResponse(identity, reply.Text, threadID, replyTo)
+			} else {
+				words = p.responseBuilder.MarkdownResponse(identity, reply.Text, threadID)
+			}
+			if err := p.send(ctx, words); err != nil {
+				return err
+			}
+		}
 		return p.send(ctx, p.responseBuilder.PollResponse(identity, title, threadID, reply.Poll.Options))
 	}
 

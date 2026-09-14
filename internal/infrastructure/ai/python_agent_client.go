@@ -52,6 +52,7 @@ type PythonChatResponse struct {
 	Cards                []PythonChatCard        `json:"cards"`
 	Poll                 *PythonChatPoll         `json:"poll,omitempty"`
 	Onboarding           *PythonOnboardingStatus `json:"onboarding,omitempty"`
+	Name                 string                  `json:"name,omitempty"`
 }
 
 // PythonApprovedAction is one card replayed back to Python for execution after
@@ -72,12 +73,12 @@ type PythonChatDocument struct {
 
 // pythonChatRequest is the request body sent to the Python agent.
 type pythonChatRequest struct {
-	Message         string                `json:"message"`
-	ConversationID  string                `json:"conversation_id"`
+	Message         string                 `json:"message"`
+	ConversationID  string                 `json:"conversation_id"`
 	ApprovedActions []PythonApprovedAction `json:"approved_actions,omitempty"`
-	IsPollVote      bool                  `json:"is_poll_vote,omitempty"`
-	PollTitle       string                `json:"poll_title,omitempty"`
-	Document        *PythonChatDocument   `json:"document,omitempty"`
+	IsPollVote      bool                   `json:"is_poll_vote,omitempty"`
+	PollTitle       string                 `json:"poll_title,omitempty"`
+	Document        *PythonChatDocument    `json:"document,omitempty"`
 }
 
 // PythonProactiveOutcome mirrors the Python agent's /api/v1/proactive/analyze
@@ -178,9 +179,9 @@ func (c *PythonAgentClient) ChatPollVote(ctx context.Context, userID uuid.UUID, 
 // brain can ground the financial plan in it during onboarding.
 func (c *PythonAgentClient) ChatWithDocument(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string, doc PythonChatDocument) (*PythonChatResponse, error) {
 	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
-		Message:         message,
-		ConversationID:  conversationID,
-		Document:        &doc,
+		Message:        message,
+		ConversationID: conversationID,
+		Document:       &doc,
 	})
 }
 

@@ -81,6 +81,16 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		resp.RequiresConfirmation = false
 	}
 
+	// "Picked from the Go guest brain": the agent recorded the person's name.
+	// Surface it as note_detail so the deterministic executor tracks it in
+	// guest state (used for a warmer signup and never re-asking).
+	if name := strings.TrimSpace(resp.Name); name != "" {
+		res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
+			Name:      "note_detail",
+			Arguments: map[string]interface{}{"field": "first_name", "value": name},
+		})
+	}
+
 	// A completed interview means the guest has made a plan decision. Only when
 	// they explicitly consented to setting it up as standing rules (automated)
 	// do we hand back into Go's phone/OTP/consent funnel so the rules become
@@ -101,6 +111,13 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		opts := resp.Poll.Options
 		if len(opts) > 4 {
 			opts = opts[:4]
+		}
+		// A poll must never be the entire reply: the person should always see
+		// Miriam's words as a message too. The executor renders reply text next
+		// to the poll, so guarantee text exists (guest brain otherwise treats an
+		// empty text + tools turn as a no-reply and retries/falls back).
+		if strings.TrimSpace(res.Text) == "" {
+			res.Text = resp.Poll.Title
 		}
 		res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
 			Name: "send_poll",
