@@ -2025,6 +2025,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			)
 		}
 
+		// Register the Glider-backed investment Agent API (strategies, portfolios,
+		// rebalancing) that the Miriam agent drives through its Go client.
+		if gliderHandlers := container.GetInvestmentGliderHandlers(); gliderHandlers != nil {
+			RegisterInvestmentGliderRoutes(
+				v1,
+				gliderHandlers,
+				container.Config,
+				container.Logger,
+				sessionValidator,
+				container.TokenBlacklist,
+				container.UserRepo,
+				container.GetPasscodeService(),
+			)
+		}
 		// Register round-up routes
 		RegisterRoundupRoutes(
 			v1,

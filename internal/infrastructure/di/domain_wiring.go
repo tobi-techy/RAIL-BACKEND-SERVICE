@@ -2412,6 +2412,13 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
 	}
 
+	// Initialize the Glider-backed investment infrastructure (Agent API).
+	// A failure here disables investing rather than the whole API: the feature is
+	// additive and every endpoint reports NOT_SUPPORTED when the service is nil.
+	if err := c.initializeInvestmentGliderServices(sqlxDB); err != nil {
+		c.ZapLog.Warn("Investment (Glider) services initialization failed, investing disabled", zap.Error(err))
+	}
+
 	// Initialize instant funding + ChainRails cross-chain deposit services
 	c.initializeInstantFundingServices(sqlxDB)
 

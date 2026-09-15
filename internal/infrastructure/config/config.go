@@ -12,63 +12,64 @@ import (
 
 // Config holds all configuration for the application
 type Config struct {
-	Environment     string               `mapstructure:"environment"`
-	LogLevel        string               `mapstructure:"log_level"`
-	Server          ServerConfig         `mapstructure:"server"`
-	Cache           CacheConfig          `mapstructure:"cache"`
-	RateLimit       RateLimitConfig      `mapstructure:"rate_limit"`
-	Database        DatabaseConfig       `mapstructure:"database"`
-	Redis           RedisConfig          `mapstructure:"redis"`
-	JWT             JWTConfig            `mapstructure:"jwt"`
-	Blockchain      BlockchainConfig     `mapstructure:"blockchain"`
-	Payment         PaymentConfig        `mapstructure:"payment"`
-	Security        SecurityConfig       `mapstructure:"security"`
-	Circle          CircleConfig         `mapstructure:"circle"`
-	KYC             KYCConfig            `mapstructure:"kyc"`
-	Cloudflare      CloudflareConfig     `mapstructure:"cloudflare"`
-	Email           EmailConfig          `mapstructure:"email"`
-	SMS             SMSConfig            `mapstructure:"sms"`
-	Notification    NotificationConfig   `mapstructure:"notification"`
-	Verification    VerificationConfig   `mapstructure:"verification"`
-	Alpaca          AlpacaConfig         `mapstructure:"alpaca"`
-	Bridge          BridgeConfig         `mapstructure:"bridge"`
-	Blend           BlendConfig          `mapstructure:"blend"`
-	Grid            GridConfig           `mapstructure:"grid"`
-	CCTP            CCTPConfig           `mapstructure:"cctp"`
-	ChainRails      ChainRailsConfig     `mapstructure:"chainrails"`
-	Paj             PajConfig            `mapstructure:"paj"`
-	RampHub         RampHubConfig        `mapstructure:"ramphub"`
-	Graph           GraphConfig          `mapstructure:"graph"`
-	Airbills        AirbillsConfig       `mapstructure:"airbills"`
-	Brij            BrijConfig           `mapstructure:"brij"`
-	Workers         WorkerConfig         `mapstructure:"workers"`
-	Reconciliation  ReconciliationConfig `mapstructure:"reconciliation"`
-	SocialAuth      SocialAuthConfig     `mapstructure:"social_auth"`
-	Platform        PlatformConfig       `mapstructure:"platform"`
-	Eval            EvalConfig           `mapstructure:"eval"`
-	WebAuthn        WebAuthnConfig       `mapstructure:"webauthn"`
-	AI              AIConfig             `mapstructure:"ai"`
-	PythonAgent     PythonAgentConfig    `mapstructure:"python_agent"`
-	SNSPush         SNSPushConfig        `mapstructure:"sns_push"`
-	Push            PushConfig           `mapstructure:"push"`
-	TelegramAlerts  TelegramConfig       `mapstructure:"telegram_alerts"`
-	Umbra           UmbraConfig          `mapstructure:"umbra"`
-	Enrichment      EnrichmentConfig     `mapstructure:"enrichment"`
-	Mono            MonoConfig           `mapstructure:"mono"`
-	Statement       StatementConfig      `mapstructure:"statement"`
-	Document        DocumentConfig       `mapstructure:"document"`
-	DataRetention   DataRetentionConfig  `mapstructure:"data_retention"`
-	AdminAlertEmail string               `mapstructure:"admin_alert_email"`
+	Environment      string                 `mapstructure:"environment"`
+	LogLevel         string                 `mapstructure:"log_level"`
+	Server           ServerConfig           `mapstructure:"server"`
+	Cache            CacheConfig            `mapstructure:"cache"`
+	RateLimit        RateLimitConfig        `mapstructure:"rate_limit"`
+	Database         DatabaseConfig         `mapstructure:"database"`
+	Redis            RedisConfig            `mapstructure:"redis"`
+	JWT              JWTConfig              `mapstructure:"jwt"`
+	Blockchain       BlockchainConfig       `mapstructure:"blockchain"`
+	Payment          PaymentConfig          `mapstructure:"payment"`
+	Security         SecurityConfig         `mapstructure:"security"`
+	Circle           CircleConfig           `mapstructure:"circle"`
+	KYC              KYCConfig              `mapstructure:"kyc"`
+	Cloudflare       CloudflareConfig       `mapstructure:"cloudflare"`
+	Email            EmailConfig            `mapstructure:"email"`
+	SMS              SMSConfig              `mapstructure:"sms"`
+	Notification     NotificationConfig     `mapstructure:"notification"`
+	Verification     VerificationConfig     `mapstructure:"verification"`
+	Alpaca           AlpacaConfig           `mapstructure:"alpaca"`
+	Bridge           BridgeConfig           `mapstructure:"bridge"`
+	Blend            BlendConfig            `mapstructure:"blend"`
+	Grid             GridConfig             `mapstructure:"grid"`
+	CCTP             CCTPConfig             `mapstructure:"cctp"`
+	ChainRails       ChainRailsConfig       `mapstructure:"chainrails"`
+	Paj              PajConfig              `mapstructure:"paj"`
+	RampHub          RampHubConfig          `mapstructure:"ramphub"`
+	Graph            GraphConfig            `mapstructure:"graph"`
+	Airbills         AirbillsConfig         `mapstructure:"airbills"`
+	Brij             BrijConfig             `mapstructure:"brij"`
+	Workers          WorkerConfig           `mapstructure:"workers"`
+	Reconciliation   ReconciliationConfig   `mapstructure:"reconciliation"`
+	SocialAuth       SocialAuthConfig       `mapstructure:"social_auth"`
+	Platform         PlatformConfig         `mapstructure:"platform"`
+	Eval             EvalConfig             `mapstructure:"eval"`
+	WebAuthn         WebAuthnConfig         `mapstructure:"webauthn"`
+	AI               AIConfig               `mapstructure:"ai"`
+	PythonAgent      PythonAgentConfig      `mapstructure:"python_agent"`
+	InvestmentGlider InvestmentGliderConfig `mapstructure:"investment_glider"`
+	SNSPush          SNSPushConfig          `mapstructure:"sns_push"`
+	Push             PushConfig             `mapstructure:"push"`
+	TelegramAlerts   TelegramConfig         `mapstructure:"telegram_alerts"`
+	Umbra            UmbraConfig            `mapstructure:"umbra"`
+	Enrichment       EnrichmentConfig       `mapstructure:"enrichment"`
+	Mono             MonoConfig             `mapstructure:"mono"`
+	Statement        StatementConfig        `mapstructure:"statement"`
+	Document         DocumentConfig         `mapstructure:"document"`
+	DataRetention    DataRetentionConfig    `mapstructure:"data_retention"`
+	AdminAlertEmail  string                 `mapstructure:"admin_alert_email"`
 }
 
 // DataRetentionConfig controls how long non-critical AI tracking data
 // (predictions, outcomes, health scores) is kept before automatic cleanup.
 // Financial ledger, audit, and compliance records are never affected.
 type DataRetentionConfig struct {
-	HealthScoreDays     int `mapstructure:"health_score_days"`
-	PredictionDays      int `mapstructure:"prediction_days"`
-	OutcomeDays         int `mapstructure:"outcome_days"`
-	NotificationDays    int `mapstructure:"notification_days"`
+	HealthScoreDays      int `mapstructure:"health_score_days"`
+	PredictionDays       int `mapstructure:"prediction_days"`
+	OutcomeDays          int `mapstructure:"outcome_days"`
+	NotificationDays     int `mapstructure:"notification_days"`
 	CampaignDeliveryDays int `mapstructure:"campaign_delivery_days"`
 }
 
@@ -114,12 +115,12 @@ type EnrichmentConfig struct {
 // MonoConfig holds configuration for Mono (open-banking data + DirectPay).
 // Sandbox base URL: https://api.withmono.com  |  Live: https://api.withmono.com
 type MonoConfig struct {
-	APIKey         string `mapstructure:"api_key"`          // mono-sec-key from Mono dashboard
-	Environment    string `mapstructure:"environment"`      // "sandbox" or "production"
-	BaseURL        string `mapstructure:"base_url"`         // defaults to https://api.withmono.com
-	WebhookSecret  string `mapstructure:"webhook_secret"`   // for verifying webhook signatures
-	Timeout        int    `mapstructure:"timeout"`          // HTTP timeout in seconds (default 30)
-	MaxRetries     int    `mapstructure:"max_retries"`      // retry attempts for 5xx (default 3)
+	APIKey        string `mapstructure:"api_key"`        // mono-sec-key from Mono dashboard
+	Environment   string `mapstructure:"environment"`    // "sandbox" or "production"
+	BaseURL       string `mapstructure:"base_url"`       // defaults to https://api.withmono.com
+	WebhookSecret string `mapstructure:"webhook_secret"` // for verifying webhook signatures
+	Timeout       int    `mapstructure:"timeout"`        // HTTP timeout in seconds (default 30)
+	MaxRetries    int    `mapstructure:"max_retries"`    // retry attempts for 5xx (default 3)
 }
 
 // SNSPushConfig contains AWS SNS push notification configuration
@@ -430,6 +431,84 @@ type PaymentConfig struct {
 	WebhookSecret   string              `mapstructure:"webhook_secret"`
 	Cards           CardProcessorConfig `mapstructure:"cards"`
 	Supported       []string            `mapstructure:"supported_currencies"`
+}
+
+// InvestmentGliderConfig configures the Glider-backed investment engine
+// (strategy objects, portfolios, rebalancing) that the Miriam agent drives over
+// the Agent API. Policy-relevant values live here so compliance rules never live
+// inside an LLM prompt.
+type InvestmentGliderConfig struct {
+	// Enabled turns the whole feature on. When false every endpoint reports
+	// NOT_SUPPORTED rather than failing obscurely.
+	Enabled bool `mapstructure:"enabled"`
+	// Simulation selects the in-process Glider provider. It must never be used
+	// in production: the simulation signs nothing and touches no chain.
+	Simulation bool `mapstructure:"simulation"`
+
+	// APIKey is the Glider tenant API key (x-api-key). Production-only.
+	APIKey string `mapstructure:"api_key"`
+	// BaseURL overrides the Glider V2 API base URL.
+	BaseURL string `mapstructure:"base_url"`
+	// Timeout is the per-request timeout in seconds for Glider calls.
+	Timeout int `mapstructure:"timeout"`
+
+	// DefaultChain is the chain portfolios are enrolled on (solana).
+	DefaultChain string `mapstructure:"default_chain"`
+	// SolanaChainIDs are the numeric chain ids sent to Glider for Solana. Glider
+	// uses a compatibility placeholder for SVM, so this is configuration rather
+	// than a hard-coded constant.
+	SolanaChainIDs []int `mapstructure:"solana_chain_ids"`
+	// OwnerAccountPrefix is the CAIP-2 prefix used to build owner account ids,
+	// e.g. "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".
+	OwnerAccountPrefix string `mapstructure:"owner_account_prefix"`
+	// OwnerSigner selects how the portfolio owner authorises enrollments and
+	// withdrawals: "circle" (the user's Circle wallet, production) or "derived"
+	// (a Rail-derived per-user key, simulation/development only).
+	OwnerSigner string `mapstructure:"owner_signer"`
+	// OwnerKeySeed is the master seed for the derived owner signer. Supply it
+	// from a secret manager; never commit it.
+	OwnerKeySeed string `mapstructure:"owner_key_seed"`
+
+	// SettlementSymbol is the cash leg (USDC).
+	SettlementSymbol string `mapstructure:"settlement_symbol"`
+	// DefaultSlippageBps is the swap slippage sent to Glider when a strategy
+	// does not specify one.
+	DefaultSlippageBps int `mapstructure:"default_slippage_bps"`
+	// FeeBps is the fee assumption used in previews (Glider publishes no fee
+	// schedule, so previews must state their assumption).
+	FeeBps float64 `mapstructure:"fee_bps"`
+	// HighValueThresholdUSD forces step-up authentication at or above this size.
+	HighValueThresholdUSD float64 `mapstructure:"high_value_threshold_usd"`
+	// ConfirmationTTLMinutes is how long a staged confirmation stays valid.
+	ConfirmationTTLMinutes int `mapstructure:"confirmation_ttl_minutes"`
+	// AllowedCountries is an ISO-3166 alpha-2 allowlist. Empty means the layer
+	// enforces no jurisdiction restriction.
+	AllowedCountries []string `mapstructure:"allowed_countries"`
+
+	MinAllocationLegs int `mapstructure:"min_allocation_legs"`
+	MaxAllocationLegs int `mapstructure:"max_allocation_legs"`
+
+	// StaleMarketDataMinutes is how old a position snapshot may be before the
+	// portfolio read is flagged stale.
+	StaleMarketDataMinutes int `mapstructure:"stale_market_data_minutes"`
+
+	// Default limits, overridable per user in the database.
+	MaxPositionPct    float64 `mapstructure:"max_position_pct"`
+	MaxStrategyPct    float64 `mapstructure:"max_strategy_pct"`
+	MaxTransactionUSD float64 `mapstructure:"max_transaction_usd"`
+	MaxDailyVolumeUSD float64 `mapstructure:"max_daily_volume_usd"`
+	MinCashReserveUSD float64 `mapstructure:"min_cash_reserve_usd"`
+	MinOrderAmountUSD float64 `mapstructure:"min_order_amount_usd"`
+	MaxEnrollments    int     `mapstructure:"max_enrollments"`
+
+	// SyncIntervalMinutes is how often the sync worker polls Glider operations,
+	// reconciles positions and evaluates drift.
+	SyncIntervalMinutes int `mapstructure:"sync_interval_minutes"`
+	// SyncBatchSize caps how many enrollments/operations one sweep handles.
+	SyncBatchSize int `mapstructure:"sync_batch_size"`
+	// AutoRebalance enables the drift sweep. Manual rebalances stay available
+	// regardless; this only controls unattended automation.
+	AutoRebalance bool `mapstructure:"auto_rebalance"`
 }
 
 type CardProcessorConfig struct {
@@ -812,12 +891,12 @@ type WebAuthnConfig struct {
 // forwarded to the Python agent instead of Go's in-process orchestrator; Go stays
 // the identity + money authority and mints short-lived per-user JWTs for Python.
 type PythonAgentConfig struct {
-	Enabled           bool   `mapstructure:"enabled"`                  // Delegate platform chat to the Python agent
-	BaseURL           string `mapstructure:"base_url"`                 // Python agent HTTP base (e.g. http://localhost:8000)
-	JWTTTLSeconds     int    `mapstructure:"jwt_ttl_seconds"`          // Per-user token TTL (default 120)
-	OTPTTLSeconds     int    `mapstructure:"otp_ttl_seconds"`          // Email OTP validity (default 600 = 10 min)
-	OTPMaxAttempts    int    `mapstructure:"otp_max_attempts"`         // Wrong-code attempts before expiry (default 3)
-	HTTPTimeoutSeconds int   `mapstructure:"http_timeout_seconds"`     // Agent call timeout (default 60)
+	Enabled            bool   `mapstructure:"enabled"`              // Delegate platform chat to the Python agent
+	BaseURL            string `mapstructure:"base_url"`             // Python agent HTTP base (e.g. http://localhost:8000)
+	JWTTTLSeconds      int    `mapstructure:"jwt_ttl_seconds"`      // Per-user token TTL (default 120)
+	OTPTTLSeconds      int    `mapstructure:"otp_ttl_seconds"`      // Email OTP validity (default 600 = 10 min)
+	OTPMaxAttempts     int    `mapstructure:"otp_max_attempts"`     // Wrong-code attempts before expiry (default 3)
+	HTTPTimeoutSeconds int    `mapstructure:"http_timeout_seconds"` // Agent call timeout (default 60)
 }
 
 // ZeroGConfig contains configuration for 0G Network integration
@@ -1230,6 +1309,36 @@ func setDefaults() {
 	viper.SetDefault("workers.miriam_event_driven", true)
 	viper.SetDefault("workers.miriam_adaptive_loop", true)
 	viper.SetDefault("workers.leader_election", false)
+	// Investment (Glider) defaults. The feature is off unless explicitly enabled,
+	// and it defaults to simulation so a misconfigured deployment cannot place
+	// real trades with a placeholder key.
+	viper.SetDefault("investment_glider.enabled", false)
+	viper.SetDefault("investment_glider.simulation", true)
+	viper.SetDefault("investment_glider.base_url", "https://api.glider.fi/v2")
+	viper.SetDefault("investment_glider.timeout", 30)
+	viper.SetDefault("investment_glider.default_chain", "solana")
+	viper.SetDefault("investment_glider.solana_chain_ids", []int{1399811149})
+	viper.SetDefault("investment_glider.owner_account_prefix", "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")
+	viper.SetDefault("investment_glider.owner_signer", "circle")
+	viper.SetDefault("investment_glider.settlement_symbol", "USDC")
+	viper.SetDefault("investment_glider.default_slippage_bps", 50)
+	viper.SetDefault("investment_glider.fee_bps", 10)
+	viper.SetDefault("investment_glider.high_value_threshold_usd", 1000)
+	viper.SetDefault("investment_glider.confirmation_ttl_minutes", 15)
+	viper.SetDefault("investment_glider.allowed_countries", []string{})
+	viper.SetDefault("investment_glider.min_allocation_legs", 1)
+	viper.SetDefault("investment_glider.max_allocation_legs", 25)
+	viper.SetDefault("investment_glider.stale_market_data_minutes", 60)
+	viper.SetDefault("investment_glider.max_position_pct", 40)
+	viper.SetDefault("investment_glider.max_strategy_pct", 100)
+	viper.SetDefault("investment_glider.max_transaction_usd", 10000)
+	viper.SetDefault("investment_glider.max_daily_volume_usd", 25000)
+	viper.SetDefault("investment_glider.min_cash_reserve_usd", 0)
+	viper.SetDefault("investment_glider.min_order_amount_usd", 1)
+	viper.SetDefault("investment_glider.max_enrollments", 5)
+	viper.SetDefault("investment_glider.sync_interval_minutes", 5)
+	viper.SetDefault("investment_glider.sync_batch_size", 50)
+	viper.SetDefault("investment_glider.auto_rebalance", true)
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -1748,6 +1857,21 @@ func overrideFromEnv() error {
 		return fmt.Errorf("bind env workers.miriam_adaptive_loop: %w", err)
 	}
 	viper.BindEnv("workers.leader_election", "WORKERS_LEADER_ELECTION")
+	// Investment (Glider) secrets and toggles. The API key and owner key seed
+	// must come from the environment / secret manager, never from config.yaml.
+	for _, binding := range [][2]string{
+		{"investment_glider.enabled", "INVESTMENT_GLIDER_ENABLED"},
+		{"investment_glider.simulation", "INVESTMENT_GLIDER_SIMULATION"},
+		{"investment_glider.api_key", "INVESTMENT_GLIDER_API_KEY"},
+		{"investment_glider.base_url", "INVESTMENT_GLIDER_BASE_URL"},
+		{"investment_glider.owner_account_prefix", "INVESTMENT_GLIDER_OWNER_ACCOUNT_PREFIX"},
+		{"investment_glider.owner_signer", "INVESTMENT_GLIDER_OWNER_SIGNER"},
+		{"investment_glider.owner_key_seed", "INVESTMENT_GLIDER_OWNER_KEY_SEED"},
+		{"investment_glider.auto_rebalance", "INVESTMENT_GLIDER_AUTO_REBALANCE"},
+		{"investment_glider.sync_interval_minutes", "INVESTMENT_GLIDER_SYNC_INTERVAL_MINUTES"},
+	} {
+		viper.BindEnv(binding[0], binding[1])
+	}
 	if os.Getenv("WORKERS_LEADER_ELECTION") == "" &&
 		(os.Getenv("ENVIRONMENT") == "production" || viper.GetString("environment") == "production") {
 		viper.Set("workers.leader_election", true)
@@ -1953,6 +2077,9 @@ func validate(config *Config) error {
 	if err := validateBlendConfig(config); err != nil {
 		return err
 	}
+	if err := validateInvestmentGliderConfig(config); err != nil {
+		return err
+	}
 
 	if config.RampHub.APIKey != "" {
 		if config.RampHub.DeveloperFeePercent < 0 || config.RampHub.DeveloperFeePercent > 100 {
@@ -2085,6 +2212,39 @@ func validateBlendConfig(config *Config) error {
 				return fmt.Errorf("blend base_rpc_url cannot use public RPC endpoint %q in %s environment - use a dedicated provider (Alchemy, Infura, etc.)", rpc, config.Environment)
 			}
 		}
+	}
+	return nil
+}
+
+// validateInvestmentGliderConfig refuses configurations that could act on real
+// money by accident: in production the real provider needs an API key, and
+// simulation must never be enabled there.
+func validateInvestmentGliderConfig(config *Config) error {
+	inv := config.InvestmentGlider
+	if !inv.Enabled {
+		return nil
+	}
+	if !isDevEnvironment(config.Environment) {
+		if inv.Simulation {
+			return fmt.Errorf("investment_glider.simulation cannot be enabled in %s: the simulated provider signs nothing and touches no chain", config.Environment)
+		}
+		if strings.TrimSpace(inv.APIKey) == "" {
+			return fmt.Errorf("investment_glider.api_key is required when investment_glider.enabled is true in %s", config.Environment)
+		}
+		if strings.EqualFold(strings.TrimSpace(inv.OwnerSigner), "derived") && strings.TrimSpace(inv.OwnerKeySeed) == "" {
+			return fmt.Errorf("investment_glider.owner_key_seed is required when owner_signer is derived")
+		}
+	}
+	if strings.TrimSpace(inv.OwnerSigner) == "" {
+		return fmt.Errorf("investment_glider.owner_signer must be set to circle or derived")
+	}
+	switch strings.ToLower(strings.TrimSpace(inv.OwnerSigner)) {
+	case "circle", "derived":
+	default:
+		return fmt.Errorf("investment_glider.owner_signer must be circle or derived (got %q)", inv.OwnerSigner)
+	}
+	if inv.MinAllocationLegs > inv.MaxAllocationLegs {
+		return fmt.Errorf("investment_glider.min_allocation_legs cannot exceed max_allocation_legs")
 	}
 	return nil
 }

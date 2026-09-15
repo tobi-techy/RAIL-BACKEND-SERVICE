@@ -44,6 +44,84 @@ Rail deploys to [AtlasFlow](https://atlasflow.com). Full guide: `deployments/atl
 
 Workspace `tobi-omotade-2cd167ac`. GitHub `tobi-techy/RAIL-BACKEND-SERVICE`. There is no separate Miriam project. Do not create `rail-api`.
 
+## Investment-Glider Infrastructure (Milestone 1)
+
+The `internal/domain/services/investment/` vertical slice connects Rail to the **Glider** portfolio automation provider (Solana) and exposes it to the **Miriam** Python agent via a controlled Agent API.
+
+### Quick Reference
+
+| Layer | Package / Files |
+|-------|-----------------|
+| Domain entities | `internal/domain/entities/investment_glider_{entities,requests,provider}.go` |
+| Engines (validator, policy, preview) | `internal/domain/services/investment/engines.go` + `engines_test.go` |
+| Domain services | `internal/domain/services/investment/{service,strategy_service,enrollment_service,execution_service,discovery,sync}.go` |
+| Service e2e tests | `internal/domain/services/investment/service_test.go` (in-memory repos + simulated provider) |
+| Postgres repositories | `internal/infrastructure/repositories/investment_{strategy,portfolio,ledger,policy}_repository.go` |
+| Glider HTTP client | `internal/infrastructure/adapters/glider/{client,errors,simulated}.go` + `client_test.go` |
+| Owner signer port | `internal/infrastructure/adapters/investmentowner/{signer,derived,circle}.go` + `signer_test.go` |
+| Agent API handlers | `internal/api/handlers/investment/handlers.go` |
+| API routes | `internal/api/routes/investment_glider_routes.go` |
+| Middleware (step-up) | `internal/api/middleware/investment_restrictions.go` |
+| Sync worker | `internal/workers/investment_sync/worker.go` |
+| DI / wiring | `internal/infrastructure/di/investment_glider_wiring.go` |
+| Config | `internal/infrastructure/config/config.go` (`InvestmentGliderConfig`) |
+| Migrations | `migrations/303_...`, `304_...`, `305_...`, `306_...` |
+| Miriam tools | `miriam_agent/tools/investment_definitions.py` + `tests/test_investment_tools.py` |
+
+### Agent API Contract
+
+**Reads** (auto-execute in Miriam): `GET /api/v1/investments/*` — portfolio, positions, assets, strategies, executions, audit, investors, limits, previews.
+
+**Staged mutations** (HTTP 202 + payload-bound confirmation token):  
+`POST /api/v1/investments/strategies` (create)  
+`POST /api/v1/investments/strategies/:id/versions` (update)  
+`POST /api/v1/investments/enroll`  
+`POST /api/v1/investments/orders` (buy/sell)  
+`POST /api/v1/investments/allocations` (set allocation)
+
+**Immediate mutations** (approval only, no staging):  
+`POST /api/v1/investments/strategies/:id/pause`  
+`POST /api/v1/investments/strategies/:id/resume`  
+`POST /api/v1/investments/strategies/:id/rebalance`
+
+**Withdrawals**: `POST /api/v1/investments/withdrawals` — **interactive + passcode step-up only**, no agent tool.
+
+### Testing
+
+```bash
+# Go packages
+go test -race ./internal/domain/services/investment/...
+go test -race ./internal/infrastructure/adapters/glider/...
+go test -race ./internal/infrastructure/adapters/investmentowner/...
+go test -race ./...    # full suite
+
+# Miriam
+cd /Users/tobi/Development/MIRIAM
+.venv/bin/python -m pytest tests/test_investment_tools.py -q
+.venv/bin/python -m pytest -q    # full suite (285 tests)
+```
+
+### Configuration
+
+`InvestmentGliderConfig` (in `config.go`) with env bindings:
+- `INVESTMENT_GLIDER_ENABLED`
+- `INVESTMENT_GLIDER_PROVIDER_API_KEY` (required in non-dev)
+- `INVESTMENT_GLIDER_OWNER_SIGNER_MODE` (`derived` | `circle`)
+- `INVESTMENT_GLIDER_DERIVED_MASTER_SEED` (32+ chars, dev only)
+- `INVESTMENT_GLIDER_CONFIRMATION_TTL` (default 15m)
+- `INVESTMENT_GLIDER_HIGH_VALUE_THRESHOLD_USD` (default 1000)
+- Worker intervals, stale data threshold, settlement symbol
+
+### Key Principles
+
+1. **Miriam proposes, Go decides** — every mutation is staged behind a confirmation token bound to the exact payload hash.
+2. **Never fabricate investor data** — fields Glider doesn't provide are labeled `UNAVAILABLE`/`INFERRED`.
+3. **Orders adjust target allocation** — they are NOT limit orders, no price guarantee.
+4. **Withdrawals are app-only** — passcode step-up via `rail://authorize`; no chat-tool path.
+5. **Fail closed** — provider errors surface as typed, explainable errors; actions are unconfirmed, never silently failed.
+
+See `docs/investment-glider.md` for the complete architecture document.
+
 ## What we have learned
 
 - Miriam conversational-intelligence retune (external review, 8.2→9.x goal): `SystemPromptV2` restructured to hierarchy WHO YOU ARE → YOUR JOB → TRUTH RULES → EXECUTION MODEL (generated) → RELATIONSHIP → CONVERSATIONAL INTELLIGENCE → INTERACTION MODES → JUDGMENT → FINANCIAL PHILOSOPHY → PROACTIVE → CURRENCY → ANSWER THE QUESTION ASKED → OUTPUT → COACHING → ONBOARDING. Removed: hard 60-word brevity cap (now ADAPTIVE LENGTH), unconditional NEVER GREET (contextual GREETINGS rule), "NEVER RUSH TO SOLUTIONS" (contradicted ANSWER THE QUESTION ASKED; now "don't rush when the problem isn't understood — if it IS clear, solve it"), and the 12-bullet Ramit-method section (philosophy absorbed into a 5-line invisible PHILOSOPHY block + personality traits; never name financial personalities). Added: ask-vs-answer decision rules (one question at a time; short confident answers like "Yeah, you can afford it" are valid full responses), silent interaction modes (MANAGER/ADVISOR/COACH/COMPANION/GUARDIAN/ANALYST), opinionated JUDGMENT ("No — build the net first", not an interview), RELATIONSHIP continuity (past goal → current behavior → next decision). Onboarding beat 1 reframed relationship-first: "what are you trying to make your money do for you?" with "honestly, no idea yet" as welcome answer (`orchestrator_onboarding_context.go`). Guard tests: `system_prompt_v2_test.go` pins new sections, bans old rigid rules, and caps prompt size (~13k chars) so future edits tighten instead of append.

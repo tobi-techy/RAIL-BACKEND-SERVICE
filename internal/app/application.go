@@ -57,6 +57,7 @@ import (
 	"github.com/rail-service/rail_service/internal/workers/funding_webhook"
 	gameplay_workers "github.com/rail-service/rail_service/internal/workers/gameplay"
 	graph_ngn_recovery "github.com/rail-service/rail_service/internal/workers/graph_ngn_recovery"
+	investment_sync "github.com/rail-service/rail_service/internal/workers/investment_sync"
 	kyc_autoinvest "github.com/rail-service/rail_service/internal/workers/kyc_autoinvest"
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	ledger_maintenance "github.com/rail-service/rail_service/internal/workers/ledger_maintenance"
@@ -112,6 +113,7 @@ type Application struct {
 	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
 	rebalancingWorker            *rebalancing_worker.Worker
+	investmentSyncWorker         *investment_sync.Worker
 	kycSyncWorker                *kyc_sync.Worker
 	balanceReconciliationWorker  *balance_reconciliation.Worker
 	bridgeGovIDRepairWorker      *bridge_govid_repair.Worker
@@ -425,6 +427,13 @@ func (app *Application) initializeWorkers() error {
 		)
 		go app.rebalancingWorker.Start(context.Background())
 		app.log.Info("Rebalancing worker started")
+	}
+	// Investment (Glider) sync worker: settles in-flight provider operations,
+	// reconciles positions and converges drifted portfolios.
+	if investmentSyncWorker := app.container.GetInvestmentSyncWorker(); investmentSyncWorker != nil {
+		app.investmentSyncWorker = investmentSyncWorker
+		go app.investmentSyncWorker.Start(context.Background())
+		app.log.Info("Investment sync worker started")
 	}
 
 	// KYC Sumsub sync worker
@@ -1370,6 +1379,11 @@ func (app *Application) stopWorkers() {
 		app.scheduledInvestmentWorker.Stop()
 	}
 
+	// Stop investment sync worker
+	if app.investmentSyncWorker != nil {
+		app.log.Info("Stopping investment sync worker...")
+		app.investmentSyncWorker.Stop()
+	}
 	// Stop public trades worker
 	if app.publicTradesWorker != nil {
 		app.log.Info("Stopping public trades worker...")
