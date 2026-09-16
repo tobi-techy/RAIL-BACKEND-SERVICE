@@ -80,7 +80,19 @@ func (a *orchestratorAdapter) costCeilingMessage(ctx context.Context, uid uuid.U
 func mapPythonChatReply(resp *ai.PythonChatResponse) *platform.PlatformReply {
 	reply := &platform.PlatformReply{Text: resp.Response}
 	if resp.Poll != nil && len(resp.Poll.Options) > 0 {
-		reply.Poll = &platform.PollRequest{Title: resp.Poll.Title, Options: resp.Poll.Options}
+		title := strings.TrimSpace(resp.Poll.Title)
+		if title == "" {
+			title = strings.TrimSpace(resp.Response)
+		}
+		if title != "" {
+			reply.Poll = &platform.PollRequest{Title: title, Options: resp.Poll.Options}
+		}
+		// Ensure a poll is never bare: if the response text is the same as the
+		// title, the processor will still send it as a lead-in bubble before the
+		// poll (pollWords now always carries leadIn when text present).
+		if strings.TrimSpace(reply.Text) == "" && title != "" {
+			reply.Text = title
+		}
 	}
 	if emoji := strings.TrimSpace(resp.Reaction); emoji != "" && platform.ValidReaction(emoji) {
 		reply.Reaction = emoji

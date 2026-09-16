@@ -366,7 +366,9 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			// linked sender) with nothing staged — feeding bare "Confirm" into
 			// the model would only confuse it. First give the orchestrator a
 			// chance to route it to the agent brain (conversational onboarding
-			// answer selections); if it declines, drop as before.
+			// answer selections). If it declines, fall through to normal message
+			// handling so the tap never reads as a dead tap — the user always
+			// gets a reply.
 			if voteOrch, _ := p.orchestrator.(PollVoteOrchestrator); voteOrch != nil {
 				reply, handled, voteErr := voteOrch.HandlePlatformPollVote(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform, msg.Text, msg.PollTitle)
 				if voteErr != nil {
@@ -379,9 +381,11 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 					return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
 				}
 			}
-			p.logger.Debug("dropping stray poll vote with no pending action",
+			// Not handled as a poll vote — treat the option text as a normal
+			// message so the user still gets an answer (covers retries and
+			// non-delegated setups where silent drops were confusing).
+			p.logger.Debug("poll vote not handled as vote, falling through to normal message",
 				zap.String("thread_id", msg.ThreadID), zap.String("text", msg.Text))
-			return nil
 		}
 		return p.handleNormalMessage(ctx, msg, resolved)
 	}
@@ -1030,24 +1034,26 @@ func (p *Processor) sendOnboardingGestures(ctx context.Context, msg InboundMessa
 // renders inside the poll, and any lead-in text that deserves its own bubble
 // BEFORE the poll. A poll is never the whole turn — a distinct lead-in always
 // ships as its own message (the bridge renders a poll as title + options only,
-// so anything bundled onto the poll message would be silently dropped). When
-// the reply text is just the poll question, the title IS the message and no
-// separate bubble is emitted, which keeps tap-poll turns terse instead of
-// double-saying the question. With neither a title nor any text the poll is
-// undeliverable — a bare poll with no question is only ever dropped by callers.
+// so anything bundled onto the poll message would be silently dropped). Every
+// poll is now preceded by a message bubble so the user always sees the question
+// as words before the tappable options; when text == title we still send the
+// lead-in (the poll title stays as the tappable header) because a bare poll
+// with no preceding message is a broken experience. With neither a title nor any
+// text the poll is undeliverable — a bare poll with no question is dropped.
 func pollWords(reply *PlatformReply) (title, leadIn string) {
 	title = strings.TrimSpace(reply.Poll.Title)
 	text := strings.TrimSpace(reply.Text)
 	if title != "" {
-		if text != "" && text != title {
+		if text != "" {
 			leadIn = text
 		}
 		return title, leadIn
 	}
 	if text != "" {
 		title = text
+		leadIn = text
 	}
-	return title, ""
+	return title, leadIn
 }
 
 // friendlyActionError converts an execution error into user-facing copy without

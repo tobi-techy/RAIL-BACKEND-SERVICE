@@ -129,20 +129,29 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		if len(opts) > 4 {
 			opts = opts[:4]
 		}
-		// A poll must never be the entire reply: the person should always see
-		// Miriam's words as a message too. The executor renders reply text next
-		// to the poll, so guarantee text exists (guest brain otherwise treats an
-		// empty text + tools turn as a no-reply and retries/falls back).
-		if strings.TrimSpace(res.Text) == "" {
-			res.Text = resp.Poll.Title
+		title := strings.TrimSpace(resp.Poll.Title)
+		if title == "" {
+			title = strings.TrimSpace(res.Text)
 		}
-		res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
-			Name: "send_poll",
-			Arguments: map[string]interface{}{
-				"question": resp.Poll.Title,
-				"options":  opts,
-			},
-		})
+		if title == "" {
+			a.logger.Warn("python guest turn returned poll with empty title; dropping poll",
+				zap.String("sender", sender.SenderID))
+		} else {
+			// A poll must never be the entire reply: the person should always see
+			// Miriam's words as a message too. The executor renders reply text next
+			// to the poll, so guarantee text exists (guest brain otherwise treats an
+			// empty text + tools turn as a no-reply and retries/falls back).
+			if strings.TrimSpace(res.Text) == "" {
+				res.Text = title
+			}
+			res.ToolCalls = append(res.ToolCalls, platform.GuestToolCall{
+				Name: "send_poll",
+				Arguments: map[string]interface{}{
+					"question": title,
+					"options":  opts,
+				},
+			})
+		}
 	}
 
 	// Chatty turn: pass through up to two extra short bubbles, one tapback

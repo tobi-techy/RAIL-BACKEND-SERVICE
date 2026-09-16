@@ -906,12 +906,15 @@ func TestProcess_LinkedSenderContactCardNotForwarded(t *testing.T) {
 	}
 }
 
-// A poll is never the whole turn: a lead-in that adds words beyond the poll
-// question always ships as its own bubble BEFORE the poll, and a reply whose
-// text is just the question ships as the poll only (no duplicate bubble). The
-// bare poll bug happened because the onboarding path bundled the lead-in text
-// onto the poll payload, which the iMessage bridge drops (a rendered poll is
-// title + options only) — so the person saw a poll with no words at all.
+// A poll is never the whole turn: every poll is preceded by a message bubble
+// with the question so the user always sees words before the tappable options.
+// A distinct lead-in ships as its own bubble BEFORE the poll, and when the
+// reply text is the question itself it still ships as a bubble before the poll
+// (so a bare poll with no preceding message never happens). The bare poll bug
+// happened because the onboarding path bundled the lead-in text onto the poll
+// payload or sent the poll alone (text == title), which the iMessage bridge
+// drops (a rendered poll is title + options only) — so the person saw a poll
+// with no words at all or a poll with an empty title that failed to cache.
 func TestProcessor_OnboardingPollAlwaysCarriesWords(t *testing.T) {
 	repo := newFakeRepo()
 	orch := &fakeOrchestrator{}
@@ -969,12 +972,18 @@ func TestProcessor_OnboardingPollAlwaysCarriesWords(t *testing.T) {
 		if err := p.sendOnboardingReply(context.Background(), msg, reply); err != nil {
 			t.Fatalf("sendOnboardingReply: %v", err)
 		}
-		if len(*sent) != 1 {
-			t.Fatalf("expected only the poll (text == title), got %d messages", len(*sent))
+		if len(*sent) != 2 {
+			t.Fatalf("expected lead-in + poll when text == title (question before poll), got %d messages", len(*sent))
 		}
-		got := (*sent)[0]
+		if (*sent)[0].Text != title {
+			t.Fatalf("lead-in must be the question, got %q", (*sent)[0].Text)
+		}
+		got := (*sent)[1]
 		if got.ContentType != ContentTypePoll || got.PollTitle != title {
-			t.Fatalf("expected the consent poll only, got %+v", got)
+			t.Fatalf("expected the consent poll as second message, got %+v", got)
+		}
+		if strings.TrimSpace(got.Text) != "" {
+			t.Fatalf("poll payload must not embed text, got %q", got.Text)
 		}
 	})
 

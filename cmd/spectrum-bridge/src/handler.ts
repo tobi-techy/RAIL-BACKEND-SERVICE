@@ -217,15 +217,22 @@ export class MessageHandler {
           return;
         }
         const options = msg.poll_options?.length ? msg.poll_options : ["Confirm", "Cancel"];
-        const title = msg.poll_title || msg.text || "Your call";
-        // Never drop words next to a poll. A rendered iMessage poll is just the
-        // question + options, so any lead-in text the backend attached to the
-        // payload becomes a normal bubble first. Backends are expected to send
-        // the words as their own message and leave the poll payload bare — this
-        // branch only ever fires for a payload that still carries text, and it
-        // no-ops when the text is just the question again (the title).
-        if (msg.text && msg.text !== title) {
-          await this.sendWithPacing(space, msg.text, "text");
+        const rawTitle = (msg.poll_title || "").trim();
+        const rawText = (msg.text || "").trim();
+        // Guard against empty poll titles (Zod requires title >=1). If both
+        // are empty, fall back to a safe question instead of caching a broken
+        // poll that can never be resolved (the bug that caused Zod title
+        // too_small and failed-to-resolve errors).
+        const title = rawTitle || rawText || "Your call";
+        // Always send the question as a message bubble BEFORE the poll so the
+        // user sees words even when the poll title duplicates the text. The
+        // backend's pollWords now always sets leadIn when text present, but
+        // this is the last defense for any legacy payload that still bundles
+        // text onto the poll.
+        if (rawText) {
+          await this.sendWithPacing(space, rawText, "text");
+        } else if (rawTitle && rawTitle !== title) {
+          await this.sendWithPacing(space, rawTitle, "text");
         }
         await space.send(poll(title, options));
         return;

@@ -203,9 +203,13 @@ describe("MessageHandler poll content type", () => {
       poll_options: ["I agree", "Not yet"],
     });
 
-    // Just the poll — the question is its title, so re-sending it as a bubble
-    // would double the message.
-    expect(sends.length).toBe(1);
+    // Now every poll is preceded by a message bubble so the user always sees
+    // the question as words before the tappable options. Text == title still
+    // sends the lead-in bubble before the poll (fixes bare-poll) plus typing.
+    // So total is typing + bubble + poll = 3.
+    const textBubbles = sends.filter((s) => typeof s === "string") as string[];
+    expect(textBubbles).toContain(question);
+    expect(sends.length).toBe(3);
   });
 
   it("sends only the poll when no text is attached", async () => {
