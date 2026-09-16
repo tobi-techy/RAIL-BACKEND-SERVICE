@@ -17,22 +17,8 @@ import (
 	"go.uber.org/zap"
 )
 
-type stubGuestCompleter struct {
-	result *platform.GuestResult
-	err    error
-	calls  atomic.Int32
-}
-
-func (s *stubGuestCompleter) CompleteGuest(_ context.Context, _ string, _ []platform.GuestMessage, _ []platform.GuestToolDef) (*platform.GuestResult, error) {
-	s.calls.Add(1)
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.result, nil
-}
-
 // servePythonChat fakes the Python agent's /api/v1/chat. When respond is nil it
-// returns 500 so the adapter's fallback path is exercised.
+// returns 500 so the adapter's error path is exercised.
 func servePythonChat(t *testing.T, respond *ai.PythonChatResponse) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var hit atomic.Int32
@@ -62,9 +48,8 @@ func TestPythonGuestCompleter_PollMapping(t *testing.T) {
 		Poll:     &ai.PythonChatPoll{Title: "Pick your vibe", Options: []string{"Avoider", "Optimizer", "Worrier"}},
 	})
 	adapter := &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
-		fallback: &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}},
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
 
 	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
@@ -97,9 +82,8 @@ func TestPythonGuestCompleter_NameMapsToNoteDetail(t *testing.T) {
 		Name:     "Tola",
 	})
 	adapter := &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
-		fallback: &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}},
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
 
 	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
@@ -129,9 +113,8 @@ func TestPythonGuestCompleter_PollAddsTextFallback(t *testing.T) {
 		Poll: &ai.PythonChatPoll{Title: "When money gets tight, what's behind it?", Options: []string{"Timing", "Spending", "Debt", "Not sure"}},
 	})
 	adapter := &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
-		fallback: &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}},
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
 
 	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
@@ -230,43 +213,32 @@ func TestPythonGuestCompleter_CardsDropped(t *testing.T) {
 	}
 }
 
-func TestPythonGuestCompleter_PythonErrorFallsBack(t *testing.T) {
+func TestPythonGuestCompleter_PythonErrorSurfacesNoFallback(t *testing.T) {
 	srv, hit := servePythonChat(t, nil) // 500
-	fallback := &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback answer"}}
 	adapter := &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t", Timeout: 2 * time.Second}, zap.NewNop()),
-		fallback: fallback,
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t", Timeout: 2 * time.Second}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
 
-	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
+	_, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
 		Platform: entities.PlatformIMessage, SenderID: "user-7A", ThreadID: "thread-9",
 	}), "sys", []platform.GuestMessage{{Role: "user", Content: "hi"}}, nil)
-	if err != nil {
-		t.Fatalf("CompleteGuest failed: %v", err)
+	if err == nil {
+		t.Fatal("expected an error when the python agent fails, not a Go fallback answer")
 	}
-	if hit.Load() != 1 || fallback.calls.Load() != 1 {
-		t.Fatalf("expected python hit and one fallback, got hit=%d fallback=%d", hit.Load(), fallback.calls.Load())
-	}
-	if res.Text != "fallback answer" {
-		t.Fatalf("unexpected text %q", res.Text)
+	if hit.Load() != 1 {
+		t.Fatalf("expected one python hit, got %d", hit.Load())
 	}
 }
 
-func TestPythonGuestCompleter_NoSenderUsesFallback(t *testing.T) {
-	fallback := &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback answer"}}
+func TestPythonGuestCompleter_NoSenderErrors(t *testing.T) {
 	adapter := &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: "http://127.0.0.1:1", JWTSecret: "t"}, zap.NewNop()),
-		fallback: fallback,
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: "http://127.0.0.1:1", JWTSecret: "t"}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
-	res, err := adapter.CompleteGuest(context.Background(), "sys",
-		[]platform.GuestMessage{{Role: "user", Content: "hi"}}, nil)
-	if err != nil {
-		t.Fatalf("CompleteGuest failed: %v", err)
-	}
-	if res.Text != "fallback answer" {
-		t.Fatalf("unexpected text %q", res.Text)
+	if _, err := adapter.CompleteGuest(context.Background(), "sys",
+		[]platform.GuestMessage{{Role: "user", Content: "hi"}}, nil); err == nil {
+		t.Fatal("expected an error when no guest sender is present, not a Go fallback answer")
 	}
 }
 
@@ -306,21 +278,15 @@ func TestPythonGuestCompleter_TokenClaimsArePerSenderUnique(t *testing.T) {
 	}
 }
 
-func TestPythonGuestCompleter_EmptyTextUsesFallback(t *testing.T) {
-	fallback := &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback answer"}}
+func TestPythonGuestCompleter_EmptyTextErrors(t *testing.T) {
 	adapter := &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: "http://127.0.0.1:1", JWTSecret: "t"}, zap.NewNop()),
-		fallback: fallback,
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: "http://127.0.0.1:1", JWTSecret: "t"}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
-	res, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
+	if _, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
 		Platform: entities.PlatformIMessage, SenderID: "user-A", ThreadID: "t1",
-	}), "sys", []platform.GuestMessage{{Role: "assistant", Content: "welcome"}}, nil)
-	if err != nil {
-		t.Fatalf("CompleteGuest failed: %v", err)
-	}
-	if res.Text != "fallback answer" {
-		t.Fatalf("unexpected text %q", res.Text)
+	}), "sys", []platform.GuestMessage{{Role: "assistant", Content: "welcome"}}, nil); err == nil {
+		t.Fatal("expected an error when there is no user text, not a Go fallback answer")
 	}
 }
 
@@ -353,11 +319,10 @@ func servePythonChatCapturing(t *testing.T, respond *ai.PythonChatResponse) (*ht
 	return srv, &bodies
 }
 
-func newGuestCompleterAdapter(srv *httptest.Server, fallback *stubGuestCompleter) *pythonGuestCompleterAdapter {
+func newGuestCompleterAdapter(srv *httptest.Server) *pythonGuestCompleterAdapter {
 	return &pythonGuestCompleterAdapter{
-		python:   ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
-		fallback: fallback,
-		logger:   zap.NewNop(),
+		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
+		logger: zap.NewNop(),
 	}
 }
 
@@ -369,7 +334,7 @@ func TestPythonGuestCompleter_PollVoteForwardsVoteFlag(t *testing.T) {
 	srv, bodies := servePythonChatCapturing(t, &ai.PythonChatResponse{
 		Response: "Savings it is. Where would you like that money to live?",
 	})
-	adapter := newGuestCompleterAdapter(srv, &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}})
+	adapter := newGuestCompleterAdapter(srv)
 
 	const pollTitle = "What's been bothering you about money lately?"
 	ctx := platform.ContextWithGuestVote(guestTurn(context.Background(), platform.GuestSender{
@@ -401,7 +366,7 @@ func TestPythonGuestCompleter_PollVoteForwardsVoteFlag(t *testing.T) {
 
 func TestPythonGuestCompleter_PlainTextIsNotAVote(t *testing.T) {
 	srv, bodies := servePythonChatCapturing(t, &ai.PythonChatResponse{Response: "Tell me more."})
-	adapter := newGuestCompleterAdapter(srv, &stubGuestCompleter{result: &platform.GuestResult{Text: "fallback"}})
+	adapter := newGuestCompleterAdapter(srv)
 
 	_, err := adapter.CompleteGuest(guestTurn(context.Background(), platform.GuestSender{
 		Platform: entities.PlatformIMessage, SenderID: "user-7A", ThreadID: "thread-9",

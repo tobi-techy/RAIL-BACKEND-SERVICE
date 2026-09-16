@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -17,6 +18,8 @@ type fakeRepo struct {
 	byID       map[uuid.UUID]*entities.PlatformIdentity
 	byHash     map[string]uuid.UUID
 	byPlatUser map[string]uuid.UUID // platform|platform_user_id -> id
+	lookupErr  error                // when set, GetByPlatformUser returns it
+	touchErr   error                // when set, TouchLastUsed returns it
 }
 
 func newFakeRepo() *fakeRepo {
@@ -30,16 +33,19 @@ func newFakeRepo() *fakeRepo {
 func key(p entities.Platform, u string) string { return string(p) + "|" + u }
 
 func (f *fakeRepo) GetByPlatformUser(_ context.Context, p entities.Platform, u string) (*entities.PlatformIdentity, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
 	if id, ok := f.byPlatUser[key(p, u)]; ok {
 		return f.byID[id], nil
 	}
-	return nil, errNotFound
+	return nil, sql.ErrNoRows
 }
 func (f *fakeRepo) GetByID(_ context.Context, id uuid.UUID) (*entities.PlatformIdentity, error) {
 	if pi, ok := f.byID[id]; ok {
 		return pi, nil
 	}
-	return nil, errNotFound
+	return nil, sql.ErrNoRows
 }
 func (f *fakeRepo) GetByUserAndPlatform(_ context.Context, userID uuid.UUID, p entities.Platform) (*entities.PlatformIdentity, error) {
 	for _, pi := range f.byID {
@@ -47,13 +53,13 @@ func (f *fakeRepo) GetByUserAndPlatform(_ context.Context, userID uuid.UUID, p e
 			return pi, nil
 		}
 	}
-	return nil, errNotFound
+	return nil, sql.ErrNoRows
 }
 func (f *fakeRepo) GetByHandshakeTokenHash(_ context.Context, hash string) (*entities.PlatformIdentity, error) {
 	if id, ok := f.byHash[hash]; ok {
 		return f.byID[id], nil
 	}
-	return nil, errNotFound
+	return nil, sql.ErrNoRows
 }
 func (f *fakeRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]*entities.PlatformIdentity, error) {
 	var out []*entities.PlatformIdentity
@@ -100,17 +106,11 @@ func (f *fakeRepo) CompleteHandshake(_ context.Context, id uuid.UUID, platformUs
 	f.byPlatUser[key(pi.Platform, platformUserID)] = id
 	return nil
 }
-func (f *fakeRepo) TouchLastUsed(_ context.Context, _ uuid.UUID) error { return nil }
+func (f *fakeRepo) TouchLastUsed(_ context.Context, _ uuid.UUID) error { return f.touchErr }
 func (f *fakeRepo) Delete(_ context.Context, id uuid.UUID) error {
 	delete(f.byID, id)
 	return nil
 }
-
-var errNotFound = &notFoundErr{}
-
-type notFoundErr struct{}
-
-func (*notFoundErr) Error() string { return "not found" }
 
 // fakeOrchestrator records execution calls.
 type fakeOrchestrator struct {

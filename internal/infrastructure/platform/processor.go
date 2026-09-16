@@ -346,41 +346,13 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		statementAttachment = &attachment
 	}
 
-	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
-	if err == nil {
+	resolved, err := p.resolveLinkedUser(ctx, msg)
+	if err != nil {
+		return err
+	}
+	if resolved != nil {
 		if statementAttachment != nil {
-			// The user's actual statement always lands in the durable pipeline —
-			// their real transactions must persist for long-term insights. The
-			// sync-scan fast path below is an optional accelerant on top of it.
-			if p.statementHandler == nil {
-				return p.sendErrorMessage(ctx, msg, "I can't scan statements from chat just yet. Please upload it in the RAIL app.")
-			}
-			reply, handlerErr := p.statementHandler.EnqueueLinked(ctx, resolved.UserID, *statementAttachment)
-			if handlerErr != nil {
-				p.logger.Warn("linked statement enqueue failed", zap.Error(handlerErr))
-				_ = p.sendErrorMessage(ctx, msg, "I couldn't start that statement scan just now. Please try sending it again.")
-				return Retryable(handlerErr)
-			}
-			// Optional fast path: hand a synchronous scan to the orchestrator so
-			// Python-driven onboarding grounds its plan immediately. Only attempted
-			// when the orchestrator opts in via StatementScanGate; when it declines,
-			// the durable ack we already hold stands on its own.
-			if docOrch, _ := p.orchestrator.(DocumentOrchestrator); docOrch != nil {
-				if gate, ok := p.orchestrator.(StatementScanGate); !ok || gate.WantsStatementScan(ctx, resolved.UserID) {
-					scan, scanErr := p.statementHandler.ScanLinked(ctx, resolved.UserID, *statementAttachment)
-					if scanErr != nil {
-						p.logger.Warn("linked statement scan failed", zap.Error(scanErr))
-					} else if scan != nil {
-						groundedReply, handled, orchErr := docOrch.HandlePlatformDocument(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform, *scan)
-						if orchErr != nil {
-							p.logger.Warn("document orchestrator error", zap.Error(orchErr))
-						} else if handled {
-							return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, groundedReply, false)
-						}
-					}
-				}
-			}
-			return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
+			return p.handleLinkedStatement(ctx, msg, resolved, statementAttachment)
 		}
 		if isContactPayload(msg) && strings.TrimSpace(msg.Text) == "" {
 			p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID, "You're already linked — I don't need the card. What do you want to look at?")
@@ -445,6 +417,58 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		linkHint = "Link WhatsApp"
 	}
 	return p.sendErrorMessage(ctx, msg, "Please link your account first. Open the RAIL app and tap '"+linkHint+"'.")
+}
+
+// resolveLinkedUser returns the linked identity for the sender, or (nil, nil)
+// for an unlinked/unknown sender that should proceed to handshake or chat
+// onboarding. A transient lookup failure surfaces as a retryable error so the
+// delivery is requeued and retried against the same brain — it must never
+// demote a linked user onto the guest/onboarding path, which may answer from a
+// different brain.
+func (p *Processor) resolveLinkedUser(ctx context.Context, msg InboundMessage) (*ResolvedUser, error) {
+	resolved, err := p.resolver.Resolve(ctx, msg.Platform, msg.UserID)
+	if err != nil && IsRetryable(err) {
+		p.logger.Warn("platform identity resolution failed transiently; requeueing instead of treating as unlinked",
+			zap.Error(err), zap.String("platform", msg.Platform.String()), zap.String("user_id", msg.UserID))
+		return nil, err
+	}
+	if err != nil {
+		return nil, nil
+	}
+	return resolved, nil
+}
+
+// handleLinkedStatement enqueues a linked user's statement scan into the durable
+// pipeline (their real transactions must persist for long-term insights) and
+// optionally hands a synchronous scan to the orchestrator as a fast path. The
+// fast path is only attempted when the orchestrator opts in via StatementScanGate;
+// when it declines, the durable ack already held stands on its own.
+func (p *Processor) handleLinkedStatement(ctx context.Context, msg InboundMessage, resolved *ResolvedUser, attachment *StatementAttachment) error {
+	if p.statementHandler == nil {
+		return p.sendErrorMessage(ctx, msg, "I can't scan statements from chat just yet. Please upload it in the RAIL app.")
+	}
+	reply, handlerErr := p.statementHandler.EnqueueLinked(ctx, resolved.UserID, *attachment)
+	if handlerErr != nil {
+		p.logger.Warn("linked statement enqueue failed", zap.Error(handlerErr))
+		_ = p.sendErrorMessage(ctx, msg, "I couldn't start that statement scan just now. Please try sending it again.")
+		return Retryable(handlerErr)
+	}
+	if docOrch, _ := p.orchestrator.(DocumentOrchestrator); docOrch != nil {
+		if gate, ok := p.orchestrator.(StatementScanGate); !ok || gate.WantsStatementScan(ctx, resolved.UserID) {
+			scan, scanErr := p.statementHandler.ScanLinked(ctx, resolved.UserID, *attachment)
+			if scanErr != nil {
+				p.logger.Warn("linked statement scan failed", zap.Error(scanErr))
+			} else if scan != nil {
+				groundedReply, handled, orchErr := docOrch.HandlePlatformDocument(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), msg.ThreadID, msg.Platform, *scan)
+				if orchErr != nil {
+					p.logger.Warn("document orchestrator error", zap.Error(orchErr))
+				} else if handled {
+					return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, groundedReply, false)
+				}
+			}
+		}
+	}
+	return p.deliverReply(ctx, resolved.Identity, msg.ThreadID, msg.MsgID, reply, false)
 }
 
 // handleOnboarding drives one step of chat-first account creation and delivers
@@ -536,6 +560,13 @@ func (p *Processor) ProcessAction(ctx context.Context, raw []byte) error {
 	// then resolved by (user + thread), and its ownership re-checked downstream.
 	resolved, err := p.resolver.Resolve(ctx, entities.Platform(pb.Platform), pb.UserID)
 	if err != nil {
+		if IsRetryable(err) {
+			// A transient lookup failure must not silently drop a confirm/cancel
+			// vote — requeue so the retry resolves on the linked identity.
+			p.logger.Warn("action postback identity resolution failed transiently; requeueing",
+				zap.Error(err), zap.String("platform", pb.Platform), zap.String("user_id", pb.UserID))
+			return err
+		}
 		log.Printf("vote from unlinked/unknown sender %s: %v", pb.UserID, err)
 		return nil
 	}

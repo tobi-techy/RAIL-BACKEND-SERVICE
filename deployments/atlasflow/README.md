@@ -168,7 +168,6 @@ PLATFORM_ENABLED=true
 PLATFORM_BRIDGE_HMAC_SECRET=your-hmac-secret
 PLATFORM_BRIDGE_BASE_URL=https://spectrum-bridge-tobi-omotade-2cd167ac.atlasflow.dev
 PLATFORM_BRIDGE_MESSAGING_ADDRESS=+15555550100
-PLATFORM_APP_DEEP_LINK_BASE_URL=rail://
 PLATFORM_ONBOARDING_ENABLED=true
 ENRICHMENT_SERVICE_URL=https://rail-enrichment-tobi-omotade-2cd167ac.atlasflow.dev
 DOCUMENT_OCR_SERVICE_URL=https://rail-ocr-tobi-omotade-2cd167ac.atlasflow.dev

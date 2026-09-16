@@ -2,6 +2,8 @@ package platform
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,14 +40,23 @@ type ResolvedUser struct {
 
 func (r *UserResolver) Resolve(ctx context.Context, platform entities.Platform, platformUserID string) (*ResolvedUser, error) {
 	identity, err := r.platformRepo.GetByPlatformUser(ctx, platform, platformUserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("unlinked platform user")
+	}
 	if err != nil {
-		return nil, fmt.Errorf("unlinked platform user: %w", err)
+		// A real lookup failure (DB/Redis blip) is NOT "unlinked". Treating it
+		// as unlinked would demote a linked user into the guest/onboarding path
+		// mid-conversation and answer from a different brain. Mark it transient
+		// so the caller requeues instead of guessing.
+		return nil, Retryable(fmt.Errorf("lookup platform identity: %w", err))
 	}
 	if identity.LinkedAt == nil {
 		return nil, fmt.Errorf("platform user not yet linked (handshake pending)")
 	}
+	// TouchLastUsed is bookkeeping only. A write blip here must never un-link a
+	// verified user mid-conversation, so the identity still resolves.
 	if err := r.platformRepo.TouchLastUsed(ctx, identity.ID); err != nil {
-		return nil, fmt.Errorf("touch last used: %w", err)
+		return &ResolvedUser{UserID: identity.UserID, Identity: identity}, nil
 	}
 	return &ResolvedUser{UserID: identity.UserID, Identity: identity}, nil
 }

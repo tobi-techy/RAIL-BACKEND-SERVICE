@@ -1349,26 +1349,19 @@ func (c *Container) wireChatOnboarding() {
 	}
 	// Agent-led guest conversation: the LLM owns the words, the deterministic
 	// executor owns identity verification. When the platform brain is the Python
-	// MIRIAM agent, the guest conversation rides it too (with the Cencori
-	// provider as a fallback so a Python outage degrades instead of breaking);
-	// otherwise the shared provider drives guests as before. Without any provider
-	// the onboarder falls back to its scripted flow.
-	if c.AIProvider != nil {
-		if c.PythonAgentClient != nil {
-			onboarder.SetGuestCompleter(&pythonGuestCompleterAdapter{
-				python:   c.PythonAgentClient,
-				fallback: &guestCompleterAdapter{provider: c.AIProvider},
-				logger:   c.ZapLog,
-			})
-			c.ZapLog.Info("guest onboarding agent enabled",
-				zap.String("brain", "python-miriam"),
-				zap.String("fallback", c.AIProvider.Name()))
-		} else {
-			onboarder.SetGuestCompleter(&guestCompleterAdapter{provider: c.AIProvider})
-			c.ZapLog.Info("guest onboarding agent enabled", zap.String("provider", c.AIProvider.Name()))
-		}
+	// MIRIAM agent, the guest conversation rides it too — every texted
+	// conversation, linked or guest, is answered by MIRIAM (Python) and never
+	// falls back to a different brain. Without the Python agent the onboarder
+	// falls back to its scripted flow (no Go brain on the guest path).
+	if c.PythonAgentClient != nil {
+		onboarder.SetGuestCompleter(&pythonGuestCompleterAdapter{
+			python: c.PythonAgentClient,
+			logger: c.ZapLog,
+		})
+		c.ZapLog.Info("guest onboarding agent enabled",
+			zap.String("brain", "python-miriam"))
 	} else {
-		c.ZapLog.Warn("guest onboarding agent unavailable; using transparent retry replies")
+		c.ZapLog.Warn("guest onboarding agent unavailable — Python MIRIAM agent not wired; using scripted retry replies")
 	}
 	// Carry the guest read into the authenticated relationship: money type to
 	// the tone profile, transcript to the first platform conversation.

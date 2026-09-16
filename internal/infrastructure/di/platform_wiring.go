@@ -30,11 +30,11 @@ func (c *Container) initializePlatformMessaging() {
 	pythonReady := c.Config.PythonAgent.Enabled && c.Config.PythonAgent.BaseURL != "" &&
 		c.RedisClient != nil && c.Config.JWT.Secret != ""
 
-	// MIRIAM (Python) is the default brain. If it is enabled but could not be
-	// wired, log loudly so the fall back to the in-process orchestrator is
+	// MIRIAM (Python) is the only brain for texted chat. If it is enabled but
+	// could not be wired, log loudly so the fail-closed apology users see is
 	// deliberate and visible, never silent.
 	if c.Config.PythonAgent.Enabled && !pythonReady {
-		c.ZapLog.Warn("python agent enabled but not wired — messaging falls back to in-process orchestrator",
+		c.ZapLog.Warn("python agent enabled but not wired — texted chat fails closed to apology (no in-process brain on the messaging channel)",
 			zap.Bool("base_url_set", c.Config.PythonAgent.BaseURL != ""),
 			zap.Bool("redis_ok", c.RedisClient != nil),
 			zap.Bool("jwt_secret_set", c.Config.JWT.Secret != ""),
@@ -59,7 +59,6 @@ func (c *Container) initializePlatformMessaging() {
 			platformOrchestrator := &orchestratorAdapter{
 				orchestrator: c.AIOrchestrator,
 				convRepo:     c.ConversationRepo,
-				deepLinkBase: c.Config.Platform.AppDeepLinkBaseURL,
 				logger:       c.ZapLog,
 			}
 

@@ -873,7 +873,6 @@ type PlatformConfig struct {
 	BridgeBaseURL          string `mapstructure:"bridge_base_url"`             // URL of the Spectrum Bridge service
 	BridgeHMACSecret       string `mapstructure:"bridge_hmac_secret"`          // HMAC signing secret for Bridge↔Go
 	BridgeMessagingAddress string `mapstructure:"bridge_messaging_address"`    // Platform address users text the link code to (e.g. bridge iMessage handle)
-	AppDeepLinkBaseURL     string `mapstructure:"app_deep_link_base_url"`      // Base for app authorization deep links (default "rail://")
 	AppDownloadURL         string `mapstructure:"app_download_url"`            // App download link shared during chat-first onboarding (e.g. TestFlight)
 	OnboardingEnabled      bool   `mapstructure:"onboarding_enabled"`          // Enable chat-first account creation for unlinked senders
 	PushNotificationRule   string `mapstructure:"push_notification_rule"`      // "always", "action_only", "never"
@@ -1381,7 +1380,6 @@ func setDefaults() {
 	viper.SetDefault("platform.enabled", false)
 	viper.SetDefault("platform.handshake_token_ttl_seconds", 900)
 	viper.SetDefault("platform.bridge_base_url", "http://localhost:4000")
-	viper.SetDefault("platform.app_deep_link_base_url", "rail://")
 	viper.SetDefault("platform.push_notification_rule", "action_only")
 	viper.SetDefault("platform.onboarding_enabled", false)
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
@@ -1432,9 +1430,6 @@ func overrideFromEnv() error {
 	}
 	if v := os.Getenv("PLATFORM_BRIDGE_MESSAGING_ADDRESS"); v != "" {
 		viper.Set("platform.bridge_messaging_address", v)
-	}
-	if v := os.Getenv("PLATFORM_APP_DEEP_LINK_BASE_URL"); v != "" {
-		viper.Set("platform.app_deep_link_base_url", v)
 	}
 	if v := os.Getenv("PLATFORM_APP_DOWNLOAD_URL"); v != "" {
 		viper.Set("platform.app_download_url", v)

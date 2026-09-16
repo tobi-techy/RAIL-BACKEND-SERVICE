@@ -34,15 +34,15 @@ import (
 // and email (Python's users table enforces uniqueness on both) so interview
 // state survives across turns without ever colliding with a real user.
 //
-// When Python can't answer — no sender context, an empty turn, a timeout, or a
-// Python outage — the fallback GuestCompleter (the Cencori provider) answers
-// instead, so onboarding never breaks. A single longer attempt (13s) replaces
-// the default two short ones so the Python agent loop fits inside the bridge
-// deadline; the fallback supplies the retry safety net.
+// When Python can't answer no Go brain takes over: the adapter returns the
+// failure, the guest brain retries once, and the bundling onboarder requeues
+// (or, out of redeliveries, answers with its deterministic scripted reply). A
+// texted conversation always comes from MIRIAM (Python) — never silently from a
+// different brain. A single longer attempt (13s) replaces the default two short
+// ones so the Python agent loop fits inside the bridge deadline.
 type pythonGuestCompleterAdapter struct {
-	python   *ai.PythonAgentClient
-	fallback platform.GuestCompleter
-	logger   *zap.Logger
+	python *ai.PythonAgentClient
+	logger *zap.Logger
 }
 
 // guestTurnTimeout is the whole-turn budget a Python-backed guest completion may
@@ -54,16 +54,16 @@ func (a *pythonGuestCompleterAdapter) CompletionTimeout() time.Duration { return
 
 func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemPrompt string, messages []platform.GuestMessage, tools []platform.GuestToolDef) (*platform.GuestResult, error) {
 	if a.python == nil {
-		return a.fallbackTurn(ctx, systemPrompt, messages, tools)
+		return nil, fmt.Errorf("python guest completer has no python backend wired")
 	}
 	sender, ok := platform.GuestSenderFromContext(ctx)
 	if !ok {
-		a.logger.Warn("python guest completer used outside an onboarding turn; using fallback")
-		return a.fallbackTurn(ctx, systemPrompt, messages, tools)
+		a.logger.Warn("python guest completer used outside an onboarding turn")
+		return nil, fmt.Errorf("python guest completer used outside an onboarding turn")
 	}
 	text := lastGuestUserText(messages)
 	if strings.TrimSpace(text) == "" {
-		return a.fallbackTurn(ctx, systemPrompt, messages, tools)
+		return nil, fmt.Errorf("python guest completer received no user text")
 	}
 
 	uid := guestSyntheticID(sender)
@@ -82,12 +82,12 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		resp, err = a.python.ChatAsGuest(ctx, uid, guestUsername(uid), guestEmail(uid), "guest", conversationID, text)
 	}
 	if err != nil {
-		a.logger.Warn("python guest turn failed; using fallback completer",
+		a.logger.Warn("python guest turn failed; no Go fallback — erroring so the turn is retried or requeued",
 			zap.String("sender", sender.SenderID),
 			zap.String("platform", sender.Platform.String()),
 			zap.Bool("is_poll_vote", vote.IsPollVote),
 			zap.Error(err))
-		return a.fallbackTurn(ctx, systemPrompt, messages, tools)
+		return nil, err
 	}
 
 	res := &platform.GuestResult{Text: strings.TrimSpace(resp.Response)}
@@ -178,13 +178,6 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		})
 	}
 	return res, nil
-}
-
-func (a *pythonGuestCompleterAdapter) fallbackTurn(ctx context.Context, systemPrompt string, messages []platform.GuestMessage, tools []platform.GuestToolDef) (*platform.GuestResult, error) {
-	if a.fallback != nil {
-		return a.fallback.CompleteGuest(ctx, systemPrompt, messages, tools)
-	}
-	return nil, fmt.Errorf("python guest completer has no backend or fallback")
 }
 
 // guestSyntheticID derives a stable UUID for an unlinked sender so Python memory
