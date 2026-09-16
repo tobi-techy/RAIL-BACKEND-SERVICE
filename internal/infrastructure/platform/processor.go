@@ -747,12 +747,17 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 
 	if reply.Poll != nil && len(reply.Poll.Options) > 0 {
 		title, leadIn := pollWords(reply)
+		p.logger.Info("sending poll", zap.String("title", title), zap.String("leadIn", leadIn), zap.Strings("options", reply.Poll.Options))
 		if title == "" {
 			p.logger.Warn("dropping poll with no title and no text",
 				zap.String("platform", string(identity.Platform)),
 				zap.String("user_id", identity.UserID.String()),
 			)
 			return nil
+		}
+		// Final fallback if title somehow still empty after pollWords (e.g. whitespace/ellipsis only)
+		if len(title) < 1 || title == "…" {
+			title = "What's your pick?"
 		}
 		// Send gestures (extra bubbles/share) before the poll so the poll is
 		// always the final thing on screen, but keep the question (leadIn) bundled

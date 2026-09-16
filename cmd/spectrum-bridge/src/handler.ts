@@ -223,7 +223,13 @@ export class MessageHandler {
         // are empty, fall back to a safe question instead of caching a broken
         // poll that can never be resolved (the bug that caused Zod title
         // too_small and failed-to-resolve errors).
-        const title = rawTitle || rawText || "Your call";
+        let title = rawTitle || rawText || "Your call";
+        // Extra guard: single ellipsis or whitespace-only still fails Zod
+        if (!title || title === "…" || title.replace(/[…\s]/g, "").length === 0) {
+          title = "Your call";
+          log.warn({ rawTitle, rawText, thread_id: msg.thread_id }, "poll title was empty/ellipsis, fell back to Your call");
+        }
+        log.info({ title, rawTitle, rawText, options, thread_id: msg.thread_id }, "sending poll");
         // Always send the question as a message bubble BEFORE the poll so the
         // user sees words even when the poll title duplicates the text. The
         // backend's pollWords now always sets leadIn when text present, but
