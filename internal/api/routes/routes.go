@@ -1661,6 +1661,17 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 						aiGroup.GET("/statement/:id/transactions", middleware.AuthRateLimit(20), stmtHandler.GetTransactions)
 					}
 
+					// Document intelligence (contract v1): unified upload/status/result.
+					// Wired only when the repo, queue, and R2 file store all exist;
+					// Upload degrades to 503 when storage is unconfigured.
+					if container.DocumentRepo != nil && container.JobQueueInstance != nil && container.DocumentFileStore != nil {
+						docHandler := handlers.NewDocumentHandler(container.DocumentRepo, container.JobQueueInstance, container.DocumentFileStore, container.ZapLog)
+						protected.POST("/documents/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), docHandler.Upload)
+						protected.GET("/documents/:id", middleware.AuthRateLimit(30), docHandler.GetStatus)
+						protected.GET("/documents/:id/result", middleware.AuthRateLimit(30), docHandler.GetResult)
+						protected.DELETE("/documents/:id", middleware.AuthRateLimit(10), docHandler.Delete)
+					}
+
 					// Voice session ticket issuance (protected by standard auth).
 					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
 					if voiceHandler != nil {

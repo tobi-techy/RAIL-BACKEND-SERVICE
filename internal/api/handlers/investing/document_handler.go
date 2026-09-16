@@ -1,14 +1,19 @@
 package investing
 
 import (
+	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/document"
@@ -78,6 +83,21 @@ func docExtension(ct string) string {
 	default:
 		return ""
 	}
+}
+
+// isUniqueViolation reports a Postgres unique-violation (SQLSTATE 23505),
+// the concurrent-dedup race signal on uq_documents_user_hash. It matches the
+// pg driver error code and falls back to a message substring so wrapped
+// errors are still recognized.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && string(pqErr.Code) == "23505" {
+		return true
+	}
+	return strings.Contains(err.Error(), "23505")
 }
 
 // Upload handles POST /api/v1/documents/upload.
@@ -156,6 +176,19 @@ func (h *DocumentHandler) Upload(c *gin.Context) {
 	}
 	if err := h.repo.Create(c.Request.Context(), doc); err != nil {
 		_ = h.fileStore.Delete(c.Request.Context(), fileKey)
+		// Concurrent duplicate upload lost the race on
+		// uq_documents_user_hash: return the winner instead of a 500.
+		// GetByHash is user-scoped, so this cannot leak another user's doc.
+		if isUniqueViolation(err) {
+			if existing, gerr := h.repo.GetByHash(c.Request.Context(), userID, hash); gerr == nil && existing != nil {
+				c.JSON(http.StatusOK, gin.H{"data": gin.H{
+					"document_id": existing.ID.String(),
+					"status":      existing.Status,
+					"duplicate":   true,
+				}})
+				return
+			}
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create document record"})
 		return
 	}
@@ -216,6 +249,13 @@ func (h *DocumentHandler) GetStatus(c *gin.Context) {
 }
 
 // GetResult handles GET /api/v1/documents/:id/result.
+//
+// Serves the versioned document-intelligence contract (contract v1):
+// {schema_version, document_id, document_type, status, confidence, data,
+// validation, evidence}. Non-completed documents return identity + status
+// only — no invented financial data. Ownership is enforced via GetByID's
+// (id, user_id) scoping; cross-user access returns 404, never 403, so one
+// user cannot probe another user's document existence.
 func (h *DocumentHandler) GetResult(c *gin.Context) {
 	userID, err := common.GetUserIDFromContext(c)
 	if err != nil {
@@ -234,26 +274,132 @@ func (h *DocumentHandler) GetResult(c *gin.Context) {
 	}
 
 	if doc.Status != entities.DocumentStatusCompleted {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{
-			"document_id": doc.ID.String(),
-			"status":      doc.Status,
-		}})
+		res := document.NonCompleted(doc.ID.String(), doc.Type, doc.Status)
+		c.JSON(http.StatusOK, gin.H{"data": res})
 		return
 	}
 
-	fields, _ := h.repo.GetExtractedFields(c.Request.Context(), id)
-	validation, _ := h.repo.GetValidation(c.Request.Context(), id)
+	res := h.buildResult(c.Request.Context(), doc)
+	if err := res.Validate(); err != nil {
+		h.logger.Error("document contract invalid", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "result unavailable"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": res})
+}
 
-	resp := gin.H{
-		"document_id": doc.ID.String(),
-		"status":      doc.Status,
-		"type":        doc.Type,
+// buildResult assembles contract v1 from persisted pipeline output. Missing
+// pieces stay explicit (nil fields, empty evidence) — never synthesized.
+func (h *DocumentHandler) buildResult(ctx context.Context, doc *entities.Document) document.APIResult {
+	res := document.APIResult{
+		SchemaVersion: document.SchemaVersion,
+		DocumentID:    doc.ID.String(),
+		DocumentType:  doc.Type,
+		Status:        doc.Status,
+		Evidence:      []document.APIEvidence{},
 	}
+	res.Validation = document.APIValidation{
+		Status:     doc.Status,
+		Difference: "0.00",
+		Checks:     []document.APICheck{},
+	}
+
+	fields, _ := h.repo.GetExtractedFields(ctx, doc.ID)
 	if fields != nil {
-		resp["fields"] = fields
+		res.Data.Merchant = fields.Merchant
+		res.Data.Amount = fields.Amount
+		res.Data.Currency = fields.Currency
+		if fields.DocDate != nil {
+			s := fields.DocDate.Format("2006-01-02")
+			res.Data.DocumentDate = &s
+		}
+		res.Data.AccountName = fields.AccountName
+		res.Data.OpeningBalance = fields.OpeningBalance
+		res.Data.ClosingBalance = fields.ClosingBalance
+		if len(fields.JSON) > 0 {
+			res.Data.Raw = fields.JSON
+		}
 	}
+
+	validation, _ := h.repo.GetValidation(ctx, doc.ID)
 	if validation != nil {
-		resp["validation"] = validation
+		res.Confidence = validation.Confidence
+		if validation.Passed {
+			res.Validation.Status = "valid"
+			res.Validation.Reconciled = true
+		} else {
+			res.Validation.Status = "invalid"
+		}
+		var errs []string
+		if len(validation.Errors) > 0 {
+			_ = json.Unmarshal(validation.Errors, &errs)
+		}
+		res.Validation.Errors = errs
+		for _, e := range errs {
+			res.Validation.Checks = append(res.Validation.Checks, document.APICheck{
+				Name: "deterministic", Passed: false, Message: e,
+			})
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"data": resp})
+
+	ocr, _ := h.repo.GetOCRResult(ctx, doc.ID)
+	if ocr != nil {
+		var lines []document.Line
+		if len(ocr.Lines) > 0 {
+			_ = json.Unmarshal(ocr.Lines, &lines)
+		}
+		for i, l := range lines {
+			if l.Text == "" || i >= 20 {
+				break
+			}
+			pg := l.Page
+			res.Evidence = append(res.Evidence, document.APIEvidence{
+				Field:      l.Text,
+				Page:       &pg,
+				Region:     flattenBBox(l.BBox),
+				Engine:     ocr.Engine,
+				Confidence: l.Confidence,
+			})
+		}
+	}
+	return res
+}
+
+func flattenBBox(bbox [][]float64) []float64 {
+	var out []float64
+	for _, row := range bbox {
+		out = append(out, row...)
+	}
+	return out
+}
+
+// Delete handles DELETE /api/v1/documents/:id. Ownership-scoped: deleting
+// another user's document is a 404, and the original bytes are removed from
+// object storage alongside the DB row (cascades to ocr/fields/validation).
+func (h *DocumentHandler) Delete(c *gin.Context) {
+	userID, err := common.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid document id"})
+		return
+	}
+	doc, err := h.repo.GetByID(c.Request.Context(), userID, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		return
+	}
+	if h.fileStore != nil && doc.FileKey != "" {
+		if err := h.fileStore.Delete(c.Request.Context(), doc.FileKey); err != nil {
+			h.logger.Warn("document object delete failed", zap.Error(err))
+		}
+	}
+	if err := h.repo.Delete(c.Request.Context(), userID, id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete document"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"document_id": id.String(), "deleted": true}})
 }
