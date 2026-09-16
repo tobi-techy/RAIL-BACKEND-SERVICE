@@ -939,26 +939,21 @@ func TestProcessor_OnboardingPollAlwaysCarriesWords(t *testing.T) {
 		if err := p.sendOnboardingReply(context.Background(), msg, reply); err != nil {
 			t.Fatalf("sendOnboardingReply: %v", err)
 		}
-		if len(*sent) != 2 {
-			t.Fatalf("expected 2 outbound messages (lead-in + poll), got %d", len(*sent))
+		// Lead-in + poll are now bundled in ONE outbound message (Text+PollTitle)
+		// so the bridge can guarantee text -> poll ordering within a single
+		// handleOutbound await chain (two queued messages raced: markdown typing delay vs immediate poll).
+		if len(*sent) != 1 {
+			t.Fatalf("expected 1 combined poll message (lead-in bundled), got %d", len(*sent))
 		}
-		words, pollMsg := (*sent)[0], (*sent)[1]
-		if words.ContentType != ContentTypeText {
-			t.Fatalf("first message must be the lead-in text bubble, got content type %q", words.ContentType)
-		}
-		if words.Text != "No worries, we go with what you told me." {
-			t.Fatalf("lead-in text wrong: %q", words.Text)
-		}
+		pollMsg := (*sent)[0]
 		if pollMsg.ContentType != ContentTypePoll {
-			t.Fatalf("expected a poll after the lead-in, got %q", pollMsg.ContentType)
+			t.Fatalf("expected a poll, got %q", pollMsg.ContentType)
 		}
 		if pollMsg.PollTitle != "Send me a bank statement for a real deep dive?" {
 			t.Fatalf("unexpected poll title %q", pollMsg.PollTitle)
 		}
-		// The poll payload must never carry the text: an iMessage poll renders
-		// title + options only, so embedded text is what caused the bare poll.
-		if strings.TrimSpace(pollMsg.Text) != "" {
-			t.Fatalf("poll payload must not embed the lead-in text, got %q", pollMsg.Text)
+		if pollMsg.Text != "No worries, we go with what you told me." {
+			t.Fatalf("poll message must carry lead-in as Text for ordered delivery, got %q", pollMsg.Text)
 		}
 	})
 
@@ -972,18 +967,17 @@ func TestProcessor_OnboardingPollAlwaysCarriesWords(t *testing.T) {
 		if err := p.sendOnboardingReply(context.Background(), msg, reply); err != nil {
 			t.Fatalf("sendOnboardingReply: %v", err)
 		}
-		if len(*sent) != 2 {
-			t.Fatalf("expected lead-in + poll when text == title (question before poll), got %d messages", len(*sent))
+		// Even when text==title we bundle as ONE message (Text+Poll) so bridge
+		// sends question bubble before poll in order; previously this was bare poll.
+		if len(*sent) != 1 {
+			t.Fatalf("expected 1 combined poll message when text==title, got %d", len(*sent))
 		}
-		if (*sent)[0].Text != title {
-			t.Fatalf("lead-in must be the question, got %q", (*sent)[0].Text)
-		}
-		got := (*sent)[1]
+		got := (*sent)[0]
 		if got.ContentType != ContentTypePoll || got.PollTitle != title {
-			t.Fatalf("expected the consent poll as second message, got %+v", got)
+			t.Fatalf("expected the consent poll, got %+v", got)
 		}
-		if strings.TrimSpace(got.Text) != "" {
-			t.Fatalf("poll payload must not embed text, got %q", got.Text)
+		if got.Text != title {
+			t.Fatalf("poll must carry question as Text, got %q", got.Text)
 		}
 	})
 
@@ -1017,16 +1011,18 @@ func TestProcessor_LinkedPollAlwaysCarriesWords(t *testing.T) {
 	if err := p.deliverReply(context.Background(), identity, "space-1", "", reply, false); err != nil {
 		t.Fatalf("deliverReply: %v", err)
 	}
-	if len(*sent) != 2 {
-		t.Fatalf("expected lead-in + poll, got %d messages", len(*sent))
+	// Bundle leadIn+poll in ONE queued message for ordered bridge delivery
+	if len(*sent) != 1 {
+		t.Fatalf("expected 1 combined poll message, got %d", len(*sent))
 	}
-	if (*sent)[0].Text != "Send one over, or just say skip." {
-		t.Fatalf("lead-in must be the first message, got %q", (*sent)[0].Text)
+	got := (*sent)[0]
+	if got.ContentType != ContentTypePoll {
+		t.Fatalf("expected poll, got %q", got.ContentType)
 	}
-	if (*sent)[1].ContentType != ContentTypePoll {
-		t.Fatalf("poll must follow the lead-in, got %q", (*sent)[1].ContentType)
+	if got.PollTitle != "Send me a bank statement for a real deep dive?" {
+		t.Fatalf("unexpected poll title %q", got.PollTitle)
 	}
-	if strings.TrimSpace((*sent)[1].Text) != "" {
-		t.Fatalf("poll payload must not embed text, got %q", (*sent)[1].Text)
+	if got.Text != "Send one over, or just say skip." {
+		t.Fatalf("poll must carry lead-in as Text, got %q", got.Text)
 	}
 }

@@ -754,21 +754,23 @@ func (p *Processor) deliverReply(ctx context.Context, identity *entities.Platfor
 			)
 			return nil
 		}
-		if leadIn != "" {
-			var words *OutboundMessage
-			if replyTo != "" {
-				words = p.responseBuilder.ReplyResponse(identity, leadIn, threadID, replyTo)
-			} else {
-				words = p.responseBuilder.MarkdownResponse(identity, leadIn, threadID)
-			}
-			if err := p.send(ctx, words); err != nil {
-				return err
-			}
-		}
+		// Send gestures (extra bubbles/share) before the poll so the poll is
+		// always the final thing on screen, but keep the question (leadIn) bundled
+		// with the poll in a SINGLE outbound message so the bridge's
+		// handleOutbound can guarantee text -> poll ordering within one await
+		// chain (two queued messages would race: markdown's typing delay vs poll's immediate send).
 		if err := p.sendGestures(ctx, identity, threadID, replyTo, reply); err != nil {
 			return err
 		}
-		return p.send(ctx, p.responseBuilder.PollResponse(identity, title, threadID, reply.Poll.Options))
+		out := p.responseBuilder.PollResponse(identity, title, threadID, reply.Poll.Options)
+		if leadIn != "" {
+			out.Text = leadIn
+			if replyTo != "" {
+				out.ReplyTo = replyTo
+				out.ContentType = ContentTypeReply
+			}
+		}
+		return p.send(ctx, out)
 	}
 
 	// Mirror modality: a voice note in gets a voice note back when TTS is available.
@@ -955,11 +957,9 @@ func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage,
 			)
 			return nil
 		}
-		if leadIn != "" {
-			if err := p.sendToSender(ctx, msg, leadIn); err != nil {
-				return err
-			}
-		}
+		// Gestures before poll so poll is last, but leadIn is bundled with the
+		// poll in ONE message so the bridge can guarantee text -> poll ordering
+		// (two queued messages race due to markdown typing delay vs immediate poll).
 		if err := p.sendOnboardingGestures(ctx, msg, reply); err != nil {
 			return err
 		}
@@ -970,6 +970,7 @@ func (p *Processor) sendOnboardingReply(ctx context.Context, msg InboundMessage,
 			ContentType: ContentTypePoll,
 			PollTitle:   title,
 			PollOptions: reply.Poll.Options,
+			Text:        leadIn,
 		})
 	}
 	if reply.Effect != "" {
