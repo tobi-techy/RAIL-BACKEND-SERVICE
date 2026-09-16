@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "eval": "bun run src/eval.ts"
+    "eval": "bun run src/eval.ts",
+    "postinstall": "node scripts/apply-patches.mjs || true"
   },
   "dependencies": {
     "spectrum-ts": "8.2.1",
