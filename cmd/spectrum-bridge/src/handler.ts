@@ -240,6 +240,14 @@ export class MessageHandler {
         } else if (rawTitle && rawTitle !== title) {
           await this.sendWithPacing(space, rawTitle, "text");
         }
+        // Log the actual poll object that will be built and sent, and catch
+        // any Zod validation before it hits the iMessage provider's cache.
+        try {
+          const built = await poll(title, options).build();
+          log.info({ builtTitle: built.title, builtOptions: built.options.map(o=>o.title), thread_id: msg.thread_id }, "poll built successfully");
+        } catch (e) {
+          log.error({ err: e, title, options, thread_id: msg.thread_id }, "poll build failed - would have caused failed to cache");
+        }
         await space.send(poll(title, options));
         return;
       }
