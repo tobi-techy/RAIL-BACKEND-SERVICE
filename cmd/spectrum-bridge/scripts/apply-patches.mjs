@@ -1,8 +1,19 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const target = path.resolve(__dirname, "../node_modules/@spectrum-ts/imessage/dist/index.js");
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+// Find the imessage dist file relative to this script regardless of where
+// npm runs postinstall from (repo root vs cmd/spectrum-bridge).
+const candidates = [
+  path.resolve(here, "../node_modules/@spectrum-ts/imessage/dist/index.js"),
+  path.resolve(here, "../../node_modules/@spectrum-ts/imessage/dist/index.js"),
+];
+const target = candidates.find((p) => fs.existsSync(p));
+if (!target) {
+  console.warn("spectrum-ts imessage dist not found; skipping patch");
+  process.exit(0);
+}
 
 function patch(targetFile, old, neo, marker) {
   let text = fs.readFileSync(targetFile, "utf8");
@@ -35,5 +46,5 @@ try {
   );
   console.log("toCachedPoll coerce:", r2);
 } catch (e) {
-  console.warn("patch failed (may be fresh install, will retry after npm install)", e.message);
+  console.warn("patch failed", e.message);
 }
