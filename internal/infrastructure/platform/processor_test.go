@@ -119,6 +119,9 @@ type fakeOrchestrator struct {
 	lastConvID   string
 	lastMessage  string
 	reply        *PlatformReply // when set, HandlePlatformMessage returns it
+	// pendingAction drives HasPendingPlatformAction, which decides whether a bare
+	// "stop" is a staged-action cancel rather than a messaging opt-out.
+	pendingAction bool
 }
 
 func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform) (*PlatformReply, error) {
@@ -185,7 +188,7 @@ func (o *fakeOrchestrator) ConfirmPlatformAction(_ context.Context, _, _, thread
 	return &PlatformReply{Text: "done", Effect: EffectCelebration}, nil
 }
 func (o *fakeOrchestrator) HasPendingPlatformAction(_ context.Context, _, _, _ string, _ entities.Platform) bool {
-	return false
+	return o.pendingAction
 }
 
 func (o *fakeOrchestrator) CancelPlatformAction(_ context.Context, _, _, _ string, _ entities.Platform) (*PlatformReply, error) {

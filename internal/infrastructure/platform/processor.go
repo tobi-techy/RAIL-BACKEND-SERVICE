@@ -221,6 +221,8 @@ type Processor struct {
 	voice            VoiceTranscoder
 	vision           ReceiptVision
 	statementHandler StatementAttachmentHandler
+	optOut           OptOutStore
+	emailBackfill    AccountReader
 	sendFunc         func(ctx context.Context, msg *OutboundMessage) error
 	logger           *zap.Logger
 }
@@ -291,6 +293,19 @@ func (p *Processor) SetBabyStepsSeeder(s BabyStepsSeeder) {
 	p.babyStepsSeeder = s
 }
 
+// SetOptOutStore enables the global STOP/START opt-out. Nil-safe: with no store
+// the feature is off, so tests and deployments without the table still work.
+func (p *Processor) SetOptOutStore(store OptOutStore) {
+	p.optOut = store
+}
+
+// SetEmailBackfill enables the one-time ask for a real address on accounts that
+// still carry the opaque placeholder. Nil-safe: with no reader the feature is
+// off.
+func (p *Processor) SetEmailBackfill(accounts AccountReader) {
+	p.emailBackfill = accounts
+}
+
 func (p *Processor) voiceEnabled() bool {
 	return p.voice != nil && p.voice.Available()
 }
@@ -350,6 +365,23 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	if err != nil {
 		return err
 	}
+
+	// Global messaging opt-out. Checked once here — after identity resolution, so
+	// a bare "stop" that is answering a staged confirmation still cancels that
+	// action (the vote path owns that case) — and before any conversational flow,
+	// so a STOP is never swallowed by onboarding. It applies to linked and
+	// unlinked senders alike.
+	if handled, oErr := p.handleOptOut(ctx, msg, resolved); handled || oErr != nil {
+		return oErr
+	}
+
+	// A question about the account's own address is routed to the onboarder while
+	// the backfill is in flight; otherwise the ask is sent (once) alongside the
+	// person's normal reply, never instead of it.
+	if handled, bErr := p.emailBackfillTurn(ctx, msg, resolved); handled || bErr != nil {
+		return bErr
+	}
+
 	if resolved != nil {
 		if statementAttachment != nil {
 			return p.handleLinkedStatement(ctx, msg, resolved, statementAttachment)
@@ -387,7 +419,10 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			p.logger.Debug("poll vote not handled as vote, falling through to normal message",
 				zap.String("thread_id", msg.ThreadID), zap.String("text", msg.Text))
 		}
-		return p.handleNormalMessage(ctx, msg, resolved)
+		err := p.handleNormalMessage(ctx, msg, resolved)
+		// Ask once for a real address, after their reply rather than instead of it.
+		p.maybeAskForEmail(ctx, msg, resolved)
+		return err
 	}
 
 	// Unlinked sender. A handshake token always takes precedence — even if the

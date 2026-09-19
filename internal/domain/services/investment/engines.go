@@ -339,20 +339,20 @@ func (p *Policy) Evaluate(ctx context.Context, in PolicyInput) (*entities.Invest
 			return nil, fmt.Errorf("policy: load user profile: %w", err)
 		}
 		if profile != nil {
-			tierRank := kycTierRank(profile.KYCTier, profile.KYCStatus)
-			if tierRank < 3 {
-				decision.Verdict = entities.InvestmentVerdictRequiresComplianceReview
-				decision.Reasons = append(decision.Reasons,
-					"investing needs advanced identity verification (tier 3) before money can be invested")
-				decision.Disclosures = append(decision.Disclosures,
-					"Rail must verify identity before it can place investments for you")
-				return decision, nil
-			}
+			// KYC is deliberately NOT a gate for Glider strategy investing: the
+			// provider holds and executes the assets, so an unverified user can
+			// start and fund a strategy. Country restrictions still apply, and
+			// the KYC tier is carried through in the decision reasons so the
+			// audit trail still shows the tier the action ran under.
 			if len(p.cfg.AllowedCountries) > 0 && profile.Country != "" && !containsFold(p.cfg.AllowedCountries, profile.Country) {
 				decision.Verdict = entities.InvestmentVerdictNotSupported
 				decision.Reasons = append(decision.Reasons,
 					fmt.Sprintf("investing is not available in %s", strings.ToUpper(profile.Country)))
 				return decision, nil
+			}
+			if tierRank := kycTierRank(profile.KYCTier, profile.KYCStatus); tierRank < 3 {
+				decision.Reasons = append(decision.Reasons,
+					fmt.Sprintf("identity tier %d: strategy investing runs without identity verification on this rail", tierRank))
 			}
 		}
 	}

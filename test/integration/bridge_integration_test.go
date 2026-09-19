@@ -48,7 +48,7 @@ func TestBridgeIntegration_FullFlow(t *testing.T) {
 	})
 
 	// Create a test customer with wallet
-	customer, wallet, err := adapter.CreateCustomerWithWallet(ctx, &bridge.CreateCustomerWithWalletRequest{
+	created, err := adapter.CreateCustomerWithWallet(ctx, &bridge.CreateCustomerWithWalletRequest{
 		FirstName: "Test",
 		LastName:  "User",
 		Email:     generateTestEmail(),
@@ -56,8 +56,10 @@ func TestBridgeIntegration_FullFlow(t *testing.T) {
 		Chain:     bridge.PaymentRailSolana,
 	})
 	require.NoError(t, err)
-	require.NotNil(t, customer)
-	require.NotNil(t, wallet)
+	require.NotNil(t, created)
+	require.NotNil(t, created.Customer)
+	require.NotNil(t, created.Wallet)
+	customer, wallet := created.Customer, created.Wallet
 
 	t.Logf("Created customer: %s", customer.ID)
 	t.Logf("Created wallet: %s", wallet.ID)
@@ -72,16 +74,16 @@ func TestBridgeIntegration_FullFlow(t *testing.T) {
 	// Test KYC link generation
 	kycLink, err := adapter.GetKYCLinkForCustomer(ctx, customer.ID)
 	require.NoError(t, err)
-	require.NotEmpty(t, kycLink.URL)
+	require.NotEmpty(t, kycLink.KYCLink)
 
-	t.Logf("KYC link: %s", kycLink.URL)
+	t.Logf("KYC link: %s", kycLink.KYCLink)
 
 	// Test wallet balance
 	balance, err := adapter.GetWalletBalance(ctx, customer.ID, wallet.ID)
 	require.NoError(t, err)
 	require.NotNil(t, balance)
 
-	t.Logf("Wallet balance: %s %s", balance.Amount, balance.Currency)
+	t.Logf("Wallet balance: %d entries, USDC amount %s", len(balance.Balances), balance.GetUSDCAmount())
 
 	// Test virtual account creation
 	virtualAccount, err := adapter.CreateVirtualAccountForCustomer(ctx, customer.ID, &bridge.CreateVirtualAccountRequest{})

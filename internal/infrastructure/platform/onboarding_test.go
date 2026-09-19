@@ -80,11 +80,24 @@ func (v *fakeVerifier) VerifyCode(_ context.Context, _, _, code string) (bool, e
 	return code == v.validCode, nil
 }
 
+// emailUpdate records one attached address for assertions.
+type emailUpdate struct {
+	id    uuid.UUID
+	email string
+}
+
 // fakeUsers backs the OnboardingUserStore.
 type fakeUsers struct {
 	byPhone map[string]*entities.UserProfile
 	byEmail map[string]*entities.UserProfile
 	created []*entities.User
+	// emailUpdated records every UpdateEmail (attached address) call.
+	emailUpdated []emailUpdate
+	// emailVerified records every MarkEmailVerified call. Without this the
+	// email-first path's write would be silently skipped by the optional
+	// interface type assertion, and nothing would assert that a proven address
+	// is actually recorded.
+	emailVerified []uuid.UUID
 	// vanishAfterEmailLookups simulates an account being deleted mid-flow:
 	// once more than this many GetByEmail calls have happened, lookups return
 	// not-found. 0 disables the behaviour.
@@ -126,6 +139,42 @@ func (u *fakeUsers) CreateUserWithHash(_ context.Context, email string, phone *s
 	return usr, nil
 }
 
+func (u *fakeUsers) UpdateEmail(_ context.Context, userID uuid.UUID, email string) error {
+	u.emailUpdated = append(u.emailUpdated, emailUpdate{id: userID, email: email})
+	// Keep the lookup maps consistent with a real repository write.
+	if p, ok := u.byPhoneLookupByID(userID); ok {
+		delete(u.byPhone, p)
+	}
+	for phone, p := range u.byPhone {
+		if p.ID == userID {
+			delete(u.byPhone, phone)
+		}
+	}
+	u.byEmail[email] = &entities.UserProfile{ID: userID, Email: email, IsActive: true}
+	return nil
+}
+
+// byPhoneLookupByID finds the phone key currently mapped to a user id.
+func (u *fakeUsers) byPhoneLookupByID(id uuid.UUID) (string, bool) {
+	for phone, p := range u.byPhone {
+		if p.ID == id {
+			return phone, true
+		}
+	}
+	return "", false
+}
+
+// MarkEmailVerified records a proven address, mirroring the repository write.
+func (u *fakeUsers) MarkEmailVerified(_ context.Context, userID uuid.UUID) error {
+	u.emailVerified = append(u.emailVerified, userID)
+	for _, p := range u.byEmail {
+		if p.ID == userID {
+			p.EmailVerified = true
+		}
+	}
+	return nil
+}
+
 type fakeProvisioner struct {
 	calls     int
 	lastName  string
@@ -145,17 +194,37 @@ func (p *fakeProvisioner) ProvisionPhoneFirstUser(_ context.Context, _ uuid.UUID
 type fakeLinker struct {
 	calls     int
 	lastSend  string
+	lastUser  uuid.UUID
+	unlinks   []uuid.UUID
 	returnErr error
+	linkErr   error
+	// alreadyLinkedTo, when set, models the real service's behaviour for an
+	// account that already owns an identity on this platform: it returns that
+	// established identity instead of binding the caller's handle.
+	alreadyLinkedTo string
 }
 
-func (l *fakeLinker) LinkVerified(_ context.Context, _ uuid.UUID, _ entities.Platform, senderUserID string) (*entities.PlatformIdentity, error) {
+func (l *fakeLinker) LinkVerified(_ context.Context, userID uuid.UUID, _ entities.Platform, senderUserID string) (*entities.PlatformIdentity, error) {
 	l.calls++
 	l.lastSend = senderUserID
+	l.lastUser = userID
+	if l.linkErr != nil {
+		return nil, l.linkErr
+	}
 	if l.returnErr != nil {
 		return nil, l.returnErr
 	}
+	bound := senderUserID
+	if l.alreadyLinkedTo != "" {
+		bound = l.alreadyLinkedTo
+	}
 	now := time.Now()
-	return &entities.PlatformIdentity{ID: uuid.New(), PlatformUserID: senderUserID, LinkedAt: &now}, nil
+	return &entities.PlatformIdentity{ID: uuid.New(), PlatformUserID: bound, LinkedAt: &now}, nil
+}
+
+func (l *fakeLinker) Unlink(_ context.Context, userID uuid.UUID, _ entities.Platform) error {
+	l.unlinks = append(l.unlinks, userID)
+	return nil
 }
 
 func newTestOnboarder() (*ChatOnboarder, *fakeStore, *fakeVerifier, *fakeUsers, *fakeProvisioner, *fakeLinker) {
@@ -200,9 +269,11 @@ func stepContact(t *testing.T, ob *ChatOnboarder, sender string, contact SharedC
 	return reply.Text
 }
 
-// TestOnboarding_ContactCardShortcut pins the fast path: a card with a phone
-// goes straight to the code, no re-asking what the card already answered.
-func TestOnboarding_ContactCardShortcut(t *testing.T) {
+// TestOnboarding_ContactCardCannotDriveIdentity pins the ownership rule for
+// shared cards. A card carries a THIRD PARTY's details, so it may contribute a
+// display name and a candidate address (which still has to be proven by OTP),
+// but it must never supply a phone number or make us text one.
+func TestOnboarding_ContactCardCannotDriveIdentity(t *testing.T) {
 	ob, _, ver, users, prov, linker := newTestOnboarder()
 	sender := "+15551111"
 
@@ -212,21 +283,30 @@ func TestOnboarding_ContactCardShortcut(t *testing.T) {
 		Emails:    []string{"ada-card@example.com"},
 		Country:   "Nigeria",
 	})
-	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
-		t.Fatalf("expected OTP to card phone immediately, got: %v", ver.sentTo)
+
+	// The card's number must never receive a code.
+	for _, to := range ver.sentTo {
+		if to == "+2348012345678" {
+			t.Fatalf("a card's phone must never receive an OTP, got: %v", ver.sentTo)
+		}
 	}
-	if !strings.Contains(strings.ToLower(otpPrompt), "code") && !strings.Contains(strings.ToLower(otpPrompt), "texted") {
-		t.Fatalf("expected OTP prompt, got: %q", otpPrompt)
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "ada-card@example.com" {
+		t.Fatalf("expected the card address to be proven by email OTP, got: %v", ver.sentTo)
+	}
+	if !strings.Contains(strings.ToLower(otpPrompt), "emailed") {
+		t.Fatalf("expected email OTP prompt, got: %q", otpPrompt)
 	}
 
 	consent := step(t, ob, sender, "123456")
 	if !strings.Contains(consent, "I agree") {
-		t.Fatalf("expected consent after OTP, got: %q", consent)
+		t.Fatalf("expected consent after the email code, got: %q", consent)
+	}
+	// Provisioned at identity proof, and with no phone: the card's number was
+	// never adopted as the account's number.
+	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "" {
+		t.Fatalf("provision not done at email verification: %+v", prov)
 	}
 	done := step(t, ob, sender, "I agree")
-	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
-		t.Fatalf("provision mismatch: %+v %+v", prov, linker)
-	}
 	if linker.calls != 1 {
 		t.Fatalf("expected auto-link, got %d", linker.calls)
 	}
@@ -261,26 +341,29 @@ func TestOnboarding_ContactExistingEmailRequiresEmailProof(t *testing.T) {
 		t.Fatalf("expected email OTP prompt, got: %q", reply)
 	}
 
-	// Email proven; the card's phone is on file, so it gets the SMS code next.
-	askPhoneCode := step(t, ob, sender, "123456")
-	if len(ver.sentTo) != 2 || ver.sentTo[1] != "+2348012345678" {
-		t.Fatalf("expected SMS OTP to the card phone after email proof, got: %v", ver.sentTo)
+	// Email proven: the address anchors the account, so onboarding moves straight
+	// to consent. The card's phone is never used and no SMS is sent to it.
+	consent := step(t, ob, sender, "123456")
+	if !strings.Contains(consent, "I agree") {
+		t.Fatalf("expected consent after email proof, got: %q", consent)
 	}
-	if !strings.Contains(strings.ToLower(askPhoneCode), "code") {
-		t.Fatalf("expected SMS code prompt after email proof, got: %q", askPhoneCode)
+	for _, to := range ver.sentTo {
+		if to == "+2348012345678" {
+			t.Fatalf("a card's phone must never receive an OTP, got: %v", ver.sentTo)
+		}
 	}
 }
 
-func TestOnboarding_ContactNameOnlyStillAsksPhone(t *testing.T) {
+func TestOnboarding_ContactNameOnlyStillAsksForIdentity(t *testing.T) {
 	ob, _, ver, _, _, _ := newTestOnboarder()
 	sender := "+15551112"
 
 	reply := stepContact(t, ob, sender, SharedContact{FirstName: "Bola"})
 	if len(ver.sentTo) != 0 {
-		t.Fatalf("must not send a code without a phone, sent to %v", ver.sentTo)
+		t.Fatalf("must not send a code without an address, sent to %v", ver.sentTo)
 	}
-	if !strings.Contains(reply, "Bola") || !strings.Contains(strings.ToLower(reply), "number") {
-		t.Fatalf("expected name ack + phone ask, got: %q", reply)
+	if !strings.Contains(reply, "Bola") || !strings.Contains(strings.ToLower(reply), "email") {
+		t.Fatalf("expected name ack + email ask, got: %q", reply)
 	}
 }
 
@@ -325,9 +408,23 @@ func TestOnboarding_HappyPath(t *testing.T) {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
 
-	done := step(t, ob, sender, "YES")
+	// Provisioning happens at phone verification; the terms poll only gates the
+	// messaging link and records consent.
 	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
-		t.Fatalf("expected provisioning with Ada/NG/+2348012345678, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
+		t.Fatalf("expected provisioning with Ada/NG/+2348012345678 at phone verification, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
+	}
+	// The account exists before consent: no second provisioning call yet.
+	if prov.calls != 1 {
+		t.Fatalf("expected exactly one provisioning call before consent, got %d", prov.calls)
+	}
+
+	askEmail := step(t, ob, sender, "YES")
+	if !strings.Contains(strings.ToLower(askEmail), "email") {
+		t.Fatalf("expected email-attach prompt, got: %q", askEmail)
+	}
+	done := step(t, ob, sender, "skip")
+	if prov.calls != 2 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
+		t.Fatalf("expected consent provisioning retry with Ada/NG/+2348012345678, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
 	}
 	if linker.calls != 1 || linker.lastSend != sender {
 		t.Fatalf("expected auto-link to sender, got calls=%d send=%q", linker.calls, linker.lastSend)
@@ -409,7 +506,9 @@ func TestOnboarding_ExistingPhoneAutoLinks(t *testing.T) {
 	if len(users.created) != 0 {
 		t.Fatalf("should not create a new user when phone already exists, created %d", len(users.created))
 	}
-	if prov.calls != 1 || linker.calls != 1 {
+	// Provisioning runs at phone verification (safe update for the existing
+	// account) and again at consent; the link happens only at consent.
+	if prov.calls != 2 || linker.calls != 1 {
 		t.Fatalf("expected provision+link for existing user, got prov=%d link=%d", prov.calls, linker.calls)
 	}
 }
@@ -443,15 +542,19 @@ func TestOnboarding_ConsentRequiredBeforeProvision(t *testing.T) {
 	step(t, ob, sender, "+2348012345678")
 	step(t, ob, sender, "123456")
 
-	// A non-affirmative reply must not provision.
+	// A non-affirmative reply must not link (consent gates the messaging link),
+	// even though provisioning already happened at phone verification.
 	step(t, ob, sender, "not yet")
-	if prov.calls != 0 || linker.calls != 0 {
-		t.Fatalf("must not provision before consent, prov=%d link=%d", prov.calls, linker.calls)
+	if linker.calls != 0 {
+		t.Fatalf("must not link before consent, link=%d", linker.calls)
+	}
+	if prov.calls == 0 {
+		t.Fatal("account must be provisioned at phone verification, before consent")
 	}
 
 	step(t, ob, sender, "yes")
-	if prov.calls != 1 || linker.calls != 1 {
-		t.Fatalf("expected provision after consent, prov=%d link=%d", prov.calls, linker.calls)
+	if linker.calls != 1 {
+		t.Fatalf("expected link after consent, link=%d", linker.calls)
 	}
 }
 
@@ -661,6 +764,11 @@ func TestCompletionMessage_CountryVariants(t *testing.T) {
 	}
 }
 
+// TestOnboarding_ExistingEmailVerifiesAndLinks pins the existing-customer path:
+// someone who texts Miriam brand new, gives the address that already owns their
+// account, and is let straight in. Email alone must be enough — previously this
+// branch demanded a phone number before it would finish, so an existing customer
+// could never be onboarded on email.
 func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
 	ob, _, ver, users, prov, linker := newTestOnboarder()
 	sender := "+15550008"
@@ -674,29 +782,26 @@ func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
 		t.Fatalf("expected email OTP prompt, got: %q", askEmailOTP)
 	}
 
-	askPhone := step(t, ob, sender, "123456")
-	if !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected phone prompt after email OTP, got: %q", askPhone)
-	}
-
-	step(t, ob, sender, "+2348099999999")
+	// Email proven -> consent directly. No phone step, no SMS.
 	consent := step(t, ob, sender, "123456")
 	if !strings.Contains(consent, "I agree") {
-		t.Fatalf("expected consent prompt, got: %q", consent)
+		t.Fatalf("expected consent prompt after the email code, got: %q", consent)
 	}
-
+	if len(ver.sentTo) != 1 {
+		t.Fatalf("email alone must not trigger a second code, sent=%v", ver.sentTo)
+	}
 	if len(users.created) != 0 {
 		t.Fatalf("should not create a new user when email already exists, created %d", len(users.created))
 	}
 
 	step(t, ob, sender, "yes")
-	if prov.calls != 1 || linker.calls != 1 {
-		t.Fatalf("expected provision+link for existing user, got prov=%d link=%d", prov.calls, linker.calls)
+	if linker.calls != 1 {
+		t.Fatalf("expected the chat to be linked to the existing account, got link=%d", linker.calls)
 	}
-	// Verify it was sent to both email and phone
-	if len(ver.sentTo) < 2 {
-		t.Fatalf("expected OTPs to both email and phone, got: %v", ver.sentTo)
+	if linker.lastUser != existingID || linker.lastSend != sender {
+		t.Fatalf("linked the wrong account: %+v", linker)
 	}
+	_ = prov
 }
 
 // TestOnboarding_ExistingAccountIntentRoutesToEmail pins the fallback flow's
@@ -734,12 +839,25 @@ func TestOnboarding_SimulatedOTPDisclosesNoSend(t *testing.T) {
 		t.Fatalf("simulated email OTP must disclose no send, got: %q", reply)
 	}
 
-	// Confirm the email code, then the SMS path discloses too.
-	askPhone := step(t, ob, sender, ver.validCode)
-	if !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected phone prompt after email code, got: %q", askPhone)
+	// Confirm the email code: the address anchors the account, so onboarding
+	// moves to consent without ever texting anyone.
+	consent := step(t, ob, sender, ver.validCode)
+	if !strings.Contains(consent, "I agree") {
+		t.Fatalf("expected consent after the email code, got: %q", consent)
 	}
-	reply = step(t, ob, sender, "+2348099999998")
+}
+
+// TestOnboarding_SimulatedSMSDisclosesNoSend keeps the honest-delivery contract
+// covered on the phone path, which is now the fallback for a session that
+// supplies a number and no address.
+func TestOnboarding_SimulatedSMSDisclosesNoSend(t *testing.T) {
+	ob, _, ver, _, _, _ := newTestOnboarder()
+	sender := "+15550011"
+	ver.simulated = true
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Zara")
+	reply := step(t, ob, sender, "+2348099999998")
 	if !strings.Contains(strings.ToLower(reply), "nothing was actually texted") {
 		t.Fatalf("simulated SMS OTP must disclose no send, got: %q", reply)
 	}
@@ -855,12 +973,12 @@ func TestOnboarding_NewUserCreatedWithEmail(t *testing.T) {
 
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Lola")
-	step(t, ob, sender, "lola@example.com") // no account under it — kept for creation
-	step(t, ob, sender, "+2348099999999")
-	step(t, ob, sender, "123456")
-	step(t, ob, sender, "yes")
+	step(t, ob, sender, "lola@example.com") // no account under it — this is the signup
+	step(t, ob, sender, "123456")           // email code
+	step(t, ob, sender, "yes")              // consent
+
 	if len(users.created) != 1 || users.created[0].Email != "lola@example.com" {
-		t.Fatalf("expected new user with email, got %d", len(users.created))
+		t.Fatalf("expected a new account anchored on the address, got %+v", users.created)
 	}
 }
 
@@ -911,13 +1029,18 @@ func TestProcessor_ContactInboundStartsOnboarding(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("expected 1 outbound, got %d", len(*sent))
 	}
-	// The card answered name and phone — the reply is the code prompt, not a
-	// re-ask of anything the card already said.
-	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
-		t.Fatalf("expected OTP straight to the card phone, got: %v", ver.sentTo)
+	// The card carries no address, so nothing is sent — and the card's phone is
+	// never adopted, never texted.
+	for _, to := range ver.sentTo {
+		if to == "+2348012345678" {
+			t.Fatalf("a card's phone must never receive an OTP, got: %v", ver.sentTo)
+		}
 	}
-	if !strings.Contains(strings.ToLower((*sent)[0].Text), "code") {
-		t.Fatalf("expected code prompt, got: %q", (*sent)[0].Text)
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("expected no code from a card alone, got: %v", ver.sentTo)
+	}
+	if !strings.Contains(strings.ToLower((*sent)[0].Text), "email") {
+		t.Fatalf("expected the email ask, got: %q", (*sent)[0].Text)
 	}
 }
 
@@ -947,6 +1070,9 @@ func TestProcessor_UnlinkedYesGoesToOnboarder(t *testing.T) {
 	process("+2348012345678")
 	process("123456")
 	process("yes")
+	// The account was created with a placeholder address, so onboarding asks for
+	// an email (skippable) before it reports completion.
+	process("skip")
 	last := (*sent)[len(*sent)-1]
 	if !strings.Contains(strings.ToLower(last.Text), "you're in") {
 		t.Fatalf("expected onboarding completion from unlinked yes, got: %q", last.Text)

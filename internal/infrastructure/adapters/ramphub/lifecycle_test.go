@@ -1,3 +1,5 @@
+//go:build integration
+
 package ramphub
 
 import (
@@ -22,7 +24,16 @@ func TestSandboxLifecycle(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("RAMPHUB_API_KEY not set; skipping live sandbox lifecycle test")
 	}
-	client, err := NewClient(Config{APIKey: apiKey, BaseURL: os.Getenv("RAMPHUB_BASE_URL")}, zap.NewNop())
+	webhookSecret := os.Getenv("RAMPHUB_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		t.Skip("RAMPHUB_WEBHOOK_SECRET not set; the client requires it for webhook authentication")
+	}
+	client, err := NewClient(Config{
+		APIKey:        apiKey,
+		BaseURL:       os.Getenv("RAMPHUB_BASE_URL"),
+		WebhookSecret: webhookSecret,
+		Sandbox:       true,
+	}, zap.NewNop())
 	require.NoError(t, err, "failed to create ramphub client")
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()

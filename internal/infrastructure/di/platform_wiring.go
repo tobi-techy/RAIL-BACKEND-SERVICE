@@ -92,7 +92,27 @@ func (c *Container) initializePlatformMessaging() {
 			bridgeHMACSecret := c.Config.Platform.BridgeHMACSecret
 			bridgeHTTPClient := &http.Client{Timeout: 30 * time.Second}
 
+			// Durable STOP opt-outs. Read on every outbound send below, so a
+			// single check covers replies, onboarding sends and unsolicited
+			// proactive outreach (MiriamProactiveChatSender is this dispatcher).
+			optOutRepo := repositories.NewPlatformOptOutRepository(c.DB, c.ZapLog)
+
 			sendFunc := func(ctx context.Context, msg *platform.OutboundMessage) error {
+				// Honour a messaging opt-out. Fail open on a lookup error — the
+				// same policy the rest of the app uses for a degraded dependency —
+				// because failing closed would silence messaging for everyone
+				// during a blip. Logged loudly, since the trade-off is that a blip
+				// can let one message reach someone who opted out.
+				switch suppressed, err := optOutRepo.IsOptedOut(ctx, string(msg.Platform), msg.UserID); {
+				case err != nil:
+					c.ZapLog.Error("opt-out check failed on outbound; sending anyway",
+						zap.Error(err), zap.String("sender", msg.UserID))
+				case suppressed:
+					c.ZapLog.Info("suppressed outbound to an opted-out sender",
+						zap.String("platform", string(msg.Platform)), zap.String("sender", msg.UserID))
+					return nil
+				}
+
 				data, err := respBuilder.JSON(msg)
 				if err != nil {
 					return err
@@ -187,6 +207,12 @@ func (c *Container) initializePlatformMessaging() {
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
 			proc.SetLogger(c.ZapLog)
+			// Enables the STOP/START handling in Process. The same store backs the
+			// outbound suppression above, so the two halves cannot drift apart.
+			proc.SetOptOutStore(optOutRepo)
+			// One-time ask for a real address on accounts still carrying the
+			// opaque placeholder from a phone-first chat signup.
+			proc.SetEmailBackfill(platform.NewAccountReader(c.UserRepo))
 
 			// Receipt photos texted to Miriam: build a lightweight vision pipeline
 			// (OCR -> classify -> extract) so she can summarize and offer to log or

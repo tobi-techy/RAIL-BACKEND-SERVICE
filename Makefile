@@ -36,6 +36,16 @@ lint:
 	@echo "Running linters..."
 	golangci-lint run ./...
 
+# Type-check the integration-tagged tests. The `test` target above runs
+# `go test ./...` with no build tag, so test/integration/ is never compiled --
+# which is how it silently rotted into not building at all (stale calls to the
+# Bridge adapter and to entities/). This does NOT run those tests; they need a
+# live database and third-party sandbox credentials. It only proves they still
+# compile, so rot is caught in CI instead of on the day someone needs them.
+vet-integration:
+	@echo "Type-checking integration-tagged tests..."
+	go vet -tags=integration ./test/integration/...
+
 sim:
 	@echo "Running Miriam simulation impact grader..."
 	@echo "Requires SIM_DATABASE_URL (a disposable Postgres) and AI provider keys."

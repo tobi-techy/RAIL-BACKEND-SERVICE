@@ -154,7 +154,11 @@ func TestGuestBrain_StartSignupWithoutPhoneAsksNaturally(t *testing.T) {
 	}
 }
 
-func TestGuestBrain_StartSignupWithCardPhoneSkipsToOTP(t *testing.T) {
+// TestGuestBrain_StartSignupWithCardNeverTextsTheCardPhone pins that a shared
+// card cannot put a code on a third party's number. The card may contribute a
+// display name, but identity has to come from the sender, so the reply asks for
+// the address that will anchor the account.
+func TestGuestBrain_StartSignupWithCardNeverTextsTheCardPhone(t *testing.T) {
 	fc := &fakeCompleter{responses: []fakeCompletion{
 		{text: "Got it, Ada. Let's get you in."},
 		{text: "Let's do it.",
@@ -166,11 +170,19 @@ func TestGuestBrain_StartSignupWithCardPhoneSkipsToOTP(t *testing.T) {
 	stepContact(t, ob, sender, SharedContact{FirstName: "Ada", Phones: []string{"+2348012345678"}, Country: "NG"})
 	reply := step(t, ob, sender, "I want to put money in")
 
-	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
-		t.Fatalf("phone on file should go straight to OTP, got: %v", ver.sentTo)
+	for _, to := range ver.sentTo {
+		if to == "+2348012345678" {
+			t.Fatalf("a card's phone must never receive an OTP, got: %v", ver.sentTo)
+		}
 	}
-	if !strings.Contains(strings.ToLower(reply), "code") {
-		t.Fatalf("expected code prompt, got: %q", reply)
+	// The brain owns the phrasing (see the Go/Python split), so this asserts the
+	// deterministic invariant rather than the copy: no code is sent before the
+	// sender supplies an address of their own.
+	if len(ver.sentTo) != 0 {
+		t.Fatalf("no code may be sent before an address is given, got: %v", ver.sentTo)
+	}
+	if strings.TrimSpace(reply) == "" {
+		t.Fatal("expected a reply to the signup request")
 	}
 }
 
@@ -305,10 +317,15 @@ func TestGuestBrain_ConsentQuestionAnsweredNotPolled(t *testing.T) {
 	if !strings.Contains(consent, "I agree") {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
+	// Provisioning is part of phone verification now; the consent phase itself
+	// must not provision again on its own.
+	if prov.calls != 1 {
+		t.Fatalf("expected provisioning at phone verification, got %d", prov.calls)
+	}
 
 	reply := step(t, ob, sender, "wait, what am I agreeing to?")
-	if prov.calls != 0 {
-		t.Fatal("a question must not provision")
+	if prov.calls != 1 {
+		t.Fatal("a question must not provision again")
 	}
 	if !strings.Contains(reply, "Fair question") {
 		t.Fatalf("expected the model's answer, not a re-poll, got: %q", reply)
@@ -574,8 +591,8 @@ func TestGuestBrain_MoneyDialCapturedAndHandedOff(t *testing.T) {
 	step(t, ob, "+15552120", "123456")
 	step(t, ob, "+15552120", "I agree")
 
-	if prov.calls != 1 {
-		t.Fatalf("expected provisioning to run, got %d", prov.calls)
+	if prov.calls != 2 {
+		t.Fatalf("expected provisioning at phone verification and consent, got %d", prov.calls)
 	}
 }
 

@@ -856,7 +856,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				platformGroup := protected.Group("/platform")
 				{
 					platformGroup.POST("/link", middleware.AuthRateLimit(5), container.PlatformHandler.InitiateLink)
-					platformGroup.GET("/linked", container.PlatformHandler.ListLinked)
+					// Throttled like its siblings: it reads the caller's linked
+					// identities and was the only unthrottled route in the group.
+					platformGroup.GET("/linked", middleware.AuthRateLimit(20), container.PlatformHandler.ListLinked)
 					platformGroup.DELETE("/:platform", middleware.AuthRateLimit(5), container.PlatformHandler.Unlink)
 				}
 

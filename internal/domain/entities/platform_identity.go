@@ -1,10 +1,20 @@
 package entities
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrIdentityAlreadyLinked reports that a platform identity is already bound —
+// either that handle belongs to a different Rail user, or that user already has
+// a linked identity on this platform.
+//
+// It is raised from the unique constraints on platform_identities rather than
+// from a lookup, so a race between two concurrent claims is reported as a
+// conflict instead of surfacing a raw database error to the person.
+var ErrIdentityAlreadyLinked = errors.New("platform identity already linked")
 
 type Platform string
 

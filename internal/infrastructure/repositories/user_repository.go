@@ -1262,6 +1262,42 @@ func (r *UserRepository) UpdatePassword(ctx context.Context, userID uuid.UUID, n
 	return nil
 }
 
+// UpdateEmail attaches a verified email address to an existing account.
+//
+// This is the phone-first completion step: the account was created at phone
+// verification with an opaque placeholder address (users.email is NOT NULL
+// UNIQUE), and once the person proves ownership of a real address we store it.
+// The unique index is the guard: attaching an address that already belongs to
+// another row fails loudly instead of silently merging two accounts.
+func (r *UserRepository) UpdateEmail(ctx context.Context, userID uuid.UUID, email string) error {
+	query := `UPDATE users SET email = $2, updated_at = $3 WHERE id = $1`
+	if _, err := r.db.ExecContext(ctx, query, userID, email, time.Now()); err != nil {
+		r.logger.Error("Failed to update email",
+			zap.Error(err), zap.String("user_id", userID.String()), zap.String("email", email))
+		return fmt.Errorf("failed to update email: %w", err)
+	}
+	r.logger.Info("Email attached to account",
+		zap.String("user_id", userID.String()), zap.String("email", email))
+	return nil
+}
+
+// MarkEmailVerified records that the address on the account was proven by OTP.
+//
+// Email verification used to be written only by the HTTP signup paths
+// (auth_handlers, social_auth) and the phone-first attach path, so an account
+// whose address was proven through chat onboarding was left with
+// email_verified = false — every downstream reader, and the app, treated a
+// proven address as unproven.
+func (r *UserRepository) MarkEmailVerified(ctx context.Context, userID uuid.UUID) error {
+	query := `UPDATE users SET email_verified = TRUE, updated_at = $2 WHERE id = $1`
+	if _, err := r.db.ExecContext(ctx, query, userID, time.Now()); err != nil {
+		r.logger.Error("Failed to mark email verified",
+			zap.Error(err), zap.String("user_id", userID.String()))
+		return fmt.Errorf("failed to mark email verified: %w", err)
+	}
+	return nil
+}
+
 // UpdateSourceOfFunds persists employment, source of funds, and account purpose data.
 func (r *UserRepository) UpdateSourceOfFunds(ctx context.Context, userID uuid.UUID, employmentStatus, sourceOfFunds, accountPurpose *string) error {
 	query := `UPDATE users SET employment_status = $2, source_of_funds = $3, account_purpose = $4, updated_at = $5 WHERE id = $1`

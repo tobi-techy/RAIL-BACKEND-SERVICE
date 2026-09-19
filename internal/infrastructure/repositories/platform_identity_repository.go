@@ -3,12 +3,29 @@ package repositories
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
+
+// mapPlatformIdentityConflict turns the unique-constraint violations on
+// platform_identities (uq_platform_user on (platform, platform_user_id), and
+// uq_user_platform on (user_id, platform)) into a domain error.
+//
+// Without this a concurrent claim — two chats finishing a handshake for the same
+// handle, or one account being linked twice on the same platform — surfaced a
+// raw pq error, which the onboarding flow could neither recognise nor explain.
+func mapPlatformIdentityConflict(err error) error {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		return entities.ErrIdentityAlreadyLinked
+	}
+	return err
+}
 
 type PlatformIdentityRepository struct {
 	db     *sql.DB
@@ -26,10 +43,11 @@ func (r *PlatformIdentityRepository) Create(ctx context.Context, pi *entities.Pl
 			 handshake_token_hash, handshake_expires_at, linked_at, last_used_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING created_at, updated_at`
-	return r.db.QueryRowContext(ctx, query,
+	err := r.db.QueryRowContext(ctx, query,
 		pi.ID, pi.UserID, pi.Platform, pi.PlatformUserID, pi.PlatformUsername,
 		pi.HandshakeTokenHash, pi.HandshakeExpiresAt, pi.LinkedAt, pi.LastUsedAt,
 	).Scan(&pi.CreatedAt, &pi.UpdatedAt)
+	return mapPlatformIdentityConflict(err)
 }
 
 func (r *PlatformIdentityRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.PlatformIdentity, error) {
@@ -138,7 +156,7 @@ func (r *PlatformIdentityRepository) SetHandshake(ctx context.Context, id uuid.U
 func (r *PlatformIdentityRepository) CompleteHandshake(ctx context.Context, id uuid.UUID, platformUserID string) error {
 	query := `UPDATE platform_identities SET platform_user_id = $2, handshake_token_hash = NULL, handshake_expires_at = NULL, linked_at = NOW(), updated_at = NOW() WHERE id = $1`
 	_, err := r.db.ExecContext(ctx, query, id, platformUserID)
-	return err
+	return mapPlatformIdentityConflict(err)
 }
 
 func (r *PlatformIdentityRepository) TouchLastUsed(ctx context.Context, id uuid.UUID) error {

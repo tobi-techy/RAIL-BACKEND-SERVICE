@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(cd /Users/tobi/Development/MIRIAM && find miriam_agent -name \"*.py\" | sort && echo \"=== LOC ===\" && find miriam_agent -name \"*.py\" | xargs wc -l | tail -1 && echo \"=== tests LOC ===\" && find tests -name \"*.py\" | xargs wc -l | tail -1)",
+      "Shell(.venv/bin/python:*)",
+      "Shell(cd /Users/tobi/Development/MIRIAM && echo \"=== .env keys (names only) ===\" && grep -oE '^[A-Z_]+=' .env | tr -d '=' && echo \"=== ENCRYPTION_KEY len ===\" && awk -F= '/^ENCRYPTION_KEY=/{print length($2)}' .env && echo \"=== run tests with valid fernet key ===\" && ENCRYPTION_KEY=$(.venv/bin/python -c \"from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())\") .venv/bin/python -m pytest -q 2>&1 | tail -30)",
+      "Shell(env)",
+      "Shell(echo:*)",
+      "Shell(cd /Users/tobi/Development/RAIL_BACKEND && for p in \"/balances\" \"/funding/transactions\" \"/analytics/dashboard\" \"/analytics/financial-snapshot\" \"/investments/positions\" \"/investments/portfolio\" \"/financial-obligations\" \"/funding/ngn/virtual-account\" \"/users/me\" \"/investments/limits\" \"/investments/strategies\" \"/investments/executions\" \"/investments/audit\" \"/investments/investors\" \"/automations\" \"/scheduled-investments\" \"/funding/deposit/address\" \"/investments/orders\" \"/investments/enroll\" \"/investments/allocations\" \"/documents\"; do n=$(grep -rn \"\\\"$p\\\"\" --include=*.go internal/api/routes/ | wc -l | tr -d ' '); echo \"$n $p\"; done)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

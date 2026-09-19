@@ -185,8 +185,10 @@ func TestGuestMono_AttachOnSignup(t *testing.T) {
 	if mono.attached[0] != st.GuestToken {
 		t.Fatalf("attached with wrong token: %q", mono.attached[0])
 	}
-	if prov.calls != 1 {
-		t.Fatalf("expected provisioning to run once, got %d", prov.calls)
+	if prov.calls != 2 {
+		// Provisioning runs at phone verification and re-runs (idempotently) at
+		// consent; the second call proves the idempotent retry path.
+		t.Fatalf("expected provisioning at phone verification and consent, got %d", prov.calls)
 	}
 	if linker.calls != 1 {
 		t.Fatalf("expected linking to run once, got %d", linker.calls)

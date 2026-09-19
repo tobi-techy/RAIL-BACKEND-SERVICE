@@ -140,10 +140,11 @@ func RequireAlpacaCapability(userReader UserEntityReader, log *zap.Logger) gin.H
 	}
 }
 
-// RequireTokenizedInvestingCapability gates tokenized-asset investing (e.g. LI.FI)
-// behind Tier 3 (advanced). Until a user reaches Tier 3 via Bridge KYC, the
-// capability is locked with a 403.
-func RequireTokenizedInvestingCapability(userReader UserEntityReader, log *zap.Logger) gin.HandlerFunc {
+// RequireActiveAccount is the identity floor for an authenticated feature: the
+// caller must resolve to a real, active user row. It deliberately does NOT check
+// KYC tier — feature-specific compliance (KYC for fiat rails, cards, brokerage)
+// is enforced by that feature's own gate, not here.
+func RequireActiveAccount(userReader UserEntityReader, log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, err := extractUserID(c)
 		if err != nil {
@@ -156,27 +157,44 @@ func RequireTokenizedInvestingCapability(userReader UserEntityReader, log *zap.L
 
 		user, err := userReader.GetUserEntityByID(c.Request.Context(), userID)
 		if err != nil {
-			log.Error("Failed to load user for tokenized investing capability check",
+			log.Error("Failed to load user for account check",
 				zap.Error(err),
 				zap.String("user_id", userID.String()),
 				zap.String("request_id", c.GetString("request_id")))
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"code":    "KYC_STATUS_ERROR",
-				"message": "Unable to verify investing eligibility at this time",
+				"code":    "ACCOUNT_LOOKUP_ERROR",
+				"message": "Unable to verify your account at this time",
 			})
 			return
 		}
-
-		tier := entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus)
-		caps := entities.CapabilitiesForTier(entities.KYCTierToLevel(tier))
-		if !caps.CanInvestTokenized {
+		if user == nil || user.ID == uuid.Nil {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code":    "TOKENIZED_INVESTING_LOCKED",
-				"message": "Complete advanced (Tier 3) verification to access tokenized-asset investing",
+				"code":    "ACCOUNT_SETUP_REQUIRED",
+				"message": "Finish setting up your account to continue",
 			})
 			return
 		}
 
+		// Record the tier for downstream limits/pricing without gating on it.
+		tier := entities.EffectiveKYCTier(user.KYCTier, user.KYCStatus)
+		c.Set("kyc_tier", string(tier))
 		c.Next()
 	}
+}
+
+// RequireTokenizedInvestingCapability gates Glider strategy investing (create a
+// strategy, enroll funds, place strategy orders, rebalance).
+//
+// This used to require advanced (Tier 3) verification and 403'd everyone else.
+// That was wrong for this rail: the provider (Glider) holds and executes the
+// assets on its own regulated infrastructure, so a brand-new, unverified user is
+// allowed to start and fund a strategy. The gate now only requires a resolvable,
+// active account, which also turns a missing/inactive user into a clear 403
+// instead of a confusing downstream service error.
+//
+// KYC is still enforced everywhere it is legally required: USD fiat virtual
+// accounts and cards (RequireBridgeCapability), brokerage investing
+// (RequireAlpacaCapability), fiat withdrawals/ramps and P2P transfers.
+func RequireTokenizedInvestingCapability(userReader UserEntityReader, log *zap.Logger) gin.HandlerFunc {
+	return RequireActiveAccount(userReader, log)
 }

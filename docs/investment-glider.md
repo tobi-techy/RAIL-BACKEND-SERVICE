@@ -319,7 +319,7 @@ go test -race ./...                                               # full suite
 - **Idempotency**: Every write carries an `IdempotencyKey` (user-scoped, deterministic in Miriam)
 - **Confirmation tokens**: Single-use, TTL (15m default), bound to **payload hash** (token field excluded from hash)
 - **Step-up**: Withdrawals require `RequireInteractiveSession` + `RequirePasscodeSession` — not callable from chat
-- **Tier gating**: KYC tier < 3 → `REQUIRES_COMPLIANCE_REVIEW` before any investment
+- **No KYC gate for strategy investing**: Glider holds and executes the assets, so an unverified (Tier 1) user can create, enroll in and fund a strategy. KYC is still enforced for USD fiat virtual accounts, cards, brokerage (Alpaca) investing, ramps and P2P. `REQUIRES_COMPLIANCE_REVIEW` remains only for cases the policy layer cannot clear (country not supported, contradictory evidence flagged elsewhere).
 - **Provider failures**: Fail closed — action is unconfirmed, never silently failed
 - **Ledger integration**: Funding reuses `WithdrawalService.InitiateCryptoWithdrawal` (double-entry)
 

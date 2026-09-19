@@ -979,16 +979,26 @@ func TestExpiredConfirmationIsRejected(t *testing.T) {
 	require.ErrorIs(t, err, ErrConfirmationInvalid)
 }
 
-func TestPolicyBlocksUnverifiedUser(t *testing.T) {
+func TestPolicyAllowsUnverifiedUserToStartStrategy(t *testing.T) {
 	h := newHarness(t)
 	h.setTier("basic")
 
 	req := h.createRequest("USDC")
 	response, err := h.service.CreateStrategy(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
-	require.ErrorIs(t, err, ErrPolicyBlocked)
+	require.NoError(t, err, "strategy investing must not be KYC gated")
 	require.NotNil(t, response.Policy)
-	assert.Equal(t, entities.InvestmentVerdictRequiresComplianceReview, response.Policy.Verdict)
-	assert.Empty(t, h.store.strategies, "policy must block before anything is stored")
+	assert.Equal(t, entities.InvestmentVerdictRequiresConfirmation, response.Policy.Verdict)
+}
+
+func TestPolicyAllowsUnverifiedNonKYCUserToStartStrategy(t *testing.T) {
+	h := newHarness(t)
+	h.setTier("non_kyc")
+
+	req := h.createRequest("USDC")
+	response, err := h.service.CreateStrategy(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+	require.NoError(t, err, "a brand-new account can start a Glider strategy")
+	require.NotNil(t, response.Policy)
+	assert.Equal(t, entities.InvestmentVerdictRequiresConfirmation, response.Policy.Verdict)
 }
 
 // ---------------------------------------------------------------------------

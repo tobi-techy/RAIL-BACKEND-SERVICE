@@ -129,3 +129,45 @@ func TestLinking_LinkVerifiedRejectsSenderLinkedElsewhere(t *testing.T) {
 		t.Fatal("expected rejection when sender already linked to another user")
 	}
 }
+
+// TestLinking_LinkVerifiedNeverRebindsAnAlreadyLinkedAccount pins the invariant
+// the email-only claim path depends on.
+//
+// Claiming an existing account on email alone is safe precisely because this
+// method refuses to move a link that is already established: when the target
+// account already owns an identity on the platform, a different sender gets the
+// existing identity back and the stored platform_user_id is left alone. If this
+// ever started rebinding, a proven email address would be sufficient to move
+// someone else's chat link onto an attacker's handle.
+func TestLinking_LinkVerifiedNeverRebindsAnAlreadyLinkedAccount(t *testing.T) {
+	repo := newFakeRepo()
+	ls := NewLinkingService(repo, 900)
+	owner := uuid.New()
+	const ownersHandle = "+2348000000001"
+	const claimantsHandle = "+2348000000002"
+
+	if _, err := ls.LinkVerified(context.Background(), owner, entities.PlatformIMessage, ownersHandle); err != nil {
+		t.Fatalf("owner link: %v", err)
+	}
+
+	// A different handle "claims" the same account.
+	identity, err := ls.LinkVerified(context.Background(), owner, entities.PlatformIMessage, claimantsHandle)
+	if err != nil {
+		t.Fatalf("claim returned an error (callers now handle this): %v", err)
+	}
+	if identity.PlatformUserID != ownersHandle {
+		t.Fatalf("the established link must not be rebound: got %q, want %q",
+			identity.PlatformUserID, ownersHandle)
+	}
+
+	// The claimant's handle must not resolve to the account.
+	resolver := NewUserResolver(repo)
+	if _, err := resolver.Resolve(context.Background(), entities.PlatformIMessage, claimantsHandle); err == nil {
+		t.Fatal("a claimant's handle must not resolve to the account")
+	}
+	// ...and the owner's handle still must.
+	resolved, err := resolver.Resolve(context.Background(), entities.PlatformIMessage, ownersHandle)
+	if err != nil || resolved.UserID != owner {
+		t.Fatalf("the owner's link must survive the claim attempt, got %v %v", resolved, err)
+	}
+}

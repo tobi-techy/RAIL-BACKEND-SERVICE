@@ -30,10 +30,23 @@ func (a *orchestratorAdapter) pythonDelegated() bool {
 	return a.python != nil && a.otpStore != nil
 }
 
-// pythonRole derives the JWT role claim Python's RBAC expects: "verified" for
-// KYC-approved users (money tools), otherwise "user" (read/plan only).
-func pythonRole(kycStatus string) string {
-	if kycStatus == string(entities.KYCStatusApproved) {
+// pythonRole derives the JWT role claim Python's RBAC expects: "verified" grants
+// the money tools, "user" is read/plan only.
+//
+// This keyed on KYC approval alone, which meant a chat-onboarded account — email
+// verified, Tier 1, kyc_status non_kyc — could not move money through Miriam at
+// all, so a chat signup could never be the equal of an app signup. A proven
+// email on an active account is the identity floor. KYC approval remains an
+// additional grant so existing approved users are unaffected.
+//
+// Note this widens who may move money. The real controls are the per-tier limits
+// (enforced Go-side), Python's MAX_TRANSACTION_AMOUNT / MAX_DAILY_TRANSFER caps,
+// and the confirmation step-up — not this claim.
+func pythonRole(kycStatus string, emailVerified, isActive bool) string {
+	if !isActive {
+		return "user"
+	}
+	if emailVerified || kycStatus == string(entities.KYCStatusApproved) {
 		return "verified"
 	}
 	return "user"
@@ -51,7 +64,7 @@ func (a *orchestratorAdapter) pythonTokenClaims(ctx context.Context, uid uuid.UU
 	if u == nil {
 		return "", role
 	}
-	return u.Email, pythonRole(u.KYCStatus)
+	return u.Email, pythonRole(u.KYCStatus, u.EmailVerified, u.IsActive)
 }
 
 // costCeilingMessage returns the monthly-AI-limit reply when the user is over

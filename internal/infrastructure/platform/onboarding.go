@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net/mail"
@@ -66,6 +67,10 @@ type OnboardingUserStore interface {
 	GetByPhone(ctx context.Context, phone string) (*entities.UserProfile, error)
 	GetByEmail(ctx context.Context, email string) (*entities.UserProfile, error)
 	CreateUserWithHash(ctx context.Context, email string, phone *string, passwordHash string) (*entities.User, error)
+	// UpdateEmail attaches a verified email to an existing account (the
+	// phone-first case: the row was created with an opaque placeholder because
+	// no email had been collected yet). Satisfied by the user repository.
+	UpdateEmail(ctx context.Context, userID uuid.UUID, email string) error
 }
 
 // OnboardingProvisioner completes Tier 1 setup once the phone is verified.
@@ -126,29 +131,51 @@ const (
 	phaseEmail guestPhase = "awaiting_email"
 	// phaseEmailOTP — existing-account path, email code sent.
 	phaseEmailOTP guestPhase = "awaiting_email_otp"
+	// phaseEmailAttach — the account already exists (created at phone
+	// verification); we are asking for a real email to attach to it. Replying
+	// with an email verifies ownership and links it; skipping keeps the
+	// opaque placeholder and finishes onboarding.
+	phaseEmailAttach guestPhase = "awaiting_email_attach"
 )
 
 // guestState is the per-sender pre-signup conversation persisted in Redis.
 type guestState struct {
-	Phase              guestPhase     `json:"phase"`
-	FirstName          string         `json:"first_name,omitempty"`
-	Country            string         `json:"country,omitempty"`
-	Goal               string         `json:"goal,omitempty"`
-	MoneyType          string         `json:"money_type,omitempty"`
-	MoneyDial          string         `json:"money_dial,omitempty"`
-	Email              string         `json:"email,omitempty"`
-	Phone              string         `json:"phone,omitempty"`
-	Turns              []GuestMessage `json:"turns,omitempty"`
-	TurnCount          int            `json:"turn_count,omitempty"`
-	LastReplyHash      uint64         `json:"last_reply_hash,omitempty"`
-	OTPAttempts        int            `json:"otp_attempts,omitempty"`
-	EmailOTPAttempts   int            `json:"email_otp_attempts,omitempty"`
-	EmailVerified      bool           `json:"email_verified,omitempty"`
-	UserID             string         `json:"user_id,omitempty"`
-	SignupReason       string         `json:"signup_reason,omitempty"`
-	IntroSent          bool           `json:"intro_sent,omitempty"`
-	StatementSummary   string         `json:"statement_summary,omitempty"`
-	PendingStatementID string         `json:"pending_statement_id,omitempty"`
+	Phase            guestPhase     `json:"phase"`
+	FirstName        string         `json:"first_name,omitempty"`
+	Country          string         `json:"country,omitempty"`
+	Goal             string         `json:"goal,omitempty"`
+	MoneyType        string         `json:"money_type,omitempty"`
+	MoneyDial        string         `json:"money_dial,omitempty"`
+	Email            string         `json:"email,omitempty"`
+	Phone            string         `json:"phone,omitempty"`
+	Turns            []GuestMessage `json:"turns,omitempty"`
+	TurnCount        int            `json:"turn_count,omitempty"`
+	LastReplyHash    uint64         `json:"last_reply_hash,omitempty"`
+	OTPAttempts      int            `json:"otp_attempts,omitempty"`
+	EmailOTPAttempts int            `json:"email_otp_attempts,omitempty"`
+	EmailVerified    bool           `json:"email_verified,omitempty"`
+	// EmailAttach reports that the pending email OTP is proving ownership of an
+	// address to attach to the session's account (rather than confirming an
+	// existing account's address).
+	EmailAttach bool `json:"email_attach,omitempty"`
+	// EmailBackfill reports that this session is collecting a real address for an
+	// ALREADY-linked account whose row still carries the opaque placeholder
+	// (phone+<uuid>@placeholder.invalid). It behaves like EmailAttach except that
+	// the account is never handed off: the person is already in their account, so
+	// an address belonging to someone else must be refused rather than moving
+	// their chat.
+	EmailBackfill bool   `json:"email_backfill,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
+	// AccountCreated reports that THIS chat session created the account row
+	// (rather than adopting a pre-existing one). Only a session-created account
+	// may be re-pointed or have its email attached automatically: it has no
+	// history and no balance, so a bulk email-finish or an existing-account
+	// handoff can never strand money.
+	AccountCreated     bool   `json:"account_created,omitempty"`
+	SignupReason       string `json:"signup_reason,omitempty"`
+	IntroSent          bool   `json:"intro_sent,omitempty"`
+	StatementSummary   string `json:"statement_summary,omitempty"`
+	PendingStatementID string `json:"pending_statement_id,omitempty"`
 	// GuestToken is a web-safe token mapping this chat session to a pre-signup
 	// Mono linking session (used as Mono's MetaRef and in the redirect URL).
 	GuestToken string `json:"guest_token,omitempty"`
@@ -451,8 +478,8 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 	case phaseConsent:
 		reply, err = c.handleConsent(ctx, key, &st, in, text)
 	case phaseEmailOTP:
-		reply, err = c.handleEmailOTP(ctx, key, &st, text)
-	case phasePhone, phaseEmail, phaseConverse:
+		reply, err = c.handleEmailOTP(ctx, key, &st, in, text)
+	case phasePhone, phaseEmail, phaseConverse, phaseEmailAttach:
 		reply, err = c.handleConversational(ctx, key, &st, in, text)
 	default:
 		reply, err = c.handleConversational(ctx, key, &st, in, text)
@@ -470,8 +497,19 @@ func (c *ChatOnboarder) handleConversational(ctx context.Context, key string, st
 	// A bare email address in any of these phases is the existing-account path.
 	if st.Phase != phaseEmail {
 		if email := normalizeEmail(text); email != "" && strings.Contains(text, "@") && len(strings.Fields(text)) <= 2 {
-			return c.handleEmail(ctx, key, st, email)
+			return c.handleEmail(ctx, key, st, in, email)
 		}
+	}
+
+	// The account already exists and we are collecting an email for it. An
+	// address attaches/links; anything that reads as "no" finishes with the
+	// placeholder instead of trapping the person in a loop they cannot exit.
+	if st.Phase == phaseEmailAttach {
+		if isSkipEmail(text) {
+			c.clear(ctx, key)
+			return c.completionReply(st), nil
+		}
+		return textReply(c.emailAttachPrompt()), nil
 	}
 
 	if st.Phase == phasePhone {
@@ -487,9 +525,9 @@ func (c *ChatOnboarder) handleConversational(ctx context.Context, key string, st
 	if st.Phase == phaseEmail {
 		email := normalizeEmail(text)
 		if email == "" {
-			return textReply("What's the email on your RAIL account?"), nil
+			return textReply(c.emailPrompt()), nil
 		}
-		return c.handleEmail(ctx, key, st, email)
+		return c.handleEmail(ctx, key, st, in, email)
 	}
 
 	// Daily abuse cap — read before spending a model turn. The counter is only
@@ -777,28 +815,31 @@ func (c *ChatOnboarder) beginSignup(ctx context.Context, key string, st *guestSt
 	return textReply(replyText), nil
 }
 
-// startVerification picks the next proof step. An unverified email that matches
-// an existing account must be proven by email OTP before anything links or is
-// created — a shared contact card alone can never substitute for ownership.
-// Otherwise a phone on file gets the SMS code; without one we ask.
+// startVerification begins identity proof. Email is the anchor: the signup ask
+// is the address, because users.email is the NOT NULL UNIQUE key while the phone
+// is an optional profile attribute. The phone/SMS path stays for sessions that
+// supplied a phone and no address.
 func (c *ChatOnboarder) startVerification(ctx context.Context, key string, st *guestState) (*PlatformReply, error) {
 	if st.Email != "" && !st.EmailVerified {
-		if existing, err := c.users.GetByEmail(ctx, st.Email); err == nil && existing != nil {
-			if !existing.IsActive {
-				c.clear(ctx, key)
-				return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
-			}
-			return c.sendEmailOTP(ctx, key, st, existing)
+		existing, _ := c.users.GetByEmail(ctx, st.Email)
+		if existing != nil && !existing.IsActive {
+			c.clear(ctx, key)
+			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 		}
+		// attach only when this session already created a row: then the verified
+		// address is written onto it (or the chat is handed to its owner). With
+		// no session row the verified address anchors the signup itself, and the
+		// code path creates or claims the account.
+		return c.sendEmailOTP(ctx, key, st, existing, c.canLinkAccount(st))
 	}
-	if st.Phone != "" {
+	if st.Phone != "" && st.Email == "" {
 		return c.sendPhoneOTP(ctx, key, st)
 	}
-	st.Phase = phasePhone
+	st.Phase = phaseEmail
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply(c.phonePrompt()), nil
+	return textReply(c.emailPrompt()), nil
 }
 
 // recordTurn appends the exchange to the bounded transcript and ticks the
@@ -924,19 +965,21 @@ func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestS
 		}
 	}
 
-	// A contact card answers the questions it answers; never re-ask them.
+	// A contact card answers the questions it safely can — a display name, and a
+	// candidate address that still has to be proven. It never supplies identity,
+	// so this starts the proof step rather than trusting the card.
 	if in.Contact != nil {
 		st.IntroSent = true
-		if st.Phone != "" {
+		if st.Email != "" || st.Phone != "" {
 			return c.startVerification(ctx, key, st)
 		}
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
 		if st.FirstName != "" {
-			return textReply(fmt.Sprintf("Got it, %s. %s", st.FirstName, c.phonePrompt())), nil
+			return textReply(fmt.Sprintf("Got it, %s. %s", st.FirstName, c.emailPrompt())), nil
 		}
-		return textReply("Whose card is that? Tell me your first name, and " + c.phonePrompt()), nil
+		return textReply("Whose card is that? Tell me your first name, and " + c.emailPrompt()), nil
 	}
 
 	// "I already have an account" routes to email-ownership proof.
@@ -997,56 +1040,94 @@ func countryFromText(text string) string {
 
 // --- Identity verification (deterministic; never model-generated) ---
 
-// handleEmail starts or continues the existing-account path: the address is
-// looked up, and a live account gets an email OTP to prove ownership.
-func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *guestState, email string) (*PlatformReply, error) {
+// handleEmail starts or continues the email step: the address is looked up, and
+// either an existing account gets an email OTP to prove ownership, a free
+// address is kept for creation/attachment, or a session-created placeholder
+// account is pointed at the address that already owns an account.
+func (c *ChatOnboarder) handleEmail(ctx context.Context, key string, st *guestState, in OnboardInput, email string) (*PlatformReply, error) {
 	st.Email = email
 
 	existing, err := c.users.GetByEmail(ctx, email)
 	if err != nil || existing == nil {
-		// No account under that email — keep it for creation and move on.
-		reply, rerr := c.startVerification(ctx, key, st)
-		if rerr != nil || st.Phone != "" {
-			return reply, rerr
-		}
-		return textReply("No account under that email, so we'll start fresh. " + c.phonePrompt()), nil
+		// No account under that address. Email is the anchor, so a verified free
+		// address IS the signup: send the code and create the account when it
+		// checks out. (When this session already owns a placeholder row, the
+		// address is attached to that row instead.)
+		return c.sendEmailOTP(ctx, key, st, nil, c.canLinkAccount(st))
 	}
 	if !existing.IsActive {
 		c.clear(ctx, key)
 		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 	}
-	return c.sendEmailOTP(ctx, key, st, existing)
+	attaching := c.canLinkAccount(st) && existing.ID.String() != st.UserID
+	return c.sendEmailOTP(ctx, key, st, existing, attaching)
 }
 
-// sendEmailOTP verifies the account is still live, then sends the ownership
-// code synchronously so a provider failure reaches the user instead of dying
-// in a background worker after we already claimed success.
-func (c *ChatOnboarder) sendEmailOTP(ctx context.Context, key string, st *guestState, existing *entities.UserProfile) (*PlatformReply, error) {
+// canLinkAccount reports whether this session owns a freshly created account
+// that may be linked to a verified email. A pre-existing account adopted by the
+// chat (AccountCreated false) is never re-pointed: it may already hold money or
+// history, and a silent handoff would strand it.
+func (c *ChatOnboarder) canLinkAccount(st *guestState) bool {
+	return st.UserID != "" && st.AccountCreated
+}
+
+// sendEmailOTP sends the email ownership code synchronously so a provider
+// failure reaches the user instead of dying in a background worker after we
+// already claimed success.
+//
+// attach=true means the code proves ownership of an address we intend to attach
+// (or hand over the chat to), so a missing row is expected: a free address, or
+// the session's own placeholder account.
+func (c *ChatOnboarder) sendEmailOTP(ctx context.Context, key string, st *guestState, existing *entities.UserProfile, attach bool) (*PlatformReply, error) {
 	code, simulated, err := c.verifier.GenerateAndSendCodeSync(ctx, "email", st.Email)
 	if err != nil {
 		c.logger.Warn("onboarding email OTP send failed", zap.Error(err))
 		return textReply(otpSendErrorMessage(err)), nil
 	}
-	// Re-verify the account still exists and is active now that the OTP is in
-	// flight, so a deleted or deactivated account can never receive a code that
-	// links a chat to a stale row.
+	// Re-verify now that the OTP is in flight, so a deleted or deactivated
+	// account can never receive a code that links a chat to a stale row. On the
+	// existing-account path the row must still be live; on the attach path the
+	// row may legitimately be absent, and only a *different* live account is
+	// disqualifying (the address changed owner while we were checking).
 	recheck, rerr := c.users.GetByEmail(ctx, st.Email)
-	if rerr != nil || recheck == nil || !recheck.IsActive {
+	if rerr == nil && recheck != nil && !recheck.IsActive {
 		c.clear(ctx, key)
 		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
 	}
+	if attach {
+		if existing != nil && recheck != nil && recheck.ID != existing.ID {
+			c.clear(ctx, key)
+			return textReply("That email changed accounts while I was checking. Please link this chat from the RAIL app instead."), nil
+		}
+	} else if existing != nil && (rerr != nil || recheck == nil || !recheck.IsActive) {
+		// An account was found a moment ago and is no longer resolvable: a genuine
+		// race (deleted or deactivated mid-flight), not a free address.
+		c.clear(ctx, key)
+		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+	}
+	// Deliberately no "the account must already exist" guard here. Email is the
+	// identity anchor, so a free address is a signup rather than an error: the
+	// code proves ownership and handleEmailOTP then creates or claims the
+	// account. The old unconditional guard refused every new signup with "That
+	// account isn't active", which is what forced the phone step to come first.
 	st.Phase = phaseEmailOTP
 	st.EmailOTPAttempts = 0
+	st.EmailAttach = attach
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
 	if simulated {
 		return textReply(fmt.Sprintf("No email provider is configured here, so nothing was actually sent. Test code: %s.", code)), nil
 	}
-	return textReply(fmt.Sprintf("I found your RAIL account. I just emailed a 6-digit code to %s. Reply with it here to confirm it's you.", st.Email)), nil
+	if attach {
+		return textReply(fmt.Sprintf("I just emailed a 6-digit code to %s. Reply with it here and I'll put it on your Rail account.", st.Email)), nil
+	}
+	// Wording is identical whether or not the address already owns an account:
+	// otherwise this line tells an attacker which addresses are customers.
+	return textReply(fmt.Sprintf("I just emailed a 6-digit code to %s. Reply with it here and I'll take it from there.", st.Email)), nil
 }
 
-func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *guestState, text string) (*PlatformReply, error) {
+func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
 	code := digitsOnly(text)
 	if len(code) != 6 {
 		return textReply("That doesn't look like the 6-digit code. Reply with the code I emailed you."), nil
@@ -1065,24 +1146,186 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *gues
 	}
 	st.EmailVerified = true
 	existing, err := c.users.GetByEmail(ctx, st.Email)
-	if err != nil || existing == nil {
-		c.logger.Error("verified email account disappeared during onboarding", zap.Error(err))
+
+	// Attach path: the verified address belongs on an account that already
+	// exists (the one this chat created, or the one the address already owns).
+	// A backfill session is the same job for an already-linked account.
+	if st.EmailAttach || st.EmailBackfill {
+		return c.completeEmailAttach(ctx, key, st, in, existing, err)
+	}
+
+	if err == nil && existing != nil {
+		if !existing.IsActive {
+			c.clear(ctx, key)
+			return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+		}
+		// The verified address already owns an account, so it anchors this chat
+		// onto that account. No phone is required: previously this branch set the
+		// user id and then demanded a phone, so an existing customer could never
+		// be let in on email alone. Consent follows, and linking/provisioning
+		// happen there (handleConsent).
+		st.UserID = existing.ID.String()
+		st.AccountCreated = false
+		st.Phase = phaseConsent
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return c.consentReply(), nil
+	}
+
+	// Unknown address: create the account now. The row exists and is provisioned
+	// the moment identity is proven, which is the same failure-safety invariant
+	// the phone path held — never a verified-but-unprovisioned account that every
+	// read treats as missing.
+	if err := c.createEmailFirstUser(ctx, st); err != nil {
+		c.logger.Error("email-first account creation failed", zap.Error(err))
 		c.clear(ctx, key)
 		return textReply("Something went wrong on my end. Please try again in a moment."), nil
 	}
-	if !existing.IsActive {
-		c.clear(ctx, key)
-		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
-	}
-	st.UserID = existing.ID.String()
-	if st.Phone != "" {
-		return c.sendPhoneOTP(ctx, key, st)
-	}
-	st.Phase = phasePhone
+	st.Phase = phaseConsent
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	return textReply("Email confirmed. " + c.phonePrompt()), nil
+	return c.consentReply(), nil
+}
+
+// completeEmailAttach finishes the email step for an account that already
+// exists: it either hands the chat over to the account the verified email
+// already owns, or writes the verified address onto the phone-first account this
+// session created.
+func (c *ChatOnboarder) completeEmailAttach(ctx context.Context, key string, st *guestState, in OnboardInput, existing *entities.UserProfile, lookupErr error) (*PlatformReply, error) {
+	if lookupErr == nil && existing != nil && !existing.IsActive {
+		c.clear(ctx, key)
+		return textReply("That account isn't active. Please reach out to support@userail.money for help."), nil
+	}
+	// The verified address already owns a different account: hand the chat over
+	// to it (attach the proven phone, move the messaging link) instead of
+	// leaving the person with a second, empty account under the same email.
+	if lookupErr == nil && existing != nil && existing.ID.String() != st.UserID {
+		// A backfill session belongs to someone who is ALREADY in their own
+		// account. Moving their chat to a different account because they typed an
+		// address that happens to belong to one would hand their conversation to
+		// a stranger's account, so refuse instead.
+		if st.EmailBackfill {
+			c.clear(ctx, key)
+			return textReply(
+				"That address is already on another RAIL account. Use a different one, " +
+					"or change it from the RAIL app."), nil
+		}
+		if err := c.handoffToEmailOwner(ctx, st, in, existing); err != nil {
+			c.logger.Error("email-owner handoff failed", zap.Error(err), zap.String("user_id", st.UserID))
+			c.clear(ctx, key)
+			return textReply("I found your existing account but couldn't move this chat onto it. Link from the RAIL app and I'll pick this back up there."), nil
+		}
+		c.clear(ctx, key)
+		return c.completionReply(st), nil
+	}
+
+	uid, perr := uuid.Parse(st.UserID)
+	if perr != nil {
+		c.logger.Error("attach email with unparseable user id", zap.Error(perr), zap.String("user_id", st.UserID))
+		c.clear(ctx, key)
+		return textReply("Something went wrong on my end. Text me again and we'll finish this."), nil
+	}
+	if err := c.users.UpdateEmail(ctx, uid, st.Email); err != nil {
+		c.logger.Error("failed to attach verified email", zap.Error(err), zap.String("user_id", st.UserID))
+		c.clear(ctx, key)
+		return textReply("I verified that email but couldn't save it to your account. Mind trying again in a moment?"), nil
+	}
+	// The address was just proven by OTP, so it is verified by definition.
+	c.markEmailVerified(ctx, uid)
+	c.clear(ctx, key)
+	return c.completionReply(st), nil
+}
+
+// handoffToEmailOwner moves this chat from the placeholder account created for
+// it onto the account the verified email already owns, and attaches the proven
+// phone so the email account gains the number. Only a session-created account is
+// ever handed off (see canLinkAccount), so no balance or history is stranded.
+func (c *ChatOnboarder) handoffToEmailOwner(ctx context.Context, st *guestState, in OnboardInput, owner *entities.UserProfile) error {
+	oldID, err := uuid.Parse(st.UserID)
+	if err != nil {
+		return fmt.Errorf("parse placeholder user id: %w", err)
+	}
+	// Attach the proven phone first: if this fails nothing has changed yet and
+	// the placeholder account stays exactly as it was.
+	if st.Phone != "" {
+		if err := c.provisioner.ProvisionPhoneFirstUser(ctx, owner.ID, st.FirstName, st.Country, st.Phone); err != nil {
+			return fmt.Errorf("attach phone to email account: %w", err)
+		}
+	}
+	if c.linker == nil {
+		st.UserID = owner.ID.String()
+		st.AccountCreated = false
+		return nil
+	}
+	unlinker, ok := c.linker.(PlatformUnlinker)
+	if !ok {
+		// The linker cannot release the placeholder link, so the sender id is
+		// still bound to the empty account. Refuse rather than leave the person
+		// half-moved between two accounts.
+		return fmt.Errorf("linker does not support unlinking")
+	}
+	if err := unlinker.Unlink(ctx, oldID, in.Platform); err != nil {
+		return fmt.Errorf("release placeholder link: %w", err)
+	}
+	linked, err := c.linker.LinkVerified(ctx, owner.ID, in.Platform, in.SenderID)
+	if err != nil {
+		// Roll the placeholder link back so the chat keeps working while the
+		// person retries or links from the app.
+		if _, rerr := c.linker.LinkVerified(ctx, oldID, in.Platform, in.SenderID); rerr != nil {
+			c.logger.Error("failed to restore placeholder link after handoff failure",
+				zap.Error(rerr), zap.String("user_id", st.UserID))
+		}
+		return fmt.Errorf("link email account: %w", err)
+	}
+	if linked == nil || linked.PlatformUserID != in.SenderID {
+		// The owner account is already connected on this platform, so the link
+		// could not be moved here. Put the placeholder link back rather than
+		// leaving the chat unbound mid-handoff.
+		if _, rerr := c.linker.LinkVerified(ctx, oldID, in.Platform, in.SenderID); rerr != nil {
+			c.logger.Error("failed to restore placeholder link after refused handoff",
+				zap.Error(rerr), zap.String("user_id", st.UserID))
+		}
+		return fmt.Errorf("owner account is already connected on this platform")
+	}
+	st.UserID = owner.ID.String()
+	st.AccountCreated = false
+	return nil
+}
+
+// PlatformUnlinker is the optional release half of the linking service. The
+// onboarder only needs it for the email-owner handoff, so it is a type
+// assertion rather than a required interface method.
+type PlatformUnlinker interface {
+	Unlink(ctx context.Context, userID uuid.UUID, platform entities.Platform) error
+}
+
+// completionReply is the single place the "you're in" reply is built, so a
+// completion reached from any path looks the same.
+func (c *ChatOnboarder) completionReply(st *guestState) *PlatformReply {
+	return &PlatformReply{
+		Text:   c.completionMessage(st),
+		Effect: EffectCelebration,
+	}
+}
+
+// emailAttachPrompt asks for the address to put on the account. It is asked once
+// and is skippable, so nobody is trapped by not wanting to share an email.
+func (c *ChatOnboarder) emailAttachPrompt() string {
+	return "Last thing, what email should I put on your account? It's how receipts and anything needing a paper trail reach you. Say skip if you'd rather not."
+}
+
+// isSkipEmail reads a decline of the email step ("skip", "no", "later", ...).
+func isSkipEmail(text string) bool {
+	s := strings.ToLower(strings.TrimSpace(text))
+	s = strings.Trim(s, ".!,")
+	switch s {
+	case "skip", "no", "nah", "nope", "later", "not now", "no thanks", "no thank you",
+		"dont", "don't", "no email", "none", "without":
+		return true
+	}
+	return false
 }
 
 // looksLikeExistingAccount catches the "I already have an account" intent so
@@ -1150,6 +1393,18 @@ func (c *ChatOnboarder) handleOTP(ctx context.Context, key string, st *guestStat
 		}
 		return textReply("Something went wrong setting up your account. Mind trying that code again in a moment?"), nil
 	}
+	// The account exists the moment ownership is proven, and it is provisioned
+	// right here rather than after the terms poll: a verified-but-unprovisioned
+	// row has no KYC tier and no ledger/wallet accounts, so every later read or
+	// tool call answered as if the account did not exist. Terms acceptance is
+	// still recorded separately at the consent step, which re-runs this same
+	// idempotent provision in case this best-effort attempt failed.
+	if uid, perr := uuid.Parse(st.UserID); perr == nil {
+		if perr := c.provisioner.ProvisionPhoneFirstUser(ctx, uid, st.FirstName, st.Country, st.Phone); perr != nil {
+			c.logger.Warn("early phone-first provisioning failed; consent will retry",
+				zap.Error(perr), zap.String("user_id", st.UserID))
+		}
+	}
 	st.Phase = phaseConsent
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
@@ -1188,8 +1443,35 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *guest
 	}
 	identity, err := c.linker.LinkVerified(ctx, uid, in.Platform, in.SenderID)
 	if err != nil {
+		// A conflict is definitive — the handle belongs to another account, or
+		// this account is already connected — so "tap I agree to try again" would
+		// be a lie that loops the person. This is also how a race between two
+		// concurrent claims surfaces, thanks to the unique constraint.
+		if errors.Is(err, entities.ErrIdentityAlreadyLinked) {
+			if err := c.save(ctx, key, *st); err != nil {
+				return nil, err
+			}
+			return textReply(
+				"That account is already connected to a different chat. Open the RAIL app, " +
+					"disconnect it there, and text me again — I'll pick this straight back up."), nil
+		}
 		c.logger.Error("phone-first auto-link failed", zap.Error(err), zap.String("user_id", st.UserID))
 		return textReply("I couldn't finish linking this chat just now. Tap I agree to try again."), nil
+	}
+	// LinkVerified returns the account's EXISTING identity unchanged when that
+	// account is already connected on this platform — it deliberately does not
+	// move an established link to a new handle. Treating that as success would
+	// tell the person they are in and then drop them back into onboarding on
+	// their next message, so say what actually happened instead. This is
+	// reachable whenever a claimed account was already linked (e.g. from the
+	// app), not only in a race.
+	if identity == nil || identity.PlatformUserID != in.SenderID {
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(
+			"That account is already connected to a different chat. Open the RAIL app, " +
+				"disconnect it there, and text me again — I'll pick this straight back up."), nil
 	}
 	// Fire the first-login goal seeder for the new user so the goal_progress
 	// worker has a 7-step ladder to track on its next tick. Async + recover
@@ -1197,11 +1479,25 @@ func (c *ChatOnboarder) handleConsent(ctx context.Context, key string, st *guest
 	SeedBabyStepsOnLink(c.babySteps, uid, c.logger)
 	c.fireGuestHandoff(uid, identity, in, st)
 	c.attachGuestMono(ctx, uid, st)
+
+	// Email comes last, after the conversation has already earned trust and the
+	// account definitively exists. A phone-first row was created with an opaque
+	// placeholder address, so this is the moment we can attach a real one, or,
+	// if the address already owns an account, hand this chat over to it instead
+	// of creating a second account for the same person.
+	// Only a session-created account (an opaque placeholder email was used) is
+	// asked for a real address. A pre-existing account adopted by this chat
+	// already has its identity on file and is never re-prompted.
+	if st.Email == "" && st.AccountCreated {
+		st.Phase = phaseEmailAttach
+		if err := c.save(ctx, key, *st); err != nil {
+			return nil, err
+		}
+		return textReply(c.emailAttachPrompt()), nil
+	}
+
 	c.clear(ctx, key)
-	return &PlatformReply{
-		Text:   c.completionMessage(st),
-		Effect: EffectCelebration,
-	}, nil
+	return c.completionReply(st), nil
 }
 
 // fireGuestHandoff carries the guest conversation into the authenticated
@@ -1316,7 +1612,72 @@ func (c *ChatOnboarder) ensureUser(ctx context.Context, st *guestState) error {
 		return fmt.Errorf("create user: %w", err)
 	}
 	st.UserID = user.ID.String()
+	// Mark the row as created by this session. Only such a row may later be
+	// pointed at an email that already owns an account (see handoffToEmailOwner)
+	// or have an email attached to it, because a session-created row has no
+	// history and no balance to strand.
+	st.AccountCreated = true
 	return nil
+}
+
+// createEmailFirstUser creates the account for an email-verified chat signup.
+//
+// Email is the identity anchor (users.email is NOT NULL UNIQUE), so no phone is
+// required — the phone is an optional profile attribute collected later, if at
+// all. Race handling mirrors ensureUser: a lost race adopts the winning row
+// rather than failing the person.
+func (c *ChatOnboarder) createEmailFirstUser(ctx context.Context, st *guestState) error {
+	user, err := c.users.CreateUserWithHash(ctx, st.Email, nil, "")
+	if err != nil {
+		if existing, gerr := c.users.GetByEmail(ctx, st.Email); gerr == nil && existing != nil && existing.IsActive {
+			st.UserID = existing.ID.String()
+			st.AccountCreated = false
+			c.markEmailVerified(ctx, existing.ID)
+			return nil
+		}
+		return fmt.Errorf("create email-first user: %w", err)
+	}
+	st.UserID = user.ID.String()
+	// Only a row this session created may later be re-pointed at an address that
+	// already owns an account (see canLinkAccount/handoffToEmailOwner): it has no
+	// history or balance to strand.
+	st.AccountCreated = true
+	c.markEmailVerified(ctx, user.ID)
+	// Provision now, not at consent: the account must be usable the moment
+	// identity is proven, so a mid-conversation failure can never leave a
+	// verified-but-unprovisioned row that every read treats as missing. A
+	// failure is non-fatal — handleConsent retries.
+	if err := c.provisioner.ProvisionPhoneFirstUser(ctx, user.ID, st.FirstName, st.Country, ""); err != nil {
+		c.logger.Warn("email-first provisioning failed; consent will retry",
+			zap.Error(err), zap.String("user_id", user.ID.String()))
+	}
+	return nil
+}
+
+// markEmailVerified records that the address was proven by OTP. Without it the
+// account would hold a proven address with email_verified = false, which every
+// downstream reader — and the app — treats as unproven.
+func (c *ChatOnboarder) markEmailVerified(ctx context.Context, id uuid.UUID) {
+	marker, ok := c.users.(emailVerificationMarker)
+	if !ok {
+		// Loud rather than silent: if the store ever stops satisfying this, a
+		// proven address would be left recorded as unproven with no signal.
+		c.logger.Warn("user store cannot mark email verified; address stays unverified",
+			zap.String("user_id", id.String()))
+		return
+	}
+	if err := marker.MarkEmailVerified(ctx, id); err != nil {
+		c.logger.Warn("failed to mark email verified",
+			zap.Error(err), zap.String("user_id", id.String()))
+	}
+}
+
+// emailVerificationMarker is the optional write-half of the user store. The
+// onboarder only needs it to record a proven address, so it is a type assertion
+// (like PlatformUnlinker) rather than a required interface method — that keeps
+// existing fakes and tests compiling.
+type emailVerificationMarker interface {
+	MarkEmailVerified(ctx context.Context, userID uuid.UUID) error
 }
 
 func (c *ChatOnboarder) mergeContact(st *guestState, contact *SharedContact) {
@@ -1336,20 +1697,11 @@ func (c *ChatOnboarder) mergeContact(st *guestState, contact *SharedContact) {
 			st.Country = cc
 		}
 	}
-	if st.Phone == "" {
-		raw := contact.PrimaryPhone()
-		if st.Country == "" {
-			if inferred := inferCountryFromPhone(raw); inferred != "" {
-				st.Country = inferred
-			}
-		}
-		if phone, ok := normalizePhone(raw, st.Country); ok {
-			st.Phone = phone
-			if st.Country == "" {
-				st.Country = inferCountryFromPhone(phone)
-			}
-		}
-	}
+	// A contact card's phone number is deliberately not taken. A card carries a
+	// THIRD PARTY's data: forwarding a friend's card used to set st.Phone to the
+	// friend's number, text the SMS OTP to the friend, and — on success — create
+	// an account keyed on the friend's verified phone. A phone is only ever
+	// accepted when the sender types it themselves.
 }
 
 func (c *ChatOnboarder) save(ctx context.Context, key string, st guestState) error {
@@ -1364,6 +1716,13 @@ func (c *ChatOnboarder) save(ctx context.Context, key string, st guestState) err
 
 func (c *ChatOnboarder) phonePrompt() string {
 	return "What's the best number for a quick code? Include the country code, like +2348012345678."
+}
+
+// emailPrompt asks for the address that anchors the account. Email is the
+// identity anchor, so this is the signup question — it must not presuppose an
+// existing account.
+func (c *ChatOnboarder) emailPrompt() string {
+	return "What's the best email for you? I'll send a code to it to open your Rail account."
 }
 
 func (c *ChatOnboarder) consentMessage() string {
@@ -1457,6 +1816,87 @@ func normalizeEmail(input string) string {
 		return ""
 	}
 	return addr.Address
+}
+
+// IsPlaceholderEmail reports whether an address is the opaque placeholder a
+// phone-first signup is created with. Such an account never collected a real
+// address, so it can receive no receipts and cannot reset anything by email.
+func IsPlaceholderEmail(email string) bool {
+	e := strings.ToLower(strings.TrimSpace(email))
+	return strings.HasPrefix(e, "phone+") && strings.HasSuffix(e, "@placeholder.invalid")
+}
+
+// emailBackfillKey marks that a linked account has already been asked for a real
+// address, so the ask happens once rather than on every message. Losing this key
+// only means asking again, which is benign — which is why it lives in Redis
+// rather than needing a column.
+func emailBackfillKey(platform entities.Platform, senderID string) string {
+	return fmt.Sprintf("email_backfill_asked:%s:%s", platform, senderID)
+}
+
+// HasAskedEmailBackfill reports whether this sender has already been asked.
+func (c *ChatOnboarder) HasAskedEmailBackfill(
+	ctx context.Context, platform entities.Platform, senderID string,
+) bool {
+	var seen string
+	if err := c.store.Get(ctx, emailBackfillKey(platform, senderID), &seen); err != nil {
+		return false
+	}
+	return seen != ""
+}
+
+// MarkEmailBackfillAsked records the ask so it is not repeated.
+func (c *ChatOnboarder) MarkEmailBackfillAsked(
+	ctx context.Context, platform entities.Platform, senderID string,
+) {
+	if err := c.store.Set(ctx, emailBackfillKey(platform, senderID), "1", 90*24*time.Hour); err != nil {
+		c.logger.Warn("failed to record email backfill ask",
+			zap.Error(err), zap.String("sender", senderID))
+	}
+}
+
+// IsEmailBackfillSession reports whether this sender is mid-way through the
+// linked-account email backfill, so following turns (the address, then the code)
+// go to the onboarder instead of the general agent. Deliberately narrow: a
+// linked sender with some other leftover session must not be routed here.
+func (c *ChatOnboarder) IsEmailBackfillSession(
+	ctx context.Context, platform entities.Platform, senderID string,
+) bool {
+	var st guestState
+	if err := c.store.Get(ctx, onboardingKey(platform, senderID), &st); err != nil {
+		return false
+	}
+	return st.EmailBackfill && st.UserID != ""
+}
+
+// StartEmailBackfill seeds a session that collects a real address for an
+// ALREADY-linked account whose row still holds the opaque placeholder.
+//
+// It reuses the normal attach machinery rather than a parallel flow: the session
+// starts at phaseEmailAttach, so the next address the person sends is proven by
+// email OTP and written onto their own account by completeEmailAttach. The
+// EmailBackfill flag makes that completion refuse a handoff, because this person
+// is already inside their account and must never be moved to a different one.
+func (c *ChatOnboarder) StartEmailBackfill(
+	ctx context.Context,
+	platform entities.Platform,
+	senderID string,
+	userID uuid.UUID,
+) (*PlatformReply, error) {
+	key := onboardingKey(platform, senderID)
+	st := guestState{
+		Phase:         phaseEmailAttach,
+		UserID:        userID.String(),
+		EmailBackfill: true,
+	}
+	if err := c.save(ctx, key, st); err != nil {
+		return nil, err
+	}
+	// Record the ask here rather than leaving it to the caller: this method is
+	// what constitutes "we have asked", and a caller that forgot to mark it
+	// would re-ask on every message.
+	c.MarkEmailBackfillAsked(ctx, platform, senderID)
+	return textReply(c.emailAttachPrompt()), nil
 }
 
 // placeholderEmail generates an opaque, unique placeholder email for a

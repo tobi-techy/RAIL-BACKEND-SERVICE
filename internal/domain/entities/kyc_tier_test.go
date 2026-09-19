@@ -65,20 +65,23 @@ func TestCapabilitiesForTier(t *testing.T) {
 	if !tier1.CanDepositCrypto {
 		t.Error("tier 1 should allow crypto deposit")
 	}
+	if !tier1.CanInvestTokenized {
+		t.Error("tier 1 should allow Glider strategy investing (not KYC gated)")
+	}
 	if tier1.CanReceiveNGN || tier1.CanDepositFiatUSD || tier1.CanUseCard || tier1.CanInvest {
-		t.Error("tier 1 should not unlock NGN/USD/card/invest")
+		t.Error("tier 1 should not unlock NGN/USD/card/brokerage investing")
 	}
 
 	tier2 := CapabilitiesForTier(KYCTierLevelBasic)
-	if !tier2.CanReceiveNGN {
-		t.Error("tier 2 should unlock NGN")
+	if !tier2.CanReceiveNGN || !tier2.CanInvestTokenized {
+		t.Error("tier 2 should unlock NGN and Glider strategy investing")
 	}
-	if tier2.CanDepositFiatUSD || tier2.CanUseCard || tier2.CanInvest || tier2.CanInvestTokenized {
-		t.Error("tier 2 should not unlock USD/card/invest/tokenized")
+	if tier2.CanDepositFiatUSD || tier2.CanUseCard || tier2.CanInvest {
+		t.Error("tier 2 should not unlock USD/card/brokerage investing")
 	}
 
 	tier3 := CapabilitiesForTier(KYCTierLevelAdvanced)
 	if !(tier3.CanReceiveNGN && tier3.CanDepositFiatUSD && tier3.CanUseCard && tier3.CanInvest && tier3.CanInvestTokenized) {
-		t.Error("tier 3 should unlock NGN, USD, card, invest, tokenized")
+		t.Error("tier 3 should unlock NGN, USD, card, brokerage investing, tokenized investing")
 	}
 }

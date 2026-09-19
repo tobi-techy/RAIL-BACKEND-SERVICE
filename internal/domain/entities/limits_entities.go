@@ -324,18 +324,25 @@ type TierCapabilities struct {
 	CanDepositFiatUSD  bool `json:"can_deposit_fiat_usd"` // Bridge USD virtual account (Tier 3)
 	CanUseCard         bool `json:"can_use_card"`         // Bridge cards (Tier 3)
 	CanInvest          bool `json:"can_invest"`           // Brokerage investing (Tier 3)
-	CanInvestTokenized bool `json:"can_invest_tokenized"` // Tokenized-asset investing / LI.FI (Tier 3)
+	CanInvestTokenized bool `json:"can_invest_tokenized"` // Glider strategy investing (no KYC gate)
 }
 
 // CapabilitiesForTier returns the capability set unlocked at a numeric tier.
 //
-//	Tier 1 (non_kyc):  crypto + NGN ramp (limited caps).
+//	Tier 1 (non_kyc):  crypto + NGN ramp + Glider strategy investing (limited caps).
 //	Tier 2 (basic):    + Graph NGN named virtual account, higher NGN limits.
-//	Tier 3 (advanced): + Bridge USD virtual account, cards, investing (incl. tokenized).
+//	Tier 3 (advanced): + Bridge USD virtual account, cards, brokerage investing.
+//
+// Glider strategy investing (CanInvestTokenized) is deliberately NOT KYC gated:
+// the provider holds and executes the assets, so an unverified user can create,
+// enroll in and fund a strategy from the moment they have an account. Brokerage
+// investing (CanInvest, Alpaca) keeps its identity requirement because the
+// brokerage account is opened in the user's own name.
 func CapabilitiesForTier(tierLevel int) TierCapabilities {
 	caps := TierCapabilities{Tier: tierLevel}
 	if tierLevel >= KYCTierLevelNonKYC {
 		caps.CanDepositCrypto = true
+		caps.CanInvestTokenized = true
 	}
 	if tierLevel >= KYCTierLevelBasic {
 		caps.CanReceiveNGN = true
@@ -344,7 +351,6 @@ func CapabilitiesForTier(tierLevel int) TierCapabilities {
 		caps.CanDepositFiatUSD = true
 		caps.CanUseCard = true
 		caps.CanInvest = true
-		caps.CanInvestTokenized = true
 	}
 	return caps
 }

@@ -120,7 +120,7 @@ func TestSignUpFlow(t *testing.T) {
 	)
 
 	// Setup test router
-	router := setupTestRouter(container)
+	router := setupSignupFlowRouter(container)
 
 	t.Run("Email Signup Flow", func(t *testing.T) {
 		testEmailSignupFlow(t, router, redisClient)
@@ -319,7 +319,7 @@ func stringPtr(s string) *string {
 	return &s
 }
 
-func setupTestRouter(container *di.Container) *gin.Engine {
+func setupSignupFlowRouter(container *di.Container) *gin.Engine {
 	router := gin.New()
 
 	authHandlers := handlers.NewAuthHandlers(
