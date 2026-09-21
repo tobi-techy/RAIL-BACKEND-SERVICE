@@ -105,7 +105,18 @@ type Service struct {
 	bridgeOfframp  BridgeOfframp
 	tapIntentStore TapIntentStore
 	commitment     SpendingCommitmentGuard
+	inflowNotifier InflowNotifier
 	logger         *zap.Logger
+}
+
+// InflowNotifier tells the Python ledger that money arrived.
+//
+// Miriam keeps her own ledger and it is the only thing her Hands layer checks
+// before a movement, so a credit she is never told about is money she cannot see.
+// Go stays the money authority; this is a projection of a credit that has already
+// committed.
+type InflowNotifier interface {
+	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error
 }
 
 // NewService creates a new P2P service
@@ -143,6 +154,9 @@ func (s *Service) SetWalletLookup(w WalletLookup) {
 }
 
 // SetSpendingCommitment wires the self-imposed daily spending cap enforcer.
+// SetInflowNotifier wires the Python-ledger projection.
+func (s *Service) SetInflowNotifier(n InflowNotifier) { s.inflowNotifier = n }
+
 func (s *Service) SetSpendingCommitment(g SpendingCommitmentGuard) {
 	s.commitment = g
 }
@@ -757,6 +771,28 @@ func (s *Service) completeClaim(ctx context.Context, transfer *entities.P2PTrans
 		claimerName = *claimer.FirstName
 	}
 	_ = s.notification.SendP2PClaimed(ctx, transfer.SenderID, claimerName, transfer.Amount)
+
+	// Report the committed credit to Miriam's ledger, so she can see the money the
+	// user just received. Idempotent on the transfer id, so a retry re-reports.
+	//
+	// This belongs HERE and not inside CreditUserFromSystem, which is also the
+	// rollback, cancel and expiry path: reporting from there would book refunds as
+	// income and inflate the user's 70/30 split with their own money coming back.
+	if s.inflowNotifier != nil {
+		if err := s.inflowNotifier.NotifyInflow(
+			ctx, claimerID, "p2p-claim-"+transfer.ID.String(),
+			transfer.Amount.String(), transfer.Currency, desc,
+		); err != nil {
+			// The money has already moved to the claimer, so the claim is not
+			// failed. Return the error so the caller can retry: a retry re-reports
+			// (idempotent) rather than crediting twice.
+			s.logger.Error("Failed to report the P2P claim to the Python ledger",
+				zap.String("transfer_id", transfer.ID.String()),
+				zap.String("claimer_id", claimerID.String()),
+				zap.Error(err))
+			return nil, fmt.Errorf("report p2p claim to the python ledger: %w", err)
+		}
+	}
 
 	return transfer, nil
 }
