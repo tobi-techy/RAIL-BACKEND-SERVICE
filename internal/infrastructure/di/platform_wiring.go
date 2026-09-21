@@ -62,10 +62,11 @@ func (c *Container) initializePlatformMessaging() {
 				logger:       c.ZapLog,
 			}
 
-			// Python-agent delegation: MIRIAM's LLM brain owns messaging chat and
-			// all mutations are confirmed via email OTP before the agent executes
-			// them through Go's REST. Go stays the money authority. Requires Redis
-			// for OTP staging — fail closed to the in-process orchestrator if gone.
+			// Python-agent delegation: MIRIAM's LLM brain owns messaging chat. Money
+			// movements are settled by a confirm_id the Python ledger issued, which
+			// is relayed as a Confirm/Cancel poll; Go executes nothing and holds no
+			// money state. Requires Redis for the staged id — fail closed to the
+			// in-process orchestrator if gone.
 			if cfg := c.Config.PythonAgent; cfg.Enabled && cfg.BaseURL != "" && c.RedisClient != nil &&
 				c.Config.JWT.Secret != "" {
 				c.PythonAgentClient = ai.NewPythonAgentClient(ai.PythonAgentClientConfig{
@@ -75,14 +76,12 @@ func (c *Container) initializePlatformMessaging() {
 					Timeout:   time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
 				}, c.ZapLog)
 				platformOrchestrator.python = c.PythonAgentClient
-				platformOrchestrator.otpStore = ai.NewOtpStore(
+				platformOrchestrator.confirmStore = ai.NewConfirmStore(
 					c.RedisClient,
-					time.Duration(cfg.OTPTTLSeconds)*time.Second,
-					cfg.OTPMaxAttempts,
+					time.Duration(cfg.ConfirmTTLSeconds)*time.Second,
 					c.ZapLog,
 				)
 				platformOrchestrator.userRepo = c.UserRepo
-				platformOrchestrator.emailSvc = c.EmailService
 				c.ZapLog.Info("Platform messaging delegated to Python agent (MIRIAM)",
 					zap.String("base_url", cfg.BaseURL),
 				)
