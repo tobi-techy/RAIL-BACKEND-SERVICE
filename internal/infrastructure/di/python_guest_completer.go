@@ -91,12 +91,10 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 	}
 
 	res := &platform.GuestResult{Text: strings.TrimSpace(resp.Response)}
-	if len(resp.Cards) > 0 {
-		a.logger.Warn("python guest turn returned confirmation cards; ignoring them",
-			zap.String("sender", sender.SenderID),
-			zap.Int("cards", len(resp.Cards)))
-		resp.RequiresConfirmation = false
-	}
+
+	// No confirmation handling here: a guest has no account, so Python cannot
+	// issue a challenge a guest could settle. The cards this used to drop are
+	// part of the deleted approval protocol.
 
 	// "Picked from the Go guest brain": the agent recorded the person's name.
 	// Surface it as note_detail so the deterministic executor tracks it in

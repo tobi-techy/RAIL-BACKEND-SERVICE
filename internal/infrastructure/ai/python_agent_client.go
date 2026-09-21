@@ -16,16 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// PythonChatCard mirrors the Python agent's action_confirmation card. Go never
-// executes these mutations itself — it stages an email OTP, then replays the
-// card back to Python as an approved_action once the code is verified.
-type PythonChatCard struct {
-	Type      string                 `json:"type"`
-	Tool      string                 `json:"tool"`
-	Arguments map[string]interface{} `json:"arguments"`
-	Summary   string                 `json:"summary"`
-}
-
 // PythonChatPoll mirrors an iMessage poll rendered by the Python agent during
 // conversational onboarding. Go surfaces it as a platform poll; votes come back
 // as messages with IsPollVote set and are forwarded by message text.
@@ -55,25 +45,25 @@ type PythonOnboardingStatus struct {
 }
 
 // PythonChatResponse mirrors the Python agent's /api/v1/chat response payload.
+//
+// There is no requires_confirmation and no cards. A money turn instead carries a
+// confirm_id that Hands issued, and that id is the only thing that can settle
+// the movement: Go renders it as a Confirm/Cancel poll and sends the id back
+// with the user's answer. The earlier approval-card protocol — stage a card,
+// email a 6-digit code, replay the card — is deleted, because it put the
+// confirmation authority in Go's approval store rather than in the ledger.
 type PythonChatResponse struct {
-	Response             string                  `json:"response"`
-	ConversationID       string                  `json:"conversation_id"`
-	RequiresConfirmation bool                    `json:"requires_confirmation"`
-	Cards                []PythonChatCard        `json:"cards"`
-	Poll                 *PythonChatPoll         `json:"poll,omitempty"`
-	Onboarding           *PythonOnboardingStatus `json:"onboarding,omitempty"`
-	Name                 string                  `json:"name,omitempty"`
-	Messages             []string                `json:"messages,omitempty"`
-	Reaction             string                  `json:"reaction,omitempty"`
-	Share                *PythonChatShare        `json:"share,omitempty"`
-}
-
-// PythonApprovedAction is one card replayed back to Python for execution after
-// the user's email OTP step-up succeeds. The Python agent executes the mutation
-// through its Go REST client; Go never holds the money path.
-type PythonApprovedAction struct {
-	Tool      string                 `json:"tool"`
-	Arguments map[string]interface{} `json:"arguments"`
+	Response       string                  `json:"response"`
+	ConversationID string                  `json:"conversation_id"`
+	ConfirmID      string                  `json:"confirm_id"`
+	Decision       map[string]interface{}  `json:"decision"`
+	Receipt        map[string]interface{}  `json:"receipt"`
+	Poll           *PythonChatPoll         `json:"poll,omitempty"`
+	Onboarding     *PythonOnboardingStatus `json:"onboarding,omitempty"`
+	Name           string                  `json:"name,omitempty"`
+	Messages       []string                `json:"messages,omitempty"`
+	Reaction       string                  `json:"reaction,omitempty"`
+	Share          *PythonChatShare        `json:"share,omitempty"`
 }
 
 // PythonChatDocument is a linked statement scan forwarded from Go's durable
@@ -85,13 +75,18 @@ type PythonChatDocument struct {
 }
 
 // pythonChatRequest is the request body sent to the Python agent.
+//
+// A confirmation tap carries confirm_id plus yes; yes=false is a decline and
+// closes the challenge without moving anything. Nothing else in the body can
+// settle an action, and a bare "yes" sent as a message does not.
 type pythonChatRequest struct {
-	Message         string                 `json:"message"`
-	ConversationID  string                 `json:"conversation_id"`
-	ApprovedActions []PythonApprovedAction `json:"approved_actions,omitempty"`
-	IsPollVote      bool                   `json:"is_poll_vote,omitempty"`
-	PollTitle       string                 `json:"poll_title,omitempty"`
-	Document        *PythonChatDocument    `json:"document,omitempty"`
+	Message        string              `json:"message"`
+	ConversationID string              `json:"conversation_id"`
+	ConfirmID      string              `json:"confirm_id,omitempty"`
+	Yes            *bool               `json:"yes,omitempty"`
+	IsPollVote     bool                `json:"is_poll_vote,omitempty"`
+	PollTitle      string              `json:"poll_title,omitempty"`
+	Document       *PythonChatDocument `json:"document,omitempty"`
 }
 
 // PythonProactiveOutcome mirrors the Python agent's /api/v1/proactive/analyze
@@ -150,7 +145,10 @@ func NewPythonAgentClient(cfg PythonAgentClientConfig, logger *zap.Logger) *Pyth
 // `conversationID` must be namespaced per platform+thread so agent memory never
 // collides across channels (e.g. "platform:imessage:thread-abc").
 func (c *PythonAgentClient) Chat(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string) (*PythonChatResponse, error) {
-	return c.ChatWithApprovedActions(ctx, userID, email, role, conversationID, message, nil)
+	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
+		Message:        message,
+		ConversationID: conversationID,
+	})
 }
 
 // ChatAsGuest advances a pre-signup (guest) conversation on the Python brain.
@@ -178,14 +176,16 @@ func (c *PythonAgentClient) ChatAsGuestPollVote(ctx context.Context, userID uuid
 	})
 }
 
-// ChatWithApprovedActions is Chat plus the confirmation replay: after the user
-// proves their email OTP, Go sends the staged cards back as approved_actions so
-// the agent executes them (via Go's REST) and returns the final response.
-func (c *PythonAgentClient) ChatWithApprovedActions(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string, approved []PythonApprovedAction) (*PythonChatResponse, error) {
+// ChatConfirm settles a challenge the user tapped, by the confirm_id Hands
+// issued. `yes=false` declines it and closes the challenge without moving
+// anything. This is the only way a movement is authorised: the id comes from the
+// response that asked the question, and the ledger holds the challenge it names.
+func (c *PythonAgentClient) ChatConfirm(ctx context.Context, userID uuid.UUID, email, role, conversationID, confirmID string, yes bool) (*PythonChatResponse, error) {
+	answer := yes
 	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
-		Message:         message,
-		ConversationID:  conversationID,
-		ApprovedActions: approved,
+		ConversationID: conversationID,
+		ConfirmID:      confirmID,
+		Yes:            &answer,
 	})
 }
 
