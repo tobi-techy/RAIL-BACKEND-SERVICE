@@ -115,6 +115,9 @@ type mockP2PRepo struct {
 	releasedID    uuid.UUID
 	acquiredByID  []uuid.UUID
 	acquiredToken []string
+	// pending is what GetPendingByIdentifier hands back; nil keeps the historic
+	// "no pending transfers" behaviour for every test that does not set it.
+	pending []*entities.P2PTransfer
 }
 
 func (m *mockP2PRepo) Create(ctx context.Context, transfer *entities.P2PTransfer) error {
@@ -135,7 +138,7 @@ func (m *mockP2PRepo) GetBySender(ctx context.Context, senderID uuid.UUID, limit
 	return nil, nil
 }
 func (m *mockP2PRepo) GetPendingByIdentifier(ctx context.Context, email, phone string) ([]*entities.P2PTransfer, error) {
-	return nil, nil
+	return m.pending, nil
 }
 func (m *mockP2PRepo) GetExpired(ctx context.Context) ([]*entities.P2PTransfer, error) {
 	return nil, nil
@@ -419,3 +422,104 @@ func TestP2PService_ClaimByToken_RejectsWrongRecipient(t *testing.T) {
 	assert.False(t, transferExec.creditCalled)
 	assert.Nil(t, repo.updated)
 }
+
+// ---------------------------------------------------------------------------
+// The Python-ledger projection
+//
+// A credited P2P claim must be reported to Miriam's ledger, because that ledger
+// is the only thing her Hands layer checks before a movement. Reporting happens
+// at the claim, never inside CreditUserFromSystem: that helper is also the
+// rollback, cancel and expiry path, and reporting from there would book refunds
+// as income.
+// ---------------------------------------------------------------------------
+
+type recordingInflowNotifier struct {
+	calls []inflowCall
+	err   error
+}
+
+type inflowCall struct {
+	userID    uuid.UUID
+	paymentID string
+	amount    string
+	currency  string
+	sourceRaw string
+}
+
+func (r *recordingInflowNotifier) NotifyInflow(_ context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error {
+	r.calls = append(r.calls, inflowCall{userID, paymentID, amount, currency, sourceRaw})
+	return r.err
+}
+
+func TestP2PService_ClaimPending_ReportsTheCreditToMiriam(t *testing.T) {
+	claimerID := uuid.New()
+	transferID := uuid.New()
+	transfer := &entities.P2PTransfer{
+		ID:         transferID,
+		SenderID:   uuid.New(),
+		Amount:     decimal.NewFromInt(5000),
+		Currency:   "NGN",
+		Status:     entities.P2PStatusPending,
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		ClaimToken: strPtr("claim-token-1"),
+	}
+	repo := &mockP2PRepo{transfer: transfer, pending: []*entities.P2PTransfer{transfer}}
+	transferExec := &mockP2PTransferExecutor{}
+	notifier := &recordingInflowNotifier{}
+
+	svc := p2pservice.NewService(
+		repo,
+		&mockP2PUserLookup{usersByID: map[uuid.UUID]*entities.UserProfile{}},
+		&mockP2PBalance{balance: decimal.NewFromInt(100)},
+		transferExec,
+		&mockP2PNotification{},
+		zap.NewNop(),
+	)
+	svc.SetInflowNotifier(notifier)
+
+	claimed, err := svc.ClaimPendingForUser(context.Background(), claimerID, "claimer@example.com", "")
+	require.NoError(t, err)
+	require.Equal(t, 1, claimed)
+	require.True(t, transferExec.creditCalled, "the credit must happen")
+
+	require.Len(t, notifier.calls, 1, "the credit must be reported exactly once")
+	call := notifier.calls[0]
+	assert.Equal(t, claimerID, call.userID)
+	// The transfer id is the idempotency key, so a retry re-reports rather than
+	// crediting a second time.
+	assert.Equal(t, "p2p-claim-"+transferID.String(), call.paymentID)
+	assert.Equal(t, "5000", call.amount)
+	assert.Equal(t, "NGN", call.currency)
+}
+
+func TestP2PService_ClaimPending_WithoutANotifierStillClaims(t *testing.T) {
+	// The projection is optional: an unwired deployment credits exactly as before.
+	claimerID := uuid.New()
+	transferID := uuid.New()
+	transfer := &entities.P2PTransfer{
+		ID:         transferID,
+		SenderID:   uuid.New(),
+		Amount:     decimal.NewFromInt(100),
+		Currency:   "NGN",
+		Status:     entities.P2PStatusPending,
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		ClaimToken: strPtr("claim-token-2"),
+	}
+	repo := &mockP2PRepo{transfer: transfer, pending: []*entities.P2PTransfer{transfer}}
+	transferExec := &mockP2PTransferExecutor{}
+
+	svc := p2pservice.NewService(
+		repo,
+		&mockP2PUserLookup{usersByID: map[uuid.UUID]*entities.UserProfile{}},
+		&mockP2PBalance{balance: decimal.NewFromInt(100)},
+		transferExec,
+		&mockP2PNotification{},
+		zap.NewNop(),
+	)
+
+	claimed, err := svc.ClaimPendingForUser(context.Background(), claimerID, "claimer@example.com", "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, claimed)
+}
+
+func strPtr(s string) *string { return &s }

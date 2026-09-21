@@ -111,6 +111,28 @@ type OwnerSigner interface {
 	SignSolanaTransaction(ctx context.Context, userID uuid.UUID, unsignedTx string) (string, error)
 }
 
+// VaultObserver is the retirement vault's control surface over vault-linked
+// portfolios. It is optional: when nil, no portfolio belongs to a vault and
+// behaviour is unchanged.
+//
+// It exists so the Roth lock can never be bypassed. A vault-linked portfolio
+// has exactly one way out — an authorization issued by the vault — and this port
+// is where that authorization is checked, consumed and settled.
+type VaultObserver interface {
+	// IsVaultEnrollment reports whether a portfolio belongs to a retirement vault.
+	IsVaultEnrollment(ctx context.Context, enrollmentID uuid.UUID) (bool, error)
+	// Authorize validates and consumes a single-use withdrawal authorization and
+	// returns the plan, including the Rail-controlled settlement account the
+	// withdrawal must be sent to. Any error means the withdrawal is refused.
+	Authorize(ctx context.Context, enrollmentID uuid.UUID, grossUSD decimal.Decimal, key string) (*entities.VaultWithdrawalPlan, error)
+	// OnEnrollmentSynced is called after a successful provider sync so the vault
+	// can record a fresh valuation snapshot.
+	OnEnrollmentSynced(ctx context.Context, enrollment *entities.InvestmentEnrollment) error
+	// OnWithdrawalFilled is called when a withdrawal execution fills, so the
+	// vault can settle the ledger split and commit the penalty.
+	OnWithdrawalFilled(ctx context.Context, execution *entities.InvestmentExecution) error
+}
+
 // ---------------------------------------------------------------------------
 // Funding port + repositories
 // ---------------------------------------------------------------------------

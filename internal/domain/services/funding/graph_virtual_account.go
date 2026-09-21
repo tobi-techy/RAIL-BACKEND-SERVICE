@@ -89,6 +89,7 @@ type GraphVirtualAccountService struct {
 	graphClient         GraphClient
 	virtualAccountRepo  GraphVirtualAccountRepository
 	depositRepo         DepositRepository
+	inflowNotifier      InflowNotifier
 	userProvider        GraphUserProvider
 	allocationService   AllocationService
 	ledgerIntegration   LedgerIntegration
@@ -147,6 +148,42 @@ func (s *GraphVirtualAccountService) SetGameplayHooks(gh FundingGameplayHooks) {
 }
 
 // SetCurrencyRates sets the FX rate provider used for NGN→USDC fallback pricing.
+// SetInflowNotifier wires the Python-ledger projection for inbound Naira.
+func (s *GraphVirtualAccountService) SetInflowNotifier(n InflowNotifier) {
+	s.inflowNotifier = n
+}
+
+// notifyNairaInflow reports a committed NGN credit to Miriam's ledger. Called
+// only after the ledger split has committed, and idempotent on the deposit's
+// idempotency key so a Graph webhook replay re-reports rather than double-counts.
+func (s *GraphVirtualAccountService) notifyNairaInflow(ctx context.Context, userID uuid.UUID, paymentID string, ngnAmount decimal.Decimal, sourceRaw string) error {
+	if s.inflowNotifier == nil {
+		return nil
+	}
+	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, ngnAmount.String(), "NGN", sourceRaw)
+}
+
+// replayNairaInflow re-reports a NGN credit that was already processed, using the
+// NGN source amount recorded on the deposit row.
+//
+// Only the replay path needs this: on a first delivery the caller reports with
+// the amount it just parsed. A report that failed last time has no other way back
+// in, because the credit itself short-circuits on the idempotency check.
+func (s *GraphVirtualAccountService) replayNairaInflow(ctx context.Context, deposit *entities.Deposit) error {
+	if deposit == nil || deposit.SourceAmount == nil {
+		return nil
+	}
+	if deposit.SourceCurrency == nil || !strings.EqualFold(*deposit.SourceCurrency, "NGN") {
+		return nil
+	}
+	if err := s.notifyNairaInflow(ctx, deposit.UserID, deposit.IdempotencyKey, *deposit.SourceAmount, "NGN virtual account credit "+deposit.TxHash); err != nil {
+		s.logger.Error("Failed to re-report the NGN deposit to the Python ledger",
+			"deposit_id", deposit.ID, "error", err)
+		return fmt.Errorf("re-report ngn deposit to the python ledger: %w", err)
+	}
+	return nil
+}
+
 func (s *GraphVirtualAccountService) SetCurrencyRates(r CurrencyRateProvider) {
 	s.currencyRates = r
 }
@@ -606,6 +643,14 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 			switch existing.Status {
 			case "confirmed", "broker_funded", "off_ramp_initiated", "off_ramp_completed":
 				s.logger.Info("NGN deposit already processed (idempotent)", "idempotency_key", idempotencyKey)
+				// Re-report the credit. A Graph replay lands here, and so does the
+				// retry that follows a report that did not land — this is the only
+				// path where such a retry can recover, because the credit itself
+				// short-circuits above. Idempotent on the same key, so reporting a
+				// credit that was already reported changes nothing.
+				if err := s.replayNairaInflow(ctx, existing); err != nil {
+					return err
+				}
 				return nil
 			default:
 				depositID = existing.ID
@@ -743,6 +788,19 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 			"user_id", userID, "deposit_id", depositID, "error", err)
 	}
 
+	// Report the committed credit to Miriam's ledger, so she can see the Naira she
+	// will be asked to spend from. Only after the split has committed, and
+	// idempotent on the deposit's idempotency key.
+	if err := s.notifyNairaInflow(ctx, userID, idempotencyKey, ngnAmount, "NGN virtual account credit "+txRef); err != nil {
+		// The money is credited and split; this is not a failed deposit. Return the
+		// error so the webhook is retried, because a retry re-reports (idempotent)
+		// while swallowing it would leave Miriam's ledger quietly short of money
+		// the user can plainly see.
+		s.logger.Error("Failed to report the NGN deposit to the Python ledger",
+			"user_id", userID, "deposit_id", depositID, "error", err)
+		return fmt.Errorf("report ngn deposit to the python ledger: %w", err)
+	}
+
 	if s.notificationService != nil {
 		if err := s.notificationService.NotifyDepositConfirmed(ctx, userID, usdcAmount.StringFixed(2), "NGN", txRef); err != nil {
 			s.logger.Warn("Failed to send NGN deposit notification", "user_id", userID, "error", err)
@@ -756,12 +814,12 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 		"user_id", userID, "ngn_amount", ngnAmount.String(), "usdc_amount", usdcAmount.String(), "deposit_id", depositID)
 
 	analytics.TrackEvent(ctx, userID.String(), analytics.EventDepositCompleted, map[string]any{
-		"amount":        usdcAmount.InexactFloat64(),
-		"currency":      "USDC",
-		"provider":      "graph",
-		"method":        "ngn_fiat",
-		"ngn_amount":    ngnAmount.InexactFloat64(),
-		"deposit_id":    depositID.String(),
+		"amount":     usdcAmount.InexactFloat64(),
+		"currency":   "USDC",
+		"provider":   "graph",
+		"method":     "ngn_fiat",
+		"ngn_amount": ngnAmount.InexactFloat64(),
+		"deposit_id": depositID.String(),
 	})
 
 	return nil

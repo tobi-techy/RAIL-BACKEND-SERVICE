@@ -2412,6 +2412,12 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Investment (Glider) services initialization failed, investing disabled", zap.Error(err))
 	}
 
+	// Initialize the retirement vault. It must come after the investment engine
+	// (which it gates) and the allocation service (which it hooks).
+	if err := c.initializeVaultServices(sqlxDB); err != nil {
+		c.ZapLog.Warn("Retirement vault initialization failed, vault disabled", zap.Error(err))
+	}
+
 	// Initialize instant funding + ChainRails cross-chain deposit services
 	c.initializeInstantFundingServices(sqlxDB)
 

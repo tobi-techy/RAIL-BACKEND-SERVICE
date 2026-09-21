@@ -85,6 +85,25 @@ func (c *Container) initializePlatformMessaging() {
 				c.ZapLog.Info("Platform messaging delegated to Python agent (MIRIAM)",
 					zap.String("base_url", cfg.BaseURL),
 				)
+
+				// Miriam keeps her own ledger, and it is the only thing her Hands
+				// layer checks before a movement — so every genuine credit has to be
+				// reported to it, or she will deny a spend the user can plainly
+				// afford. Go still credits first; these are projections of committed
+				// credits, never the source.
+				//
+				// The client itself skips non-NGN amounts, because her ledger is
+				// single-currency: the rule lives in one place rather than at each
+				// call site, where it could be forgotten.
+				if c.FundingService != nil {
+					c.FundingService.SetInflowNotifier(c.PythonAgentClient)
+				}
+				if c.GraphVirtualAccountService != nil {
+					c.GraphVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
+				}
+				if c.P2PService != nil {
+					c.P2PService.SetInflowNotifier(c.PythonAgentClient)
+				}
 			}
 
 			bridgeBaseURL := strings.TrimRight(c.Config.Platform.BridgeBaseURL, "/")
