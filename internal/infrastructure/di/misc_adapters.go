@@ -165,12 +165,12 @@ type orchestratorAdapter struct {
 	convRepo     *repositories.ConversationRepository
 	logger       *zap.Logger
 
-	// Python agent delegation (when Enabled, HandlePlatformMessage forwards to
-	// the Python agent and all mutations are confirmed via email OTP).
-	python   *ai.PythonAgentClient
-	otpStore *ai.OtpStore
-	userRepo *repositories.UserRepository // for email + KYC-derived role
-	emailSvc emailOTPSender               // SendCustomEmail for OTP delivery
+	// Python agent delegation (when wired, HandlePlatformMessage forwards to the
+	// Python agent and money movements are settled by a confirm_id its ledger
+	// issued, surfaced as a Confirm/Cancel poll).
+	python       *ai.PythonAgentClient
+	confirmStore *ai.ConfirmStore
+	userRepo     *repositories.UserRepository // for email + KYC-derived role
 }
 
 func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
@@ -207,10 +207,10 @@ func (a *orchestratorAdapter) ConfirmPlatformAction(ctx context.Context, userID,
 		return nil, fmt.Errorf("resolve conversation: %w", err)
 	}
 
-	// Python-delegated confirmation: a bare yes/vote can't pass the email OTP
-	// step-up — ask for the code instead of executing.
-	if reply, handled := a.confirmVoteWhenOTPPending(ctx, uid, cid); handled {
-		return reply, nil
+	// Python-delegated confirmation: the tap settles the challenge the ledger
+	// issued, named by the id staged for this thread. Go holds no money state.
+	if confirmID, ok := a.pendingPythonConfirm(ctx, cid); ok {
+		return a.settlePythonConfirm(ctx, uid, cid, threadID, plat, confirmID, true)
 	}
 
 	if a.orchestrator == nil {
@@ -245,8 +245,10 @@ func (a *orchestratorAdapter) HasPendingPlatformAction(ctx context.Context, user
 	if err != nil {
 		return false
 	}
-	// Python-delegated confirmations are OTP-staged; report them too.
-	if a.pythonDelegated() && a.otpStore.DryPeek(ctx, cid) {
+	// A Python challenge is reported as pending too, so the Confirm/Cancel poll
+	// and the bare YES/NO fallback both resolve to a settlement rather than to
+	// normal chat.
+	if _, ok := a.pendingPythonConfirm(ctx, cid); ok {
 		return true
 	}
 	if a.orchestrator == nil {
@@ -265,9 +267,11 @@ func (a *orchestratorAdapter) CancelPlatformAction(ctx context.Context, userID, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve conversation: %w", err)
 	}
-	// Drop any Python-staged OTP confirmation; also cancel a Go-native pending
-	// action if one somehow exists for the thread.
-	a.cancelOTPWhenPresent(ctx, cid)
+	// A declined Python challenge is reported back to the ledger, so it is closed
+	// rather than left open for a later tap.
+	if confirmID, ok := a.pendingPythonConfirm(ctx, cid); ok {
+		return a.settlePythonConfirm(ctx, uid, cid, threadID, plat, confirmID, false)
+	}
 	if a.orchestrator == nil {
 		return &platform.PlatformReply{Text: "No problem — I've cancelled that."}, nil
 	}

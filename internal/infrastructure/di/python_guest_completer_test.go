@@ -188,11 +188,14 @@ func TestPythonGuestCompleter_DeclinedSetupStaysConversational(t *testing.T) {
 	}
 }
 
-func TestPythonGuestCompleter_CardsDropped(t *testing.T) {
+func TestPythonGuestCompleter_ConfirmIDNeverSurfacesAsAnEffect(t *testing.T) {
+	// A guest has no account, so there is no ledger to issue a challenge against
+	// and nothing a guest could settle. If one ever came back it must not become
+	// a guest effect — the signup funnel is the only thing a guest turn may
+	// trigger, and only on an explicit consent.
 	srv, _ := servePythonChat(t, &ai.PythonChatResponse{
-		Response:             "parts",
-		RequiresConfirmation: true,
-		Cards:                []ai.PythonChatCard{{Tool: "transfer_funds"}},
+		Response:  "parts",
+		ConfirmID: "confirm_abc",
 	})
 	adapter := &pythonGuestCompleterAdapter{
 		python: ai.NewPythonAgentClient(ai.PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "t"}, zap.NewNop()),
@@ -209,7 +212,7 @@ func TestPythonGuestCompleter_CardsDropped(t *testing.T) {
 		t.Fatalf("unexpected text %q", res.Text)
 	}
 	if len(res.ToolCalls) != 0 {
-		t.Fatalf("cards must never surface as guest effects, got %+v", res.ToolCalls)
+		t.Fatalf("a confirm id must never surface as a guest effect, got %+v", res.ToolCalls)
 	}
 }
 
@@ -296,6 +299,8 @@ type pythonChatBody struct {
 	Message    string `json:"message"`
 	IsPollVote bool   `json:"is_poll_vote"`
 	PollTitle  string `json:"poll_title"`
+	ConfirmID  string `json:"confirm_id"`
+	Yes        *bool  `json:"yes"`
 }
 
 // servePythonChatCapturing records the request bodies the adapter posts.

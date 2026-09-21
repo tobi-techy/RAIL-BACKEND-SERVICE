@@ -893,8 +893,7 @@ type PythonAgentConfig struct {
 	Enabled            bool   `mapstructure:"enabled"`              // Delegate platform chat to the Python agent
 	BaseURL            string `mapstructure:"base_url"`             // Python agent HTTP base (e.g. http://localhost:8000)
 	JWTTTLSeconds      int    `mapstructure:"jwt_ttl_seconds"`      // Per-user token TTL (default 120)
-	OTPTTLSeconds      int    `mapstructure:"otp_ttl_seconds"`      // Email OTP validity (default 600 = 10 min)
-	OTPMaxAttempts     int    `mapstructure:"otp_max_attempts"`     // Wrong-code attempts before expiry (default 3)
+	ConfirmTTLSeconds  int    `mapstructure:"confirm_ttl_seconds"`  // How long a staged confirm_id stays tappable (default 600 = 10 min)
 	HTTPTimeoutSeconds int    `mapstructure:"http_timeout_seconds"` // Agent call timeout (default 60)
 }
 
@@ -1390,8 +1389,7 @@ func setDefaults() {
 	viper.SetDefault("python_agent.enabled", true)
 	viper.SetDefault("python_agent.base_url", "")
 	viper.SetDefault("python_agent.jwt_ttl_seconds", 120)
-	viper.SetDefault("python_agent.otp_ttl_seconds", 600)
-	viper.SetDefault("python_agent.otp_max_attempts", 3)
+	viper.SetDefault("python_agent.confirm_ttl_seconds", 600)
 	viper.SetDefault("python_agent.http_timeout_seconds", 60)
 }
 
@@ -1450,14 +1448,9 @@ func overrideFromEnv() error {
 			viper.Set("python_agent.jwt_ttl_seconds", ttl)
 		}
 	}
-	if v := os.Getenv("PYTHON_AGENT_OTP_TTL_SECONDS"); v != "" {
+	if v := os.Getenv("PYTHON_AGENT_CONFIRM_TTL_SECONDS"); v != "" {
 		if ttl, err := strconv.Atoi(v); err == nil {
-			viper.Set("python_agent.otp_ttl_seconds", ttl)
-		}
-	}
-	if v := os.Getenv("PYTHON_AGENT_OTP_MAX_ATTEMPTS"); v != "" {
-		if attempts, err := strconv.Atoi(v); err == nil {
-			viper.Set("python_agent.otp_max_attempts", attempts)
+			viper.Set("python_agent.confirm_ttl_seconds", ttl)
 		}
 	}
 	if v := os.Getenv("PYTHON_AGENT_HTTP_TIMEOUT_SECONDS"); v != "" {
