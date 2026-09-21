@@ -65,6 +65,11 @@ type Deps struct {
 	Audit         AuditRepository
 	Limits        LimitsRepository
 	Users         UserProfileReader
+
+	// VaultObserver is optional. It is set when the retirement vault is enabled,
+	// and it is the only thing that can authorise a withdrawal from a
+	// vault-linked portfolio.
+	VaultObserver VaultObserver
 }
 
 // Service is the deterministic investment infrastructure. Handlers, the sync
@@ -88,6 +93,7 @@ type Service struct {
 	audit         AuditRepository
 	limits        LimitsRepository
 	users         UserProfileReader
+	vaultObserver VaultObserver
 
 	validator *Validator
 	policy    *Policy
@@ -120,6 +126,7 @@ func NewService(d Deps) *Service {
 		audit:         d.Audit,
 		limits:        d.Limits,
 		users:         d.Users,
+		vaultObserver: d.VaultObserver,
 		resolver:      resolverFor(d.Assets),
 		clock:         func() time.Time { return time.Now().UTC() },
 	}
@@ -131,6 +138,10 @@ func NewService(d Deps) *Service {
 
 // Enabled reports whether the investment feature is configured on.
 func (s *Service) Enabled() bool { return s.cfg.Enabled }
+
+// SetVaultObserver wires the retirement vault's control surface. Called once at
+// startup; nil keeps vault behaviour entirely off.
+func (s *Service) SetVaultObserver(observer VaultObserver) { s.vaultObserver = observer }
 
 // SetClock overrides the service clock (tests).
 func (s *Service) SetClock(now func() time.Time) {

@@ -27,7 +27,7 @@ func NewInvestmentEnrollmentRepository(db *sqlx.DB) *InvestmentEnrollmentReposit
 }
 
 const investmentEnrollmentColumns = `id, user_id, strategy_id, strategy_version, glider_portfolio_id,
-	glider_strategy_id, chain, owner_account_id, agent_account_id, deposit_account_id, swig_role_id,
+	glider_strategy_id, vault_id, chain, owner_account_id, agent_account_id, deposit_account_id, swig_role_id,
 	status, automation_status, next_due_at, last_rebalance_at, total_value_usd, positions_as_of,
 	last_sync_error, created_at, updated_at, closed_at`
 
@@ -44,12 +44,12 @@ func (r *InvestmentEnrollmentRepository) Create(ctx context.Context, enrollment 
 
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO investment_enrollments (id, user_id, strategy_id, strategy_version, glider_portfolio_id,
-			glider_strategy_id, chain, owner_account_id, agent_account_id, deposit_account_id, swig_role_id,
+			glider_strategy_id, vault_id, chain, owner_account_id, agent_account_id, deposit_account_id, swig_role_id,
 			status, automation_status, next_due_at, last_rebalance_at, total_value_usd, positions_as_of,
 			last_sync_error, created_at, updated_at, closed_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
 		enrollment.ID, enrollment.UserID, enrollment.StrategyID, enrollment.StrategyVersion,
-		enrollment.GliderPortfolioID, enrollment.GliderStrategyID, enrollment.Chain,
+		enrollment.GliderPortfolioID, enrollment.GliderStrategyID, enrollment.VaultID, enrollment.Chain,
 		enrollment.OwnerAccountID, enrollment.AgentAccountID, enrollment.DepositAccountID, enrollment.SwigRoleID,
 		string(enrollment.Status), enrollment.AutomationStatus, enrollment.NextDueAt, enrollment.LastRebalanceAt,
 		enrollment.TotalValueUSD, enrollment.PositionsAsOf, enrollment.LastSyncError,
@@ -69,17 +69,17 @@ func (r *InvestmentEnrollmentRepository) Update(ctx context.Context, enrollment 
 
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE investment_enrollments SET
-			strategy_version = $2, glider_portfolio_id = $3, glider_strategy_id = $4, chain = $5,
-			owner_account_id = $6, agent_account_id = $7, deposit_account_id = $8, swig_role_id = $9,
-			status = $10, automation_status = $11, next_due_at = $12, last_rebalance_at = $13,
-			total_value_usd = $14, positions_as_of = $15, last_sync_error = $16,
-			updated_at = $17, closed_at = $18
+			strategy_version = $2, glider_portfolio_id = $3, glider_strategy_id = $4, vault_id = $5, chain = $6,
+			owner_account_id = $7, agent_account_id = $8, deposit_account_id = $9, swig_role_id = $10,
+			status = $11, automation_status = $12, next_due_at = $13, last_rebalance_at = $14,
+			total_value_usd = $15, positions_as_of = $16, last_sync_error = $17,
+			updated_at = $18, closed_at = $19
 		WHERE id = $1`,
 		enrollment.ID, enrollment.StrategyVersion, enrollment.GliderPortfolioID, enrollment.GliderStrategyID,
-		enrollment.Chain, enrollment.OwnerAccountID, enrollment.AgentAccountID, enrollment.DepositAccountID,
-		enrollment.SwigRoleID, string(enrollment.Status), enrollment.AutomationStatus, enrollment.NextDueAt,
-		enrollment.LastRebalanceAt, enrollment.TotalValueUSD, enrollment.PositionsAsOf, enrollment.LastSyncError,
-		enrollment.UpdatedAt, enrollment.ClosedAt)
+		enrollment.VaultID, enrollment.Chain, enrollment.OwnerAccountID, enrollment.AgentAccountID,
+		enrollment.DepositAccountID, enrollment.SwigRoleID, string(enrollment.Status), enrollment.AutomationStatus,
+		enrollment.NextDueAt, enrollment.LastRebalanceAt, enrollment.TotalValueUSD, enrollment.PositionsAsOf,
+		enrollment.LastSyncError, enrollment.UpdatedAt, enrollment.ClosedAt)
 	if err != nil {
 		return fmt.Errorf("update investment enrollment: %w", err)
 	}

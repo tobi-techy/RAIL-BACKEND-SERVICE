@@ -72,6 +72,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/twofa"
 	"github.com/rail-service/rail_service/internal/domain/services/umbrawallet"
 	usagesvc "github.com/rail-service/rail_service/internal/domain/services/usage"
+	vaultsvc "github.com/rail-service/rail_service/internal/domain/services/vault"
 	waitlistsvc "github.com/rail-service/rail_service/internal/domain/services/waitlist"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
@@ -345,6 +346,12 @@ type Container struct {
 	InvestmentAuditRepo         *repositories.InvestmentAuditRepository
 	InvestmentLimitsRepo        *repositories.InvestmentLimitsRepository
 	InvestmentUserProfileReader *repositories.InvestmentUserProfileReader
+
+	// Retirement Vault Services — the locked, dollar-denominated retirement
+	// sleeve. It gates vault-linked portfolio withdrawals and receives the
+	// automatic-savings hook from the allocation split.
+	VaultRepo    *repositories.VaultRepository
+	VaultService *vaultsvc.Service
 
 	// Card Services
 	CardRepo    *repositories.CardRepository

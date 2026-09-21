@@ -352,6 +352,47 @@ func (s *Service) enrollWithProvider(
 	return enrollment, nil
 }
 
+// Fund moves additional money into an existing portfolio. It is the top-up
+// primitive the retirement vault uses for contributions: enrollment already
+// created the portfolio, so this only has to move and record the money.
+func (s *Service) Fund(
+	ctx context.Context,
+	userID, enrollmentID uuid.UUID,
+	amountUSD decimal.Decimal,
+	source, idempotencyKey string,
+	actor entities.InvestmentActor,
+) (*entities.InvestmentFundingTransfer, error) {
+	if !s.cfg.Enabled {
+		return nil, ErrDisabled
+	}
+	if !amountUSD.GreaterThan(decimal.Zero) {
+		return nil, fmt.Errorf("%w: amount_usd must be greater than zero", ErrValidationFailed)
+	}
+	enrollment, err := s.enrollments.GetByID(ctx, enrollmentID)
+	if err != nil {
+		return nil, fmt.Errorf("get enrollment: %w", err)
+	}
+	if enrollment == nil || enrollment.UserID != userID {
+		return nil, ErrNotFound
+	}
+	if enrollment.Status == entities.InvestmentEnrollmentClosed {
+		return nil, fmt.Errorf("%w: this portfolio is closed", ErrValidationFailed)
+	}
+
+	resolved := normaliseFundingSource(source)
+	if s.funding != nil {
+		available, err := s.funding.Available(ctx, userID, resolved)
+		if err != nil {
+			return nil, fmt.Errorf("check available balance: %w", err)
+		}
+		if available.LessThan(amountUSD) {
+			return nil, fmt.Errorf("%w: you have %s available to save, which is less than %s",
+				ErrPolicyBlocked, available.StringFixed(2), amountUSD.StringFixed(2))
+		}
+	}
+	return s.fundEnrollment(ctx, userID, enrollment, amountUSD, resolved, idempotencyKey, actor)
+}
+
 // fundEnrollment moves money into the portfolio and records both legs.
 func (s *Service) fundEnrollment(
 	ctx context.Context,

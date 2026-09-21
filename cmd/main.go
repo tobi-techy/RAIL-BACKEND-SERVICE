@@ -7,15 +7,20 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/app"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	investmentsvc "github.com/rail-service/rail_service/internal/domain/services/investment"
 	blendadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
+	glider "github.com/rail-service/rail_service/internal/infrastructure/adapters/glider"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/internal/recovery"
 	"github.com/rail-service/rail_service/pkg/alerting"
 	"github.com/shopspring/decimal"
@@ -67,6 +72,12 @@ func main() {
 		case "diagnose-yield":
 			if err := runDiagnoseYield(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "diagnose-yield failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "seed-catalog":
+			if err := runSeedCatalog(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "seed-catalog failed: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -391,6 +402,126 @@ func diagnoseYield(ctx context.Context, userID string, out io.Writer) error {
 	return recovery.DiagnoseYield(ctx, dbx, blendClient, circleClient, recovery.DiagnoseParams{
 		UserID: userID,
 	}, out)
+}
+
+// runSeedCatalog discovers the provider's published strategies and seeds Rail's
+// asset catalog from the assets those strategies actually reference.
+//
+// This is a prerequisite, not a nicety: the investment validator refuses any
+// allocation leg that does not resolve to an allowlisted catalog asset, so no
+// strategy — retirement or otherwise — can exist until the catalog holds real
+// provider asset ids. It is also why this is a discovery call and not a
+// hand-written list: Rail does not invent CAIP-19 identifiers.
+//
+// It is a read-only preview unless -confirm is passed, and it never overwrites a
+// row an operator has already curated. The Glider key is read from the
+// environment, exactly like the running service — it is never an argument.
+//
+//	rail_service seed-catalog                                  # preview
+//	rail_service seed-catalog -confirm                         # write
+//	rail_service seed-catalog -collection top_performing -limit 25 -confirm
+func runSeedCatalog(args []string) error {
+	fs := flag.NewFlagSet("seed-catalog", flag.ContinueOnError)
+	collection := fs.String("collection", "curated", "provider discovery collection: curated or top_performing")
+	limit := fs.Int("limit", 100, "max discovered strategies to scan (1-100)")
+	confirm := fs.Bool("confirm", false, "write the catalog (default: preview only, nothing changes)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if !cfg.InvestmentGlider.Enabled {
+		return fmt.Errorf("the investment engine is disabled: set INVESTMENT_GLIDER_ENABLED=true")
+	}
+	if !cfg.InvestmentGlider.Simulation && strings.TrimSpace(cfg.InvestmentGlider.APIKey) == "" {
+		return fmt.Errorf("INVESTMENT_GLIDER_API_KEY is not configured")
+	}
+
+	logger, err := zap.NewProduction()
+	if err != nil {
+		return fmt.Errorf("create logger: %w", err)
+	}
+
+	// Build the provider directly from config, mirroring how recover-funds builds
+	// its clients: the command inherits the deployment's credentials without a
+	// full application bootstrap.
+	var provider investmentsvc.Provider
+	if cfg.InvestmentGlider.Simulation {
+		provider = glider.NewSimulated(glider.SimulatedConfig{})
+	} else {
+		provider = glider.NewClient(glider.Config{
+			BaseURL: cfg.InvestmentGlider.BaseURL,
+			APIKey:  cfg.InvestmentGlider.APIKey,
+			Timeout: time.Duration(cfg.InvestmentGlider.Timeout) * time.Second,
+		}, logger)
+	}
+
+	db, err := database.NewConnection(cfg.Database, cfg.Environment)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer db.Close()
+	assetRepo := repositories.NewInvestmentAssetRepository(sqlx.NewDb(db, "postgres"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	report, err := investmentsvc.IngestAssetCatalog(ctx, provider, assetRepo, investmentsvc.CatalogIngestOptions{
+		Collection: *collection,
+		Limit:      *limit,
+		Confirm:    *confirm,
+	})
+	if err != nil {
+		return err
+	}
+	printCatalogReport(os.Stdout, report)
+	return nil
+}
+
+// printCatalogReport writes the discovered assets as a copy-pasteable table.
+func printCatalogReport(out io.Writer, report *entities.InvestmentAssetCatalogReport) {
+	mode := "PREVIEW (nothing written)"
+	if report.Written {
+		mode = "WRITTEN"
+	}
+	fmt.Fprintf(out, "\n========== ASSET CATALOG INGEST: %s ==========\n", mode)
+	fmt.Fprintf(out, "collection=%s  strategies_scanned=%d  added=%d  already_known=%d\n\n",
+		report.Collection, report.Strategies, report.Upserted, report.Skipped)
+
+	if len(report.Assets) == 0 {
+		fmt.Fprintf(out, "No assets found. %s\n", report.Note)
+		fmt.Fprintln(out, "===============================================")
+		return
+	}
+
+	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(writer, "SYMBOL\tCHAIN\tSTATUS\tCAIP19")
+	for _, asset := range report.Assets {
+		status := "new"
+		if asset.AlreadyKnown {
+			status = "known"
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", asset.Symbol, asset.Chain, status, asset.CAIP19)
+	}
+	_ = writer.Flush()
+
+	fmt.Fprintln(out, "\nCopy the CAIP19 values above into vault.strategies in configs/config.yaml.")
+	fmt.Fprintln(out, "asset_class is recorded as \"unknown\" and decimals as the column default:")
+	fmt.Fprintln(out, "curate both before the per-asset order path is used. The retirement vault")
+	fmt.Fprintln(out, "funds and rebalances and never sizes a raw order, so it is unaffected.")
+	if report.Note != "" {
+		fmt.Fprintf(out, "\nNote: %s\n", report.Note)
+	}
+	if !report.Written {
+		fmt.Fprintln(out, "\nThis was a preview. Re-run with -confirm to write the catalog.")
+	}
+	fmt.Fprintln(out, "===============================================")
 }
 
 // maybeRunBootDiagnose runs the read-only yield diagnostic on startup when activated by an

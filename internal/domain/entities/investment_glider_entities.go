@@ -329,6 +329,10 @@ type InvestmentEnrollment struct {
 	StrategyVersion   int                        `json:"strategy_version" db:"strategy_version"`
 	GliderPortfolioID string                     `json:"glider_portfolio_id" db:"glider_portfolio_id"`
 	GliderStrategyID  string                     `json:"glider_strategy_id" db:"glider_strategy_id"`
+	// VaultID links this portfolio to a retirement vault. A vault-linked
+	// enrollment cannot be withdrawn from directly: it requires a single-use
+	// authorization issued by the vault, which is where the lock is enforced.
+	VaultID           *uuid.UUID                 `json:"vault_id,omitempty" db:"vault_id"`
 	Chain             string                     `json:"chain" db:"chain"`
 	OwnerAccountID    string                     `json:"owner_account_id,omitempty" db:"owner_account_id"`
 	AgentAccountID    string                     `json:"agent_account_id,omitempty" db:"agent_account_id"`

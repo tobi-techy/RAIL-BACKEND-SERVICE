@@ -2052,6 +2052,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				container.GetPasscodeService(),
 			)
 		}
+		// Register the retirement vault: locked, dollar-denominated retirement
+		// savings fed by the automated split.
+		if vaultHandlers := container.GetVaultHandlers(); vaultHandlers != nil {
+			RegisterVaultRoutes(
+				v1,
+				vaultHandlers,
+				container.Config,
+				container.Logger,
+				sessionValidator,
+				container.TokenBlacklist,
+				container.UserRepo,
+				container.GetPasscodeService(),
+			)
+		}
 		// Register round-up routes
 		RegisterRoundupRoutes(
 			v1,
