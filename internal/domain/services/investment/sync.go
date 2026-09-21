@@ -80,6 +80,15 @@ func (s *Service) SyncEnrollment(ctx context.Context, enrollmentID uuid.UUID) er
 	if err := s.enrollments.Update(ctx, enrollment); err != nil {
 		return fmt.Errorf("update enrollment: %w", err)
 	}
+	// The retirement vault records a valuation snapshot from every successful
+	// sync, so its view stays grounded without a live provider call.
+	if s.vaultObserver != nil {
+		if err := s.vaultObserver.OnEnrollmentSynced(ctx, enrollment); err != nil {
+			s.log.Error("vault snapshot after sync failed",
+				"enrollment_id", enrollment.ID.String(),
+				"error", err)
+		}
+	}
 	return nil
 }
 
@@ -212,6 +221,17 @@ func (s *Service) settleExecution(ctx context.Context, executionID uuid.UUID, st
 	execution.UpdatedAt = now
 	if err := s.executions.Update(ctx, execution); err != nil {
 		return fmt.Errorf("update execution: %w", err)
+	}
+	// A settled vault withdrawal is where the ledger split and the penalty are
+	// committed, so the vault has to hear about it before anything else.
+	if s.vaultObserver != nil &&
+		execution.Status == entities.InvestmentExecutionFilled &&
+		(execution.Kind == entities.InvestmentExecutionWithdraw || execution.Kind == entities.InvestmentExecutionLiquidate) {
+		if err := s.vaultObserver.OnWithdrawalFilled(ctx, execution); err != nil {
+			s.log.Error("vault withdrawal settlement failed",
+				"execution_id", execution.ID.String(),
+				"error", err)
+		}
 	}
 	return nil
 }

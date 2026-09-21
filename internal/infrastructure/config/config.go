@@ -50,6 +50,7 @@ type Config struct {
 	AI               AIConfig               `mapstructure:"ai"`
 	PythonAgent      PythonAgentConfig      `mapstructure:"python_agent"`
 	InvestmentGlider InvestmentGliderConfig `mapstructure:"investment_glider"`
+	Vault            VaultConfig            `mapstructure:"vault"`
 	SNSPush          SNSPushConfig          `mapstructure:"sns_push"`
 	Push             PushConfig             `mapstructure:"push"`
 	TelegramAlerts   TelegramConfig         `mapstructure:"telegram_alerts"`
@@ -509,6 +510,57 @@ type InvestmentGliderConfig struct {
 	// AutoRebalance enables the drift sweep. Manual rebalances stay available
 	// regardless; this only controls unattended automation.
 	AutoRebalance bool `mapstructure:"auto_rebalance"`
+}
+
+// VaultStrategyLegConfig is one allocation leg of a Rail-owned retirement
+// strategy. The CAIP-19 id must come from the provider's real asset universe;
+// Rail never invents one, so an empty default is deliberate.
+type VaultStrategyLegConfig struct {
+	CAIP19 string  `mapstructure:"caip19"`
+	Symbol string  `mapstructure:"symbol"`
+	Weight float64 `mapstructure:"weight"`
+}
+
+// VaultStrategyConfig defines one Rail-owned retirement tier.
+type VaultStrategyConfig struct {
+	Tier    string                   `mapstructure:"tier"`
+	Name    string                   `mapstructure:"name"`
+	Risk    string                   `mapstructure:"risk"`
+	Horizon string                   `mapstructure:"horizon"`
+	Legs    []VaultStrategyLegConfig `mapstructure:"legs"`
+}
+
+// VaultConfig configures the Premium Global Dollar Retirement Vault: a locked,
+// dollar-denominated retirement account fed by Rail's automated money system.
+// Every policy value (lock age, minimum lock, penalty) is server-side so it can
+// never be set by a caller.
+type VaultConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+
+	DefaultRetirementAge int `mapstructure:"default_retirement_age"`
+	MinLockYears         int `mapstructure:"min_lock_years"`
+
+	// PenaltyRate is the haircut on growth withdrawn before unlock (0.10 = 10%).
+	PenaltyRate float64 `mapstructure:"penalty_rate"`
+
+	DefaultAutoContributionPct float64 `mapstructure:"default_auto_contribution_pct"`
+	MaxAutoContributionPct     float64 `mapstructure:"max_auto_contribution_pct"`
+	MinContributionUSD         float64 `mapstructure:"min_contribution_usd"`
+
+	// ContributionSource is the ledger bucket automatic savings come from.
+	// Defaults to spending: the stash bucket is protected by the 90-day lock.
+	ContributionSource string `mapstructure:"contribution_source"`
+
+	// SettlementAccount is the Rail-controlled address vault withdrawals are
+	// sent to. Required in non-dev when enabled: without it the penalty cannot
+	// be computed or retained.
+	SettlementAccount string `mapstructure:"settlement_account"`
+
+	AuthorizationTTLMinutes int `mapstructure:"authorization_ttl_minutes"`
+	StaleAfterHours         int `mapstructure:"stale_after_hours"`
+
+	// Strategies are the Rail-owned tiers users can choose from.
+	Strategies []VaultStrategyConfig `mapstructure:"strategies"`
 }
 
 type CardProcessorConfig struct {
@@ -1339,6 +1391,18 @@ func setDefaults() {
 	viper.SetDefault("investment_glider.sync_batch_size", 50)
 	viper.SetDefault("investment_glider.auto_rebalance", true)
 
+	viper.SetDefault("vault.enabled", true)
+	viper.SetDefault("vault.default_retirement_age", 50)
+	viper.SetDefault("vault.min_lock_years", 5)
+	viper.SetDefault("vault.penalty_rate", 0.10)
+	viper.SetDefault("vault.default_auto_contribution_pct", 0.0)
+	viper.SetDefault("vault.max_auto_contribution_pct", 1.0)
+	viper.SetDefault("vault.min_contribution_usd", 1.0)
+	viper.SetDefault("vault.contribution_source", "spending")
+	viper.SetDefault("vault.authorization_ttl_minutes", 10)
+	viper.SetDefault("vault.stale_after_hours", 24)
+	viper.SetDefault("vault.strategies", []VaultStrategyConfig{})
+
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
 	viper.SetDefault("rate_limit.global_limit", 10000)
@@ -1864,6 +1928,17 @@ func overrideFromEnv() error {
 		{"investment_glider.owner_key_seed", "INVESTMENT_GLIDER_OWNER_KEY_SEED"},
 		{"investment_glider.auto_rebalance", "INVESTMENT_GLIDER_AUTO_REBALANCE"},
 		{"investment_glider.sync_interval_minutes", "INVESTMENT_GLIDER_SYNC_INTERVAL_MINUTES"},
+		{"vault.enabled", "VAULT_ENABLED"},
+		{"vault.default_retirement_age", "VAULT_DEFAULT_RETIREMENT_AGE"},
+		{"vault.min_lock_years", "VAULT_MIN_LOCK_YEARS"},
+		{"vault.penalty_rate", "VAULT_PENALTY_RATE"},
+		{"vault.default_auto_contribution_pct", "VAULT_DEFAULT_AUTO_CONTRIBUTION_PCT"},
+		{"vault.max_auto_contribution_pct", "VAULT_MAX_AUTO_CONTRIBUTION_PCT"},
+		{"vault.min_contribution_usd", "VAULT_MIN_CONTRIBUTION_USD"},
+		{"vault.contribution_source", "VAULT_CONTRIBUTION_SOURCE"},
+		{"vault.settlement_account", "VAULT_SETTLEMENT_ACCOUNT"},
+		{"vault.authorization_ttl_minutes", "VAULT_AUTHORIZATION_TTL_MINUTES"},
+		{"vault.stale_after_hours", "VAULT_STALE_AFTER_HOURS"},
 	} {
 		viper.BindEnv(binding[0], binding[1])
 	}
@@ -2075,6 +2150,9 @@ func validate(config *Config) error {
 	if err := validateInvestmentGliderConfig(config); err != nil {
 		return err
 	}
+	if err := validateVaultConfig(config); err != nil {
+		return err
+	}
 
 	if config.RampHub.APIKey != "" {
 		if config.RampHub.DeveloperFeePercent < 0 || config.RampHub.DeveloperFeePercent > 100 {
@@ -2240,6 +2318,56 @@ func validateInvestmentGliderConfig(config *Config) error {
 	}
 	if inv.MinAllocationLegs > inv.MaxAllocationLegs {
 		return fmt.Errorf("investment_glider.min_allocation_legs cannot exceed max_allocation_legs")
+	}
+	return nil
+}
+
+// validateVaultConfig refuses vault configurations that would move real money
+// without the guardrails that keep the lock enforceable.
+func validateVaultConfig(config *Config) error {
+	v := config.Vault
+	if !v.Enabled {
+		return nil
+	}
+	if v.PenaltyRate < 0 || v.PenaltyRate > 1 {
+		return fmt.Errorf("vault.penalty_rate must be between 0 and 1")
+	}
+	if v.MinLockYears < 0 {
+		return fmt.Errorf("vault.min_lock_years cannot be negative")
+	}
+	if v.DefaultRetirementAge < 50 || v.DefaultRetirementAge > 90 {
+		return fmt.Errorf("vault.default_retirement_age must be between 50 and 90")
+	}
+	if v.DefaultAutoContributionPct < 0 || v.DefaultAutoContributionPct > 1 {
+		return fmt.Errorf("vault.default_auto_contribution_pct must be between 0 and 1")
+	}
+	switch strings.ToLower(strings.TrimSpace(v.ContributionSource)) {
+	case "", "spending", "stash":
+	default:
+		return fmt.Errorf("vault.contribution_source must be spending or stash")
+	}
+	// A missing settlement account is deliberately NOT a boot error. The vault is
+	// enabled by default, and failing startup over one unconfigured feature would
+	// take payments, cards and chat down with it. Instead the vault refuses to
+	// open a plan or accept a contribution until the account is set (see
+	// vault.Service.ready), so money can never enter a plan it cannot leave.
+	for _, strategy := range v.Strategies {
+		if strings.TrimSpace(strategy.Name) == "" || strings.TrimSpace(strategy.Tier) == "" {
+			return fmt.Errorf("vault.strategies entries need a tier and a name")
+		}
+		if len(strategy.Legs) == 0 {
+			return fmt.Errorf("vault strategy %q has no allocation legs", strategy.Name)
+		}
+		total := 0.0
+		for _, leg := range strategy.Legs {
+			if strings.TrimSpace(leg.CAIP19) == "" {
+				return fmt.Errorf("vault strategy %q has a leg with no caip19 id", strategy.Name)
+			}
+			total += leg.Weight
+		}
+		if total < 99.99 || total > 100.01 {
+			return fmt.Errorf("vault strategy %q allocations must sum to 100 (got %.2f)", strategy.Name, total)
+		}
 	}
 	return nil
 }

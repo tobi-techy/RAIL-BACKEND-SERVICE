@@ -398,7 +398,7 @@ func (s *Service) Withdraw(
 	if req == nil {
 		return nil, fmt.Errorf("%w: missing withdrawal", ErrValidationFailed)
 	}
-	enrollment, strategy, version, err := s.resolveTradable(ctx, userID, req.StrategyID)
+	enrollment, strategy, version, err := s.resolveWithdrawable(ctx, userID, req.StrategyID)
 	if err != nil {
 		return nil, err
 	}
@@ -409,6 +409,34 @@ func (s *Service) Withdraw(
 	}
 	if !req.LiquidateAll && !amount.GreaterThan(decimal.Zero) {
 		return nil, fmt.Errorf("%w: amount_usd must be greater than zero", ErrValidationFailed)
+	}
+
+	// Retirement lock (fail closed). A vault-linked portfolio has exactly one way
+	// out: a single-use authorization issued by the vault. Without a valid one,
+	// or without the vault wired at all, the withdrawal is refused before any
+	// provider call is made.
+	recipientOverride := ""
+	if enrollment.VaultID != nil {
+		if s.vaultObserver == nil {
+			return &entities.InvestmentWithdrawalResponse{Status: entities.InvestmentActionRejected},
+				fmt.Errorf("%w: this portfolio is locked to a retirement plan and cannot be withdrawn from here", ErrPolicyBlocked)
+		}
+		plan, authErr := s.vaultObserver.Authorize(ctx, enrollment.ID, amount, req.VaultAuthorizationKey)
+		if authErr != nil {
+			_ = s.recordEvent(ctx, userID, EventPolicyBlocked, actor, map[string]any{
+				"action":        "withdraw",
+				"enrollment_id": enrollment.ID.String(),
+				"reason":        "vault authorization refused",
+				"error":         authErr.Error(),
+			})
+			return &entities.InvestmentWithdrawalResponse{Status: entities.InvestmentActionRejected},
+				fmt.Errorf("%w: %v", ErrPolicyBlocked, authErr)
+		}
+		if plan == nil || strings.TrimSpace(plan.SettlementAccount) == "" {
+			return &entities.InvestmentWithdrawalResponse{Status: entities.InvestmentActionRejected},
+				fmt.Errorf("%w: the retirement plan did not provide a settlement account", ErrPolicyBlocked)
+		}
+		recipientOverride = plan.SettlementAccount
 	}
 
 	limits, err := s.EffectiveLimits(ctx, userID)
@@ -448,11 +476,13 @@ func (s *Service) Withdraw(
 			fmt.Errorf("%w: the portfolio is worth %s", ErrValidationFailed, enrollment.TotalValueUSD.StringFixed(2))
 	}
 
-	recipient := ""
-	if s.funding != nil {
-		recipient, err = s.funding.RecipientAccount(ctx, userID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve withdrawal recipient: %w", err)
+	recipient := recipientOverride
+	if recipient == "" {
+		if s.funding != nil {
+			recipient, err = s.funding.RecipientAccount(ctx, userID)
+			if err != nil {
+				return nil, fmt.Errorf("resolve withdrawal recipient: %w", err)
+			}
 		}
 	}
 	if strings.TrimSpace(recipient) == "" {
@@ -623,30 +653,10 @@ func (s *Service) resolveTradable(
 	userID uuid.UUID,
 	strategyID string,
 ) (*entities.InvestmentEnrollment, *entities.InvestmentStrategy, *entities.InvestmentStrategyVersion, error) {
-	enrollments, err := s.enrollments.ListByUser(ctx, userID)
+	enrollment, err := s.findActiveEnrollment(ctx, userID, strategyID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("list enrollments: %w", err)
+		return nil, nil, nil, err
 	}
-	var enrollment *entities.InvestmentEnrollment
-	for _, candidate := range enrollments {
-		if candidate.Status != entities.InvestmentEnrollmentActive && candidate.Status != entities.InvestmentEnrollmentPaused {
-			continue
-		}
-		if strings.TrimSpace(strategyID) == "" || candidate.StrategyID.String() == strings.TrimSpace(strategyID) {
-			enrollment = candidate
-			break
-		}
-	}
-	if enrollment == nil {
-		if strings.TrimSpace(strategyID) == "" {
-			return nil, nil, nil, fmt.Errorf("%w: you are not enrolled in an investment strategy yet", ErrNotFound)
-		}
-		return nil, nil, nil, fmt.Errorf("%w: no active portfolio for that strategy", ErrNotFound)
-	}
-	if strings.TrimSpace(strategyID) == "" && len(enrollments) > 1 {
-		return nil, nil, nil, fmt.Errorf("%w: you have more than one portfolio; pass strategy_id", ErrValidationFailed)
-	}
-
 	strategy, err := s.strategies.GetByID(ctx, enrollment.StrategyID)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("get strategy: %w", err)
@@ -662,6 +672,72 @@ func (s *Service) resolveTradable(
 		return nil, nil, nil, ErrNotFound
 	}
 	return enrollment, strategy, version, nil
+}
+
+// resolveWithdrawable is resolveTradable for withdrawals. A vault-linked
+// portfolio mirrors a Rail-owned strategy, which users cannot mutate — but they
+// must still be able to withdraw from it. The lock that governs that withdrawal
+// is enforced by the vault observer, not by the mutability rule.
+func (s *Service) resolveWithdrawable(
+	ctx context.Context,
+	userID uuid.UUID,
+	strategyID string,
+) (*entities.InvestmentEnrollment, *entities.InvestmentStrategy, *entities.InvestmentStrategyVersion, error) {
+	enrollment, err := s.findActiveEnrollment(ctx, userID, strategyID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	strategy, err := s.strategies.GetByID(ctx, enrollment.StrategyID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("get strategy: %w", err)
+	}
+	if strategy == nil {
+		return nil, nil, nil, ErrNotFound
+	}
+	if enrollment.VaultID == nil && !s.canMutate(strategy, userID) {
+		return nil, nil, nil, fmt.Errorf("%w: this portfolio mirrors a shared strategy, so it cannot be withdrawn from here; create your own strategy instead", ErrUnsupported)
+	}
+	version, err := s.strategies.GetVersion(ctx, strategy.ID, strategy.CurrentVersion)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("get strategy version: %w", err)
+	}
+	if version == nil {
+		return nil, nil, nil, ErrNotFound
+	}
+	return enrollment, strategy, version, nil
+}
+
+// findActiveEnrollment locates the user's active or paused portfolio, scoped to
+// a strategy id when one is supplied.
+func (s *Service) findActiveEnrollment(
+	ctx context.Context,
+	userID uuid.UUID,
+	strategyID string,
+) (*entities.InvestmentEnrollment, error) {
+	enrollments, err := s.enrollments.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list enrollments: %w", err)
+	}
+	var enrollment *entities.InvestmentEnrollment
+	for _, candidate := range enrollments {
+		if candidate.Status != entities.InvestmentEnrollmentActive && candidate.Status != entities.InvestmentEnrollmentPaused {
+			continue
+		}
+		if strings.TrimSpace(strategyID) == "" || candidate.StrategyID.String() == strings.TrimSpace(strategyID) {
+			enrollment = candidate
+			break
+		}
+	}
+	if enrollment == nil {
+		if strings.TrimSpace(strategyID) == "" {
+			return nil, fmt.Errorf("%w: you are not enrolled in an investment strategy yet", ErrNotFound)
+		}
+		return nil, fmt.Errorf("%w: no active portfolio for that strategy", ErrNotFound)
+	}
+	if strings.TrimSpace(strategyID) == "" && len(enrollments) > 1 {
+		return nil, fmt.Errorf("%w: you have more than one portfolio; pass strategy_id", ErrValidationFailed)
+	}
+	return enrollment, nil
 }
 
 // shiftedAllocation returns the version's allocation with one asset's weight

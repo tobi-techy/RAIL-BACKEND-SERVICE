@@ -24,13 +24,14 @@ const (
 	AccountTypePendingCardSettlement AccountType = "pending_card_settlement" // Funds held for authorized but unsettled card transactions
 
 	// System account types
-	AccountTypeSystemBufferUSDC           AccountType = "system_buffer_usdc"           // System on-chain USDC reserve
-	AccountTypeSystemBufferFiat           AccountType = "system_buffer_fiat"           // System operational USD buffer
-	AccountTypeBrokerOperational          AccountType = "broker_operational"           // Pre-funded cash at Alpaca
-	AccountTypeSubscriptionRevenue        AccountType = "subscription_revenue"         // Rail Pro subscription revenue
-	AccountTypeWithdrawalFeeRevenue       AccountType = "withdrawal_fee_revenue"       // Rail withdrawal fee revenue
-	AccountTypeEmergencyWithdrawalRevenue AccountType = "emergency_withdrawal_revenue" // Emergency stash withdrawal fee revenue
-	AccountTypeLimitIncreaseRevenue       AccountType = "limit_increase_revenue"       // Daily spending commitment increase fee revenue
+	AccountTypeSystemBufferUSDC           AccountType = "system_buffer_usdc"               // System on-chain USDC reserve
+	AccountTypeSystemBufferFiat           AccountType = "system_buffer_fiat"               // System operational USD buffer
+	AccountTypeBrokerOperational          AccountType = "broker_operational"               // Pre-funded cash at Alpaca
+	AccountTypeSubscriptionRevenue        AccountType = "subscription_revenue"             // Rail Pro subscription revenue
+	AccountTypeWithdrawalFeeRevenue       AccountType = "withdrawal_fee_revenue"           // Rail withdrawal fee revenue
+	AccountTypeEmergencyWithdrawalRevenue AccountType = "emergency_withdrawal_revenue"     // Emergency stash withdrawal fee revenue
+	AccountTypeLimitIncreaseRevenue       AccountType = "limit_increase_revenue"           // Daily spending commitment increase fee revenue
+	AccountTypeEarlyRetirementPenalty     AccountType = "early_retirement_penalty_revenue" // 10% haircut on early retirement earnings withdrawals
 )
 
 // IsUserAccountType returns true if the account type belongs to a user
@@ -52,7 +53,8 @@ func (a AccountType) IsSystemAccountType() bool {
 		a == AccountTypeSubscriptionRevenue ||
 		a == AccountTypeWithdrawalFeeRevenue ||
 		a == AccountTypeEmergencyWithdrawalRevenue ||
-		a == AccountTypeLimitIncreaseRevenue
+		a == AccountTypeLimitIncreaseRevenue ||
+		a == AccountTypeEarlyRetirementPenalty
 }
 
 // IsSystemAccount is an alias for IsSystemAccountType
@@ -72,7 +74,7 @@ func (a AccountType) Validate() error {
 		AccountTypeSpendingBalance, AccountTypeStashBalance, AccountTypeGoalBalance, AccountTypePendingCardSettlement,
 		AccountTypeSystemBufferUSDC, AccountTypeSystemBufferFiat, AccountTypeBrokerOperational,
 		AccountTypeSubscriptionRevenue, AccountTypeWithdrawalFeeRevenue, AccountTypeEmergencyWithdrawalRevenue,
-		AccountTypeLimitIncreaseRevenue:
+		AccountTypeLimitIncreaseRevenue, AccountTypeEarlyRetirementPenalty:
 		return nil
 	default:
 		return fmt.Errorf("invalid account type: %s", a)

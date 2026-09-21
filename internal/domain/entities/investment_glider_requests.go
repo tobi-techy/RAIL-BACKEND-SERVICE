@@ -37,6 +37,16 @@ type InvestmentUpdateStrategyRequest struct {
 	ConfirmationToken string                       `json:"confirmation_token,omitempty"`
 }
 
+// InvestmentRailStrategyRequest asks the engine to ensure a Rail-owned strategy
+// exists. It is idempotent by Name and is never user-mutable: Rail owns the
+// allocation, users only choose which one they want.
+type InvestmentRailStrategyRequest struct {
+	Name             string                    `json:"name"`
+	Risk             string                    `json:"risk,omitempty"`
+	Horizon          string                    `json:"horizon,omitempty"`
+	TargetAllocation []InvestmentAllocationLeg `json:"target_allocation"`
+}
+
 // InvestmentEnrollRequest asks to enroll the user into a strategy and fund it.
 type InvestmentEnrollRequest struct {
 	StrategyID        string          `json:"strategy_id"`
@@ -79,6 +89,10 @@ type InvestmentWithdrawalRequest struct {
 	LiquidateAll      bool            `json:"liquidate_all,omitempty"`
 	IdempotencyKey    string          `json:"idempotency_key,omitempty"`
 	ConfirmationToken string          `json:"confirmation_token,omitempty"`
+	// VaultAuthorizationKey is the single-use capability a retirement vault
+	// issues to authorise a withdrawal from a vault-linked portfolio. It is
+	// consumed exactly once and the withdrawal is refused without it.
+	VaultAuthorizationKey string `json:"vault_authorization_key,omitempty"`
 }
 
 // InvestmentWithdrawalResponse is returned by the withdrawal flow. It always
@@ -199,4 +213,26 @@ type InvestmentActivityEntry struct {
 	Weight     *decimal.Decimal     `json:"weight,omitempty"`
 	Note       string               `json:"note,omitempty"`
 	Provenance InvestmentProvenance `json:"provenance"`
+}
+
+// InvestmentCatalogAsset is one asset observed in the provider's published
+// strategies. It is what the operator copies into a strategy definition.
+type InvestmentCatalogAsset struct {
+	CAIP19       string `json:"caip19"`
+	Symbol       string `json:"symbol"`
+	Chain        string `json:"chain"`
+	AssetClass   string `json:"asset_class"`
+	AlreadyKnown bool   `json:"already_known"`
+}
+
+// InvestmentAssetCatalogReport is the result of a provider asset-catalog
+// ingest. Written=false means it was a read-only preview.
+type InvestmentAssetCatalogReport struct {
+	Collection string                   `json:"collection"`
+	Strategies int                      `json:"strategies"`
+	Assets     []InvestmentCatalogAsset `json:"assets"`
+	Upserted   int                      `json:"upserted"`
+	Skipped    int                      `json:"skipped"`
+	Written    bool                     `json:"written"`
+	Note       string                   `json:"note,omitempty"`
 }

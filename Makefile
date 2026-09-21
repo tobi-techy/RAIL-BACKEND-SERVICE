@@ -16,6 +16,17 @@ run:
 	@echo "Running rail-service..."
 	go run cmd/main.go
 
+# Seed the investment asset catalog from the provider's published strategies.
+# This is required before ANY strategy (retirement tiers included) can be
+# created: the validator refuses allocation legs that are not in the catalog.
+#   make seed-catalog              # preview only, writes nothing
+#   make seed-catalog CONFIRM=1    # write
+#   make seed-catalog COLLECTION=top_performing LIMIT=25 CONFIRM=1
+# Needs INVESTMENT_GLIDER_ENABLED=true and INVESTMENT_GLIDER_API_KEY in the env.
+seed-catalog:
+	@echo "Ingesting provider asset catalog..."
+	go run cmd/main.go seed-catalog -collection $(or $(COLLECTION),curated) -limit $(or $(LIMIT),50) $(if $(CONFIRM),-confirm,)
+
 test:
 	@echo "Running tests..."
 	go test -v -race -coverprofile=coverage.out ./...

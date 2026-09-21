@@ -458,4 +458,80 @@ data_retention:
   prediction_days: 30          # miriam_predictions
   outcome_days: 30             # miriam_prediction_outcomes (evaluated only; pending preserved)
   notification_days: 30        # notifications
-  campaign_delivery_days: 30   # campaign_deliveries
+   campaign_duration_days: 30   # campaign_deliveries
+
+# ============================================================================
+# Premium Global Dollar Retirement Vault
+# ----------------------------------------------------------------------------
+# Automated USD Retirement Plan — locked USD growth with Roth-style rules.
+# Principal (your own money) is reachable with friction; growth is locked, and
+# early growth withdrawal carries a 10% fee.
+#
+# REQUIRED TO ACTUALLY OFFER THE PLAN:
+#   * VAULT_SETTLEMENT_ACCOUNT  — a Rail-owned wallet CAIP-10 (where withdrawals
+#     return to Rail so the 10% fee can be taken before the rest reaches you).
+#     A CAIP-10 looks like: solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:<address>
+#
+#   * Vault strategies below must be filled with REAL Glider asset ids. Run once:
+#       export INVESTMENT_GLIDER_ENABLED=true INVESMENT_GLIDER_API_KEY=<your key>
+#       make seed-catalog
+#     It populates Rail's asset catalog and Prints a table of CAIP19 ids. Paste
+#     the ids into the `caip19:` slots below. DO NOT guess — the discovered ids
+#     come back as raw addresses (no readable symbol/name), so the only safe
+#     classification is to consult Glider docs or the table itself.
+#
+# Weights in each tier MUST sum to 100, and no single leg may exceed 40%
+# (the investment validator enforces the 40% cap). asset_class and decimals are
+# NOT provided by discovery — seed-catalog records class="unknown" and decimals=6
+# as placeholders. That is harmless for the vault (it funds/rebalances, never
+# sizes a raw order) but curate them before any per-asset order route is used.
+# ----------------------------------------------------------------------------
+vault:
+  enabled: true
+  settlement_account: ""        # VAULT_SETTLEMENT_ACCOUNT — REQUIRED once live
+
+  default_retirement_age: 50    # unlock = later of (reach N) and (hold Y years)
+  min_lock_years: 5
+  penalty_rate: 0.10            # 10% on growth withdrawn before unlock
+  contribution_source: spending # money routed in comes from the spendable balance
+  default_auto_contribution_pct: 0.0
+  max_auto_contribution_pct: 0.3
+  min_contribution_usd: 5.0
+  authorization_ttl_minutes: 15
+  stale_after_hours: 24
+
+  strategies:
+    # Conservative: "Steady Dollar Income" — bills + short-duration + cash yield
+    - tier: conservative_pension
+      name: Steady Dollar Income
+      risk: low
+      horizon: long
+      legs:
+        - { caip19: "*REPLACE*", symbol: TBILL, weight: 40 }
+        - { caip19: "*REPLACE*", symbol: RWA,   weight: 20 }
+        - { caip19: "*REPLACE*", symbol: CASH,  weight: 25 }
+        - { caip19: "*REPLACE*", symbol: YIELD, weight: 15 }
+
+    # Balanced: "Balanced Global Wealth"
+    - tier: balanced_wealth
+      name: Balanced Global Wealth
+      risk: medium
+      horizon: long
+      legs:
+        - { caip19: "*REPLACE*", symbol: EQTY,  weight: 40 }
+        - { caip19: "*REPLACE*", symbol: TBILL, weight: 25 }
+        - { caip19: "*REPLACE*", symbol: RWA,   weight: 15 }
+        - { caip19: "*REPLACE*", symbol: YIELD, weight: 10 }
+        - { caip19: "*REPLACE*", symbol: CASH,  weight: 10 }
+
+    # Bold: "Long-Term Global Growth"
+    - tier: bold_growth
+      name: Long-Term Global Growth
+      risk: high
+      horizon: long
+      legs:
+        - { caip19: "*REPLACE*", symbol: EQTY,  weight: 40 }
+        - { caip19: "*REPLACE*", symbol: EMERG, weight: 20 }
+        - { caip19: "*REPLACE*", symbol: TBILL, weight: 20 }
+        - { caip19: "*REPLACE*", symbol: RWA,   weight: 10 }
+        - { caip19: "*REPLACE*", symbol: YIELD, weight: 10 }

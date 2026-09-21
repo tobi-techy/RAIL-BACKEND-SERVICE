@@ -75,6 +75,13 @@ type DepositAutomationEvaluator interface {
 	EvaluateDepositReceived(ctx context.Context, userID uuid.UUID, depositAmount decimal.Decimal)
 }
 
+// VaultContributor routes a share of each deposit into the user's retirement
+// vault. It is fired after the spend/stash split, best-effort: a failure here
+// must never break the deposit path.
+type VaultContributor interface {
+	OnDepositAllocated(ctx context.Context, userID, depositID uuid.UUID, depositAmount, stashAllocated decimal.Decimal)
+}
+
 // AllocationNotificationService defines notification operations for allocation failures.
 type AllocationNotificationService interface {
 	SendGenericNotification(ctx context.Context, userID uuid.UUID, title, message string) error
@@ -92,6 +99,7 @@ type Service struct {
 	notificationService AllocationNotificationService
 	umbraShielder       UmbraShielder
 	depositAutomation   DepositAutomationEvaluator
+	vaultContributor    VaultContributor
 	logger              *logger.Logger
 	wg                  sync.WaitGroup // tracks in-flight async goroutines for graceful shutdown
 	shuttingDown        atomic.Bool    // prevents new async work after Shutdown begins
@@ -171,6 +179,11 @@ func (s *Service) SetUmbraShielder(u UmbraShielder) {
 // SetDepositAutomationEvaluator sets the evaluator for deposit-triggered automations.
 func (s *Service) SetDepositAutomationEvaluator(e DepositAutomationEvaluator) {
 	s.depositAutomation = e
+}
+
+// SetVaultContributor wires the retirement vault's automatic-saving hook.
+func (s *Service) SetVaultContributor(v VaultContributor) {
+	s.vaultContributor = v
 }
 
 // notifyAutoInvestFailure sends a user-facing notification when auto-invest fails silently in a goroutine.
@@ -737,6 +750,32 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 					}
 				}()
 				s.depositAutomation.EvaluateDepositReceived(context.Background(), depositUserID, depositAmount)
+			}()
+		}
+	}
+
+	// Route a share of this deposit into the user's retirement vault, if they
+	// have one with an automatic-saving rule. Best-effort and detached, exactly
+	// like the other post-split hooks.
+	if s.vaultContributor != nil && req.DepositID != nil {
+		vaultUserID := req.UserID
+		vaultDepositID := *req.DepositID
+		vaultDepositAmount := req.Amount
+		vaultStashAmount := stashAmount
+		if s.tryStartAsync() {
+			go func() {
+				defer s.wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error("Panic in vault contribution goroutine",
+							"user_id", vaultUserID,
+							"panic", r,
+							"stack", string(debug.Stack()))
+					}
+				}()
+				bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				s.vaultContributor.OnDepositAllocated(bgCtx, vaultUserID, vaultDepositID, vaultDepositAmount, vaultStashAmount)
 			}()
 		}
 	}
