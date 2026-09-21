@@ -135,7 +135,21 @@ type Service struct {
 	config              *FundingConfig
 	gameplayHooks       FundingGameplayHooks
 	depositSweepRepo    DepositSweepCreator
+	inflowNotifier      InflowNotifier
 	logger              *logger.Logger
+}
+
+// InflowNotifier tells the Python ledger that money arrived.
+//
+// Miriam keeps her own ledger, and it is the only thing Hands checks before a
+// movement, so a credit Go makes that Miriam is never told about is money she
+// cannot see — she would deny a spend the user can plainly afford. The credit
+// itself stays here: this is a projection, never the source.
+//
+// Implemented by *ai.PythonAgentClient, which skips non-NGN amounts because
+// Miriam's ledger is single-currency.
+type InflowNotifier interface {
+	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error
 }
 
 // DepositSweepCreator creates sweep records for non-Solana Circle deposits.
@@ -300,6 +314,23 @@ func (s *Service) SetGameplayHooks(gh FundingGameplayHooks) {
 }
 
 // SetBridgeVAService sets the Bridge virtual account service (optional)
+// SetInflowNotifier wires the Python-ledger projection. Optional: when unset a
+// credit simply is not reported, which is the pre-PR2 behaviour.
+func (s *Service) SetInflowNotifier(n InflowNotifier) { s.inflowNotifier = n }
+
+// notifyInflow reports a committed credit to Miriam's ledger, if one is wired.
+//
+// Called AFTER the credit lands, never before: telling Miriam about money that
+// does not exist yet would let her spend it. The delivery is idempotent on
+// paymentID, so re-reporting on a webhook retry is safe and is exactly how a
+// missed report recovers.
+func (s *Service) notifyInflow(ctx context.Context, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw string) error {
+	if s.inflowNotifier == nil {
+		return nil
+	}
+	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw)
+}
+
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
 	s.bridgeVAService = bva
 }
@@ -1038,6 +1069,26 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 			s.logger.Warn("Failed to record deposit usage", "error", err, "user_id", userID.String())
 			// Don't fail the deposit, just log the warning
 		}
+	}
+
+	// Report the committed credit to Miriam's ledger, so she can see the balance
+	// she will be asked to spend from. Idempotent on the deposit's own idempotency
+	// key, so a webhook retry re-reports rather than double-counts.
+	//
+	// A chain deposit settles in USDC and Miriam's ledger is NGN-only, so this
+	// normally skips — the notifier decides, so the rule lives in one place. It is
+	// wired anyway: this is the credit that will matter the day her ledger can
+	// hold more than one currency.
+	if err := s.notifyInflow(ctx, userID, idempotencyKey, usdAmount, string(token), "chain deposit "+string(webhook.Chain)); err != nil {
+		// The money is already credited, so the deposit did not fail. Return the
+		// error anyway: the provider retries an idempotent webhook, and that retry
+		// is how a report that did not land gets another chance. Swallowing it
+		// would leave Miriam's ledger quietly short.
+		s.logger.Error("Failed to report the deposit to the Python ledger",
+			"user_id", userID,
+			"deposit_id", deposit.ID,
+			"error", err)
+		return fmt.Errorf("report deposit to the python ledger: %w", err)
 	}
 
 	// Create audit log entry for compliance

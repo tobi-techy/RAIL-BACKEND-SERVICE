@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -311,4 +312,126 @@ func (c *PythonAgentClient) AnalyzeProactive(ctx context.Context, userID uuid.UU
 		return nil, fmt.Errorf("decode python agent proactive response: %w", err)
 	}
 	return &out, nil
+}
+
+// ErrInflowNotRecorded means the Python ledger did not accept an inflow. It is
+// retryable: the delivery is idempotent on payment_id, so the caller may hand it
+// to whatever retries the credit (normally the provider's webhook retry).
+var ErrInflowNotRecorded = errors.New("python ledger did not record the inflow")
+
+// PythonInflow is the body of POST /api/v1/money/inflow.
+//
+// payment_id is the credit's idempotency key, so a webhook delivered twice is
+// split once. amount is a string because money never goes through a float.
+type PythonInflow struct {
+	PaymentID string `json:"payment_id"`
+	Amount    string `json:"amount"`
+	SourceRaw string `json:"source_raw,omitempty"`
+}
+
+// inflowRetries bounds the attempts made inside one call. A 503 means Python's
+// ledger store is down, which is usually momentary; when it stays down the error
+// goes back to the caller so the provider's own retry can try again later.
+const inflowRetries = 3
+
+// NotifyInflow tells the Python ledger that money arrived, so Miriam's ledger
+// reflects the balance Hands is asked to spend from.
+//
+// Only NGN is reported: Python's ledger is single-currency, so crediting a USD
+// amount into it would silently misstate the balance. Anything else is skipped
+// with a log, not an error — the money is still real, it just is not one Miriam
+// can reason about yet.
+//
+// Call this AFTER the credit commits. Go is the money authority, and a
+// notification that arrives before the credit would tell Miriam about money that
+// does not exist yet; the notification is a projection, never the source.
+func (c *PythonAgentClient) NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error {
+	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(amount) == "" {
+		return fmt.Errorf("notify inflow: payment_id and amount are required")
+	}
+	if !strings.EqualFold(strings.TrimSpace(currency), "NGN") {
+		c.logger.Debug("skipping inflow notification for a non-NGN credit",
+			zap.String("user_id", userID.String()),
+			zap.String("currency", currency),
+			zap.String("payment_id", paymentID))
+		return nil
+	}
+
+	token, _, err := auth.GenerateAgentToken(userID, "", "", "user", c.jwtSecret, int(c.jwtTTL.Seconds()))
+	if err != nil {
+		return fmt.Errorf("mint python agent jwt: %w", err)
+	}
+	payload, err := json.Marshal(PythonInflow{
+		PaymentID: paymentID,
+		Amount:    amount,
+		SourceRaw: sourceRaw,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal python inflow: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < inflowRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+			}
+		}
+		status, err := c.postInflow(ctx, token, payload)
+		if err == nil {
+			c.logger.Info("python ledger recorded an inflow",
+				zap.String("user_id", userID.String()),
+				zap.String("payment_id", paymentID),
+				zap.String("amount", amount))
+			return nil
+		}
+		lastErr = err
+		// Only a 503 is worth retrying here: it is the ledger saying "not now".
+		// A 4xx is a bad request and will stay bad.
+		if status != http.StatusServiceUnavailable {
+			break
+		}
+	}
+	c.logger.Warn("python ledger did not record an inflow",
+		zap.String("user_id", userID.String()),
+		zap.String("payment_id", paymentID),
+		zap.String("amount", amount),
+		zap.Error(lastErr))
+	return fmt.Errorf("%w: %v", ErrInflowNotRecorded, lastErr)
+}
+
+// postInflow posts one inflow body and reports the status code, so the caller can
+// tell a retryable 503 from a permanent 4xx.
+func (c *PythonAgentClient) postInflow(ctx context.Context, token string, payload []byte) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/money/inflow", bytes.NewReader(payload))
+	if err != nil {
+		return 0, fmt.Errorf("create python inflow request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("python inflow request: %w", err)
+	}
+	defer func() {
+		if _, drainErr := io.Copy(io.Discard, resp.Body); drainErr != nil {
+			c.logger.Warn("failed to drain python inflow response body", zap.Error(drainErr))
+		}
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			c.logger.Warn("failed to close python inflow response body", zap.Error(closeErr))
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return resp.StatusCode, fmt.Errorf(
+				"python inflow: status %d (body unreadable: %w)", resp.StatusCode, readErr)
+		}
+		return resp.StatusCode, fmt.Errorf("python inflow: status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	return resp.StatusCode, nil
 }
