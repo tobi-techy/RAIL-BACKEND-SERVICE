@@ -561,6 +561,19 @@ type VaultConfig struct {
 
 	// Strategies are the Rail-owned tiers users can choose from.
 	Strategies []VaultStrategyConfig `mapstructure:"strategies"`
+
+	// TierFiles, when set, points the vault bootstrap at checked-in YAML tier
+	// files (one per tier) instead of only the inline strategies block. Empty
+	// disables the file path; the inline block still applies.
+	TierFiles []string `mapstructure:"tier_files"`
+
+	// MinSpendableUSD is the floor the automatic-savings hook must leave behind
+	// in spendable: a contribution that would put the user under it is skipped.
+	MinSpendableUSD float64 `mapstructure:"min_spendable_usd"`
+
+	// HealthDriftThresholdPct flags a vault when the provider valuation drifts
+	// this far from the ledger basis (percent, e.g. 10 = 10%).
+	HealthDriftThresholdPct float64 `mapstructure:"health_drift_threshold_pct"`
 }
 
 type CardProcessorConfig struct {
@@ -1401,6 +1414,9 @@ func setDefaults() {
 	viper.SetDefault("vault.authorization_ttl_minutes", 10)
 	viper.SetDefault("vault.stale_after_hours", 24)
 	viper.SetDefault("vault.strategies", []VaultStrategyConfig{})
+	viper.SetDefault("vault.tier_files", []string{})
+	viper.SetDefault("vault.min_spendable_usd", 20)
+	viper.SetDefault("vault.health_drift_threshold_pct", 10)
 
 	// Rate limiting defaults
 	viper.SetDefault("rate_limit.enabled", true)
@@ -1932,6 +1948,8 @@ func overrideFromEnv() error {
 		{"vault.settlement_account", "VAULT_SETTLEMENT_ACCOUNT"},
 		{"vault.authorization_ttl_minutes", "VAULT_AUTHORIZATION_TTL_MINUTES"},
 		{"vault.stale_after_hours", "VAULT_STALE_AFTER_HOURS"},
+		{"vault.min_spendable_usd", "VAULT_MIN_SPENDABLE_USD"},
+		{"vault.health_drift_threshold_pct", "VAULT_HEALTH_DRIFT_THRESHOLD_PCT"},
 	} {
 		viper.BindEnv(binding[0], binding[1])
 	}
@@ -2339,6 +2357,12 @@ func validateVaultConfig(config *Config) error {
 	default:
 		return fmt.Errorf("vault.contribution_source must be spending or stash")
 	}
+	if v.MinSpendableUSD < 0 {
+		return fmt.Errorf("vault.min_spendable_usd cannot be negative")
+	}
+	if v.HealthDriftThresholdPct < 0 {
+		return fmt.Errorf("vault.health_drift_threshold_pct cannot be negative")
+	}
 	// A missing settlement account is deliberately NOT a boot error. The vault is
 	// enabled by default, and failing startup over one unconfigured feature would
 	// take payments, cards and chat down with it. Instead the vault refuses to
@@ -2353,8 +2377,9 @@ func validateVaultConfig(config *Config) error {
 		}
 		total := 0.0
 		for _, leg := range strategy.Legs {
-			if strings.TrimSpace(leg.CAIP19) == "" {
-				return fmt.Errorf("vault strategy %q has a leg with no caip19 id", strategy.Name)
+			caip19 := strings.TrimSpace(leg.CAIP19)
+			if caip19 == "" || strings.Contains(caip19, "REPLACE") {
+				return fmt.Errorf("vault strategy %q has a leg with no provider id (placeholder not allowed)", strategy.Name)
 			}
 			total += leg.Weight
 		}

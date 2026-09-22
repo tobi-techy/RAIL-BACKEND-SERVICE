@@ -84,19 +84,26 @@ func AllVaultTiers() []VaultTier {
 type VaultStatus string
 
 const (
-	VaultStatusActive VaultStatus = "active"
-	VaultStatusPaused VaultStatus = "paused"
-	VaultStatusClosed VaultStatus = "closed"
+	VaultStatusActive  VaultStatus = "active"
+	VaultStatusPaused  VaultStatus = "paused"
+	VaultStatusClosed  VaultStatus = "closed"
+	VaultStatusPending VaultStatus = "pending"
 )
 
 // Valid reports whether the status is known.
 func (s VaultStatus) Valid() bool {
 	switch s {
-	case VaultStatusActive, VaultStatusPaused, VaultStatusClosed:
+	case VaultStatusActive, VaultStatusPaused, VaultStatusClosed, VaultStatusPending:
 		return true
 	default:
 		return false
 	}
+}
+
+// IsReadable reports whether the vault is visible to read APIs. A pending row
+// exists only to let a failed open clean itself up; it is never a plan.
+func (s VaultStatus) IsReadable() bool {
+	return s == VaultStatusActive || s == VaultStatusPaused
 }
 
 // VaultLotStatus tracks whether a contribution lot still carries basis.
@@ -381,6 +388,68 @@ type VaultActivityEntry struct {
 	At         time.Time       `json:"at"`
 	AmountUSD  decimal.Decimal `json:"amount_usd"`
 	PenaltyUSD decimal.Decimal `json:"penalty_usd"`
+}
+
+// VaultSkipReason explains why an automatic-saving take did not happen.
+type VaultSkipReason string
+
+const (
+	// VaultSkipFloor means the take would have breached the spendable floor.
+	VaultSkipFloor VaultSkipReason = "floor"
+)
+
+// VaultSkip is one refused automatic-saving take. It exists so a skipped inflow
+// is visible to ops without ever opening a lot.
+type VaultSkip struct {
+	ID        uuid.UUID       `json:"skip_id" db:"id"`
+	VaultID   uuid.UUID       `json:"vault_id" db:"vault_id"`
+	UserID    uuid.UUID       `json:"user_id" db:"user_id"`
+	PaymentID uuid.UUID       `json:"payment_id" db:"payment_id"`
+	Reason    VaultSkipReason `json:"reason" db:"reason"`
+	WouldHave decimal.Decimal `json:"would_have_been_usd" db:"would_have_been_usd"`
+	Spendable decimal.Decimal `json:"spendable_usd" db:"spendable_usd"`
+	Floor     decimal.Decimal `json:"floor_usd" db:"floor_usd"`
+	CreatedAt time.Time       `json:"created_at" db:"created_at"`
+}
+
+// VaultTierBinding pins a tier to the provider strategy the bootstrap resolved.
+// It is how CreateVault fails closed when a tier file has no real assets yet.
+type VaultTierBinding struct {
+	Tier             VaultTier `json:"tier" db:"tier"`
+	RailStrategyID   uuid.UUID `json:"rail_strategy_id" db:"rail_strategy_id"`
+	GliderStrategyID *string   `json:"glider_strategy_id,omitempty" db:"glider_strategy_id"`
+	Version          int       `json:"version" db:"version"`
+	UpdatedAt        time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// VaultHealth is the ops-facing state of one vault plus the one user-facing
+// question: does the user need to act. Users are notified only when they must
+// act (unlock within 30 days is the only such case); everything else stays here
+// for ops.
+type VaultHealth struct {
+	VaultID          uuid.UUID       `json:"vault_id" db:"vault_id"`
+	UserID           uuid.UUID       `json:"user_id" db:"user_id"`
+	LastFundedAt     *time.Time      `json:"last_funded_at,omitempty" db:"last_funded_at"`
+	LastSnapshotAt   *time.Time      `json:"last_snapshot_at,omitempty" db:"last_snapshot_at"`
+	LedgerUSD        decimal.Decimal `json:"ledger_usd" db:"ledger_usd"`
+	ProviderUSD      decimal.Decimal `json:"provider_usd" db:"provider_usd"`
+	PendingOps       int             `json:"pending_ops" db:"pending_ops"`
+	LastSkip         *time.Time      `json:"last_skip,omitempty" db:"last_skip"`
+	LastError        string          `json:"last_error,omitempty" db:"last_error"`
+	LastErrorAt      *time.Time      `json:"last_error_at,omitempty" db:"last_error_at"`
+	Flags            []string        `json:"flags" db:"flags"`
+	UserActionNeeded bool            `json:"user_action_needed" db:"user_action_needed"`
+	CheckedAt        time.Time       `json:"checked_at" db:"checked_at"`
+}
+
+// VaultEnrollFailure records a plan open that never reached a vault row. It is
+// ops vocabulary only — a failed enroll has no retirement_vaults row, so it can
+// never own a vault_health entry, but ops still needs to see it.
+type VaultEnrollFailure struct {
+	UserID      uuid.UUID `json:"user_id" db:"user_id"`
+	LastError   string    `json:"last_error" db:"last_error"`
+	LastErrorAt time.Time `json:"last_error_at" db:"last_error_at"`
+	Tries       int       `json:"tries" db:"tries"`
 }
 
 // VaultUpdateRequest changes the contribution rule or retirement age.

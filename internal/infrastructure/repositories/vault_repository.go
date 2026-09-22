@@ -97,7 +97,8 @@ func (r *VaultRepository) GetVaultByID(ctx context.Context, id uuid.UUID) (*enti
 	return vault, nil
 }
 
-// GetActiveVaultByUser returns a user's active vault, or (nil, nil).
+// GetActiveVaultByUser returns a user's active vault, or (nil, nil). Pending
+// rows from a failed open are invisible: they are cleanup markers, not plans.
 func (r *VaultRepository) GetActiveVaultByUser(ctx context.Context, userID uuid.UUID) (*entities.RetirementVault, error) {
 	vault := &entities.RetirementVault{}
 	err := r.db.GetContext(ctx, vault,
@@ -109,6 +110,24 @@ func (r *VaultRepository) GetActiveVaultByUser(ctx context.Context, userID uuid.
 		return nil, fmt.Errorf("get active retirement vault: %w", err)
 	}
 	return vault, nil
+}
+
+// DeleteVault removes a pending vault row created before a failed portfolio
+// link. Only pending rows may be removed; anything else is refused.
+func (r *VaultRepository) DeleteVault(ctx context.Context, vaultID uuid.UUID) error {
+	result, err := r.db.ExecContext(ctx,
+		`DELETE FROM retirement_vaults WHERE id = $1 AND status = 'pending'`, vaultID)
+	if err != nil {
+		return fmt.Errorf("delete pending retirement vault: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete pending retirement vault: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("delete pending retirement vault: no pending vault %s", vaultID)
+	}
+	return nil
 }
 
 // GetVaultByEnrollment resolves the vault a portfolio belongs to, or (nil, nil).
@@ -463,6 +482,36 @@ func (r *VaultRepository) GetAuthorizationByExecution(ctx context.Context, execu
 	return auth, nil
 }
 
+// ListAuthorizations returns a vault's authorizations, newest first.
+func (r *VaultRepository) ListAuthorizations(ctx context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultWithdrawalAuthorization, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	auths := []*entities.VaultWithdrawalAuthorization{}
+	err := r.db.SelectContext(ctx, &auths,
+		`SELECT `+vaultAuthColumns+` FROM vault_withdrawal_authorizations
+		 WHERE vault_id = $1 ORDER BY created_at DESC LIMIT $2`, vaultID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list vault authorizations: %w", err)
+	}
+	return auths, nil
+}
+
+// ListPenaltyEvents returns a vault's penalty events, newest first.
+func (r *VaultRepository) ListPenaltyEvents(ctx context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultPenaltyEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	events := []*entities.VaultPenaltyEvent{}
+	err := r.db.SelectContext(ctx, &events,
+		`SELECT `+vaultPenaltyColumns+` FROM vault_penalty_events
+		 WHERE vault_id = $1 ORDER BY created_at DESC LIMIT $2`, vaultID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list vault penalty events: %w", err)
+	}
+	return events, nil
+}
+
 // ---------------------------------------------------------------------------
 // On-ramp transfers
 // ---------------------------------------------------------------------------
@@ -530,4 +579,230 @@ func (r *VaultRepository) FindOnrampByIdempotencyKey(ctx context.Context, key st
 		return nil, fmt.Errorf("find vault onramp transfer: %w", err)
 	}
 	return transfer, nil
+}
+
+// ---------------------------------------------------------------------------
+// Tiers
+// ---------------------------------------------------------------------------
+
+const vaultTierColumns = `tier, rail_strategy_id, glider_strategy_id, version, updated_at`
+
+// UpsertTier pins a tier to its resolved Rail-owned strategy.
+func (r *VaultRepository) UpsertTier(ctx context.Context, tier *entities.VaultTierBinding) error {
+	if tier == nil {
+		return fmt.Errorf("vault tier is nil")
+	}
+	tier.UpdatedAt = time.Now().UTC()
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO vault_tiers (tier, rail_strategy_id, glider_strategy_id, version, updated_at)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (tier) DO UPDATE SET
+			rail_strategy_id = EXCLUDED.rail_strategy_id,
+			glider_strategy_id = EXCLUDED.glider_strategy_id,
+			version = EXCLUDED.version,
+			updated_at = EXCLUDED.updated_at`,
+		string(tier.Tier), tier.RailStrategyID, tier.GliderStrategyID, tier.Version, tier.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert vault tier: %w", err)
+	}
+	return nil
+}
+
+// GetTier returns the binding for one tier, or (nil, nil).
+func (r *VaultRepository) GetTier(ctx context.Context, tier entities.VaultTier) (*entities.VaultTierBinding, error) {
+	binding := &entities.VaultTierBinding{}
+	err := r.db.GetContext(ctx, binding,
+		`SELECT `+vaultTierColumns+` FROM vault_tiers WHERE tier = $1`, string(tier))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get vault tier: %w", err)
+	}
+	return binding, nil
+}
+
+// ListTiers returns every tier binding.
+func (r *VaultRepository) ListTiers(ctx context.Context) ([]*entities.VaultTierBinding, error) {
+	bindings := []*entities.VaultTierBinding{}
+	err := r.db.SelectContext(ctx, &bindings, `SELECT `+vaultTierColumns+` FROM vault_tiers`)
+	if err != nil {
+		return nil, fmt.Errorf("list vault tiers: %w", err)
+	}
+	return bindings, nil
+}
+
+// ---------------------------------------------------------------------------
+// Skips
+// ---------------------------------------------------------------------------
+
+const vaultSkipColumns = `id, vault_id, user_id, payment_id, reason,
+	would_have_been_usd, spendable_usd, floor_usd, created_at`
+
+// CreateSkip records one refused automatic-saving take. Duplicate payment keys
+// are a quiet no-op: the hook retries, the ledger stays still.
+func (r *VaultRepository) CreateSkip(ctx context.Context, skip *entities.VaultSkip) error {
+	if skip == nil {
+		return fmt.Errorf("vault skip is nil")
+	}
+	if skip.ID == uuid.Nil {
+		skip.ID = uuid.New()
+	}
+	if skip.CreatedAt.IsZero() {
+		skip.CreatedAt = time.Now().UTC()
+	}
+	if skip.Reason == "" {
+		skip.Reason = entities.VaultSkipFloor
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO vault_skips (id, vault_id, user_id, payment_id, reason,
+			would_have_been_usd, spendable_usd, floor_usd, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (vault_id, payment_id, reason) DO NOTHING`,
+		skip.ID, skip.VaultID, skip.UserID, skip.PaymentID, string(skip.Reason),
+		skip.WouldHave, skip.Spendable, skip.Floor, skip.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("create vault skip: %w", err)
+	}
+	return nil
+}
+
+// FindSkipByPayment looks up an existing skip for a payment, so a retry of the
+// deposit hook does not open a second row.
+func (r *VaultRepository) FindSkipByPayment(ctx context.Context, paymentID uuid.UUID) (*entities.VaultSkip, error) {
+	var skip entities.VaultSkip
+	err := r.db.GetContext(ctx, &skip,
+		`SELECT `+vaultSkipColumns+` FROM vault_skips WHERE payment_id = $1 LIMIT 1`, paymentID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find vault skip by payment: %w", err)
+	}
+	return &skip, nil
+}
+
+// ListSkips returns a vault's recent skips, newest first.
+func (r *VaultRepository) ListSkips(ctx context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultSkip, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	skips := []*entities.VaultSkip{}
+	err := r.db.SelectContext(ctx, &skips,
+		`SELECT `+vaultSkipColumns+` FROM vault_skips
+		 WHERE vault_id = $1 ORDER BY created_at DESC LIMIT $2`, vaultID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list vault skips: %w", err)
+	}
+	return skips, nil
+}
+
+// CountRecentSkips counts skips since a cutoff, for the repeated-skip flag.
+func (r *VaultRepository) CountRecentSkips(ctx context.Context, vaultID uuid.UUID, since time.Time) (int, error) {
+	var count int
+	err := r.db.GetContext(ctx, &count,
+		`SELECT COUNT(*) FROM vault_skips WHERE vault_id = $1 AND created_at >= $2`, vaultID, since)
+	if err != nil {
+		return 0, fmt.Errorf("count recent vault skips: %w", err)
+	}
+	return count, nil
+}
+
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
+const vaultHealthColumns = `vault_id, user_id, last_funded_at, last_snapshot_at,
+	ledger_usd, provider_usd, pending_ops, last_skip, last_error, last_error_at,
+	flags, user_action_needed, checked_at`
+
+// UpsertHealth writes the vault's ops-facing state.
+func (r *VaultRepository) UpsertHealth(ctx context.Context, health *entities.VaultHealth) error {
+	if health == nil {
+		return fmt.Errorf("vault health is nil")
+	}
+	if health.CheckedAt.IsZero() {
+		health.CheckedAt = time.Now().UTC()
+	}
+	if health.Flags == nil {
+		health.Flags = []string{}
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO vault_health (vault_id, user_id, last_funded_at, last_snapshot_at,
+			ledger_usd, provider_usd, pending_ops, last_skip, last_error, last_error_at,
+			flags, user_action_needed, checked_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (vault_id) DO UPDATE SET
+			user_id = EXCLUDED.user_id,
+			last_funded_at = EXCLUDED.last_funded_at,
+			last_snapshot_at = EXCLUDED.last_snapshot_at,
+			ledger_usd = EXCLUDED.ledger_usd,
+			provider_usd = EXCLUDED.provider_usd,
+			pending_ops = EXCLUDED.pending_ops,
+			last_skip = EXCLUDED.last_skip,
+			last_error = EXCLUDED.last_error,
+			last_error_at = EXCLUDED.last_error_at,
+			flags = EXCLUDED.flags,
+			user_action_needed = EXCLUDED.user_action_needed,
+			checked_at = EXCLUDED.checked_at`,
+		health.VaultID, health.UserID, health.LastFundedAt, health.LastSnapshotAt,
+		health.LedgerUSD, health.ProviderUSD, health.PendingOps, health.LastSkip,
+		health.LastError, health.LastErrorAt, health.Flags, health.UserActionNeeded, health.CheckedAt)
+	if err != nil {
+		return fmt.Errorf("upsert vault health: %w", err)
+	}
+	return nil
+}
+
+// GetHealth returns a vault's health row, or (nil, nil).
+func (r *VaultRepository) GetHealth(ctx context.Context, vaultID uuid.UUID) (*entities.VaultHealth, error) {
+	health := &entities.VaultHealth{}
+	err := r.db.GetContext(ctx, health,
+		`SELECT `+vaultHealthColumns+` FROM vault_health WHERE vault_id = $1`, vaultID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get vault health: %w", err)
+	}
+	return health, nil
+}
+
+const vaultEnrollFailureColumns = `user_id, last_error, last_error_at, tries`
+
+// GetEnrollFailure returns a user's most recent plan-open failure, or (nil, nil).
+func (r *VaultRepository) GetEnrollFailure(ctx context.Context, userID uuid.UUID) (*entities.VaultEnrollFailure, error) {
+	failure := &entities.VaultEnrollFailure{}
+	err := r.db.GetContext(ctx, failure,
+		`SELECT `+vaultEnrollFailureColumns+` FROM vault_enroll_failures WHERE user_id = $1`, userID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get vault enroll failure: %w", err)
+	}
+	return failure, nil
+}
+
+// UpsertEnrollFailure records one more plan-open failure for a user. Tries is
+// incremented by the caller from the previous row; this only persists.
+func (r *VaultRepository) UpsertEnrollFailure(ctx context.Context, failure *entities.VaultEnrollFailure) error {
+	if failure == nil {
+		return fmt.Errorf("vault enroll failure is nil")
+	}
+	if failure.LastErrorAt.IsZero() {
+		failure.LastErrorAt = time.Now().UTC()
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO vault_enroll_failures (user_id, last_error, last_error_at, tries)
+		VALUES ($1,$2,$3,$4)
+		ON CONFLICT (user_id) DO UPDATE SET
+			last_error = EXCLUDED.last_error,
+			last_error_at = EXCLUDED.last_error_at,
+			tries = EXCLUDED.tries`,
+		failure.UserID, failure.LastError, failure.LastErrorAt, failure.Tries)
+	if err != nil {
+		return fmt.Errorf("upsert vault enroll failure: %w", err)
+	}
+	return nil
 }

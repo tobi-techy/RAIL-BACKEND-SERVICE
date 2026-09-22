@@ -75,3 +75,31 @@ func TestPrintCatalogReportHandlesAnEmptyProvider(t *testing.T) {
 	assert.Contains(t, out, "nothing to ingest")
 	assert.True(t, strings.Contains(out, "ASSET CATALOG INGEST"))
 }
+
+// TestPrintClassifyAssetPinsOperatorOutput verifies the classify step is
+// copy-pasteable and loud: the raw id is printed verbatim, the class change is
+// explicit, and a placeholder id warns before it can be pasted into a tier file.
+func TestPrintClassifyAssetPinsOperatorOutput(t *testing.T) {
+	caip := "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	asset := &entities.InvestmentAsset{
+		CAIP19:      caip,
+		Symbol:      "USDC",
+		AssetClass:  "unknown",
+		Allowlisted: true,
+	}
+
+	var buf bytes.Buffer
+	printClassifyAsset(&buf, asset, "treasury", "PREVIEW (nothing written)")
+	out := buf.String()
+
+	assert.Contains(t, out, "PREVIEW")
+	assert.Contains(t, out, caip, "the raw id must be printed so a human can paste it")
+	assert.Contains(t, out, "unknown -> treasury")
+	assert.Contains(t, out, "Re-run with -apply")
+
+	// A placeholder id must never be silently accepted.
+	var placeholder bytes.Buffer
+	asset.CAIP19 = "solana:...:*REPLACE*"
+	printClassifyAsset(&placeholder, asset, "treasury", "WRITTEN")
+	assert.Contains(t, placeholder.String(), "REPLACE", "a placeholder must warn loudly")
+}

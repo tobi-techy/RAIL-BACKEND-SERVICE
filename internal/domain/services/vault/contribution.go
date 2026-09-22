@@ -32,6 +32,10 @@ func (s *Service) OnDepositAllocated(ctx context.Context, userID, depositID uuid
 // ContributeFromDeposit computes and funds the automatic contribution for one
 // deposit. The percentage is applied to the deposit and clamped to what is
 // actually available to save, so a large rule can never overdraw a user.
+//
+// The spendable floor is checked first: if the take would leave spendable under
+// MinSpendableUSD, the take is skipped and a VaultSkip is written instead of a
+// lot. The boundary is inclusive — landing exactly on the floor is allowed.
 func (s *Service) ContributeFromDeposit(ctx context.Context, userID, depositID uuid.UUID, depositAmount, stashAllocated decimal.Decimal) (*entities.VaultContributionResult, error) {
 	if !s.ready() {
 		return nil, nil
@@ -45,17 +49,62 @@ func (s *Service) ContributeFromDeposit(ctx context.Context, userID, depositID u
 	}
 
 	amount := vault.AutoContributionPct.Mul(depositAmount)
+	spendable := decimal.Zero
+	haveBalances := false
 	if s.ledger != nil {
 		balances, err := s.ledger.GetUserBalances(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("load balances: %w", err)
 		}
-		if balances != nil && amount.GreaterThan(balances.SpendingBalance) {
-			amount = balances.SpendingBalance
+		if balances != nil {
+			haveBalances = true
+			spendable = balances.SpendingBalance
+			if amount.GreaterThan(balances.SpendingBalance) {
+				amount = balances.SpendingBalance
+			}
 		}
 	}
 	if !amount.GreaterThan(decimal.Zero) || amount.LessThan(s.cfg.MinContributionUSD) {
 		return nil, nil
+	}
+	if haveBalances && spendable.Sub(amount).LessThan(s.cfg.MinSpendableUSD) {
+		// Same payment_id must not open two skips: a retry of the deposit hook
+		// after a partial failure must be a no-op, not a duplicate skip.
+		if existing, err := s.repo.FindSkipByPayment(ctx, depositID); err != nil {
+			return nil, fmt.Errorf("check existing skip: %w", err)
+		} else if existing != nil {
+			return nil, nil
+		}
+		skip := &entities.VaultSkip{
+			VaultID:   vault.ID,
+			UserID:    userID,
+			PaymentID: depositID,
+			Reason:    entities.VaultSkipFloor,
+			WouldHave: amount,
+			Spendable: spendable,
+			Floor:     s.cfg.MinSpendableUSD,
+		}
+		if err := s.repo.CreateSkip(ctx, skip); err != nil {
+			return nil, fmt.Errorf("record vault skip: %w", err)
+		}
+		if err := s.refreshHealth(ctx, vault, "floor skip"); err != nil {
+			s.log.Warn("vault health refresh failed", "vault_id", vault.ID.String(), "error", err)
+		}
+		s.log.Info("retirement vault contribution skipped on floor",
+			"vault_id", vault.ID.String(),
+			"user_id", userID.String(),
+			"would_have_been_usd", amount.String())
+		return nil, nil
+	}
+	if existing, err := s.repo.GetLotByKey(ctx, "vault:auto:"+depositID.String()); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return &entities.VaultContributionResult{
+			LotID:      existing.ID,
+			AmountUSD:  existing.AmountUSD,
+			FundedAt:   existing.AcquiredAt,
+			UnlockDate: vault.UnlockDate,
+		}, nil
 	}
 	return s.Contribute(ctx, userID, vault, amount, s.cfg.ContributionSource, "vault:auto:"+depositID.String())
 }
@@ -142,6 +191,9 @@ func (s *Service) Contribute(ctx context.Context, userID uuid.UUID, vault *entit
 		if err := s.notifier.NotifyVaultContribution(ctx, userID, amount, vault.UnlockDate); err != nil {
 			s.log.Warn("vault contribution notification failed", "vault_id", vault.ID.String(), "error", err)
 		}
+	}
+	if err := s.refreshHealth(ctx, vault, "contribution"); err != nil {
+		s.log.Warn("vault health refresh failed", "vault_id", vault.ID.String(), "error", err)
 	}
 
 	s.log.Info("retirement vault contribution funded",

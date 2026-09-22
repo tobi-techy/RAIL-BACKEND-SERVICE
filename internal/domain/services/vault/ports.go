@@ -44,6 +44,18 @@ type Config struct {
 	AuthorizationTTL time.Duration
 	StaleAfter       time.Duration
 
+	// MinSpendableUSD is the floor the automatic-savings hook leaves in
+	// spendable. A take that would breach it is skipped, never partialled.
+	MinSpendableUSD decimal.Decimal
+
+	// HealthDriftThresholdPct flags a vault when provider value drifts this
+	// far from ledger basis (percent). Zero disables the drift flag.
+	HealthDriftThresholdPct decimal.Decimal
+
+	// TierFiles are checked-in YAML tier definitions the bootstrap validates
+	// against the catalog before calling EnsureRailStrategy. Empty disables.
+	TierFiles []string
+
 	Strategies []StrategyDefinition
 }
 
@@ -98,10 +110,37 @@ type Repository interface {
 	// failed attempt does not lock the user out until the TTL lapses.
 	ExpireAuthorization(ctx context.Context, key string, now time.Time) error
 	GetAuthorizationByExecution(ctx context.Context, executionID uuid.UUID) (*entities.VaultWithdrawalAuthorization, error)
+	ListAuthorizations(ctx context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultWithdrawalAuthorization, error)
+	ListPenaltyEvents(ctx context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultPenaltyEvent, error)
 
 	CreateOnrampTransfer(ctx context.Context, transfer *entities.VaultOnrampTransfer) error
 	UpdateOnrampTransfer(ctx context.Context, transfer *entities.VaultOnrampTransfer) error
 	FindOnrampByIdempotencyKey(ctx context.Context, key string) (*entities.VaultOnrampTransfer, error)
+
+	// Tiers persist which provider strategy each tier resolved to.
+	UpsertTier(ctx context.Context, tier *entities.VaultTierBinding) error
+	GetTier(ctx context.Context, tier entities.VaultTier) (*entities.VaultTierBinding, error)
+	ListTiers(ctx context.Context) ([]*entities.VaultTierBinding, error)
+
+	// Skips record automatic-saving takes the floor refused.
+	CreateSkip(ctx context.Context, skip *entities.VaultSkip) error
+	FindSkipByPayment(ctx context.Context, paymentID uuid.UUID) (*entities.VaultSkip, error)
+	ListSkips(ctx context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultSkip, error)
+	CountRecentSkips(ctx context.Context, vaultID uuid.UUID, since time.Time) (int, error)
+
+	// Health is the ops/user-actionable state of one vault.
+	UpsertHealth(ctx context.Context, health *entities.VaultHealth) error
+	GetHealth(ctx context.Context, vaultID uuid.UUID) (*entities.VaultHealth, error)
+
+	// Enroll failures are ops-observable open attempts that never produced a
+	// vault row (so they cannot own vault_health, which is keyed by vault).
+	GetEnrollFailure(ctx context.Context, userID uuid.UUID) (*entities.VaultEnrollFailure, error)
+	UpsertEnrollFailure(ctx context.Context, failure *entities.VaultEnrollFailure) error
+
+	// DeleteVault removes a vault row created before its portfolio link failed,
+	// so a failed open never leaves a row that later reads can mistake for a
+	// plan. Only pending rows may be removed.
+	DeleteVault(ctx context.Context, vaultID uuid.UUID) error
 }
 
 // InvestmentEngine is the slice of the investment service the vault drives.
@@ -116,6 +155,10 @@ type InvestmentEngine interface {
 	// LinkVaultEnrollment records which vault a portfolio belongs to. This is the
 	// join that lets ops answer "where is this user's money" in one query.
 	LinkVaultEnrollment(ctx context.Context, userID, enrollmentID, vaultID uuid.UUID) error
+	// GetAssetByCAIP19 resolves one catalog row by provider id. The tier
+	// bootstrap uses it to prove every YAML leg names a real catalog asset; it
+	// never invents addresses.
+	GetAssetByCAIP19(ctx context.Context, caip19 string) (*entities.InvestmentAsset, error)
 }
 
 // Ledger is the double-entry book the vault settles through.
@@ -139,6 +182,7 @@ type Notifier interface {
 	NotifyVaultContribution(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, unlockDate *time.Time) error
 	NotifyVaultUnlocked(ctx context.Context, userID uuid.UUID, unlockDate time.Time) error
 	NotifyVaultWithdrawal(ctx context.Context, userID uuid.UUID, net, penalty decimal.Decimal, early bool) error
+	NotifyVaultActionRequired(ctx context.Context, userID uuid.UUID, title, body string) error
 }
 
 // Onramp is the swappable NGN→USD conversion rail. The in-flight Rail rails

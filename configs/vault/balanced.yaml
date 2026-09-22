@@ -1,0 +1,26 @@
+# Balanced Global Wealth — the balanced retirement tier.
+#
+# OPERATOR: replace every *REPLACE* with the real provider asset id for that
+# row. Discover ids with:
+#   make seed-catalog CONFIRM=1
+# which prints a copy-pasteable table of real ids. Do NOT guess.
+#
+# Rules enforced at bootstrap (fail closed):
+#   - each leg must exist in investment_assets (by provider id)
+#   - each leg's class must be one of: treasury, rwa, yield, equity
+#   - weights are strings that sum to 100; no single leg may exceed 40
+tier: balanced_wealth
+name: Balanced Global Wealth
+risk: medium
+horizon: long
+legs:
+  - caip19: "*REPLACE*"
+    weight: "40"
+  - caip19: "*REPLACE*"
+    weight: "25"
+  - caip19: "*REPLACE*"
+    weight: "15"
+  - caip19: "*REPLACE*"
+    weight: "10"
+  - caip19: "*REPLACE*"
+    weight: "10"

@@ -12,7 +12,10 @@ import (
 )
 
 // PreviewWithdrawal computes the principal/earnings split, the penalty and the
-// net payout for a proposed withdrawal, without moving anything.
+// net payout for a proposed withdrawal, without moving anything. It clamps to
+// the current value: a request above what the plan is worth is refused, and an
+// underwater book (market below remaining principal) can never pay out more
+// than it holds.
 func (s *Service) PreviewWithdrawal(ctx context.Context, userID uuid.UUID, gross decimal.Decimal) (*entities.VaultWithdrawalPlan, error) {
 	if !s.cfg.Enabled {
 		return nil, ErrDisabled
@@ -27,6 +30,9 @@ func (s *Service) PreviewWithdrawal(ctx context.Context, userID uuid.UUID, gross
 	position, _, _, _, err := s.position(ctx, vault)
 	if err != nil {
 		return nil, err
+	}
+	if position.MarketValueUSD.LessThan(position.PrincipalUSD) {
+		position.PrincipalUSD = position.MarketValueUSD
 	}
 	plan, err := ComputeWithdrawal(position, gross, s.now(), s.cfg.PenaltyRate)
 	if err != nil {
@@ -94,6 +100,9 @@ func (s *Service) Withdraw(
 	if err != nil {
 		return nil, err
 	}
+	if position.MarketValueUSD.LessThan(position.PrincipalUSD) {
+		position.PrincipalUSD = position.MarketValueUSD
+	}
 	plan, err := ComputeWithdrawal(position, req.AmountUSD, now, s.cfg.PenaltyRate)
 	if err != nil {
 		return nil, err
@@ -159,6 +168,7 @@ func (s *Service) Withdraw(
 		if updateErr := s.repo.UpdatePenaltyEvent(ctx, penalty); updateErr != nil {
 			s.log.Warn("failed to void vault penalty event", "penalty_id", penalty.ID.String(), "error", updateErr)
 		}
+		s.RecordFailedWithdraw(ctx, vault, err)
 		return nil, err
 	}
 
@@ -176,6 +186,9 @@ func (s *Service) Withdraw(
 				s.log.Warn("failed to attach vault authorization to execution", "key", key, "error", err)
 			}
 		}
+	}
+	if err := s.refreshHealth(ctx, vault, "withdraw submitted"); err != nil {
+		s.log.Warn("vault health refresh failed", "vault_id", vault.ID.String(), "error", err)
 	}
 
 	s.log.Info("retirement vault withdrawal submitted",
@@ -289,6 +302,11 @@ func (s *Service) settle(
 	if s.notifier != nil {
 		if err := s.notifier.NotifyVaultWithdrawal(ctx, auth.UserID, auth.NetUSD, auth.PenaltyUSD, plan.Locked); err != nil {
 			s.log.Warn("vault withdrawal notification failed", "vault_id", auth.VaultID.String(), "error", err)
+		}
+	}
+	if vault, err := s.repo.GetVaultByID(ctx, auth.VaultID); err == nil && vault != nil {
+		if herr := s.refreshHealth(ctx, vault, "withdraw settled"); herr != nil {
+			s.log.Warn("vault health refresh failed", "vault_id", auth.VaultID.String(), "error", herr)
 		}
 	}
 	s.log.Info("retirement vault withdrawal settled",

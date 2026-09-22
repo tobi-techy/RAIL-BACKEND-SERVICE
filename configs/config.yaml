@@ -500,38 +500,25 @@ vault:
   authorization_ttl_minutes: 15
   stale_after_hours: 24
 
-  strategies:
-    # Conservative: "Steady Dollar Income" — bills + short-duration + cash yield
-    - tier: conservative_pension
-      name: Steady Dollar Income
-      risk: low
-      horizon: long
-      legs:
-        - { caip19: "*REPLACE*", symbol: TBILL, weight: 40 }
-        - { caip19: "*REPLACE*", symbol: RWA,   weight: 20 }
-        - { caip19: "*REPLACE*", symbol: CASH,  weight: 25 }
-        - { caip19: "*REPLACE*", symbol: YIELD, weight: 15 }
+  # Spendable floor: the automatic-savings take is skipped when it would leave
+  # spendable below this amount. Staging default is conservative at $20.
+  min_spendable_usd: 20.0
 
-    # Balanced: "Balanced Global Wealth"
-    - tier: balanced_wealth
-      name: Balanced Global Wealth
-      risk: medium
-      horizon: long
-      legs:
-        - { caip19: "*REPLACE*", symbol: EQTY,  weight: 40 }
-        - { caip19: "*REPLACE*", symbol: TBILL, weight: 25 }
-        - { caip19: "*REPLACE*", symbol: RWA,   weight: 15 }
-        - { caip19: "*REPLACE*", symbol: YIELD, weight: 10 }
-        - { caip19: "*REPLACE*", symbol: CASH,  weight: 10 }
+  # Flag a vault when the provider valuation drifts this far from the ledger
+  # basis (percent, e.g. 10 = 10%). Ops notification only.
+  health_drift_threshold_pct: 10.0
 
-    # Bold: "Long-Term Global Growth"
-    - tier: bold_growth
-      name: Long-Term Global Growth
-      risk: high
-      horizon: long
-      legs:
-        - { caip19: "*REPLACE*", symbol: EQTY,  weight: 40 }
-        - { caip19: "*REPLACE*", symbol: EMERG, weight: 20 }
-        - { caip19: "*REPLACE*", symbol: TBILL, weight: 20 }
-        - { caip19: "*REPLACE*", symbol: RWA,   weight: 10 }
-        - { caip19: "*REPLACE*", symbol: YIELD, weight: 10 }
+  # The three Rail-owned tiers are defined in checked-in YAML, not here.
+  #   configs/vault/steady.yaml    — Steady Dollar Income
+  #   configs/vault/balanced.yaml  — Balanced Global Wealth
+  #   configs/vault/growth.yaml    — Long-Term Global Growth
+  #
+  # Bootstrap resolves them at startup and fails closed on any placeholder
+  # (*REPLACE*) leg, so CreateVault keeps returning "plan not available" until
+  # an operator pastes real provider asset ids. The inline strategies block is
+  # retained only as a manual fallback for operators who do NOT use tier files;
+  # every CAIP-19 there must be a real address, never a placeholder.
+  tier_files:
+    - configs/vault/steady.yaml
+    - configs/vault/balanced.yaml
+    - configs/vault/growth.yaml

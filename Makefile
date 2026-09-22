@@ -1,4 +1,4 @@
-.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection sim sim-live sim-stub sim-soak miriam-eval
+.PHONY: build run test clean docker-build docker-run lint security-scan postman-collection sim sim-live sim-stub sim-soak miriam-eval classify seed-catalog
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT ?= $(shell git rev-parse --short HEAD)
@@ -26,6 +26,15 @@ run:
 seed-catalog:
 	@echo "Ingesting provider asset catalog..."
 	go run cmd/main.go seed-catalog -collection $(or $(COLLECTION),curated) -limit $(or $(LIMIT),50) $(if $(CONFIRM),-confirm,)
+
+# Set the asset class of one catalog asset. Required between seed-catalog and
+# the retirement tier bootstrap: discovered assets start as class "unknown",
+# and tier files fail closed on any class that is not tier-eligible.
+#   make classify ID=solana:...:<address> CLASS=treasury          # preview
+#   make classify ID=solana:...:<address> CLASS=treasury APPLY=1  # write
+classify:
+	@echo "Classifying catalog asset..."
+	go run cmd/main.go classify-asset -id $(ID) -class $(CLASS) $(if $(APPLY),-apply,)
 
 test:
 	@echo "Running tests..."
