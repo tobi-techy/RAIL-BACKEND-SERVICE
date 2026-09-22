@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	ai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/pkg/analytics"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -407,6 +409,10 @@ func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payl
 		h.logger.Error("Failed to process virtual account activity",
 			zap.String("virtual_account_id", event.VirtualAccountID),
 			zap.Error(err))
+		if errors.Is(err, ai.ErrInflowNotRecorded) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger notify pending"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
 		return
 	}
@@ -781,6 +787,10 @@ func (h *BridgeWebhookHandler) handleDepositReceived(c *gin.Context, payload Bri
 		h.logger.Error("Failed to process fiat deposit",
 			zap.String("virtual_account_id", event.VirtualAccountID),
 			zap.Error(err))
+		if errors.Is(err, ai.ErrInflowNotRecorded) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger notify pending"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
 		return
 	}

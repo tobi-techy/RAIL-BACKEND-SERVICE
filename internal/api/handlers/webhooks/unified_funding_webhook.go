@@ -3,12 +3,14 @@ package webhooks
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	ai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
 
@@ -236,6 +238,13 @@ func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.C
 		}
 		if err := h.bridgeHandler.service.ProcessFiatDeposit(c, &depositEvent); err != nil {
 			h.logger.Error("Failed to process deposit", zap.Error(err))
+			// A failed Python-ledger report after a committed credit must
+			// trigger a retry: 503 tells Bridge to redeliver, and the
+			// idempotent report re-reports safely rather than double-crediting.
+			if errors.Is(err, ai.ErrInflowNotRecorded) {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger notify pending"})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
 			return
 		}

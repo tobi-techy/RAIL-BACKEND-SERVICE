@@ -1242,7 +1242,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				p2p.Use(middleware.RequireCryptoCapability(container.UserRepo, container.ZapLog))
 				{
 					p2p.POST("/lookup", middleware.AuthRateLimit(10), p2pHandlers.Lookup)
-					p2p.POST("/send", p2pHandlers.Send)
+					p2p.POST("/send", middleware.RequireMiriamConfirmHeader(container.Config.PythonAgent.RequireMiriamConfirmHeader, container.ZapLog), p2pHandlers.Send)
 					p2p.GET("/transfers", p2pHandlers.GetTransfers)
 					p2p.GET("/recent", p2pHandlers.GetRecentRecipients)
 					p2p.DELETE("/transfers/:id", middleware.AuthRateLimit(10), p2pHandlers.Cancel)

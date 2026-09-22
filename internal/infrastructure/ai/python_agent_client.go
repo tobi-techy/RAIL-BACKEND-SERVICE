@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/pkg/auth"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
@@ -106,19 +107,21 @@ type PythonProactiveOutcome struct {
 // forwards the user's message, and maps the agent's response back into Go types.
 // All money logic stays in Go: Python executes mutations through Go's REST API.
 type PythonAgentClient struct {
-	baseURL    string
-	jwtSecret  string
-	jwtTTL     time.Duration
-	httpClient *http.Client
-	logger     *zap.Logger
+	baseURL            string
+	jwtSecret          string
+	jwtTTL             time.Duration
+	httpClient         *http.Client
+	logger             *zap.Logger
+	notifyDebitEnabled bool
 }
 
 // PythonAgentClientConfig holds the client's wiring.
 type PythonAgentClientConfig struct {
-	BaseURL   string
-	JWTSecret string
-	JWTTTL    time.Duration
-	Timeout   time.Duration
+	BaseURL            string
+	JWTSecret          string
+	JWTTTL             time.Duration
+	Timeout            time.Duration
+	NotifyDebitEnabled bool
 }
 
 // NewPythonAgentClient builds a client for the Python agent.
@@ -131,11 +134,12 @@ func NewPythonAgentClient(cfg PythonAgentClientConfig, logger *zap.Logger) *Pyth
 		timeout = 60 * time.Second
 	}
 	return &PythonAgentClient{
-		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
-		jwtSecret:  cfg.JWTSecret,
-		jwtTTL:     cfg.JWTTTL,
-		httpClient: &http.Client{Timeout: timeout},
-		logger:     logger,
+		baseURL:            strings.TrimRight(cfg.BaseURL, "/"),
+		jwtSecret:          cfg.JWTSecret,
+		jwtTTL:             cfg.JWTTTL,
+		httpClient:         &http.Client{Timeout: timeout},
+		logger:             logger,
+		notifyDebitEnabled: cfg.NotifyDebitEnabled,
 	}
 }
 
@@ -399,6 +403,9 @@ func (c *PythonAgentClient) NotifyInflow(ctx context.Context, userID uuid.UUID, 
 		zap.String("payment_id", paymentID),
 		zap.String("amount", amount),
 		zap.Error(lastErr))
+	if metrics.Business != nil {
+		metrics.Business.InflowNotifyFail.Inc()
+	}
 	return fmt.Errorf("%w: %v", ErrInflowNotRecorded, lastErr)
 }
 
@@ -432,6 +439,112 @@ func (c *PythonAgentClient) postInflow(ctx context.Context, token string, payloa
 				"python inflow: status %d (body unreadable: %w)", resp.StatusCode, readErr)
 		}
 		return resp.StatusCode, fmt.Errorf("python inflow: status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	return resp.StatusCode, nil
+}
+
+// ErrDebitNotRecorded means the Python ledger did not accept a debit.
+// Same semantics as ErrInflowNotRecorded: retryable, idempotent on payment_id.
+var ErrDebitNotRecorded = errors.New("python ledger did not record the debit")
+
+// PythonDebit is the body of POST /api/v1/money/debit. The same payment_id as
+// the original credit lets Python match the reversal to the inflow.
+type PythonDebit struct {
+	PaymentID string `json:"payment_id"`
+	Amount    string `json:"amount"`
+	Reason    string `json:"reason"`
+}
+
+// NotifyDebit tells the Python ledger that a previously-notified credit was
+// reversed, so Miriam's balance does not drift ahead of Go's.
+//
+// Only fires when notifyDebitEnabled is true (default false): the endpoint is
+// gated on a feature flag so we never ship a call into a 404 before Python
+// ships the debit endpoint. The payment_id is the same one used for the
+// original credit, and the POST is idempotent.
+func (c *PythonAgentClient) NotifyDebit(ctx context.Context, userID uuid.UUID, paymentID, amount, reason string) error {
+	if !c.notifyDebitEnabled {
+		c.logger.Debug("notify debit skipped — feature flag disabled",
+			zap.String("user_id", userID.String()),
+			zap.String("payment_id", paymentID))
+		return nil
+	}
+	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(amount) == "" {
+		return fmt.Errorf("notify debit: payment_id and amount are required")
+	}
+
+	token, _, err := auth.GenerateAgentToken(userID, "", "", "user", c.jwtSecret, int(c.jwtTTL.Seconds()))
+	if err != nil {
+		return fmt.Errorf("mint python agent jwt for debit: %w", err)
+	}
+	payload, err := json.Marshal(PythonDebit{
+		PaymentID: paymentID,
+		Amount:    amount,
+		Reason:    reason,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal python debit: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < inflowRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 250 * time.Millisecond):
+			}
+		}
+		status, err := c.postDebit(ctx, token, payload)
+		if err == nil {
+			c.logger.Info("python ledger recorded a debit",
+				zap.String("user_id", userID.String()),
+				zap.String("payment_id", paymentID),
+				zap.String("amount", amount))
+			return nil
+		}
+		lastErr = err
+		if status != http.StatusServiceUnavailable {
+			break
+		}
+	}
+	c.logger.Warn("python ledger did not record a debit",
+		zap.String("user_id", userID.String()),
+		zap.String("payment_id", paymentID),
+		zap.String("amount", amount),
+		zap.Error(lastErr))
+	return fmt.Errorf("%w: %v", ErrDebitNotRecorded, lastErr)
+}
+
+// postDebit posts one debit body and reports the status code.
+func (c *PythonAgentClient) postDebit(ctx context.Context, token string, payload []byte) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/money/debit", bytes.NewReader(payload))
+	if err != nil {
+		return 0, fmt.Errorf("create python debit request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("python debit request: %w", err)
+	}
+	defer func() {
+		if _, drainErr := io.Copy(io.Discard, resp.Body); drainErr != nil {
+			c.logger.Warn("failed to drain python debit response body", zap.Error(drainErr))
+		}
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			c.logger.Warn("failed to close python debit response body", zap.Error(closeErr))
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return resp.StatusCode, fmt.Errorf(
+				"python debit: status %d (body unreadable: %w)", resp.StatusCode, readErr)
+		}
+		return resp.StatusCode, fmt.Errorf("python debit: status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 	return resp.StatusCode, nil
 }

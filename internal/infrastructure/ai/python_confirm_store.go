@@ -69,6 +69,32 @@ func (s *ConfirmStore) Put(ctx context.Context, convID uuid.UUID, confirmID stri
 	return s.redis.Set(ctx, confirmKey(convID), string(payload), s.ttl)
 }
 
+// PutIfAbsent stages a confirm_id only when no live challenge is open for the
+// conversation. Returns true when staged, false when one was already pending
+// (so the caller can reject the new challenge instead of superseding it).
+//
+// Uses an atomic SetNX after a Peek: if a live entry is already readable the
+// put is refused without hitting Redis. If Peek sees nothing (expired or
+// absent), SetNX races against concurrent stagers and only the winner wins.
+func (s *ConfirmStore) PutIfAbsent(ctx context.Context, convID uuid.UUID, confirmID string) (bool, error) {
+	if s.redis == nil || confirmID == "" {
+		return false, nil
+	}
+	if _, ok := s.Peek(ctx, convID); ok {
+		return false, nil
+	}
+	entry := pendingPythonConfirm{ConfirmID: confirmID, ExpiresAt: time.Now().Add(s.ttl)}
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return false, err
+	}
+	ok, err := s.redis.SetNX(ctx, confirmKey(convID), string(payload), s.ttl)
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
 // Peek returns the open confirm_id for a conversation, if one is staged and has
 // not expired.
 func (s *ConfirmStore) Peek(ctx context.Context, convID uuid.UUID) (string, bool) {

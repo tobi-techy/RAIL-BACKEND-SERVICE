@@ -947,6 +947,16 @@ type PythonAgentConfig struct {
 	JWTTTLSeconds      int    `mapstructure:"jwt_ttl_seconds"`      // Per-user token TTL (default 120)
 	ConfirmTTLSeconds  int    `mapstructure:"confirm_ttl_seconds"`  // How long a staged confirm_id stays tappable (default 600 = 10 min)
 	HTTPTimeoutSeconds int    `mapstructure:"http_timeout_seconds"` // Agent call timeout (default 60)
+
+	// RequireMiriamConfirmHeader gates the X-Miriam-Confirm-Id check on
+	// POST /api/v1/p2p/send from agent JWTs. Default false until the Python
+	// agent is sending the header; flipping it true makes a missing header
+	// reject the send with 403 before any funds move.
+	RequireMiriamConfirmHeader bool `mapstructure:"require_miriam_confirm_header"`
+	// NotifyDebitEnabled gates POST /api/v1/money/debit to Python's ledger.
+	// Default false until Python ships the debit endpoint; shipping the call
+	// unconditionally would 404.
+	NotifyDebitEnabled bool `mapstructure:"notify_debit_enabled"`
 }
 
 // ZeroGConfig contains configuration for 0G Network integration

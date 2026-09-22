@@ -13,6 +13,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 )
 
@@ -332,6 +333,10 @@ func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, u
 // rendered; the tap then arrives at ConfirmPlatformAction, which reads it back.
 // With no poll to render the reply is left alone: an answer that merely mentions
 // a confirm_id (a refusal, say) should not ask the user to tap anything.
+//
+// One confirm_id per thread: if a challenge is already open, the new one is
+// rejected — the reply tells the user to finish or cancel the first instead of
+// superseding it.
 func (a *orchestratorAdapter) stageConfirmIfAsked(ctx context.Context, cid uuid.UUID, resp *ai.PythonChatResponse, reply *platform.PlatformReply) {
 	confirmID := strings.TrimSpace(resp.ConfirmID)
 	if confirmID == "" {
@@ -345,18 +350,77 @@ func (a *orchestratorAdapter) stageConfirmIfAsked(ctx context.Context, cid uuid.
 			zap.String("confirm_id", confirmID))
 		return
 	}
-	if err := a.confirmStore.Put(ctx, cid, confirmID); err != nil {
+	// PutIfAbsent rejects a second live challenge on the same thread instead
+	// of silently superseding the first.
+	staged, err := a.confirmStore.PutIfAbsent(ctx, cid, confirmID)
+	if err != nil {
 		a.logger.Warn("could not stage python confirmation",
 			zap.String("conversation", cid.String()),
 			zap.String("confirm_id", confirmID),
 			zap.Error(err))
 		return
 	}
-	summary := strings.TrimSpace(reply.Text)
-	if summary == "" {
-		summary = "Shall I go ahead?"
+	if !staged {
+		// A challenge is already open on this thread — do not overwrite it.
+		// Tell the user to settle the first one.
+		reply.Confirm = nil
+		reply.Text = "You already have a pending confirmation. Finish or cancel that one first."
+		return
 	}
+	summary := buildConfirmSummary(resp, reply.Text)
 	reply.Confirm = &platform.ConfirmRequest{Summary: summary}
+}
+
+// buildConfirmSummary prefers the structured decision/receipt data Python
+// returned, falling back to the prose reply when it is absent. A money summary
+// should read "Send ₦X to NAME from spendable?" even when Voice prose is terse.
+func buildConfirmSummary(resp *ai.PythonChatResponse, prose string) string {
+	// Helper: pull a string field from a generic map.
+	field := func(m map[string]interface{}, k string) string {
+		if v, ok := m[k]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+		return ""
+	}
+
+	// Prefer the decision object: it carries the policy verdict with amount
+	// and counterparty before the movement.
+	if resp.Decision != nil {
+		amount := field(resp.Decision, "amount")
+		to := field(resp.Decision, "to")
+		if to == "" {
+			to = field(resp.Decision, "recipient")
+		}
+		if amount != "" {
+			if to != "" {
+				return fmt.Sprintf("Send %s to %s?", amount, to)
+			}
+			return fmt.Sprintf("Send %s?", amount)
+		}
+	}
+
+	// Fall back to the receipt object: it carries the same after the fact.
+	if resp.Receipt != nil {
+		amount := field(resp.Receipt, "amount")
+		to := field(resp.Receipt, "to")
+		if to == "" {
+			to = field(resp.Receipt, "recipient")
+		}
+		if amount != "" {
+			if to != "" {
+				return fmt.Sprintf("Send %s to %s?", amount, to)
+			}
+			return fmt.Sprintf("Send %s?", amount)
+		}
+	}
+
+	// Last resort: the prose the agent generated.
+	if s := strings.TrimSpace(prose); s != "" {
+		return s
+	}
+	return "Shall I go ahead?"
 }
 
 // settlePythonConfirm sends the user's answer to Python by confirm_id and
@@ -377,6 +441,9 @@ func (a *orchestratorAdapter) settlePythonConfirm(ctx context.Context, uid uuid.
 			zap.String("confirm_id", confirmID),
 			zap.Bool("yes", yes),
 			zap.Error(err))
+		if metrics.Business != nil {
+			metrics.Business.ConfirmSettleFail.Inc()
+		}
 		return &platform.PlatformReply{
 			Text: "I hit an error carrying that out — give me a second and ask me to finish.",
 		}, nil
@@ -397,4 +464,21 @@ func (a *orchestratorAdapter) pendingPythonConfirm(ctx context.Context, cid uuid
 		return "", false
 	}
 	return a.confirmStore.Peek(ctx, cid)
+}
+
+// HasPendingPythonConfirm implements platform.PythonConfirmOrchestrator so the
+// processor can tell a Python money confirm from a Go-native approve and
+// suppress typed YES/NO on poll-less channels.
+func (a *orchestratorAdapter) HasPendingPythonConfirm(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) bool {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return false
+	}
+	pid, _ := uuid.Parse(platformIdentityID)
+	cid, _, err := a.convRepo.GetOrCreatePlatformConversation(ctx, uid, plat.String(), threadID, pid)
+	if err != nil {
+		return false
+	}
+	_, ok := a.pendingPythonConfirm(ctx, cid)
+	return ok
 }

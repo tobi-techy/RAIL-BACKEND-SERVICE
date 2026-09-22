@@ -106,6 +106,7 @@ type Service struct {
 	tapIntentStore TapIntentStore
 	commitment     SpendingCommitmentGuard
 	inflowNotifier InflowNotifier
+	debitNotifier  DebitNotifier
 	logger         *zap.Logger
 }
 
@@ -117,6 +118,14 @@ type Service struct {
 // committed.
 type InflowNotifier interface {
 	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error
+}
+
+// DebitNotifier tells the Python ledger that a previously-notified credit was
+// reversed, so her balance stays in sync with Go's. Only wired when the
+// NotifyDebitEnabled feature flag is on, so the client does not 404 before
+// Python ships the debit endpoint.
+type DebitNotifier interface {
+	NotifyDebit(ctx context.Context, userID uuid.UUID, paymentID, amount, reason string) error
 }
 
 // NewService creates a new P2P service
@@ -156,6 +165,9 @@ func (s *Service) SetWalletLookup(w WalletLookup) {
 // SetSpendingCommitment wires the self-imposed daily spending cap enforcer.
 // SetInflowNotifier wires the Python-ledger projection.
 func (s *Service) SetInflowNotifier(n InflowNotifier) { s.inflowNotifier = n }
+
+// SetDebitNotifier wires the Python-ledger debit projection for reversals.
+func (s *Service) SetDebitNotifier(n DebitNotifier) { s.debitNotifier = n }
 
 func (s *Service) SetSpendingCommitment(g SpendingCommitmentGuard) {
 	s.commitment = g
