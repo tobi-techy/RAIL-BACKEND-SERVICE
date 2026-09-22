@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/graph"
+	ai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"go.uber.org/zap"
 )
 
@@ -321,7 +323,15 @@ func (h *GraphWebhookHandler) handleAccountCredit(c *gin.Context, event *graph.W
 			zap.Error(err),
 			zap.String("account_id", accountID),
 			zap.String("tx_ref", txRef))
-		// Return 200 to prevent Graph retry storms on non-recoverable errors.
+		// A failed Python-ledger report must trigger a retry: the NGN credit
+		// already committed in Go, and Miriam needs to know about it so Hands
+		// can spend it. 503 (not 200) tells Graph to redeliver.
+		if errors.Is(err, ai.ErrInflowNotRecorded) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "message": "ledger notify pending"})
+			return
+		}
+		// Non-retryable failures that do not come from the Python ledger: ack
+		// to prevent retry storms.
 		c.JSON(http.StatusOK, gin.H{"status": "error"})
 		return
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
 
 	"github.com/gin-gonic/gin"
@@ -497,6 +498,45 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 		c.Set("token_type", claims.TokenType)
 		c.Set("is_agent", isAgent)
 
+		c.Next()
+	}
+}
+
+// RequireMiriamConfirmHeader gates POST /api/v1/p2p/send from agent JWTs behind
+// the X-Miriam-Confirm-Id header. The Python agent must present the confirm_id
+// Hands issued so Go can enforce that no agent send bypasses the Hands
+// challenge. When require is false (the default until Python ships the header),
+// the check is a no-op and existing agent sends are unaffected.
+//
+// The header check only applies to agent JWTs (is_agent=true). Direct user API
+// calls are never blocked here — they never carry a Python-issued confirm_id.
+func RequireMiriamConfirmHeader(require bool, log *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !require {
+			c.Next()
+			return
+		}
+		if !c.GetBool("is_agent") {
+			c.Next()
+			return
+		}
+		confirmID := strings.TrimSpace(c.GetHeader("X-Miriam-Confirm-Id"))
+		if confirmID == "" {
+			if log != nil {
+				log.Warn("agent p2p send rejected: missing X-Miriam-Confirm-Id header",
+					zap.String("user_id", c.GetString("user_id")))
+			}
+			if metrics.Business != nil {
+				metrics.Business.P2PAgentRejected.Inc()
+			}
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":   "MIRIAM_CONFIRM_REQUIRED",
+				"message": "P2P sends from the agent channel require X-Miriam-Confirm-Id",
+			})
+			c.Abort()
+			return
+		}
+		c.Set("miriam_confirm_id", confirmID)
 		c.Next()
 	}
 }

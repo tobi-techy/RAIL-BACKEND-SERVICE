@@ -70,10 +70,11 @@ func (c *Container) initializePlatformMessaging() {
 			if cfg := c.Config.PythonAgent; cfg.Enabled && cfg.BaseURL != "" && c.RedisClient != nil &&
 				c.Config.JWT.Secret != "" {
 				c.PythonAgentClient = ai.NewPythonAgentClient(ai.PythonAgentClientConfig{
-					BaseURL:   cfg.BaseURL,
-					JWTSecret: c.Config.JWT.Secret,
-					JWTTTL:    time.Duration(cfg.JWTTTLSeconds) * time.Second,
-					Timeout:   time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+					BaseURL:            cfg.BaseURL,
+					JWTSecret:          c.Config.JWT.Secret,
+					JWTTTL:             time.Duration(cfg.JWTTTLSeconds) * time.Second,
+					Timeout:            time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+					NotifyDebitEnabled: cfg.NotifyDebitEnabled,
 				}, c.ZapLog)
 				platformOrchestrator.python = c.PythonAgentClient
 				platformOrchestrator.confirmStore = ai.NewConfirmStore(
@@ -97,12 +98,17 @@ func (c *Container) initializePlatformMessaging() {
 				// call site, where it could be forgotten.
 				if c.FundingService != nil {
 					c.FundingService.SetInflowNotifier(c.PythonAgentClient)
+					c.FundingService.SetDebitNotifier(c.PythonAgentClient)
 				}
 				if c.GraphVirtualAccountService != nil {
 					c.GraphVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
 				}
 				if c.P2PService != nil {
 					c.P2PService.SetInflowNotifier(c.PythonAgentClient)
+					c.P2PService.SetDebitNotifier(c.PythonAgentClient)
+				}
+				if c.BridgeVirtualAccountService != nil {
+					c.BridgeVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
 				}
 			}
 

@@ -86,6 +86,11 @@ type BusinessMetrics struct {
 
 	// Net flows
 	NetFlowUSD prometheus.Gauge // deposits - withdrawals running gauge
+
+	// Miriam money flow integration
+	InflowNotifyFail  prometheus.Counter // NotifyInflow returned ErrInflowNotRecorded
+	ConfirmSettleFail prometheus.Counter // ChatConfirm round-trip failed
+	P2PAgentRejected  prometheus.Counter // agent send rejected: missing X-Miriam-Confirm-Id
 }
 
 // NewBusinessMetrics creates and registers all business metrics
@@ -416,6 +421,20 @@ func NewBusinessMetrics() *BusinessMetrics {
 		NetFlowUSD: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "stack_net_flow_usd",
 			Help: "Net flow (deposits minus withdrawals) in USD",
+		}),
+
+		// Miriam money flow integration
+		InflowNotifyFail: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "stack_money_inflow_notify_fail_total",
+			Help: "Count of NotifyInflow failures (ErrInflowNotRecorded)",
+		}),
+		ConfirmSettleFail: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "stack_money_confirm_settle_fail_total",
+			Help: "Count of ChatConfirm round-trip failures",
+		}),
+		P2PAgentRejected: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "stack_money_p2p_agent_rejected_total",
+			Help: "Count of agent P2P sends rejected for missing X-Miriam-Confirm-Id",
 		}),
 	}
 }

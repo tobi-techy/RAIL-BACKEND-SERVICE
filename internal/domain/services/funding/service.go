@@ -136,6 +136,7 @@ type Service struct {
 	gameplayHooks       FundingGameplayHooks
 	depositSweepRepo    DepositSweepCreator
 	inflowNotifier      InflowNotifier
+	debitNotifier       DebitNotifier
 	logger              *logger.Logger
 }
 
@@ -150,6 +151,13 @@ type Service struct {
 // Miriam's ledger is single-currency.
 type InflowNotifier interface {
 	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error
+}
+
+// DebitNotifier tells the Python ledger that a previously-notified credit was
+// reversed, so her balance stays in sync with Go's. Only wired when the
+// NotifyDebitEnabled feature flag is on.
+type DebitNotifier interface {
+	NotifyDebit(ctx context.Context, userID uuid.UUID, paymentID, amount, reason string) error
 }
 
 // DepositSweepCreator creates sweep records for non-Solana Circle deposits.
@@ -317,6 +325,9 @@ func (s *Service) SetGameplayHooks(gh FundingGameplayHooks) {
 // SetInflowNotifier wires the Python-ledger projection. Optional: when unset a
 // credit simply is not reported, which is the pre-PR2 behaviour.
 func (s *Service) SetInflowNotifier(n InflowNotifier) { s.inflowNotifier = n }
+
+// SetDebitNotifier wires the Python-ledger debit projection for reversals.
+func (s *Service) SetDebitNotifier(n DebitNotifier) { s.debitNotifier = n }
 
 // notifyInflow reports a committed credit to Miriam's ledger, if one is wired.
 //

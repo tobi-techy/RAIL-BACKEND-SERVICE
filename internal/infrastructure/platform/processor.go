@@ -193,6 +193,14 @@ type PollVoteOrchestrator interface {
 	HandlePlatformPollVote(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform, optionText, pollTitle string) (*PlatformReply, bool, error)
 }
 
+// PythonConfirmOrchestrator is optionally implemented by an orchestrator that
+// stages Python-issued money confirmations. It lets the processor distinguish
+// a Python money confirm from a Go-native approve, so typed YES/NO is disabled
+// for Python money confirms on poll-less channels while poll taps still work.
+type PythonConfirmOrchestrator interface {
+	HasPendingPythonConfirm(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform) bool
+}
+
 // DocumentOrchestrator is optionally implemented by an orchestrator that can
 // reason immediately over a linked statement scan (Python-driven onboarding).
 // The processor enqueues every linked statement for the durable pipeline first;
@@ -709,6 +717,19 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 		pidStr := resolved.Identity.ID.String()
 		if (affirmativeVote[normalized] || negativeVote[normalized]) &&
 			p.orchestrator.HasPendingPlatformAction(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform) {
+			// Typed YES/NO does not settle Python money confirms. On channels
+			// without polls the confirm was rendered as a poll tap (iMessage) or
+			// an in-app action; a bare typed answer must not fire it. Poll votes
+			// (IsPollVote) still resolve, since those are deliberate taps on the
+			// rendered options.
+			if !msg.IsPollVote {
+				if pyOrch, ok := p.orchestrator.(PythonConfirmOrchestrator); ok &&
+					pyOrch.HasPendingPythonConfirm(ctx, railUserID, pidStr, msg.ThreadID, msg.Platform) {
+					p.sendPlainTo(ctx, resolved.Identity, msg.ThreadID,
+						"For your security, moving money requires a tap on the poll or Face ID in the RAIL app.")
+					return nil
+				}
+			}
 			var reply *PlatformReply
 			var err error
 			if affirmativeVote[normalized] {

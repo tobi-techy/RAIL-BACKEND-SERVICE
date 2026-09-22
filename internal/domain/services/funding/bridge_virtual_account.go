@@ -29,7 +29,27 @@ type BridgeVirtualAccountService struct {
 	gameplayHooks       FundingGameplayHooks
 	walletProvider      WalletProvider
 	validationService   *ValidationService
+	inflowNotifier      InflowNotifier
 	logger              *logger.Logger
+}
+
+// SetInflowNotifier wires the Python-ledger projection for inbound fiat.
+func (s *BridgeVirtualAccountService) SetInflowNotifier(n InflowNotifier) {
+	s.inflowNotifier = n
+}
+
+// notifyFiatInflow reports a committed fiat credit to Miriam's ledger.
+// Only NGN is reported — the client skips other currencies because the
+// ledger is single-currency and a non-NGN amount would silently
+// misstate the balance.
+func notifyFiatInflow(ctx context.Context, notifier InflowNotifier, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw string) error {
+	if notifier == nil {
+		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(currency), "NGN") {
+		return nil
+	}
+	return notifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw)
 }
 
 // WalletProvider interface for getting user wallet addresses
@@ -474,6 +494,8 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	depositID := uuid.New()
 	virtAccountUUID := virtualAccount.ID
 
+	sourceAmount := amount
+	sourceCurrency := event.Currency
 	deposit := &entities.Deposit{
 		ID:               depositID,
 		IdempotencyKey:   idempotencyKey,
@@ -483,6 +505,8 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 		TxHash:           transactionRef,
 		Token:            entities.StablecoinUSDC,
 		Amount:           amount,
+		SourceAmount:     &sourceAmount,
+		SourceCurrency:   &sourceCurrency,
 		Status:           "pending",
 		CreatedAt:        time.Now(),
 	}
@@ -492,6 +516,14 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 			if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 				s.logger.Info("Fiat deposit already processed (idempotent duplicate key)",
 					"idempotency_key", idempotencyKey)
+				// Re-report the credit if it was a confirmed NGN deposit. The
+				// deposit itself short-circuits on the idempotency check, so
+				// this is the only path where a missed notify can recover.
+				if existing, _ := s.depositRepo.GetByIdempotencyKey(ctx, idempotencyKey); existing != nil {
+					if repErr := notifyFiatInflow(ctx, s.inflowNotifier, existing.UserID, existing.IdempotencyKey, *existing.SourceAmount, *existing.SourceCurrency, "fiat deposit "+existing.TxHash); repErr != nil {
+						return fmt.Errorf("replay fiat inflow: %w", repErr)
+					}
+				}
 				return nil
 			}
 			s.logger.Error("Failed to create fiat deposit record",
@@ -539,6 +571,19 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 				"deposit_id", depositID,
 				"error", err)
 		}
+	}
+
+	// Report the committed NGN credit to Miriam's ledger, so Hands can see the
+	// money the user just received. Only called AFTER the ledger split committed;
+	// idempotent on the idempotency key, so a webhook retry re-reports safely.
+	if notifyErr := notifyFiatInflow(ctx, s.inflowNotifier, virtualAccount.UserID, idempotencyKey, sourceAmount, sourceCurrency, "fiat deposit "+transactionRef); notifyErr != nil {
+		s.logger.Error("Failed to report the fiat deposit to the Python ledger",
+			"user_id", virtualAccount.UserID,
+			"deposit_id", depositID,
+			"error", notifyErr)
+		// The money is credited and split; return the error so the caller can
+		// retry. A retry re-reports (idempotent) rather than crediting twice.
+		return fmt.Errorf("report fiat inflow to python ledger: %w", notifyErr)
 	}
 
 	if metrics.Business != nil {
