@@ -110,6 +110,22 @@ func (s *Service) PrepareUserEnrollment(
 	if version == nil {
 		return nil, fmt.Errorf("%w: this strategy has no published allocation", ErrNotFound)
 	}
+	limits, err := s.EffectiveLimits(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if limits.MaxEnrollments > 0 {
+		enrollments, err := s.enrollments.ListByUser(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("list enrollments: %w", err)
+		}
+		if len(enrollments) >= limits.MaxEnrollments {
+			return &UserEnrollPrepareResponse{
+					Status: entities.InvestmentActionRejected,
+				},
+				fmt.Errorf("%w: this account can hold at most %d investment strategies", ErrPolicyBlocked, limits.MaxEnrollments)
+		}
+	}
 	value, err := s.portfolioValue(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -117,7 +133,7 @@ func (s *Service) PrepareUserEnrollment(
 	report, err := s.validator.Validate(ctx, ValidationInput{
 		Legs:              version.TargetAllocation,
 		AmountUSD:         req.AmountUSD,
-		Limits:            mustLimits(s, ctx, userID),
+		Limits:            *limits,
 		Constraints:       version.Constraints,
 		PortfolioValueUSD: value,
 	})
@@ -127,10 +143,6 @@ func (s *Service) PrepareUserEnrollment(
 	if !report.Valid {
 		return &UserEnrollPrepareResponse{Status: entities.InvestmentActionRejected},
 			fmt.Errorf("%w: %s", ErrValidationFailed, firstViolation(report))
-	}
-	limits, err := s.EffectiveLimits(ctx, userID)
-	if err != nil {
-		return nil, err
 	}
 	decision, err := s.policy.Evaluate(ctx, PolicyInput{
 		UserID:    userID,
@@ -193,6 +205,11 @@ func (s *Service) PrepareUserEnrollment(
 			Live:         !s.cfg.Simulation,
 			Simulated:    s.cfg.Simulation,
 		}, nil
+	}
+
+	if decision.Verdict == entities.InvestmentVerdictRequiresAuthentication {
+		return &UserEnrollPrepareResponse{Status: entities.InvestmentActionRejected, Policy: decision},
+			fmt.Errorf("%w: %s", ErrPolicyBlocked, strings.Join(decision.Reasons, "; "))
 	}
 
 	if s.cfg.Simulation {
@@ -280,6 +297,11 @@ func (s *Service) CompleteUserEnrollment(
 	if !s.cfg.Enabled {
 		return nil, ErrDisabled
 	}
+	if s.cfg.Simulation {
+		// Fail closed: the provider is fake in simulation mode but the funding
+		// leg is real, so stage 2 must never run here.
+		return nil, fmt.Errorf("%w: Glider is not live (simulation mode); user-signed enrollment is disabled", ErrUnsupported)
+	}
 	if req == nil || strings.TrimSpace(req.FlowID) == "" {
 		return nil, fmt.Errorf("%w: flow_id is required", ErrValidationFailed)
 	}
@@ -326,6 +348,18 @@ func (s *Service) CompleteUserEnrollment(
 	if err != nil {
 		return nil, err
 	}
+	if limits.MaxEnrollments > 0 {
+		enrollments, err := s.enrollments.ListByUser(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("list enrollments: %w", err)
+		}
+		if len(enrollments) >= limits.MaxEnrollments {
+			return &entities.InvestmentEnrollResponse{
+					Status: entities.InvestmentActionRejected,
+				},
+				fmt.Errorf("%w: this account can hold at most %d investment strategies", ErrPolicyBlocked, limits.MaxEnrollments)
+		}
+	}
 	decision, err := s.policy.Evaluate(ctx, PolicyInput{
 		UserID:    userID,
 		Action:    PolicyActionEnroll,
@@ -335,6 +369,23 @@ func (s *Service) CompleteUserEnrollment(
 	})
 	if err != nil {
 		return nil, err
+	}
+	if decision.Verdict == entities.InvestmentVerdictNotSupported ||
+		decision.Verdict == entities.InvestmentVerdictRequiresComplianceReview {
+		return &entities.InvestmentEnrollResponse{Status: entities.InvestmentActionRejected, Policy: decision},
+			fmt.Errorf("%w: %s", ErrPolicyBlocked, strings.Join(decision.Reasons, "; "))
+	}
+	if req.AmountUSD.GreaterThan(decimal.Zero) && s.funding != nil {
+		source := normaliseFundingSource(req.Source)
+		available, err := s.funding.Available(ctx, userID, source)
+		if err != nil {
+			return nil, fmt.Errorf("check available balance: %w", err)
+		}
+		if available.LessThan(req.AmountUSD) {
+			return &entities.InvestmentEnrollResponse{Status: entities.InvestmentActionRejected},
+				fmt.Errorf("%w: you have %s available from %s, which is less than %s",
+					ErrPolicyBlocked, available.StringFixed(2), source, req.AmountUSD.StringFixed(2))
+		}
 	}
 	outcome, err := s.confirmMutation(ctx, userID, "enroll_user_signed_complete", binding, decision, nil, req.ConfirmationToken)
 	if err != nil {
@@ -346,6 +397,11 @@ func (s *Service) CompleteUserEnrollment(
 			Policy:       decision,
 			Confirmation: outcome.Pending,
 		}, nil
+	}
+
+	if decision.Verdict == entities.InvestmentVerdictRequiresAuthentication {
+		return &entities.InvestmentEnrollResponse{Status: entities.InvestmentActionRejected, Policy: decision},
+			fmt.Errorf("%w: %s", ErrPolicyBlocked, strings.Join(decision.Reasons, "; "))
 	}
 
 	var stored *entities.InvestmentSignatureRequest
@@ -480,12 +536,4 @@ func gliderStrategyIDOf(strategy *entities.InvestmentStrategy) string {
 		return ""
 	}
 	return *strategy.GliderStrategyID
-}
-
-func mustLimits(s *Service, ctx context.Context, userID uuid.UUID) entities.InvestmentLimits {
-	limits, err := s.EffectiveLimits(ctx, userID)
-	if err != nil || limits == nil {
-		return entities.InvestmentLimits{}
-	}
-	return *limits
 }
