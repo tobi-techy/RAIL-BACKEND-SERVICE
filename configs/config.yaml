@@ -458,7 +458,7 @@ data_retention:
   prediction_days: 30          # miriam_predictions
   outcome_days: 30             # miriam_prediction_outcomes (evaluated only; pending preserved)
   notification_days: 30        # notifications
-   campaign_duration_days: 30   # campaign_deliveries
+  campaign_delivery_days: 30    # campaign_deliveries
 
 # ============================================================================
 # Premium Global Dollar Retirement Vault
