@@ -142,6 +142,20 @@ func (h *Handlers) ListStrategies(c *gin.Context) {
 	common.RespondSuccess(c, gin.H{"strategies": strategies})
 }
 
+// ListRailStrategies returns the Rail-curated strategies (e.g. the Rail Stock
+// Sleeve) every verified user may enroll into. These have no owning user, so
+// they never appear in ListStrategies; without this endpoint a seeded Rail
+// strategy would be enrollable by id but undiscoverable.
+// GET /investments/strategies/rail
+func (h *Handlers) ListRailStrategies(c *gin.Context) {
+	strategies, err := h.service.ListRailStrategies(c.Request.Context())
+	if err != nil {
+		h.respond(c, err, nil)
+		return
+	}
+	common.RespondSuccess(c, gin.H{"strategies": strategies})
+}
+
 // GetStrategy returns a strategy with its version history.
 // GET /investments/strategies/:id
 func (h *Handlers) GetStrategy(c *gin.Context) {
@@ -386,7 +400,8 @@ func (h *Handlers) Enroll(c *gin.Context) {
 
 // EnrollPrepare runs Glider stage 1 for a user-held Solana wallet (Model B).
 // It returns the base64 transaction to sign plus the confirmation the
-// allocate card binds to. POST /investments/enroll/prepare
+// allocate card binds to. This is confirmation 1 of 2: the token staged here
+// is not valid for complete. POST /investments/enroll/prepare
 func (h *Handlers) EnrollPrepare(c *gin.Context) {
 	userID, ok := h.user(c)
 	if !ok {
@@ -409,7 +424,8 @@ func (h *Handlers) EnrollPrepare(c *gin.Context) {
 
 // EnrollComplete submits the wallet-signed transaction (stage 2, idempotent
 // on flowId), persists the enrollment, starts automation, and funds when an
-// amount was bound. POST /investments/enroll/complete
+// amount was bound. This is confirmation 2 of 2: it needs its own token bound
+// to flowId + amount + strategyId. POST /investments/enroll/complete
 func (h *Handlers) EnrollComplete(c *gin.Context) {
 	userID, ok := h.user(c)
 	if !ok {

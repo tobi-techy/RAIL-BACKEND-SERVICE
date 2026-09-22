@@ -302,6 +302,10 @@ var (
 	ErrProviderConflict = errors.New("investment: provider conflict")
 	// ErrProviderCooldown means the provider rate-limited the action.
 	ErrProviderCooldown = errors.New("investment: provider cooldown")
+	// ErrNoSettlementAccount means the user has no Solana settlement wallet
+	// yet. Callers that surface this over HTTP should map it to ErrNotFound
+	// (404), never to a 500: it is an expected account state, not a failure.
+	ErrNoSettlementAccount = errors.New("investment: no solana settlement account")
 )
 
 // nowOr returns the service clock's time.

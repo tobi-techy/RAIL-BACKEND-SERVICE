@@ -63,6 +63,13 @@ type UserEnrollCompleteRequest struct {
 // PrepareUserEnrollment runs Glider stage 1 for a user-held Solana wallet and
 // stages the confirmation the allocate card is bound to. Fail-closed: when the
 // provider is simulated the response says so and carries no sign payload.
+//
+// This is confirmation 1 of 2 for a user-signed enrollment. It binds the
+// intent (strategy + owner + amount + source) before any provider flow exists.
+// Confirmation 2 happens in CompleteUserEnrollment, which additionally binds
+// the provider flowId: the user confirms the intent first, signs in their
+// wallet, then confirms the exact signed submission. Agent callers must drive
+// both stages; a prepare token is never valid for complete and vice versa.
 func (s *Service) PrepareUserEnrollment(
 	ctx context.Context,
 	userID uuid.UUID,
@@ -288,6 +295,11 @@ func (s *Service) PrepareUserEnrollment(
 // CompleteUserEnrollment verifies the confirmation binding, submits the
 // user-signed transaction (stage 2, idempotent on flowId), persists the
 // enrollment, starts automation, and funds when an amount was bound.
+//
+// This is confirmation 2 of 2 (see PrepareUserEnrollment): the token staged
+// here binds strategy + owner + flowId + amount + source, so anything the
+// wallet signed that differs from the confirmed intent is rejected before it
+// reaches the provider.
 func (s *Service) CompleteUserEnrollment(
 	ctx context.Context,
 	userID uuid.UUID,
@@ -408,16 +420,18 @@ func (s *Service) CompleteUserEnrollment(
 	if s.signatures != nil {
 		stored, _ = s.signatures.FindByFlow(ctx, "enroll_user_signed", strings.TrimSpace(req.FlowID))
 	}
+	if stored != nil && stored.UserID != userID {
+		return nil, fmt.Errorf("%w: this enrollment was prepared by a different account", ErrConfirmationInvalid)
+	}
 	var expected map[string]any
 	if stored != nil && len(stored.Payload) > 0 {
 		_ = json.Unmarshal(stored.Payload, &expected)
 	}
 	chainIDs := req.ChainIDs
-	if len(chainIDs) == 0 {
-		chainIDs = s.cfg.SolanaChainIDs
-	}
 	if expected != nil {
-		// Byte-for-byte round-trip guard: the stored prepare fields must match.
+		// Byte-for-byte round-trip guard: every field the provider bound at
+		// stage 1 must echo here unchanged, otherwise the caller is driving a
+		// different enrollment through this flow's authorization.
 		if v, _ := expected["account_index"].(string); v != "" && v != req.AccountIndex {
 			return nil, fmt.Errorf("%w: account_index changed since stage 1", ErrConfirmationInvalid)
 		}
@@ -427,6 +441,21 @@ func (s *Service) CompleteUserEnrollment(
 		if v, _ := expected["owner_account_id"].(string); v != "" && v != strings.TrimSpace(req.OwnerAccountID) {
 			return nil, fmt.Errorf("%w: owner_account_id changed since stage 1", ErrConfirmationInvalid)
 		}
+		if v, _ := expected["strategy_id"].(string); v != "" && v != strategy.ID.String() {
+			return nil, fmt.Errorf("%w: strategy_id changed since stage 1; prepare again", ErrConfirmationInvalid)
+		}
+		if v, _ := expected["glider_strategy"].(string); v != "" && v != gliderStrategyIDOf(strategy) {
+			return nil, fmt.Errorf("%w: the provider strategy changed since stage 1; prepare again", ErrConfirmationInvalid)
+		}
+		preparedChains := decodeChainIDs(expected["chain_ids"])
+		if len(chainIDs) == 0 {
+			chainIDs = preparedChains
+		} else if len(preparedChains) > 0 && !chainIDsEqual(chainIDs, preparedChains) {
+			return nil, fmt.Errorf("%w: chain_ids changed since stage 1", ErrConfirmationInvalid)
+		}
+	}
+	if len(chainIDs) == 0 {
+		chainIDs = s.cfg.SolanaChainIDs
 	}
 
 	portfolio, err := s.provider.SubmitEnrollment(ctx, entities.GliderEnrollSubmitInput{
@@ -493,9 +522,13 @@ func (s *Service) CompleteUserEnrollment(
 
 	var funding *entities.InvestmentFundingTransfer
 	if req.AmountUSD.GreaterThan(decimal.Zero) {
+		// The funding leg is keyed on the provider flowId (the idempotency
+		// anchor for this enrollment), never on the freshly minted enrollment
+		// row: a retry after a crash between submit and persist must find the
+		// first transfer, not debit a second time.
 		key := strings.TrimSpace(req.IdempotencyKey)
 		if key == "" {
-			key = fmt.Sprintf("invest-enroll-user-%s", enrollment.ID.String())
+			key = fmt.Sprintf("invest-enroll-user-%s", strings.TrimSpace(req.FlowID))
 		}
 		funding, err = s.fundEnrollment(ctx, userID, enrollment, req.AmountUSD, normaliseFundingSource(req.Source), key, actor)
 		if err != nil {
@@ -536,4 +569,32 @@ func gliderStrategyIDOf(strategy *entities.InvestmentStrategy) string {
 		return ""
 	}
 	return *strategy.GliderStrategyID
+}
+
+// decodeChainIDs recovers the stage-1 chain list from the stored signature
+// payload (JSON numbers decode as float64).
+func decodeChainIDs(value any) []int {
+	list, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]int, 0, len(list))
+	for _, item := range list {
+		if f, ok := item.(float64); ok {
+			out = append(out, int(f))
+		}
+	}
+	return out
+}
+
+func chainIDsEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

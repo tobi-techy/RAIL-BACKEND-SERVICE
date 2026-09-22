@@ -252,6 +252,9 @@ func (s *Service) GetOwnerAccount(ctx context.Context, userID uuid.UUID) (string
 	}
 	account, err := s.funding.RecipientAccount(ctx, userID)
 	if err != nil {
+		if errors.Is(err, ErrNoSettlementAccount) {
+			return "", fmt.Errorf("%w: this account has no solana settlement address", ErrNotFound)
+		}
 		return "", err
 	}
 	if strings.TrimSpace(account) == "" {

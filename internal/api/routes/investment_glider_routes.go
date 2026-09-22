@@ -57,6 +57,9 @@ func RegisterInvestmentGliderRoutes(
 		// Strategies: versioned and immutable.
 		investments.GET("/strategies", h.ListStrategies)
 		investments.POST("/strategies", h.CreateStrategy)
+		// Static before param: Gin prefers the static "rail" segment over
+		// ":id", so this never collides with GetStrategy.
+		investments.GET("/strategies/rail", h.ListRailStrategies)
 		investments.GET("/strategies/:id", h.GetStrategy)
 		investments.POST("/strategies/:id/versions", h.PublishStrategyVersion)
 		investments.GET("/strategies/:id/preview", h.PreviewRebalance)

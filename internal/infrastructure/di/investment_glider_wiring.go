@@ -325,7 +325,7 @@ func (a *investmentFundingAdapter) RecipientAccount(ctx context.Context, userID 
 		return "", fmt.Errorf("load settlement wallet: %w", err)
 	}
 	if wallet == nil || strings.TrimSpace(wallet.Address) == "" {
-		return "", fmt.Errorf("investment: this account has no solana settlement address")
+		return "", fmt.Errorf("%w: this account has no solana settlement address", investmentsvc.ErrNoSettlementAccount)
 	}
 	return a.accountPrefix + ":" + wallet.Address, nil
 }

@@ -300,3 +300,180 @@ func TestUserEnrollCompleteRejectsInsufficientFunds(t *testing.T) {
 	assert.Empty(t, h.store.enrollments, "no provider portfolio may be opened without funds")
 	assert.Equal(t, 0, h.funding.transfers)
 }
+
+func TestUserEnrollCompleteRejectsSwappedAccountIndex(t *testing.T) {
+	h := newHarness(t)
+	strategy := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+
+	prep := &UserEnrollPrepareRequest{
+		StrategyID:     strategy.Strategy.ID.String(),
+		OwnerAccountID: testOwnerAccount,
+		AmountUSD:      decimal.NewFromInt(500),
+	}
+	ready := h.confirmUserPrepare(t, prep)
+
+	// account_index is NOT part of the confirmation binding, so the token
+	// stays valid and only the stage-1 round-trip guard can catch the swap.
+	comp := &UserEnrollCompleteRequest{
+		StrategyID:              strategy.Strategy.ID.String(),
+		OwnerAccountID:          testOwnerAccount,
+		FlowID:                  ready.FlowID,
+		AccountIndex:            ready.AccountIndex,
+		AgentAccountID:          ready.AgentAccount,
+		SignedSolanaTransaction: "signed:" + ready.SignPayload,
+		AmountUSD:               decimal.NewFromInt(500),
+	}
+	staged, err := h.service.CompleteUserEnrollment(context.Background(), h.userID, comp, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+
+	tampered := *comp
+	tampered.AccountIndex = "999"
+	tampered.ConfirmationToken = staged.Confirmation.Token
+	_, err = h.service.CompleteUserEnrollment(context.Background(), h.userID, &tampered, entities.InvestmentActorMiriam)
+	require.ErrorIs(t, err, ErrConfirmationInvalid, "a swapped account_index must be rejected by the round-trip guard")
+	assert.Empty(t, h.store.enrollments)
+	assert.Equal(t, 0, h.funding.transfers)
+}
+
+func TestUserEnrollCompleteRejectsChainIDsChange(t *testing.T) {
+	h := newHarness(t)
+	h.service.cfg.SolanaChainIDs = []int{101, 102}
+	strategy := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+
+	prep := &UserEnrollPrepareRequest{
+		StrategyID:     strategy.Strategy.ID.String(),
+		OwnerAccountID: testOwnerAccount,
+		AmountUSD:      decimal.NewFromInt(500),
+	}
+	ready := h.confirmUserPrepare(t, prep)
+	require.Equal(t, []int{101, 102}, ready.ChainIDs, "test setup: prepare must echo the configured chains")
+
+	comp := &UserEnrollCompleteRequest{
+		StrategyID:              strategy.Strategy.ID.String(),
+		OwnerAccountID:          testOwnerAccount,
+		FlowID:                  ready.FlowID,
+		AccountIndex:            ready.AccountIndex,
+		AgentAccountID:          ready.AgentAccount,
+		ChainIDs:                ready.ChainIDs,
+		SignedSolanaTransaction: "signed:" + ready.SignPayload,
+		AmountUSD:               decimal.NewFromInt(500),
+	}
+	staged, err := h.service.CompleteUserEnrollment(context.Background(), h.userID, comp, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+
+	tampered := *comp
+	tampered.ChainIDs = []int{999}
+	tampered.ConfirmationToken = staged.Confirmation.Token
+	_, err = h.service.CompleteUserEnrollment(context.Background(), h.userID, &tampered, entities.InvestmentActorMiriam)
+	require.ErrorIs(t, err, ErrConfirmationInvalid, "changed chain_ids must be rejected by the round-trip guard")
+	assert.Empty(t, h.store.enrollments)
+}
+
+// railStrategySharingProviderBinding inserts a Rail-owned strategy row that
+// points at an already-created provider strategy, so tests can enroll without
+// owning the strategy.
+func railStrategySharingProviderBinding(t *testing.T, h *harness, gliderStrategyID string) *entities.InvestmentStrategy {
+	t.Helper()
+	created := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+	legs := created.Version.TargetAllocation
+	railStrategy := &entities.InvestmentStrategy{
+		ID:               uuid.New(),
+		UserID:           nil,
+		OwnerType:        entities.InvestmentOwnerRail,
+		GliderStrategyID: &gliderStrategyID,
+		Name:             "Rail test sleeve",
+		Risk:             "medium",
+		Horizon:          "long",
+		Status:           entities.InvestmentStrategyActive,
+		CurrentVersion:   1,
+		CreatedBy:        entities.InvestmentActorSystem,
+	}
+	require.NoError(t, h.store.Create(context.Background(), railStrategy))
+	require.NoError(t, h.store.CreateVersion(context.Background(), &entities.InvestmentStrategyVersion{
+		ID:               uuid.New(),
+		StrategyID:       railStrategy.ID,
+		Version:          1,
+		TargetAllocation: legs,
+		Risk:             "medium",
+		Horizon:          "long",
+		CreatedBy:        entities.InvestmentActorSystem,
+	}))
+	return railStrategy
+}
+
+func TestUserEnrollCompleteRejectsForeignFlow(t *testing.T) {
+	h := newHarness(t)
+	created := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+	railStrategy := railStrategySharingProviderBinding(t, h, *created.Strategy.GliderStrategyID)
+
+	// User A prepares stage 1 against the Rail strategy.
+	prep := &UserEnrollPrepareRequest{
+		StrategyID:     railStrategy.ID.String(),
+		OwnerAccountID: testOwnerAccount,
+		AmountUSD:      decimal.NewFromInt(100),
+	}
+	ready := h.confirmUserPrepare(t, prep)
+
+	// User B replays A's flowId through their own confirmation. The token is
+	// valid for B's payload, so only the stored-request ownership check stops
+	// B from enrolling through A's authorization.
+	otherUser := uuid.New()
+	comp := &UserEnrollCompleteRequest{
+		StrategyID:              railStrategy.ID.String(),
+		OwnerAccountID:          testOwnerAccount,
+		FlowID:                  ready.FlowID,
+		AccountIndex:            ready.AccountIndex,
+		AgentAccountID:          ready.AgentAccount,
+		SignedSolanaTransaction: "signed:" + ready.SignPayload,
+		AmountUSD:               decimal.NewFromInt(100),
+	}
+	staged, err := h.service.CompleteUserEnrollment(context.Background(), otherUser, comp, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	require.Equal(t, entities.InvestmentActionAwaitingConfirmation, staged.Status)
+
+	comp.ConfirmationToken = staged.Confirmation.Token
+	_, err = h.service.CompleteUserEnrollment(context.Background(), otherUser, comp, entities.InvestmentActorMiriam)
+	require.ErrorIs(t, err, ErrConfirmationInvalid, "a flow prepared by another account must be rejected")
+	assert.Empty(t, h.store.enrollments)
+	assert.Equal(t, 0, h.funding.transfers)
+}
+
+func TestGetOwnerAccountReturnsNotFoundWithoutWallet(t *testing.T) {
+	h := newHarness(t)
+	h.funding.recipient = ""
+	_, err := h.service.GetOwnerAccount(context.Background(), h.userID)
+	require.ErrorIs(t, err, ErrNotFound, "a missing wallet is an expected account state, not a 500")
+
+	h.funding.recipient = "solana:testnet:RailSettlementAddress"
+	account, err := h.service.GetOwnerAccount(context.Background(), h.userID)
+	require.NoError(t, err)
+	assert.Equal(t, "solana:testnet:RailSettlementAddress", account)
+}
+
+func TestListRailStrategiesSurfacesSeededSleeve(t *testing.T) {
+	h := newHarness(t)
+	created := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+	railStrategy := railStrategySharingProviderBinding(t, h, *created.Strategy.GliderStrategyID)
+
+	// The sleeve has no owning user, so it is invisible to ListStrategies...
+	mine, err := h.service.ListStrategies(context.Background(), h.userID, "")
+	require.NoError(t, err)
+	for _, s := range mine {
+		assert.NotEqual(t, railStrategy.ID, s.ID)
+	}
+
+	// ...but discoverable through the Rail listing the new endpoint serves.
+	rail, err := h.service.ListRailStrategies(context.Background())
+	require.NoError(t, err)
+	require.Len(t, rail, 1)
+	assert.Equal(t, railStrategy.ID, rail[0].ID)
+
+	// And enrollable by id through the user-signed flow.
+	prep := &UserEnrollPrepareRequest{
+		StrategyID:     railStrategy.ID.String(),
+		OwnerAccountID: testOwnerAccount,
+		AmountUSD:      decimal.NewFromInt(100),
+	}
+	ready := h.confirmUserPrepare(t, prep)
+	require.NotEmpty(t, ready.FlowID)
+}
