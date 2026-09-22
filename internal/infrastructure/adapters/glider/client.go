@@ -332,6 +332,9 @@ func (c *Client) attempt(ctx context.Context, method, path string, body any, out
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Correlation-Id", correlationID)
+	// Cloudflare in front of api.glider.fi rejects the default Go user agent
+	// (1010 browser_signature_banned); identify the tenant integration.
+	req.Header.Set("User-Agent", "RailBackend/1.0 (Stocklana; +https://rail.app)")
 
 	resp, err := c.http.Do(req)
 	if err != nil {

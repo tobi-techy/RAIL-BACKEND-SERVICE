@@ -3,6 +3,7 @@ package investment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -671,7 +672,7 @@ func (f *fakeFunding) TransferToPortfolio(_ context.Context, in FundingRequest) 
 
 func (f *fakeFunding) RecipientAccount(_ context.Context, _ uuid.UUID) (string, error) {
 	if f.recipient == "" {
-		return "", errors.New("no settlement account")
+		return "", fmt.Errorf("%w: no settlement account", ErrNoSettlementAccount)
 	}
 	return f.recipient, nil
 }

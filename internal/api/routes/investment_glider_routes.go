@@ -42,6 +42,7 @@ func RegisterInvestmentGliderRoutes(
 		// portfolio values from memory.
 		investments.GET("/portfolio", h.GetPortfolio)
 		investments.GET("/positions", h.GetPositions)
+		investments.GET("/owner", h.GetOwner)
 
 		// Asset catalog.
 		investments.GET("/assets", h.ListAssets)
@@ -56,6 +57,9 @@ func RegisterInvestmentGliderRoutes(
 		// Strategies: versioned and immutable.
 		investments.GET("/strategies", h.ListStrategies)
 		investments.POST("/strategies", h.CreateStrategy)
+		// Static before param: Gin prefers the static "rail" segment over
+		// ":id", so this never collides with GetStrategy.
+		investments.GET("/strategies/rail", h.ListRailStrategies)
 		investments.GET("/strategies/:id", h.GetStrategy)
 		investments.POST("/strategies/:id/versions", h.PublishStrategyVersion)
 		investments.GET("/strategies/:id/preview", h.PreviewRebalance)
@@ -65,6 +69,8 @@ func RegisterInvestmentGliderRoutes(
 
 		// Execution.
 		investments.POST("/enroll", h.Enroll)
+		investments.POST("/enroll/prepare", h.EnrollPrepare)
+		investments.POST("/enroll/complete", h.EnrollComplete)
 		investments.POST("/orders", h.PlaceOrder)
 		investments.POST("/allocations", h.SetAllocation)
 

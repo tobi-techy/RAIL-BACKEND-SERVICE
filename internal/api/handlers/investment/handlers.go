@@ -86,6 +86,23 @@ func (h *Handlers) GetPositions(c *gin.Context) {
 	common.RespondSuccess(c, gin.H{"positions": positions})
 }
 
+// GetOwner returns the caller's Solana owner account id (CAIP-10) for
+// user-signed enrollment. Read-only; an account without a Solana wallet gets
+// an explicit error, never an invented address.
+// GET /investments/owner
+func (h *Handlers) GetOwner(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	account, err := h.service.GetOwnerAccount(c.Request.Context(), userID)
+	if err != nil {
+		h.respond(c, err, nil)
+		return
+	}
+	common.RespondSuccess(c, gin.H{"owner_account_id": account})
+}
+
 // ListAssets searches the supported asset catalog.
 // GET /investments/assets
 func (h *Handlers) ListAssets(c *gin.Context) {
@@ -118,6 +135,20 @@ func (h *Handlers) ListStrategies(c *gin.Context) {
 		return
 	}
 	strategies, err := h.service.ListStrategies(c.Request.Context(), userID, c.Query("status"))
+	if err != nil {
+		h.respond(c, err, nil)
+		return
+	}
+	common.RespondSuccess(c, gin.H{"strategies": strategies})
+}
+
+// ListRailStrategies returns the Rail-curated strategies (e.g. the Rail Stock
+// Sleeve) every verified user may enroll into. These have no owning user, so
+// they never appear in ListStrategies; without this endpoint a seeded Rail
+// strategy would be enrollable by id but undiscoverable.
+// GET /investments/strategies/rail
+func (h *Handlers) ListRailStrategies(c *gin.Context) {
+	strategies, err := h.service.ListRailStrategies(c.Request.Context())
 	if err != nil {
 		h.respond(c, err, nil)
 		return
@@ -360,6 +391,54 @@ func (h *Handlers) Enroll(c *gin.Context) {
 	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
 
 	response, err := h.service.Enroll(c.Request.Context(), userID, req, h.actor(c))
+	if err != nil {
+		h.respond(c, err, response)
+		return
+	}
+	h.respondAction(c, response.Status, response)
+}
+
+// EnrollPrepare runs Glider stage 1 for a user-held Solana wallet (Model B).
+// It returns the base64 transaction to sign plus the confirmation the
+// allocate card binds to. This is confirmation 1 of 2: the token staged here
+// is not valid for complete. POST /investments/enroll/prepare
+func (h *Handlers) EnrollPrepare(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	req := &investmentsvc.UserEnrollPrepareRequest{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		common.RespondBadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
+
+	response, err := h.service.PrepareUserEnrollment(c.Request.Context(), userID, req, h.actor(c))
+	if err != nil {
+		h.respond(c, err, response)
+		return
+	}
+	h.respondAction(c, response.Status, response)
+}
+
+// EnrollComplete submits the wallet-signed transaction (stage 2, idempotent
+// on flowId), persists the enrollment, starts automation, and funds when an
+// amount was bound. This is confirmation 2 of 2: it needs its own token bound
+// to flowId + amount + strategyId. POST /investments/enroll/complete
+func (h *Handlers) EnrollComplete(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	req := &investmentsvc.UserEnrollCompleteRequest{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		common.RespondBadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
+
+	response, err := h.service.CompleteUserEnrollment(c.Request.Context(), userID, req, h.actor(c))
 	if err != nil {
 		h.respond(c, err, response)
 		return
