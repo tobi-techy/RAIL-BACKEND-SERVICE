@@ -86,6 +86,23 @@ func (h *Handlers) GetPositions(c *gin.Context) {
 	common.RespondSuccess(c, gin.H{"positions": positions})
 }
 
+// GetOwner returns the caller's Solana owner account id (CAIP-10) for
+// user-signed enrollment. Read-only; an account without a Solana wallet gets
+// an explicit error, never an invented address.
+// GET /investments/owner
+func (h *Handlers) GetOwner(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	account, err := h.service.GetOwnerAccount(c.Request.Context(), userID)
+	if err != nil {
+		h.respond(c, err, nil)
+		return
+	}
+	common.RespondSuccess(c, gin.H{"owner_account_id": account})
+}
+
 // ListAssets searches the supported asset catalog.
 // GET /investments/assets
 func (h *Handlers) ListAssets(c *gin.Context) {
@@ -360,6 +377,52 @@ func (h *Handlers) Enroll(c *gin.Context) {
 	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
 
 	response, err := h.service.Enroll(c.Request.Context(), userID, req, h.actor(c))
+	if err != nil {
+		h.respond(c, err, response)
+		return
+	}
+	h.respondAction(c, response.Status, response)
+}
+
+// EnrollPrepare runs Glider stage 1 for a user-held Solana wallet (Model B).
+// It returns the base64 transaction to sign plus the confirmation the
+// allocate card binds to. POST /investments/enroll/prepare
+func (h *Handlers) EnrollPrepare(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	req := &investmentsvc.UserEnrollPrepareRequest{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		common.RespondBadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
+
+	response, err := h.service.PrepareUserEnrollment(c.Request.Context(), userID, req, h.actor(c))
+	if err != nil {
+		h.respond(c, err, response)
+		return
+	}
+	h.respondAction(c, response.Status, response)
+}
+
+// EnrollComplete submits the wallet-signed transaction (stage 2, idempotent
+// on flowId), persists the enrollment, starts automation, and funds when an
+// amount was bound. POST /investments/enroll/complete
+func (h *Handlers) EnrollComplete(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	req := &investmentsvc.UserEnrollCompleteRequest{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		common.RespondBadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
+
+	response, err := h.service.CompleteUserEnrollment(c.Request.Context(), userID, req, h.actor(c))
 	if err != nil {
 		h.respond(c, err, response)
 		return

@@ -239,6 +239,27 @@ func (s *Service) GetPositions(ctx context.Context, userID uuid.UUID) ([]*entiti
 	return s.holdings.ListByUser(ctx, userID)
 }
 
+// GetOwnerAccount returns the caller's Solana owner account id (CAIP-10) for
+// user-signed (Model B) enrollment. It is the user's own Rail settlement
+// wallet, read from the wallet service -- never invented, and an explicit
+// error when the account has no Solana wallet yet.
+func (s *Service) GetOwnerAccount(ctx context.Context, userID uuid.UUID) (string, error) {
+	if !s.cfg.Enabled {
+		return "", ErrDisabled
+	}
+	if s.funding == nil {
+		return "", fmt.Errorf("%w: no funding path is configured", ErrUnsupported)
+	}
+	account, err := s.funding.RecipientAccount(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(account) == "" {
+		return "", fmt.Errorf("%w: this account has no solana settlement address", ErrNotFound)
+	}
+	return account, nil
+}
+
 // GetLimitsResponse returns the effective limits plus the capability verdicts,
 // so the agent can answer "can I invest?" without attempting anything.
 func (s *Service) GetLimitsResponse(ctx context.Context, userID uuid.UUID) (*entities.InvestmentLimitsResponse, error) {

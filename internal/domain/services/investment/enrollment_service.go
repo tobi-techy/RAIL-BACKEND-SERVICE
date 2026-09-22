@@ -242,7 +242,9 @@ func (s *Service) enrollWithProvider(
 		StrategyID:     *strategy.GliderStrategyID,
 		OwnerAccountID: ownerAccount,
 		ChainIDs:       s.cfg.SolanaChainIDs,
-		AccountType:    "ECDSA",
+		// Solana Model B (and Model A) must NOT send accountType: the provider
+		// returns a Solana transaction / slot-bound payload instead of an
+		// ECDSA message. Sending "ECDSA" here breaks Solana enrollment.
 	})
 	if err != nil {
 		return nil, fmt.Errorf("prepare enrollment: %w", s.mapProviderError(err))
