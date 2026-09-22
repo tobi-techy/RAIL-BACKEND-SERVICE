@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 )
@@ -747,17 +748,36 @@ func (r *VaultRepository) UpsertHealth(ctx context.Context, health *entities.Vau
 			checked_at = EXCLUDED.checked_at`,
 		health.VaultID, health.UserID, health.LastFundedAt, health.LastSnapshotAt,
 		health.LedgerUSD, health.ProviderUSD, health.PendingOps, health.LastSkip,
-		health.LastError, health.LastErrorAt, health.Flags, health.UserActionNeeded, health.CheckedAt)
+		health.LastError, health.LastErrorAt, pq.Array(health.Flags), health.UserActionNeeded, health.CheckedAt)
 	if err != nil {
 		return fmt.Errorf("upsert vault health: %w", err)
 	}
 	return nil
 }
 
+// vaultHealthRow mirrors vault_health for reads. Flags must scan through
+// pq.StringArray: lib/pq cannot encode or decode a raw []string, so passing
+// the entity field directly fails against a real database in both directions.
+type vaultHealthRow struct {
+	VaultID          uuid.UUID       `db:"vault_id"`
+	UserID           uuid.UUID       `db:"user_id"`
+	LastFundedAt     *time.Time      `db:"last_funded_at"`
+	LastSnapshotAt   *time.Time      `db:"last_snapshot_at"`
+	LedgerUSD        decimal.Decimal `db:"ledger_usd"`
+	ProviderUSD      decimal.Decimal `db:"provider_usd"`
+	PendingOps       int             `db:"pending_ops"`
+	LastSkip         *time.Time      `db:"last_skip"`
+	LastError        string          `db:"last_error"`
+	LastErrorAt      *time.Time      `db:"last_error_at"`
+	Flags            pq.StringArray  `db:"flags"`
+	UserActionNeeded bool            `db:"user_action_needed"`
+	CheckedAt        time.Time       `db:"checked_at"`
+}
+
 // GetHealth returns a vault's health row, or (nil, nil).
 func (r *VaultRepository) GetHealth(ctx context.Context, vaultID uuid.UUID) (*entities.VaultHealth, error) {
-	health := &entities.VaultHealth{}
-	err := r.db.GetContext(ctx, health,
+	var row vaultHealthRow
+	err := r.db.GetContext(ctx, &row,
 		`SELECT `+vaultHealthColumns+` FROM vault_health WHERE vault_id = $1`, vaultID)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -765,7 +785,21 @@ func (r *VaultRepository) GetHealth(ctx context.Context, vaultID uuid.UUID) (*en
 	if err != nil {
 		return nil, fmt.Errorf("get vault health: %w", err)
 	}
-	return health, nil
+	return &entities.VaultHealth{
+		VaultID:          row.VaultID,
+		UserID:           row.UserID,
+		LastFundedAt:     row.LastFundedAt,
+		LastSnapshotAt:   row.LastSnapshotAt,
+		LedgerUSD:        row.LedgerUSD,
+		ProviderUSD:      row.ProviderUSD,
+		PendingOps:       row.PendingOps,
+		LastSkip:         row.LastSkip,
+		LastError:        row.LastError,
+		LastErrorAt:      row.LastErrorAt,
+		Flags:            []string(row.Flags),
+		UserActionNeeded: row.UserActionNeeded,
+		CheckedAt:        row.CheckedAt,
+	}, nil
 }
 
 const vaultEnrollFailureColumns = `user_id, last_error, last_error_at, tries`

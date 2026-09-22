@@ -579,7 +579,7 @@ func runClassifyAsset(args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // best-effort cleanup on CLI exit
 	assetRepo := repositories.NewInvestmentAssetRepository(sqlx.NewDb(db, "postgres"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -610,6 +610,8 @@ func runClassifyAsset(args []string) error {
 // printClassifyAsset writes the operator-facing classify result, including the
 // raw id verbatim and any allowlist warning a human must see before the tier
 // files can use the asset.
+//
+//nolint:errcheck // best-effort CLI report to stdout; a broken pipe fails the process, not the report
 func printClassifyAsset(out io.Writer, asset *entities.InvestmentAsset, assetClass, mode string) {
 	fmt.Fprintf(out, "\n========== ASSET CLASSIFY: %s ==========\n", mode)
 	fmt.Fprintf(out, "asset        : %s\n", asset.CAIP19)

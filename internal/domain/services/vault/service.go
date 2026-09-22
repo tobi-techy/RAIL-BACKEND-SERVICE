@@ -199,17 +199,40 @@ func (s *Service) position(ctx context.Context, vault *entities.RetirementVault)
 	return position, asOf, source, stale, nil
 }
 
-// ListStrategyOptions returns the tiers the app offers, with human labels only.
-func (s *Service) ListStrategyOptions() []entities.VaultStrategyOption {
-	options := make([]entities.VaultStrategyOption, 0, len(entities.AllVaultTiers()))
-	for _, tier := range entities.AllVaultTiers() {
+// ListStrategyOptions returns the tiers the app offers, with human labels
+// only. A tier is listed only when the bootstrap resolved it to a real
+// strategy (a persisted tier binding exists); unconfigured tiers are absent
+// rather than offered and refused at open. Without a repository there is
+// nothing to prove a tier against, so every tier is listed.
+func (s *Service) ListStrategyOptions(ctx context.Context) ([]entities.VaultStrategyOption, error) {
+	tiers := entities.AllVaultTiers()
+	if s.repo != nil {
+		bindings, err := s.repo.ListTiers(ctx)
+		if err != nil {
+			return nil, err
+		}
+		resolved := map[entities.VaultTier]bool{}
+		for _, binding := range bindings {
+			if binding != nil {
+				resolved[binding.Tier] = true
+			}
+		}
+		tiers = tiers[:0]
+		for _, tier := range entities.AllVaultTiers() {
+			if resolved[tier] {
+				tiers = append(tiers, tier)
+			}
+		}
+	}
+	options := make([]entities.VaultStrategyOption, 0, len(tiers))
+	for _, tier := range tiers {
 		options = append(options, entities.VaultStrategyOption{
 			Tier:        tier,
 			Label:       tier.Label(),
 			Description: tierDescription(tier),
 		})
 	}
-	return options
+	return options, nil
 }
 
 // Activity returns a plain-language contribution/withdrawal history.

@@ -125,7 +125,7 @@ func (s *Service) BootstrapStrategies(ctx context.Context) error {
 }
 
 func (s *Service) bootstrapTierFile(ctx context.Context, path string) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // tier path comes from operator config, never request input
 	if err != nil {
 		return fmt.Errorf("read tier file: %w", err)
 	}
@@ -151,41 +151,11 @@ func (s *Service) bootstrapTierFile(ctx context.Context, path string) error {
 	legs := make([]entities.InvestmentAllocationLeg, 0, len(file.Legs))
 	total := decimal.Zero
 	for i, leg := range file.Legs {
-		caip19 := strings.TrimSpace(leg.CAIP19)
-		if caip19 == "" || strings.Contains(caip19, "REPLACE") {
-			return fmt.Errorf("%w: tier %q leg %d has no provider asset id yet",
-				ErrStrategyUnavailable, tier, i)
-		}
-		asset, err := s.engine.GetAssetByCAIP19(ctx, caip19)
+		resolved, weight, err := s.resolveTierLeg(ctx, tier, i, leg, eligible)
 		if err != nil {
-			return fmt.Errorf("%w: tier %q leg %d: %v", ErrStrategyUnavailable, tier, i, err)
+			return err
 		}
-		if asset == nil {
-			return fmt.Errorf("%w: tier %q leg %d is not in the asset catalog",
-				ErrStrategyUnavailable, tier, i)
-		}
-		class := strings.ToLower(strings.TrimSpace(asset.AssetClass))
-		if !eligible[class] {
-			return fmt.Errorf("%w: tier %q does not hold class %q",
-				ErrValidation, tier, asset.AssetClass)
-		}
-		if asset.Prohibited {
-			return fmt.Errorf("%w: tier %q leg %d is prohibited", ErrValidation, tier, i)
-		}
-		weight, err := decimal.NewFromString(strings.TrimSpace(leg.Weight))
-		if err != nil || !weight.GreaterThan(decimal.Zero) {
-			return fmt.Errorf("%w: tier %q leg %d has an invalid weight",
-				ErrValidation, tier, i)
-		}
-		if weight.GreaterThan(decimal.NewFromInt(40)) {
-			return fmt.Errorf("%w: tier %q leg %d exceeds 40%%", ErrValidation, tier, i)
-		}
-		legs = append(legs, entities.InvestmentAllocationLeg{
-			AssetID: asset.ID.String(),
-			CAIP19:  asset.CAIP19,
-			Symbol:  asset.Symbol,
-			Weight:  weight,
-		})
+		legs = append(legs, resolved)
 		total = total.Add(weight)
 	}
 	if !total.Equal(decimal.NewFromInt(100)) {
@@ -222,4 +192,47 @@ func (s *Service) bootstrapTierFile(ctx context.Context, path string) error {
 		}
 	}
 	return nil
+}
+
+// resolveTierLeg proves one tier-file row names a real, eligible catalog
+// asset and carries a legal weight. Anything unresolved fails the tier closed:
+// the caller persists nothing and CreateVault keeps refusing the tier.
+func (s *Service) resolveTierLeg(ctx context.Context, tier entities.VaultTier, i int, leg tierFileLeg, eligible map[string]bool) (entities.InvestmentAllocationLeg, decimal.Decimal, error) {
+	var resolved entities.InvestmentAllocationLeg
+	caip19 := strings.TrimSpace(leg.CAIP19)
+	if caip19 == "" || strings.Contains(caip19, "REPLACE") {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q leg %d has no provider asset id yet",
+			ErrStrategyUnavailable, tier, i)
+	}
+	asset, err := s.engine.GetAssetByCAIP19(ctx, caip19)
+	if err != nil {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q leg %d: %v", ErrStrategyUnavailable, tier, i, err)
+	}
+	if asset == nil {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q leg %d is not in the asset catalog",
+			ErrStrategyUnavailable, tier, i)
+	}
+	class := strings.ToLower(strings.TrimSpace(asset.AssetClass))
+	if !eligible[class] {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q does not hold class %q",
+			ErrValidation, tier, asset.AssetClass)
+	}
+	if asset.Prohibited {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q leg %d is prohibited", ErrValidation, tier, i)
+	}
+	weight, err := decimal.NewFromString(strings.TrimSpace(leg.Weight))
+	if err != nil || !weight.GreaterThan(decimal.Zero) {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q leg %d has an invalid weight",
+			ErrValidation, tier, i)
+	}
+	if weight.GreaterThan(decimal.NewFromInt(40)) {
+		return resolved, decimal.Zero, fmt.Errorf("%w: tier %q leg %d exceeds 40%%", ErrValidation, tier, i)
+	}
+	resolved = entities.InvestmentAllocationLeg{
+		AssetID: asset.ID.String(),
+		CAIP19:  asset.CAIP19,
+		Symbol:  asset.Symbol,
+		Weight:  weight,
+	}
+	return resolved, weight, nil
 }

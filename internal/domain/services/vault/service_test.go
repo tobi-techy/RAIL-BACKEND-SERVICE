@@ -797,6 +797,45 @@ func TestAutoContributionSkipIsIdempotentOnPaymentID(t *testing.T) {
 	assert.Len(t, h.repo.skips, 1, "the same payment must not open two skips")
 }
 
+func TestAutoContributionRetryAfterFundedLotReturnsLotNotSkip(t *testing.T) {
+	h := newTestHarness(t)
+	h.createVault(t, "0.5") // 50% of any deposit
+	paymentID := uuid.New()
+
+	// First call funds: $10,000 spendable, 50% of $100 = $50 take.
+	first, err := h.service.ContributeFromDeposit(context.Background(), h.userID, paymentID, dec("100"), dec("0"))
+	require.NoError(t, err)
+	require.NotNil(t, first)
+
+	// Spendable collapses before the retry. The floor would now appear
+	// breached, but the payment already funded a lot: the retry must return
+	// the existing lot, never a skip.
+	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("30")}
+	second, err := h.service.ContributeFromDeposit(context.Background(), h.userID, paymentID, dec("100"), dec("0"))
+	require.NoError(t, err)
+	require.NotNil(t, second, "a retry of a funded payment must return the lot")
+	assert.Equal(t, first.LotID, second.LotID)
+	assert.Empty(t, h.repo.skips, "a funded payment must never record a skip")
+}
+
+func TestListStrategyOptionsOnlyListsResolvedTiers(t *testing.T) {
+	h := newTestHarness(t)
+	ctx := context.Background()
+
+	options, err := h.service.ListStrategyOptions(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, options, "unresolved tiers must be absent, never offered-then-refused")
+
+	require.NoError(t, h.repo.UpsertTier(ctx, &entities.VaultTierBinding{
+		Tier: entities.VaultTierBalanced, RailStrategyID: uuid.New(), Version: 1,
+	}))
+	options, err = h.service.ListStrategyOptions(ctx)
+	require.NoError(t, err)
+	require.Len(t, options, 1)
+	assert.Equal(t, entities.VaultTierBalanced, options[0].Tier)
+	assert.Equal(t, entities.VaultTierBalanced.Label(), options[0].Label)
+}
+
 func TestWithdrawRequiresStepUp(t *testing.T) {
 	h := newTestHarness(t)
 	vault := h.createVault(t, "0")

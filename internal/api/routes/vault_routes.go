@@ -11,11 +11,12 @@ import (
 
 // RegisterVaultRoutes registers the retirement vault API.
 //
-// Reads, setup and withdrawal preview are ordinary authenticated calls: the
-// delegated agent token Miriam uses can call them. Money out carries two
-// independent gates on top of authentication: a delegated agent token can never
-// call it (RequireInteractiveSession) and the request must carry a
-// passcode-verified session, which only the app can obtain.
+// Reads and withdrawal preview are ordinary authenticated calls: the
+// delegated agent token Miriam uses can call them. Opening a plan and changing
+// it are interactive-only (RequireInteractiveSession), matching the agent
+// contract: a delegated agent token can propose but never submit. Money out
+// carries a second gate on top: the request must carry a passcode-verified
+// session, which only the app can obtain.
 func RegisterVaultRoutes(
 	router *gin.RouterGroup,
 	h *vaulthandlers.Handlers,
@@ -35,11 +36,20 @@ func RegisterVaultRoutes(
 	vault.Use(middleware.RequireTokenizedInvestingCapability(userReader, log.Zap()))
 	{
 		vault.GET("", h.GetVault)
-		vault.POST("", h.CreateVault)
-		vault.PATCH("", h.UpdateVault)
 		vault.GET("/strategies", h.ListStrategies)
 		vault.GET("/activity", h.Activity)
 		vault.POST("/withdraw/preview", h.PreviewWithdrawal)
+	}
+
+	// Plan mutations. Interactive sessions only: delegated agent tokens stop
+	// at reads and the preview. This group deliberately carries no passcode
+	// gate — opening a plan runs through the standard confirmation flow and
+	// updates apply directly; only money out needs the passcode session.
+	mutations := vault.Group("")
+	mutations.Use(middleware.RequireInteractiveSession())
+	{
+		mutations.POST("", h.CreateVault)
+		mutations.PATCH("", h.UpdateVault)
 	}
 
 	// Money out. Two independent gates: a delegated agent token can never call

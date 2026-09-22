@@ -48,7 +48,9 @@ func (s *Service) RecordFailedEnroll(ctx context.Context, userID uuid.UUID, caus
 			failure.LastErrorAt = existing.LastErrorAt
 		}
 	}
-	_ = s.repo.UpsertEnrollFailure(ctx, failure)
+	if err := s.repo.UpsertEnrollFailure(ctx, failure); err != nil {
+		s.log.Warn("vault enroll failure not recorded", "user_id", userID.String(), "error", err)
+	}
 }
 
 // RecordFailedWithdraw flags a withdrawal that died after the key was minted.
@@ -67,7 +69,9 @@ func (s *Service) RecordFailedWithdraw(ctx context.Context, vault *entities.Reti
 		health.LastErrorAt = &at
 	}
 	health.CheckedAt = s.now()
-	_ = s.repo.UpsertHealth(ctx, health)
+	if err := s.repo.UpsertHealth(ctx, health); err != nil {
+		s.log.Warn("vault health not recorded after failed withdraw", "vault_id", vault.ID.String(), "error", err)
+	}
 }
 
 // refreshHealth recomputes a vault's health row after a state change. lastEvent
@@ -82,68 +86,111 @@ func (s *Service) refreshHealth(ctx context.Context, vault *entities.RetirementV
 		return err
 	}
 	now := s.now()
+	_ = lastEvent
 
-	lots, err := s.repo.ListOpenLots(ctx, vault.ID)
+	hasMark, err := s.refreshLedgerState(ctx, vault, health)
 	if err != nil {
 		return err
+	}
+	s.refreshFundingFlag(health, hasMark)
+	s.refreshDriftFlag(health)
+	s.refreshSkipsFlag(ctx, vault, health, now)
+	s.refreshUnlockFlag(vault, health, now)
+	s.refreshPendingOps(ctx, vault, health, now)
+	s.refreshLastSkip(ctx, vault, health)
+
+	health.CheckedAt = now
+	if err := s.repo.UpsertHealth(ctx, health); err != nil {
+		return err
+	}
+
+	s.maybeNotifyUnlockSoon(ctx, vault, health)
+	return nil
+}
+
+// refreshLedgerState reloads cost basis and the latest provider mark. It
+// reports whether any mark exists right now: basis without a mark means
+// nothing proves the money reached the portfolio.
+func (s *Service) refreshLedgerState(ctx context.Context, vault *entities.RetirementVault, health *entities.VaultHealth) (bool, error) {
+	lots, err := s.repo.ListOpenLots(ctx, vault.ID)
+	if err != nil {
+		return false, err
 	}
 	health.LedgerUSD = SumPrincipal(lots)
 
+	hasMark := false
 	snapshot, err := s.repo.LatestSnapshot(ctx, vault.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if snapshot != nil {
+		hasMark = true
 		health.LastSnapshotAt = &snapshot.AsOf
 		health.ProviderUSD = snapshot.MarketValueUSD
 	}
-
-	enrollmentValue, haveProvider := s.providerValue(vault)
-	if haveProvider {
+	if enrollmentValue, haveProvider := s.providerValue(vault); haveProvider {
+		hasMark = true
 		health.ProviderUSD = enrollmentValue
 	}
-	_ = lastEvent
+	return hasMark, nil
+}
 
-	// Lot without fund: basis exists but no snapshot ever arrived, so nothing
-	// proves the money reached the portfolio.
-	if health.LedgerUSD.GreaterThan(decimal.Zero) && snapshot == nil && !haveProvider {
+// refreshFundingFlag tracks lots without any provider mark: basis exists but
+// no snapshot ever arrived, so nothing proves the money reached the portfolio.
+func (s *Service) refreshFundingFlag(health *entities.VaultHealth, hasMark bool) {
+	if health.LedgerUSD.GreaterThan(decimal.Zero) && !hasMark {
 		addFlag(health, HealthFlagLotWithoutFund)
 	} else {
 		removeFlag(health, HealthFlagLotWithoutFund)
 	}
+}
 
-	// Drift over threshold: provider and ledger disagree by more than the
-	// configured percent of ledger.
-	if s.cfg.HealthDriftThresholdPct.GreaterThan(decimal.Zero) &&
-		health.LedgerUSD.GreaterThan(decimal.Zero) {
-		diff := health.ProviderUSD.Sub(health.LedgerUSD).Abs()
-		driftPct := diff.Div(health.LedgerUSD).Mul(decimal.NewFromInt(100))
-		if driftPct.GreaterThan(s.cfg.HealthDriftThresholdPct) {
-			addFlag(health, HealthFlagDriftOverThreshold)
-		} else {
-			removeFlag(health, HealthFlagDriftOverThreshold)
-		}
+// refreshDriftFlag tracks provider/ledger disagreement beyond the configured
+// percent of ledger. A zero threshold disables the flag.
+func (s *Service) refreshDriftFlag(health *entities.VaultHealth) {
+	if !s.cfg.HealthDriftThresholdPct.GreaterThan(decimal.Zero) ||
+		!health.LedgerUSD.GreaterThan(decimal.Zero) {
+		return
 	}
+	diff := health.ProviderUSD.Sub(health.LedgerUSD).Abs()
+	driftPct := diff.Div(health.LedgerUSD).Mul(decimal.NewFromInt(100))
+	if driftPct.GreaterThan(s.cfg.HealthDriftThresholdPct) {
+		addFlag(health, HealthFlagDriftOverThreshold)
+	} else {
+		removeFlag(health, HealthFlagDriftOverThreshold)
+	}
+}
 
-	// Repeated floor skips: 3+ in the last 30 days.
-	if n, err := s.repo.CountRecentSkips(ctx, vault.ID, now.AddDate(0, 0, -30)); err == nil && n >= 3 {
+// refreshSkipsFlag tracks 3+ floor skips in the last 30 days. A failed count
+// read leaves the previous flag alone rather than clearing signal on noise.
+func (s *Service) refreshSkipsFlag(ctx context.Context, vault *entities.RetirementVault, health *entities.VaultHealth, now time.Time) {
+	n, err := s.repo.CountRecentSkips(ctx, vault.ID, now.AddDate(0, 0, -30))
+	if err != nil {
+		return
+	}
+	if n >= 3 {
 		addFlag(health, HealthFlagRepeatedFloorSkips)
-	} else if err == nil {
+	} else {
 		removeFlag(health, HealthFlagRepeatedFloorSkips)
 	}
+}
 
-	// Unlock under 30 days: the only flag that pages the user.
+// refreshUnlockFlag tracks the only user-actionable condition: growth unlocks
+// within 30 days.
+func (s *Service) refreshUnlockFlag(vault *entities.RetirementVault, health *entities.VaultHealth, now time.Time) {
 	health.UserActionNeeded = false
 	removeFlag(health, HealthFlagUnlockSoon)
-	if vault.UnlockDate != nil {
-		until := vault.UnlockDate.Sub(now)
-		if until >= 0 && until < 30*24*time.Hour {
-			addFlag(health, HealthFlagUnlockSoon)
-			health.UserActionNeeded = true
-		}
+	if vault.UnlockDate == nil {
+		return
 	}
+	if until := vault.UnlockDate.Sub(now); until >= 0 && until < 30*24*time.Hour {
+		addFlag(health, HealthFlagUnlockSoon)
+		health.UserActionNeeded = true
+	}
+}
 
-	// Pending ops: live authorizations plus pending penalties.
+// refreshPendingOps counts live authorizations plus pending penalties.
+func (s *Service) refreshPendingOps(ctx context.Context, vault *entities.RetirementVault, health *entities.VaultHealth, now time.Time) {
 	pending := 0
 	if vault.GliderEnrollmentID != nil {
 		if live, err := s.repo.HasIssuedAuthorization(ctx, *vault.GliderEnrollmentID, now); err == nil && live {
@@ -158,23 +205,26 @@ func (s *Service) refreshHealth(ctx context.Context, vault *entities.RetirementV
 		}
 	}
 	health.PendingOps = pending
+}
 
+// refreshLastSkip records the most recent floor skip, if any.
+func (s *Service) refreshLastSkip(ctx context.Context, vault *entities.RetirementVault, health *entities.VaultHealth) {
 	if skips, err := s.repo.ListSkips(ctx, vault.ID, 1); err == nil && len(skips) > 0 {
 		health.LastSkip = &skips[0].CreatedAt
 	}
+}
 
-	health.CheckedAt = now
-	if err := s.repo.UpsertHealth(ctx, health); err != nil {
-		return err
+// maybeNotifyUnlockSoon pages the user about exactly one thing: their growth
+// is about to unlock. Everything else stays ops-only.
+func (s *Service) maybeNotifyUnlockSoon(ctx context.Context, vault *entities.RetirementVault, health *entities.VaultHealth) {
+	if !health.UserActionNeeded || s.notifier == nil || vault.UnlockDate == nil {
+		return
 	}
-
-	// The user hears about exactly one thing: their growth is about to unlock.
-	if health.UserActionNeeded && s.notifier != nil && vault.UnlockDate != nil {
-		_ = s.notifier.NotifyVaultActionRequired(ctx, vault.UserID,
-			"Your retirement growth unlocks soon",
-			"Your Retirement Plan growth unlocks on "+vault.UnlockDate.Format("2 Jan 2006")+".")
+	if err := s.notifier.NotifyVaultActionRequired(ctx, vault.UserID,
+		"Your retirement growth unlocks soon",
+		"Your Retirement Plan growth unlocks on "+vault.UnlockDate.Format("2 Jan 2006")+"."); err != nil {
+		s.log.Warn("vault unlock notification failed", "vault_id", vault.ID.String(), "error", err)
 	}
-	return nil
 }
 
 func (s *Service) loadHealth(ctx context.Context, vault *entities.RetirementVault) (*entities.VaultHealth, error) {
