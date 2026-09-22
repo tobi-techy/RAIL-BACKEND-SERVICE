@@ -11,10 +11,12 @@ import (
 
 // RegisterVaultRoutes registers the retirement vault API.
 //
-// Reads and setup are ordinary authenticated calls. Money out carries two
-// independent gates on top of authentication: a delegated agent token can never
-// call it (RequireInteractiveSession) and the request must carry a
-// passcode-verified session, which only the app can obtain.
+// Reads and withdrawal preview are ordinary authenticated calls: the
+// delegated agent token Miriam uses can call them. Opening a plan and changing
+// it are interactive-only (RequireInteractiveSession), matching the agent
+// contract: a delegated agent token can propose but never submit. Money out
+// carries a second gate on top: the request must carry a passcode-verified
+// session, which only the app can obtain.
 func RegisterVaultRoutes(
 	router *gin.RouterGroup,
 	h *vaulthandlers.Handlers,
@@ -34,22 +36,33 @@ func RegisterVaultRoutes(
 	vault.Use(middleware.RequireTokenizedInvestingCapability(userReader, log.Zap()))
 	{
 		vault.GET("", h.GetVault)
-		vault.POST("", h.CreateVault)
-		vault.PATCH("", h.UpdateVault)
 		vault.GET("/strategies", h.ListStrategies)
 		vault.GET("/activity", h.Activity)
+		vault.POST("/withdraw/preview", h.PreviewWithdrawal)
 	}
 
-	// Withdrawal preview needs an interactive session too: it exposes the split
-	// of a specific amount, which a messaging channel should not be able to
-	// enumerate.
+	// Plan mutations. Interactive sessions only: delegated agent tokens stop
+	// at reads and the preview. This group deliberately carries no passcode
+	// gate — opening a plan runs through the standard confirmation flow and
+	// updates apply directly; only money out needs the passcode session.
+	mutations := vault.Group("")
+	mutations.Use(middleware.RequireInteractiveSession())
+	{
+		mutations.POST("", h.CreateVault)
+		mutations.PATCH("", h.UpdateVault)
+	}
+
+	// Money out. Two independent gates: a delegated agent token can never call
+	// this (RequireInteractiveSession), and the request must carry a
+	// passcode-verified session token, which only the app can obtain. Preview
+	// stays outside that gate on purpose: it is numbers, not a payout, and the
+	// agent needs it to answer "what would this cost me".
 	withdrawals := vault.Group("")
 	withdrawals.Use(middleware.RequireInteractiveSession())
 	if passcodeValidator != nil {
 		withdrawals.Use(middleware.RequirePasscodeSession(passcodeValidator, true, log.Zap()))
 	}
 	{
-		withdrawals.POST("/withdraw/preview", h.PreviewWithdrawal)
 		withdrawals.POST("/withdraw", h.Withdraw)
 	}
 }

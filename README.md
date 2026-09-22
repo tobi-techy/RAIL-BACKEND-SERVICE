@@ -497,6 +497,89 @@ make migrate-up
 ./scripts/db_reset.sh --seed
 ```
 
+---
+
+## Premium Global Dollar Retirement Vault
+
+The **Automated USD Retirement Plan** is a locked-USD sleeve: contributions come from
+spendable money, the plan is invested into Rail-owned strategies, principal is reachable
+with friction, and growth taken before the unlock date carries a 10% fee that Rail retains
+at settlement. Three tiers are offered: **Steady Dollar Income**, **Balanced Global Wealth**
+and **Long-Term Global Growth**.
+
+The vault **fails closed**: the whole plan is unavailable (no new money) until an operator
+has configured a settlement account AND every tier file resolves to real, classified assets.
+Nothing is inferred; a `*REPLACE*` placeholder in a tier file disables that tier rather than
+guessing.
+
+### Staging checklist (one-time, in order)
+
+Run these from a machine with a database connection and the investment/Glider credentials
+for the target environment in the environment:
+
+```bash
+# 1. Apply the vault schema (vault_tiers, vault_skips, vault_health,
+#    vault_enroll_failures and the pending-vault index).
+make migrate-up
+
+# 2. Discover the provider's real assets into the catalog.
+#    PREVIEW by default: prints a table of CAIP-19 ids and changes nothing.
+make seed-catalog
+#    Re-run with CONFIRM=1 to actually write the discovered rows.
+make seed-catalog CONFIRM=1
+
+# 3. Classify each asset you will use. seed-catalog records class "unknown",
+#    and a tier leg with an unknown/other class is refused at bootstrap.
+#    Only treasury, rwa, yield, equity and gold are tier-eligible. The class
+#    comes from the operator, never from an automated picker.
+make classify ID=solana:...:<address> CLASS=treasury           # preview
+make classify ID=solana:...:<address> CLASS=treasury APPLY=1   # write
+#    Repeat for every leg you intend to use in the tier files.
+
+# 4. Paste the real ids into the checked-in tier files:
+#    configs/vault/steady.yaml   (treasury / rwa / yield legs)
+#    configs/vault/balanced.yaml (+ equity)
+#    configs/vault/growth.yaml   (+ gold)
+#    Replace every "*REPLACE*" with a classified, allowlisted CAIP-19. Weights
+#    must sum to 100 and no single leg may exceed 40%. Do NOT invent addresses.
+
+# 5. Point the vault at a Rail-owned settlement account (where withdrawals land
+#    so the 10% early-growth fee can be retained before anything reaches a user).
+export VAULT_SETTLEMENT_ACCOUNT="solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:<address>"
+
+# 6. Restart the service. On boot, BootstrapStrategies validates every tier file
+#    against the catalog (asset exists, class eligible, weights legal) and, for
+#    each tier, calls EnsureRailStrategy and persists the binding to vault_tiers.
+#    Any tier still holding a placeholder stays unavailable and CreateVault keeps
+#    returning "plan not available" for it — never a half-configured plan.
+```
+
+After step 6 the definition of done holds: the API can bootstrap the three strategies,
+create a vault (pending until its portfolio link succeeds), take an inflow into a costing
+lot, snapshot value, preview and settle a withdrawal with the penalty posted to Rail's
+early-retirement-penalty revenue account, and skip automatic contributions that would
+breach the `spendable` floor (`vault.min_spendable_usd`, default $20).
+
+### Operation rules
+
+- **Agent tokens** can read (`GET /vault`, `GET /vault/strategies`, `GET /vault/activity`,
+  `POST /vault/withdraw/preview`) but can never submit a withdrawal: `POST /vault/withdraw`
+  is behind an interactive-session guard plus a passcode-verified session, app-only.
+- **Create/Update** are downstream of the same confirmation flow every other money action
+  uses (`awaiting_confirmation` + a payload-bound `ConfirmationToken`); there is no second
+  confirm protocol. Withdrawals use a single-use authorization key minted by the vault.
+- **No half-created vaults**: the vault row is created `pending` and flips to `active` only
+  after the portfolio link succeeds; a failed link deletes the row and records an
+  enroll-failure for ops.
+- **Health** rows (`vault_health`) flag lot-without-fund, valuation drift, failed
+  withdrawals, repeated floor skips and unlock-within-30-days. Users are notified only for
+  the unlock case; everything else is ops-only.
+
+See `docs/vault-miriam.md` for the exact JSON contract the Miriam agent uses, and
+`docs/investment-glider.md` for the investment engine beneath the vault.
+
+---
+
 ### Building
 
 ```bash

@@ -143,6 +143,15 @@ func (s *Service) Enabled() bool { return s.cfg.Enabled }
 // startup; nil keeps vault behaviour entirely off.
 func (s *Service) SetVaultObserver(observer VaultObserver) { s.vaultObserver = observer }
 
+// GetAssetByCAIP19 resolves one catalog row by provider id. The vault tier
+// bootstrap uses it to prove every tier-file leg names a real catalog asset.
+func (s *Service) GetAssetByCAIP19(ctx context.Context, caip19 string) (*entities.InvestmentAsset, error) {
+	if s.assets == nil {
+		return nil, nil
+	}
+	return s.assets.GetByCAIP19(ctx, caip19)
+}
+
 // SetClock overrides the service clock (tests).
 func (s *Service) SetClock(now func() time.Time) {
 	s.clock = now

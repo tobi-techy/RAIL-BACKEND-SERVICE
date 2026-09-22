@@ -53,8 +53,12 @@ func (c *Container) initializeVaultServices(sqlxDB *sqlx.DB) error {
 		users = &vaultUserReaderAdapter{repo: c.UserRepo}
 	}
 
+	svcCfg := vaultServiceConfig(cfg)
+	if len(svcCfg.TierFiles) == 0 {
+		svcCfg.TierFiles = vaultsvc.DefaultTierFiles()
+	}
 	c.VaultService = vaultsvc.NewService(vaultsvc.Deps{
-		Config:     vaultServiceConfig(cfg),
+		Config:     svcCfg,
 		Logger:     c.Logger,
 		Repository: c.VaultRepo,
 		Engine:     c.InvestmentGliderService,
@@ -106,6 +110,9 @@ func vaultServiceConfig(cfg config.VaultConfig) vaultsvc.Config {
 		SettlementAccount:          strings.TrimSpace(cfg.SettlementAccount),
 		AuthorizationTTL:           time.Duration(cfg.AuthorizationTTLMinutes) * time.Minute,
 		StaleAfter:                 time.Duration(cfg.StaleAfterHours) * time.Hour,
+		MinSpendableUSD:            decimal.NewFromFloat(cfg.MinSpendableUSD),
+		HealthDriftThresholdPct:    decimal.NewFromFloat(cfg.HealthDriftThresholdPct),
+		TierFiles:                  cfg.TierFiles,
 	}
 	for _, strategy := range cfg.Strategies {
 		legs := make([]entities.InvestmentAllocationLeg, 0, len(strategy.Legs))
@@ -197,6 +204,12 @@ func (a *vaultNotifierAdapter) NotifyVaultWithdrawal(ctx context.Context, userID
 	}
 	return a.send(ctx, userID, "Withdrawal from your Retirement Plan",
 		fmt.Sprintf("$%s was sent to your balance.", net.StringFixed(2)))
+}
+
+// NotifyVaultActionRequired pages the user only when they must act (growth
+// about to unlock). Everything else stays in vault health for ops.
+func (a *vaultNotifierAdapter) NotifyVaultActionRequired(ctx context.Context, userID uuid.UUID, title, body string) error {
+	return a.send(ctx, userID, title, body)
 }
 
 // ---------------------------------------------------------------------------

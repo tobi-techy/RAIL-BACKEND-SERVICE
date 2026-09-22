@@ -82,6 +82,9 @@ func NewService(d Deps) *Service {
 	if cfg.MaxAutoContributionPct.IsZero() {
 		cfg.MaxAutoContributionPct = decimal.NewFromInt(1)
 	}
+	if cfg.MinSpendableUSD.IsZero() {
+		cfg.MinSpendableUSD = decimal.NewFromInt(20)
+	}
 	if strings.TrimSpace(cfg.ContributionSource) == "" {
 		cfg.ContributionSource = "spending"
 	}
@@ -196,17 +199,40 @@ func (s *Service) position(ctx context.Context, vault *entities.RetirementVault)
 	return position, asOf, source, stale, nil
 }
 
-// ListStrategyOptions returns the tiers the app offers, with human labels only.
-func (s *Service) ListStrategyOptions() []entities.VaultStrategyOption {
-	options := make([]entities.VaultStrategyOption, 0, len(entities.AllVaultTiers()))
-	for _, tier := range entities.AllVaultTiers() {
+// ListStrategyOptions returns the tiers the app offers, with human labels
+// only. A tier is listed only when the bootstrap resolved it to a real
+// strategy (a persisted tier binding exists); unconfigured tiers are absent
+// rather than offered and refused at open. Without a repository there is
+// nothing to prove a tier against, so every tier is listed.
+func (s *Service) ListStrategyOptions(ctx context.Context) ([]entities.VaultStrategyOption, error) {
+	tiers := entities.AllVaultTiers()
+	if s.repo != nil {
+		bindings, err := s.repo.ListTiers(ctx)
+		if err != nil {
+			return nil, err
+		}
+		resolved := map[entities.VaultTier]bool{}
+		for _, binding := range bindings {
+			if binding != nil {
+				resolved[binding.Tier] = true
+			}
+		}
+		tiers = tiers[:0]
+		for _, tier := range entities.AllVaultTiers() {
+			if resolved[tier] {
+				tiers = append(tiers, tier)
+			}
+		}
+	}
+	options := make([]entities.VaultStrategyOption, 0, len(tiers))
+	for _, tier := range tiers {
 		options = append(options, entities.VaultStrategyOption{
 			Tier:        tier,
 			Label:       tier.Label(),
 			Description: tierDescription(tier),
 		})
 	}
-	return options
+	return options, nil
 }
 
 // Activity returns a plain-language contribution/withdrawal history.
@@ -225,7 +251,25 @@ func (s *Service) Activity(ctx context.Context, userID uuid.UUID, limit int) ([]
 	if err != nil {
 		return nil, err
 	}
-	entries := make([]entities.VaultActivityEntry, 0, len(lots))
+	auths, err := s.repo.ListAuthorizations(ctx, vault.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	penalties, err := s.repo.ListPenaltyEvents(ctx, vault.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	penaltyByExec := map[string]decimal.Decimal{}
+	penaltyAt := map[string]time.Time{}
+	for _, penalty := range penalties {
+		if penalty == nil {
+			continue
+		}
+		if penalty.ExecutionID != nil {
+			penaltyByExec[penalty.ExecutionID.String()] = penalty.PenaltyUSD
+		}
+	}
+	entries := make([]entities.VaultActivityEntry, 0, len(lots)+len(auths)+len(penalties))
 	for _, lot := range lots {
 		if lot == nil {
 			continue
@@ -235,6 +279,47 @@ func (s *Service) Activity(ctx context.Context, userID uuid.UUID, limit int) ([]
 			At:        lot.AcquiredAt,
 			AmountUSD: lot.AmountUSD,
 		})
+	}
+	for _, auth := range auths {
+		if auth == nil || auth.Status != entities.VaultAuthorizationConsumed {
+			continue
+		}
+		at := auth.CreatedAt
+		if auth.ConsumedAt != nil {
+			at = *auth.ConsumedAt
+		}
+		entry := entities.VaultActivityEntry{
+			Kind:      "withdrawal",
+			At:        at,
+			AmountUSD: auth.NetUSD,
+		}
+		if auth.ExecutionID != nil {
+			if penalty, ok := penaltyByExec[auth.ExecutionID.String()]; ok {
+				entry.PenaltyUSD = penalty
+			}
+			if settled, ok := penaltyAt[auth.ExecutionID.String()]; ok {
+				entry.At = settled
+			}
+		}
+		if entry.PenaltyUSD.IsZero() {
+			entry.PenaltyUSD = auth.PenaltyUSD
+		}
+		entries = append(entries, entry)
+	}
+	for _, penalty := range penalties {
+		if penalty == nil || penalty.Status != entities.VaultPenaltyCommitted {
+			continue
+		}
+		entries = append(entries, entities.VaultActivityEntry{
+			Kind:       "penalty",
+			At:         penalty.UpdatedAt,
+			AmountUSD:  penalty.PenaltyUSD,
+			PenaltyUSD: penalty.PenaltyUSD,
+		})
+	}
+	SortActivityNewestFirst(entries)
+	if len(entries) > limit {
+		entries = entries[:limit]
 	}
 	return entries, nil
 }
@@ -246,6 +331,12 @@ func (s *Service) Activity(ctx context.Context, userID uuid.UUID, limit int) ([]
 // CreateVault opens a retirement vault and enrolls the user into a Rail-owned
 // strategy. Enrollment is confirmed (two-stage), so this returns an
 // AWAITING_CONFIRMATION response on the first call and completes on replay.
+//
+// Fail-closed inputs: a missing date of birth refuses the open (an
+// unlock-never vault would strand the growth leg), as does an unresolvable
+// tier or a missing settlement account. The vault row is created pending and
+// flips to active only after the portfolio link succeeds; if the link fails
+// the pending row is deleted so no half-state survives.
 func (s *Service) CreateVault(ctx context.Context, userID uuid.UUID, req *entities.VaultCreateRequest) (*entities.VaultCreateResponse, error) {
 	if !s.ready() {
 		return nil, ErrDisabled
@@ -276,6 +367,10 @@ func (s *Service) CreateVault(ctx context.Context, userID uuid.UUID, req *entiti
 		return nil, ErrAlreadyExists
 	}
 
+	if s.dateOfBirth(ctx, userID) == nil {
+		return nil, fmt.Errorf("%w: add your date of birth to open a retirement plan", ErrValidation)
+	}
+
 	strategy, err := s.strategyForTier(ctx, req.Tier)
 	if err != nil {
 		return nil, err
@@ -287,6 +382,9 @@ func (s *Service) CreateVault(ctx context.Context, userID uuid.UUID, req *entiti
 		ConfirmationToken: req.ConfirmationToken,
 	}, entities.InvestmentActorUser)
 	if err != nil {
+		// Ops sees the failed open even though no vault row exists: this is the
+		// "failed enroll" health flag, not user copy.
+		s.RecordFailedEnroll(ctx, userID, err)
 		return nil, err
 	}
 	if enrollResp == nil {
@@ -310,7 +408,7 @@ func (s *Service) CreateVault(ctx context.Context, userID uuid.UUID, req *entiti
 		UserID:              userID,
 		Name:                name,
 		Tier:                req.Tier,
-		Status:              entities.VaultStatusActive,
+		Status:              entities.VaultStatusPending,
 		RetirementAge:       retirementAge,
 		MinLockYears:        s.cfg.MinLockYears,
 		AutoContributionPct: pct,
@@ -322,9 +420,19 @@ func (s *Service) CreateVault(ctx context.Context, userID uuid.UUID, req *entiti
 		return nil, err
 	}
 	if err := s.engine.LinkVaultEnrollment(ctx, userID, enrollment.ID, vault.ID); err != nil {
-		// The vault exists but the portfolio is not yet locked to it. That is a
-		// dangerous half-state, so it is surfaced rather than swallowed.
+		// The portfolio is not locked to the vault, so the row must not
+		// survive: a pending row is not a plan, and leaving it behind would
+		// block the retry while looking like a plan to nothing.
+		if delErr := s.repo.DeleteVault(ctx, vault.ID); delErr != nil {
+			s.log.Warn("failed to remove pending vault after link failure",
+				"vault_id", vault.ID.String(), "error", delErr)
+		}
+		s.RecordFailedEnroll(ctx, userID, err)
 		return nil, fmt.Errorf("link vault portfolio: %w", err)
+	}
+	vault.Status = entities.VaultStatusActive
+	if err := s.repo.UpdateVault(ctx, vault); err != nil {
+		return nil, err
 	}
 
 	view, err := s.buildView(ctx, vault)
@@ -371,34 +479,6 @@ func (s *Service) UpdateVault(ctx context.Context, userID uuid.UUID, req *entiti
 		return nil, err
 	}
 	return s.buildView(ctx, vault)
-}
-
-// ---------------------------------------------------------------------------
-// Bootstrap
-// ---------------------------------------------------------------------------
-
-// BootstrapStrategies ensures the Rail-owned strategies for every configured
-// tier exist. Idempotent, so it is safe to run on every startup.
-func (s *Service) BootstrapStrategies(ctx context.Context) error {
-	if !s.cfg.Enabled {
-		return nil
-	}
-	var firstErr error
-	for _, def := range s.cfg.Strategies {
-		if _, err := s.engine.EnsureRailStrategy(ctx, entities.InvestmentRailStrategyRequest{
-			Name:             def.Name,
-			Risk:             def.Risk,
-			Horizon:          def.Horizon,
-			TargetAllocation: def.Legs,
-		}); err != nil {
-			s.log.Error("failed to ensure rail retirement strategy",
-				"tier", string(def.Tier), "name", def.Name, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +577,9 @@ func (s *Service) OnEnrollmentSynced(ctx context.Context, enrollment *entities.I
 			}
 		}
 	}
+	if err := s.refreshHealth(ctx, vault, "sync snapshot"); err != nil {
+		s.log.Warn("vault health refresh failed", "vault_id", vault.ID.String(), "error", err)
+	}
 	return nil
 }
 
@@ -530,11 +613,27 @@ func (s *Service) OnWithdrawalFilled(ctx context.Context, execution *entities.In
 }
 
 // ---------------------------------------------------------------------------
-// helpers
+// Bootstrap (tier files)
 // ---------------------------------------------------------------------------
 
-// strategyForTier resolves the Rail-owned strategy a tier maps to.
+// strategyForTier resolves the Rail-owned strategy a tier maps to. It prefers
+// the persisted tier binding written by the bootstrap (proof the tier file
+// resolved to real catalog assets); without one the tier is unavailable.
 func (s *Service) strategyForTier(ctx context.Context, tier entities.VaultTier) (*entities.InvestmentStrategy, error) {
+	if s.repo != nil {
+		if binding, err := s.repo.GetTier(ctx, tier); err == nil && binding != nil {
+			strategies, err := s.engine.ListRailStrategies(ctx)
+			if err != nil {
+				return nil, err
+			}
+			for _, strategy := range strategies {
+				if strategy != nil && strategy.ID == binding.RailStrategyID {
+					return strategy, nil
+				}
+			}
+			return nil, fmt.Errorf("%w: %s", ErrStrategyUnavailable, tier.Label())
+		}
+	}
 	name := ""
 	for _, def := range s.cfg.Strategies {
 		if def.Tier == tier {

@@ -88,10 +88,17 @@ func (h *Handlers) UpdateVault(c *gin.Context) {
 	common.RespondSuccess(c, view)
 }
 
-// ListStrategies returns the plans a user can choose from.
+// ListStrategies returns the plans a user can choose from. Only tiers the
+// bootstrap resolved to real strategies are listed; unconfigured tiers are
+// absent, never offered-then-refused.
 // GET /vault/strategies
 func (h *Handlers) ListStrategies(c *gin.Context) {
-	common.RespondSuccess(c, gin.H{"plans": h.service.ListStrategyOptions()})
+	options, err := h.service.ListStrategyOptions(c.Request.Context())
+	if err != nil {
+		h.respond(c, err, nil)
+		return
+	}
+	common.RespondSuccess(c, gin.H{"plans": options})
 }
 
 // Activity returns the contribution history.

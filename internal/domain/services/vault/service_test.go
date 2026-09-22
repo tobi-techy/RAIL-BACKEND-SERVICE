@@ -19,16 +19,20 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeRepo struct {
-	vaults    map[uuid.UUID]*entities.RetirementVault
-	lots      []*entities.VaultContributionLot
-	snaps     []*entities.VaultEarningsSnapshot
-	penalties []*entities.VaultPenaltyEvent
-	auths     []*entities.VaultWithdrawalAuthorization
-	onramps   []*entities.VaultOnrampTransfer
+	vaults        map[uuid.UUID]*entities.RetirementVault
+	lots          []*entities.VaultContributionLot
+	snaps         []*entities.VaultEarningsSnapshot
+	penalties     []*entities.VaultPenaltyEvent
+	auths         []*entities.VaultWithdrawalAuthorization
+	onramps       []*entities.VaultOnrampTransfer
+	tiers         map[entities.VaultTier]*entities.VaultTierBinding
+	skips         []*entities.VaultSkip
+	health        map[uuid.UUID]*entities.VaultHealth
+	enrollFailure *entities.VaultEnrollFailure
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{vaults: map[uuid.UUID]*entities.RetirementVault{}}
+	return &fakeRepo{vaults: map[uuid.UUID]*entities.RetirementVault{}, tiers: map[entities.VaultTier]*entities.VaultTierBinding{}, health: map[uuid.UUID]*entities.VaultHealth{}}
 }
 
 func (r *fakeRepo) CreateVault(_ context.Context, vault *entities.RetirementVault) error {
@@ -255,24 +259,138 @@ func (r *fakeRepo) FindOnrampByIdempotencyKey(_ context.Context, key string) (*e
 	return nil, nil
 }
 
+func (r *fakeRepo) UpsertTier(_ context.Context, tier *entities.VaultTierBinding) error {
+	r.tiers[tier.Tier] = tier
+	return nil
+}
+
+func (r *fakeRepo) GetTier(_ context.Context, tier entities.VaultTier) (*entities.VaultTierBinding, error) {
+	return r.tiers[tier], nil
+}
+
+func (r *fakeRepo) ListTiers(_ context.Context) ([]*entities.VaultTierBinding, error) {
+	out := make([]*entities.VaultTierBinding, 0, len(r.tiers))
+	for _, tier := range r.tiers {
+		out = append(out, tier)
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) CreateSkip(_ context.Context, skip *entities.VaultSkip) error {
+	if skip.ID == uuid.Nil {
+		skip.ID = uuid.New()
+	}
+	r.skips = append(r.skips, skip)
+	return nil
+}
+
+func (r *fakeRepo) FindSkipByPayment(_ context.Context, paymentID uuid.UUID) (*entities.VaultSkip, error) {
+	for _, skip := range r.skips {
+		if skip.PaymentID == paymentID {
+			return skip, nil
+		}
+	}
+	return nil, nil
+}
+
+func (r *fakeRepo) ListSkips(_ context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultSkip, error) {
+	var out []*entities.VaultSkip
+	for _, skip := range r.skips {
+		if skip.VaultID == vaultID {
+			out = append(out, skip)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) CountRecentSkips(_ context.Context, vaultID uuid.UUID, since time.Time) (int, error) {
+	count := 0
+	for _, skip := range r.skips {
+		if skip.VaultID == vaultID && !skip.CreatedAt.Before(since) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (r *fakeRepo) UpsertHealth(_ context.Context, health *entities.VaultHealth) error {
+	r.health[health.VaultID] = health
+	return nil
+}
+
+func (r *fakeRepo) GetHealth(_ context.Context, vaultID uuid.UUID) (*entities.VaultHealth, error) {
+	return r.health[vaultID], nil
+}
+
+func (r *fakeRepo) GetEnrollFailure(_ context.Context, userID uuid.UUID) (*entities.VaultEnrollFailure, error) {
+	if r.enrollFailure == nil || r.enrollFailure.UserID != userID {
+		return nil, nil
+	}
+	return r.enrollFailure, nil
+}
+
+func (r *fakeRepo) UpsertEnrollFailure(_ context.Context, failure *entities.VaultEnrollFailure) error {
+	r.enrollFailure = failure
+	return nil
+}
+
+func (r *fakeRepo) DeleteVault(_ context.Context, vaultID uuid.UUID) error {
+	vault, ok := r.vaults[vaultID]
+	if !ok || vault.Status != entities.VaultStatusPending {
+		return errors.New("no pending vault")
+	}
+	delete(r.vaults, vaultID)
+	return nil
+}
+
+func (r *fakeRepo) ListAuthorizations(_ context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultWithdrawalAuthorization, error) {
+	var out []*entities.VaultWithdrawalAuthorization
+	for _, auth := range r.auths {
+		if auth.VaultID == vaultID {
+			out = append(out, auth)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (r *fakeRepo) ListPenaltyEvents(_ context.Context, vaultID uuid.UUID, limit int) ([]*entities.VaultPenaltyEvent, error) {
+	var out []*entities.VaultPenaltyEvent
+	for _, penalty := range r.penalties {
+		if penalty.VaultID == vaultID {
+			out = append(out, penalty)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Fakes: engine, ledger, users, notifier
 // ---------------------------------------------------------------------------
 
 type fakeEngine struct {
 	strategies  []*entities.InvestmentStrategy
+	assets      []*entities.InvestmentAsset
 	enrollment  *entities.InvestmentEnrollment
 	enrollErr   error
 	fundErr     error
 	withdrawErr error
+	linkErr     error
 	withdraws   int
 	lastKey     string
 	lastAmount  decimal.Decimal
 	transfers   []*entities.InvestmentFundingTransfer
 	// authorize emulates the investment withdrawal gate. The real gate refuses a
 	// vault withdrawal without a valid authorization.
-	authorize      func(ctx context.Context, enrollmentID uuid.UUID, gross decimal.Decimal, key string) error
-	onWithdrawFill func(ctx context.Context, execution *entities.InvestmentExecution)
+	authorize func(ctx context.Context, enrollmentID uuid.UUID, gross decimal.Decimal, key string) error
 }
 
 func (f *fakeEngine) EnsureRailStrategy(_ context.Context, req entities.InvestmentRailStrategyRequest) (*entities.InvestmentStrategy, error) {
@@ -340,10 +458,22 @@ func (f *fakeEngine) Withdraw(ctx context.Context, _ uuid.UUID, req *entities.In
 }
 
 func (f *fakeEngine) LinkVaultEnrollment(_ context.Context, _ uuid.UUID, _ uuid.UUID, vaultID uuid.UUID) error {
+	if f.linkErr != nil {
+		return f.linkErr
+	}
 	if f.enrollment != nil {
 		f.enrollment.VaultID = &vaultID
 	}
 	return nil
+}
+
+func (f *fakeEngine) GetAssetByCAIP19(_ context.Context, caip19 string) (*entities.InvestmentAsset, error) {
+	for _, asset := range f.assets {
+		if asset.CAIP19 == caip19 {
+			return asset, nil
+		}
+	}
+	return nil, nil
 }
 
 type fakeLedger struct {
@@ -383,6 +513,7 @@ type fakeNotifier struct {
 	contributions int
 	unlocked      int
 	withdrawals   int
+	actionNeeded  int
 }
 
 func (f *fakeNotifier) NotifyVaultContribution(context.Context, uuid.UUID, decimal.Decimal, *time.Time) error {
@@ -395,6 +526,10 @@ func (f *fakeNotifier) NotifyVaultUnlocked(context.Context, uuid.UUID, time.Time
 }
 func (f *fakeNotifier) NotifyVaultWithdrawal(context.Context, uuid.UUID, decimal.Decimal, decimal.Decimal, bool) error {
 	f.withdrawals++
+	return nil
+}
+func (f *fakeNotifier) NotifyVaultActionRequired(context.Context, uuid.UUID, string, string) error {
+	f.actionNeeded++
 	return nil
 }
 
@@ -453,6 +588,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		PenaltyRate:            decimal.NewFromFloat(0.10),
 		MaxAutoContributionPct: decimal.NewFromInt(1),
 		MinContributionUSD:     decimal.NewFromInt(1),
+		MinSpendableUSD:        decimal.NewFromInt(20),
 		ContributionSource:     "spending",
 		SettlementAccount:      "solana:testnet:RailVaultSettlement",
 		AuthorizationTTL:       10 * time.Minute,
@@ -548,6 +684,12 @@ func TestCreateVaultSurfacesEnrollmentFailure(t *testing.T) {
 	assert.Nil(t, h.repo.vaults[uuid.Nil], "no vault should be half-created")
 	vault, _ := h.repo.GetActiveVaultByUser(context.Background(), h.userID)
 	assert.Nil(t, vault, "a failed enrollment must not leave an active vault")
+
+	// Ops still sees the failure even though no vault row exists.
+	require.NotNil(t, h.repo.enrollFailure, "a failed enroll must be observable by ops")
+	assert.Equal(t, h.userID, h.repo.enrollFailure.UserID)
+	assert.Contains(t, h.repo.enrollFailure.LastError, "provider unreachable")
+	assert.Equal(t, 1, h.repo.enrollFailure.Tries)
 }
 
 func TestContributionIsIdempotentAndRecordsBasis(t *testing.T) {
@@ -591,12 +733,14 @@ func TestAutoContributionAppliesPercentAndClamps(t *testing.T) {
 	require.Len(t, h.repo.lots, 1)
 	assert.True(t, h.repo.lots[0].AmountUSD.Equal(dec("50")), "got %s", h.repo.lots[0].AmountUSD)
 
-	// Clamp: only $10 spendable => contribution is $10, never more than exists.
-	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("10")}
-	_, err = h.service.ContributeFromDeposit(context.Background(), h.userID, uuid.New(), dec("100"), dec("30"))
+	// Clamp: only $60 spendable => contribution is $60, never more than exists.
+	// ($60 - $60 take = $0 left would breach the $20 floor, so raise spendable
+	// to $100: $100 - $60 take = $40 left, above the floor.)
+	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("100")}
+	_, err = h.service.ContributeFromDeposit(context.Background(), h.userID, uuid.New(), dec("120"), dec("30"))
 	require.NoError(t, err)
 	require.Len(t, h.repo.lots, 2)
-	assert.True(t, h.repo.lots[1].AmountUSD.Equal(dec("10")), "got %s", h.repo.lots[1].AmountUSD)
+	assert.True(t, h.repo.lots[1].AmountUSD.Equal(dec("60")), "got %s", h.repo.lots[1].AmountUSD)
 }
 
 func TestAutoContributionSkipsWhenRuleZeroOrBelowMinimum(t *testing.T) {
@@ -612,6 +756,84 @@ func TestAutoContributionSkipsWhenRuleZeroOrBelowMinimum(t *testing.T) {
 	_, err = h.service.ContributeFromDeposit(context.Background(), h.userID, uuid.New(), dec("1"), dec("0.3"))
 	require.NoError(t, err)
 	assert.Empty(t, h.repo.lots, "below-minimum contributions are skipped")
+}
+
+func TestAutoContributionSkipsOnSpendableFloor(t *testing.T) {
+	h := newTestHarness(t)
+	h.createVault(t, "0.5") // 50% of any deposit
+
+	// $30 spendable, floor $20. 50% of $100 = $50 take would leave $-20: skip.
+	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("30")}
+	_, err := h.service.ContributeFromDeposit(context.Background(), h.userID, uuid.New(), dec("100"), dec("0"))
+	require.NoError(t, err)
+	assert.Empty(t, h.repo.lots, "a floor-breaching take must not open a lot")
+	require.Len(t, h.repo.skips, 1, "a skip must be recorded")
+	assert.Equal(t, entities.VaultSkipFloor, h.repo.skips[0].Reason)
+}
+
+func TestAutoContributionFloorBoundaryIsAllowed(t *testing.T) {
+	h := newTestHarness(t)
+	h.createVault(t, "0.5") // 50% of any deposit
+
+	// $40 spendable, floor $20. 50% of $40 = $20 take leaves exactly $20 = floor:
+	// the boundary is inclusive, so it contributes.
+	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("40")}
+	_, err := h.service.ContributeFromDeposit(context.Background(), h.userID, uuid.New(), dec("40"), dec("0"))
+	require.NoError(t, err)
+	require.Len(t, h.repo.lots, 1, "landing exactly on the floor is allowed")
+	assert.True(t, h.repo.lots[0].AmountUSD.Equal(dec("20")), "got %s", h.repo.lots[0].AmountUSD)
+}
+
+func TestAutoContributionSkipIsIdempotentOnPaymentID(t *testing.T) {
+	h := newTestHarness(t)
+	h.createVault(t, "0.5")
+	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("30")}
+	paymentID := uuid.New()
+
+	_, err := h.service.ContributeFromDeposit(context.Background(), h.userID, paymentID, dec("100"), dec("0"))
+	require.NoError(t, err)
+	_, err = h.service.ContributeFromDeposit(context.Background(), h.userID, paymentID, dec("100"), dec("0"))
+	require.NoError(t, err)
+	assert.Len(t, h.repo.skips, 1, "the same payment must not open two skips")
+}
+
+func TestAutoContributionRetryAfterFundedLotReturnsLotNotSkip(t *testing.T) {
+	h := newTestHarness(t)
+	h.createVault(t, "0.5") // 50% of any deposit
+	paymentID := uuid.New()
+
+	// First call funds: $10,000 spendable, 50% of $100 = $50 take.
+	first, err := h.service.ContributeFromDeposit(context.Background(), h.userID, paymentID, dec("100"), dec("0"))
+	require.NoError(t, err)
+	require.NotNil(t, first)
+
+	// Spendable collapses before the retry. The floor would now appear
+	// breached, but the payment already funded a lot: the retry must return
+	// the existing lot, never a skip.
+	h.ledger.balances = &entities.UserBalances{SpendingBalance: dec("30")}
+	second, err := h.service.ContributeFromDeposit(context.Background(), h.userID, paymentID, dec("100"), dec("0"))
+	require.NoError(t, err)
+	require.NotNil(t, second, "a retry of a funded payment must return the lot")
+	assert.Equal(t, first.LotID, second.LotID)
+	assert.Empty(t, h.repo.skips, "a funded payment must never record a skip")
+}
+
+func TestListStrategyOptionsOnlyListsResolvedTiers(t *testing.T) {
+	h := newTestHarness(t)
+	ctx := context.Background()
+
+	options, err := h.service.ListStrategyOptions(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, options, "unresolved tiers must be absent, never offered-then-refused")
+
+	require.NoError(t, h.repo.UpsertTier(ctx, &entities.VaultTierBinding{
+		Tier: entities.VaultTierBalanced, RailStrategyID: uuid.New(), Version: 1,
+	}))
+	options, err = h.service.ListStrategyOptions(ctx)
+	require.NoError(t, err)
+	require.Len(t, options, 1)
+	assert.Equal(t, entities.VaultTierBalanced, options[0].Tier)
+	assert.Equal(t, entities.VaultTierBalanced.Label(), options[0].Label)
 }
 
 func TestWithdrawRequiresStepUp(t *testing.T) {
@@ -699,6 +921,37 @@ func TestWithdrawDoubleSpendIsRefused(t *testing.T) {
 	auth.Status = entities.VaultAuthorizationIssued
 	_, err = h.service.Authorize(context.Background(), *vault.GliderEnrollmentID, dec("999"), auth.Key)
 	require.ErrorIs(t, err, ErrAuthorizationInvalid, "an authorization is bound to its amount")
+}
+
+func TestWithdrawExpiredAuthorizationIsRefused(t *testing.T) {
+	h := newTestHarness(t)
+	vault := h.createVault(t, "0")
+	h.seedPosition(t, vault, "1000", "1400")
+
+	// An authorization that stays issued (nothing consumed it) but lapses:
+	// exactly the in-flight state that must die silently when the TTL passes.
+	key := "vault-stale-key"
+	require.NoError(t, h.repo.CreateAuthorization(context.Background(), &entities.VaultWithdrawalAuthorization{
+		VaultID:      vault.ID,
+		UserID:       h.userID,
+		EnrollmentID: *vault.GliderEnrollmentID,
+		Key:          key,
+		GrossUSD:     dec("100"),
+		NetUSD:       dec("100"),
+		Status:       entities.VaultAuthorizationIssued,
+		ExpiresAt:    h.now.Add(2 * time.Minute),
+	}))
+	h.advance(3 * time.Minute)
+
+	// A stale key can never authorize a payout.
+	_, err := h.service.Authorize(context.Background(), *vault.GliderEnrollmentID, dec("100"), key)
+	require.ErrorIs(t, err, ErrAuthorizationInvalid, "an expired key must refuse at the gate")
+
+	// The expired key also no longer counts as an in-flight withdrawal, so a
+	// fresh withdrawal attempt is not blocked by a ghost.
+	inflight, err := h.repo.HasIssuedAuthorization(context.Background(), *vault.GliderEnrollmentID, h.now)
+	require.NoError(t, err)
+	assert.False(t, inflight, "an expired authorization is not an in-flight withdrawal")
 }
 
 func TestWithdrawReleasesAuthorizationWhenTheEngineFails(t *testing.T) {
@@ -795,10 +1048,104 @@ func TestOnEnrollmentSyncedWritesSnapshotAndNotifiesUnlockOnce(t *testing.T) {
 
 func TestBootstrapStrategiesIsIdempotent(t *testing.T) {
 	h := newTestHarness(t)
+	h.service.cfg.TierFiles = nil
 	require.NoError(t, h.service.BootstrapStrategies(context.Background()))
 	require.Len(t, h.engine.strategies, 1)
 	require.NoError(t, h.service.BootstrapStrategies(context.Background()))
 	assert.Len(t, h.engine.strategies, 1, "bootstrap must not duplicate strategies")
+}
+
+func TestCreateVaultRefusesWithoutDateOfBirth(t *testing.T) {
+	h := newTestHarness(t)
+	h.users.dobs[h.userID] = nil
+
+	_, err := h.service.CreateVault(context.Background(), h.userID, &entities.VaultCreateRequest{
+		Tier: entities.VaultTierBalanced,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrValidation, "a missing date of birth must refuse the open")
+	_, err = h.repo.GetActiveVaultByUser(context.Background(), h.userID)
+	require.NoError(t, err)
+	assert.Nil(t, h.repo.vaults[uuid.Nil], "no vault row may be written for an open that fails pre-enroll")
+}
+
+func TestCreateVaultCompensatingDeleteOnLinkFailure(t *testing.T) {
+	h := newTestHarness(t)
+	// Pre-bind the tier so strategy resolution succeeds before the link fails.
+	require.NoError(t, h.repo.UpsertTier(context.Background(), &entities.VaultTierBinding{
+		Tier:           entities.VaultTierBalanced,
+		RailStrategyID: h.engine.strategies[0].ID,
+	}))
+	h.engine.linkErr = errors.New("portfolio link refused")
+
+	_, err := h.service.CreateVault(context.Background(), h.userID, &entities.VaultCreateRequest{
+		Tier: entities.VaultTierBalanced,
+	})
+	require.Error(t, err)
+
+	// The pending row must be gone, not stranded, so a retry is not blocked.
+	_, err = h.repo.GetActiveVaultByUser(context.Background(), h.userID)
+	require.NoError(t, err)
+	assert.Empty(t, h.repo.vaults, "a failed open must leave no vault row behind")
+
+	// The failed link is also ops-visible outside the health row.
+	require.NotNil(t, h.repo.enrollFailure, "a failed link is a failed enroll for ops")
+	assert.Equal(t, h.userID, h.repo.enrollFailure.UserID)
+}
+
+func TestCreateVaultRefusesWhenStrategyUnavailable(t *testing.T) {
+	h := newTestHarness(t)
+	// No tier files, no inline strategies, no rail strategies in the engine =>
+	// strategyForTier cannot resolve anything.
+	h.service.cfg.TierFiles = nil
+	h.service.cfg.Strategies = nil
+	h.engine.strategies = nil
+
+	_, err := h.service.CreateVault(context.Background(), h.userID, &entities.VaultCreateRequest{
+		Tier: entities.VaultTierBalanced,
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStrategyUnavailable)
+}
+
+func TestActivityReportsContributionsWithdrawalsAndPenalties(t *testing.T) {
+	h := newTestHarness(t)
+	vault := h.createVault(t, "0")
+	h.seedPosition(t, vault, "1000", "1400")
+
+	// A withdrawal to the cap: $1,000 principal free + $200 growth, 10% penalty
+	// on the growth. Settle it so the lot is consumed and the penalty committed.
+	result, err := h.service.Withdraw(context.Background(), h.userID, &entities.VaultWithdrawRequest{AmountUSD: dec("1200")}, true)
+	require.NoError(t, err)
+	require.NoError(t, h.service.OnWithdrawalFilled(context.Background(), &entities.InvestmentExecution{
+		ID:           *result.ExecutionID,
+		EnrollmentID: vault.GliderEnrollmentID,
+		Kind:         entities.InvestmentExecutionWithdraw,
+		Status:       entities.InvestmentExecutionFilled,
+	}))
+
+	entries, err := h.service.Activity(context.Background(), h.userID, 50)
+	require.NoError(t, err)
+	kinds := map[string]int{}
+	for _, e := range entries {
+		kinds[e.Kind]++
+	}
+	assert.Contains(t, kinds, "contribution", "activity must show contributions")
+	assert.Contains(t, kinds, "withdrawal", "activity must show withdrawals")
+	assert.Contains(t, kinds, "penalty", "activity must show penalties")
+}
+
+func TestWithdrawRefusedWhenUnderwaterAndAboveValue(t *testing.T) {
+	h := newTestHarness(t)
+	vault := h.createVault(t, "0")
+	// Underwater: market < principal. The book clamps principal to market, so
+	// a request for more than market is refused.
+	h.seedPosition(t, vault, "1000", "800")
+
+	_, err := h.service.Withdraw(context.Background(), h.userID, &entities.VaultWithdrawRequest{AmountUSD: dec("900")}, true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInsufficientValue, "cannot withdraw more than the current value")
+	assert.Equal(t, 0, h.engine.withdraws, "underwater must not reach the provider")
 }
 
 // A vault with no settlement account cannot take money out, so it must not take

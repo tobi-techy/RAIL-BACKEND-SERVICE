@@ -81,6 +81,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "classify-asset":
+			if err := runClassifyAsset(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "classify-asset failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
 
@@ -522,6 +528,106 @@ func printCatalogReport(out io.Writer, report *entities.InvestmentAssetCatalogRe
 		fmt.Fprintln(out, "\nThis was a preview. Re-run with -confirm to write the catalog.")
 	}
 	fmt.Fprintln(out, "===============================================")
+}
+
+// runClassifyAsset sets the asset class of one catalog asset to a human-supplied
+// value. This is the "classify" step of the retirement-vault staging flow:
+// seed-catalog records discovery rows with class "unknown", and the tier
+// bootstrap fails closed unless each leg's class is one of treasury, rwa,
+// yield, equity or gold — so an operator must tell Rail what each discovered
+// asset actually is.
+//
+// It is deliberately a manual, idempotent edit and NOT a classifier: the class
+// is read from the operator's finger, never inferred. It loads the existing
+// catalog row and changes AssetClass only; symbol, chain, decimals, source and
+// — critically — allowlisted/prohibited are preserved. An unknown CAIP-19 is
+// refused (no row is invented) and an unknown class is refused (only the
+// tier-eligible classes may be set here).
+//
+//	rail_service classify-asset -id solana:...:<address> -class treasury
+func runClassifyAsset(args []string) error {
+	fs := flag.NewFlagSet("classify-asset", flag.ContinueOnError)
+	id := fs.String("id", "", "CAIP-19 of the catalog asset to classify")
+	class := fs.String("class", "", "asset class: treasury, rwa, yield, equity or gold")
+	apply := fs.Bool("apply", false, "write the change (default: preview only)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+
+	caip19 := strings.TrimSpace(*id)
+	if caip19 == "" {
+		return fmt.Errorf("classify-asset: -id (a CAIP-19) is required")
+	}
+	assetClass := strings.ToLower(strings.TrimSpace(*class))
+	switch assetClass {
+	case "treasury", "rwa", "yield", "equity", "gold":
+	default:
+		return fmt.Errorf("classify-asset: -class must be one of treasury, rwa, yield, equity, gold (got %q)", *class)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if !cfg.InvestmentGlider.Enabled {
+		return fmt.Errorf("the investment engine is disabled: set INVESTMENT_GLIDER_ENABLED=true")
+	}
+	db, err := database.NewConnection(cfg.Database, cfg.Environment)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer db.Close() //nolint:errcheck // best-effort cleanup on CLI exit
+	assetRepo := repositories.NewInvestmentAssetRepository(sqlx.NewDb(db, "postgres"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	existing, err := assetRepo.GetByCAIP19(ctx, caip19)
+	if err != nil {
+		return fmt.Errorf("look up asset %s: %w", caip19, err)
+	}
+	if existing == nil {
+		return fmt.Errorf("classify-asset: %s is not in the catalog; run `make seed-catalog CONFIRM=1` first", caip19)
+	}
+
+	priorClass := existing.AssetClass
+	mode := "PREVIEW (nothing written)"
+	if *apply {
+		existing.AssetClass = assetClass
+		if err := assetRepo.Upsert(ctx, existing); err != nil {
+			return fmt.Errorf("classify asset %s: %w", caip19, err)
+		}
+		mode = "WRITTEN"
+	}
+	existing.AssetClass = priorClass
+	printClassifyAsset(os.Stdout, existing, assetClass, mode)
+	return nil
+}
+
+// printClassifyAsset writes the operator-facing classify result, including the
+// raw id verbatim and any allowlist warning a human must see before the tier
+// files can use the asset.
+//
+//nolint:errcheck // best-effort CLI report to stdout; a broken pipe fails the process, not the report
+func printClassifyAsset(out io.Writer, asset *entities.InvestmentAsset, assetClass, mode string) {
+	fmt.Fprintf(out, "\n========== ASSET CLASSIFY: %s ==========\n", mode)
+	fmt.Fprintf(out, "asset        : %s\n", asset.CAIP19)
+	fmt.Fprintf(out, "symbol       : %s\n", asset.Symbol)
+	fmt.Fprintf(out, "class        : %s -> %s\n", asset.AssetClass, assetClass)
+	fmt.Fprintf(out, "allowlisted  : %v\n", asset.Allowlisted)
+	if !asset.Allowlisted {
+		fmt.Fprintf(out, "WARNING      : this asset is NOT allowlisted, so no allocation or order can use it yet.\n")
+	}
+	if strings.Contains(asset.CAIP19, "REPLACE") {
+		fmt.Fprintf(out, "WARNING      : this id still contains the placeholder; replace it with a real id first.\n")
+	}
+	if mode != "WRITTEN" {
+		fmt.Fprintf(out, "This was a preview. Re-run with -apply to write the class.\n")
+	}
+	fmt.Fprintln(out, "==============================================")
 }
 
 // maybeRunBootDiagnose runs the read-only yield diagnostic on startup when activated by an
