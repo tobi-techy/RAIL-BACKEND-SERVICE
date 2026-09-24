@@ -3,6 +3,7 @@ package confirmation
 import (
 	"context"
 	"fmt"
+	"strings"
 	"net/http"
 	"time"
 
@@ -213,6 +214,93 @@ func (h *Handler) Reject(c *gin.Context) {
 type markRequest struct {
 	State  string `json:"state" binding:"required"`
 	Result string `json:"result"`
+}
+
+
+type otpSendRequest struct {
+	Token string `json:"t"`
+}
+
+// SendOTP emails a 6-digit code for a pending confirmation (token-gated).
+// Hackathon/demo path gated by CONFIRMATION_DEMO_EMAIL_OTP.
+func (h *Handler) SendOTP(c *gin.Context) {
+	id, ok := uuidOf(c, "id")
+	if !ok {
+		return
+	}
+	token := c.Query("t")
+	var req otpSendRequest
+	_ = c.ShouldBindJSON(&req)
+	if token == "" {
+		token = req.Token
+	}
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token t required"})
+		return
+	}
+	out, err := h.svc.SendEmailOTP(c.Request.Context(), id, token)
+	if err != nil {
+		h.logger.Warn("confirmation otp send failed", zap.String("action_id", id.String()), zap.Error(err))
+		status := http.StatusUnprocessableEntity
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "disabled"):
+			status = http.StatusForbidden
+		case strings.Contains(msg, "not found"), strings.Contains(msg, "invalid"), strings.Contains(msg, "expired") && strings.Contains(msg, "token"):
+			status = http.StatusNotFound
+		case strings.Contains(msg, "cooldown"):
+			status = http.StatusTooManyRequests
+		}
+		c.JSON(status, gin.H{"error": msg})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"masked_email": out.MaskedEmail,
+		"expires_in_seconds": int(out.ExpiresIn.Seconds()),
+		"cooldown_seconds":   int(out.Cooldown.Seconds()),
+		"message":            "OTP sent if the confirmation is valid",
+	})
+}
+
+type otpApproveRequest struct {
+	Token string `json:"t" binding:"required"`
+	Code  string `json:"code" binding:"required"`
+}
+
+// ApproveOTP verifies the emailed code and settles the confirmation
+// (assurance=email_otp). Token-gated, single-use. Face ID Approve stays
+// registered but is rejected while CONFIRMATION_DEMO_EMAIL_OTP=true.
+func (h *Handler) ApproveOTP(c *gin.Context) {
+	id, ok := uuidOf(c, "id")
+	if !ok {
+		return
+	}
+	var req otpApproveRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	rec, err := h.svc.Fetch(c.Request.Context(), id, req.Token)
+	if err != nil || rec == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "confirmation not found or link invalid"})
+		return
+	}
+	out, err := h.svc.ApproveWithEmailOTP(c.Request.Context(), rec.UserID, id, req.Token, req.Code)
+	if err != nil {
+		if latest, lerr := h.svc.Fetch(c.Request.Context(), id, req.Token); lerr == nil && latest != nil && latest.IsTerminal() {
+			c.JSON(http.StatusOK, gin.H{"confirmation": publicView(latest), "card": cardPayload(latest, reissueURL(latest))})
+			return
+		}
+		h.logger.Warn("confirmation otp approve failed", zap.String("action_id", id.String()), zap.Error(err))
+		status := http.StatusUnprocessableEntity
+		msg := err.Error()
+		if strings.Contains(msg, "disabled") {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": msg})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"confirmation": publicView(out), "card": cardPayload(out, reissueURL(out))})
 }
 
 // Mark applies a terminal state reported by Miriam over the shared secret
