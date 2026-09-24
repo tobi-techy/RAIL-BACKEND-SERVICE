@@ -1,26 +1,26 @@
-# Balanced Global Wealth — the balanced retirement tier.
-#
-# OPERATOR: replace every *REPLACE* with the real provider asset id for that
-# row. Discover ids with:
-#   make seed-catalog CONFIRM=1
-# which prints a copy-pasteable table of real ids. Do NOT guess.
-#
-# Rules enforced at bootstrap (fail closed):
-#   - each leg must exist in investment_assets (by provider id)
-#   - each leg's class must be one of: treasury, rwa, yield, equity
-#   - weights are strings that sum to 100; no single leg may exceed 40
+# Balanced Global Wealth — Solana (hackathon).
+# Inspired by Mag7 + Stablecoin Yield: SPYx/QQQx + mega-tech + USDC ballast.
+# Rules: classes treasury|rwa|yield|equity; weights sum 100; no leg > 40.
 tier: balanced_wealth
 name: Balanced Global Wealth
 risk: medium
 horizon: long
 legs:
-  - caip19: "*REPLACE*"
-    weight: "40"
-  - caip19: "*REPLACE*"
+  # SPYx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W"
     weight: "25"
-  - caip19: "*REPLACE*"
+  # QQQx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ"
     weight: "15"
-  - caip19: "*REPLACE*"
+  # NVDAx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh"
+    weight: "15"
+  # AAPLx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp"
     weight: "10"
-  - caip19: "*REPLACE*"
+  # TSLAx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB"
     weight: "10"
+  # USDC → classify CLASS=yield
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    weight: "25"

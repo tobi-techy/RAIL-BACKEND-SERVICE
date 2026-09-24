@@ -1,24 +1,21 @@
-# Steady Dollar Income — the conservative retirement tier.
-#
-# OPERATOR: replace every *REPLACE* with the real provider asset id for that
-# row. Discover ids with:
-#   make seed-catalog CONFIRM=1
-# which prints a copy-pasteable table of real ids. Do NOT guess.
-#
-# Rules enforced at bootstrap (fail closed):
-#   - each leg must exist in investment_assets (by provider id)
-#   - each leg's class must be one of: treasury, rwa, yield
-#   - weights are strings that sum to 100; no single leg may exceed 40
+# Steady Dollar Income — Solana cash sleeve (hackathon).
+# Inspired by Glider "Stablecoin Yield"; Solana-only (USDC/USDT/PYUSD/USDS).
+# No Solana T-bill RWA in Glider yet — all legs class=yield.
+# Rules: classes treasury|rwa|yield; weights sum 100; no leg > 40.
 tier: conservative_pension
 name: Steady Dollar Income
 risk: low
 horizon: long
 legs:
-  - caip19: "*REPLACE*"
+  # USDC → classify CLASS=yield
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     weight: "40"
-  - caip19: "*REPLACE*"
-    weight: "20"
-  - caip19: "*REPLACE*"
+  # USDT → classify CLASS=yield
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
     weight: "25"
-  - caip19: "*REPLACE*"
+  # PYUSD → classify CLASS=yield
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+    weight: "20"
+  # USDS → classify CLASS=yield
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
     weight: "15"
