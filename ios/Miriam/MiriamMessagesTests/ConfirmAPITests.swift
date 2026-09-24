@@ -9,12 +9,22 @@ import XCTest
 final class ConfirmAPITests: XCTestCase {
 
     func testParseValidLink() throws {
-        let url = URL(string: "https://api.userail.money/confirm/11112222-3333-4444-5555-666677778888?t=1893456000.abcdef0123456789")!
+        // Dev host: simulator-safe. Production hosts are refused in
+        // simulator builds (software keys must never approve real money).
+        let url = URL(string: "https://dev.userail.money/confirm/11112222-3333-4444-5555-666677778888?t=1893456000.abcdef0123456789")!
         let link = try parseConfirmLink(url)
         XCTAssertEqual(link.actionID, "11112222-3333-4444-5555-666677778888")
         XCTAssertEqual(link.token, "1893456000.abcdef0123456789")
         XCTAssertEqual(link.expiryUnix, 1893456000)
-        XCTAssertEqual(link.baseURL.absoluteString, "https://api.userail.money")
+        XCTAssertEqual(link.baseURL.absoluteString, "https://dev.userail.money")
+    }
+
+    func testParseRefusesProdHostInSimulator() {
+        // Simulator builds must never open production confirm links.
+        #if targetEnvironment(simulator)
+        let url = URL(string: "https://api.userail.money/confirm/11112222-3333-4444-5555-666677778888?t=1893456000.abcdef0123456789")!
+        XCTAssertThrowsError(try parseConfirmLink(url))
+        #endif
     }
 
     func testParseRejectsNonConfirmURL() {
@@ -23,9 +33,9 @@ final class ConfirmAPITests: XCTestCase {
     }
 
     func testParseRejectsMissingOrMalformedToken() {
-        let noToken = URL(string: "https://api.userail.money/confirm/abc")!
+        let noToken = URL(string: "https://dev.userail.money/confirm/abc")!
         XCTAssertThrowsError(try parseConfirmLink(noToken))
-        let badToken = URL(string: "https://api.userail.money/confirm/abc?t=garbage")!
+        let badToken = URL(string: "https://dev.userail.money/confirm/abc?t=garbage")!
         XCTAssertThrowsError(try parseConfirmLink(badToken))
     }
 

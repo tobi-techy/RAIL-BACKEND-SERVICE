@@ -78,21 +78,24 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 	}
 	// Preflight the funding wallet: it pays the escrow from its own USDC. If it
 	// cannot cover this booking, hold the user's money nowhere — fail before
-	// charging. RPC hiccups fail OPEN (log + proceed) so one degraded RPC can't
-	// block booking, but a confirmed short balance is a hard stop.
+	// charging. Checked against escrow + Rail fee (the full debit), not the
+	// escrow alone: a wallet covering the fare but not the fee would pass the
+	// old check and fail mid-Book after the user hold is taken. RPC hiccups
+	// fail OPEN (log + proceed) so one degraded RPC can't block booking, but
+	// a confirmed short balance is a hard stop.
+	railFee := s.railFee(escrow)
+	totalHold := escrow.Add(railFee)
 	balance, err := s.client.USDCBalanceAtomic(ctx)
 	if err != nil {
 		s.logger.Warn("brij: funding wallet balance preflight failed (continuing)",
 			zap.Error(err), zap.String("order_id", order.ID.String()), zap.String("intent_id", intentID))
-	} else if balance < escrowAtomic(escrow) {
-		s.logger.Error("brij: funding wallet cannot cover escrow",
+	} else if balance < escrowAtomic(totalHold) {
+		s.logger.Error("brij: funding wallet cannot cover escrow + fee",
 			zap.Int64("balance", balance),
-			zap.String("escrow", escrow.StringFixed(2)),
+			zap.String("total_hold", totalHold.StringFixed(2)),
 			zap.String("order_id", order.ID.String()), zap.String("intent_id", intentID))
 		return nil, fmt.Errorf("flight booking is temporarily unavailable — try again shortly")
 	}
-	railFee := s.railFee(escrow)
-	totalHold := escrow.Add(railFee)
 
 	passengersJSON, err := json.Marshal([]brij.PassengerInput{req.Passenger})
 	if err != nil {

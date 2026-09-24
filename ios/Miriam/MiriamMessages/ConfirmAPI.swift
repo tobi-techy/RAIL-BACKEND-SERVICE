@@ -36,6 +36,7 @@ func parseConfirmLink(_ url: URL) throws -> ConfirmLink {
     comps.host = url.host
     comps.port = url.port
     guard let base = comps.url else { throw ConfirmLinkError.notAConfirmURL }
+    try guardSimulatorHost(base)
     return ConfirmLink(actionID: actionID, token: token, expiryUnix: expiry, baseURL: base)
 }
 
@@ -108,6 +109,19 @@ struct ApproveBody: Encodable, Sendable {
 }
 
 // MARK: - HTTP client (URLSession async/await, no third party)
+
+/// Simulator builds use a software key (no Secure Enclave): they must NEVER
+/// talk to the production backend, where a software signature is
+/// server-indistinguishable from a real Face ID proof. Refuse prod hosts
+/// at parse time so a misconfigured simulator scheme fails loudly.
+func guardSimulatorHost(_ url: URL) throws {
+    #if targetEnvironment(simulator)
+    let host = (url.host ?? "").lowercased()
+    if host == "api.userail.money" || host == "userail.money" {
+        throw ConfirmLinkError.notAConfirmURL
+    }
+    #endif
+}
 
 struct ConfirmAPI: Sendable {
     let session: URLSession

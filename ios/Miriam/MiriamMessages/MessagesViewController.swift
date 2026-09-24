@@ -198,7 +198,7 @@ final class MessagesViewController: MSMessagesAppViewController {
                 link: link, approved: true, biometric: "pass", device: device
             )
             if let enrolled = p.enrolledKeyID, !enrolled.isEmpty {
-                UserDefaults.standard.set(enrolled, forKey: Self.enrolledKeyIDDefaultsKey)
+                KeychainRef.set(enrolled, forKey: Self.enrolledKeyIDDefaultsKey)
             }
             switch p.state {
             case "completed":
@@ -218,7 +218,7 @@ final class MessagesViewController: MSMessagesAppViewController {
             if !retriedReenroll, msg.lowercased().contains("unknown device key") {
                 retriedReenroll = true
                 DeviceKey.deleteKey()
-                UserDefaults.standard.removeObject(forKey: Self.enrolledKeyIDDefaultsKey)
+                KeychainRef.remove(forKey: Self.enrolledKeyIDDefaultsKey)
                 render(.status("Face changed — confirming again…"))
                 await approveOnce()
             } else {
@@ -237,12 +237,15 @@ final class MessagesViewController: MSMessagesAppViewController {
         guard gate.canEvaluateBiometrics() || !DeviceKey.isSecureEnclaveAvailable else {
             throw ConfirmAPIError.refused("Face ID isn't available on this device.")
         }
-        let knownKeyID = UserDefaults.standard.string(forKey: Self.enrolledKeyIDDefaultsKey)
+        let knownKeyID = KeychainRef.string(forKey: Self.enrolledKeyIDDefaultsKey)
         if let knownKeyID, (try? DeviceKey.existing()) != nil {
             let message = signedMessage(actionID: link.actionID, expiryUnix: link.expiryUnix)
             let sig = try DeviceKey.sign(message: message)
             return ApproveBody(
-                t: "", biometric: "",
+                // "pass": Face ID just ran — via Enclave access control inside
+                // sign(). The server rejects an empty biometric whenever
+                // device material is attached (fail-closed).
+                t: "", biometric: "pass",
                 deviceKeyID: knownKeyID,
                 signature: sig.base64EncodedString(),
                 enrollDeviceKey: nil
@@ -256,7 +259,7 @@ final class MessagesViewController: MSMessagesAppViewController {
         guard ok else { throw ConfirmAPIError.refused("Face ID was cancelled.") }
         let spki = try DeviceKey.publicKeySPKI()
         return ApproveBody(
-            t: "", biometric: "",
+            t: "", biometric: "pass",
             deviceKeyID: nil, signature: nil,
             enrollDeviceKey: spki.base64EncodedString()
         )

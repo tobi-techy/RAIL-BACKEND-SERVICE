@@ -164,10 +164,12 @@ function layoutFor(card: ConfirmationCardPayload) {
 }
 
 /**
- * Build the card content. Preferred path (own extension): customizedMiniApp +
- * live so tapping opens OUR extension with the native Face ID button.
- * Stopgap: Spectrum-hosted app(url, { live: true }) — works this week, weaker
- * native control. Never fake Face ID in a webview.
+ * Build the card content. Preferred path (own extension): customizedMiniApp
+ * so tapping opens OUR extension with the native Face ID button.
+ * Stopgap: Spectrum-hosted app(url) — works this week, weaker native
+ * control. Never fake Face ID in a webview. Liveness comes from in-place
+ * edits (same card mutated on approve/reject/expire), not a flag — the
+ * 8.2.1 SDK has no `live` option on either builder.
  */
 export function buildConfirmationContent(
   card: ConfirmationCardPayload,
@@ -181,12 +183,11 @@ export function buildConfirmationContent(
       appName: cfg.appName,
       extensionBundleId: cfg.extensionBundleId!,
       teamId: cfg.teamId!,
-      live: true,
       url: card.confirm_url,
       layout,
     });
   }
-  return app(card.confirm_url, { live: true });
+  return app(card.confirm_url);
 }
 
 /**

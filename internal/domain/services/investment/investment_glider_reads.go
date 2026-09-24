@@ -177,6 +177,12 @@ func (s *Service) RenameEnrollment(ctx context.Context, userID, enrollmentID uui
 	if err != nil {
 		return nil, s.mapProviderError(err)
 	}
+	// The display name lives provider-side only (no local name column);
+	// touch the row so sync/audit timelines reflect the rename.
+	enrollment.UpdatedAt = s.nowOr()
+	if err := s.enrollments.Update(ctx, enrollment); err != nil {
+		return nil, fmt.Errorf("store enrollment: %w", err)
+	}
 	return patched, nil
 }
 

@@ -206,14 +206,18 @@ func (a *travelExecAdapter) flightPassengerFromArg(args map[string]interface{}, 
 		gender = "f"
 	}
 	return brij.PassengerInput{
-		GivenName:      strings.TrimSpace(travelArgString(p, "given_name")),
-		FamilyName:     strings.TrimSpace(travelArgString(p, "family_name")),
-		BornOn:         travelDateToISO(travelArgString(p, "born_on")),
-		Title:          strings.ToLower(strings.TrimSpace(travelArgString(p, "title"))),
-		Gender:         gender,
-		Email:          strings.TrimSpace(travelArgString(p, "email")),
-		PhoneNumber:    strings.TrimSpace(travelArgString(p, "phone_number")),
-		Nationality:    strings.TrimSpace(travelArgString(p, "nationality")),
+		GivenName:   strings.TrimSpace(travelArgString(p, "given_name")),
+		FamilyName:  strings.TrimSpace(travelArgString(p, "family_name")),
+		BornOn:      travelDateToISO(travelArgString(p, "born_on")),
+		Title:       strings.ToLower(strings.TrimSpace(travelArgString(p, "title"))),
+		Gender:      gender,
+		Email:       strings.TrimSpace(travelArgString(p, "email")),
+		PhoneNumber: strings.TrimSpace(travelArgString(p, "phone_number")),
+		// passport_country is accepted as a nationality alias (mirrors
+		// TravelPassenger.HasFlightDetails/ToFlightPassenger): a model that
+		// emits only passport_country must still produce a bookable
+		// passenger instead of a book-time document rejection.
+		Nationality:    firstNonEmptyTravelArg(p, "nationality", "passport_country"),
 		PassportNumber: strings.TrimSpace(travelArgString(p, "passport_number")),
 		PassportExpiry: travelDateToISO(travelArgString(p, "passport_expiry")),
 	}
@@ -228,6 +232,15 @@ func travelArgString(args map[string]interface{}, key string) string {
 		return s
 	}
 	return ""
+}
+
+// firstNonEmptyTravelArg returns the first non-blank of two tool-arg keys
+// (primary, then alias). Used for nationality/passport_country aliasing.
+func firstNonEmptyTravelArg(args map[string]interface{}, primary, alias string) string {
+	if s := strings.TrimSpace(travelArgString(args, primary)); s != "" {
+		return s
+	}
+	return strings.TrimSpace(travelArgString(args, alias))
 }
 
 // travelArgBool extracts a bool from the tool argument map.

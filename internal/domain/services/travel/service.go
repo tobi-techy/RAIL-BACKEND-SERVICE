@@ -97,6 +97,13 @@ func (s *Service) SearchFlights(ctx context.Context, origin, destination, depart
 	if adults <= 0 {
 		adults = 1
 	}
+	// Single-passenger only: BookFlight rejects passenger_count > 1 before
+	// any hold, so searching for 2+ would walk the user into paid
+	// OfferDetails/intent calls for a booking that can never complete.
+	// Fail here — before a cent of x402 fees is spent.
+	if adults > 1 {
+		return nil, fmt.Errorf("multi-passenger booking is not supported yet — search for 1 adult")
+	}
 	limit := 20
 	cheapest := true
 	result, err := s.client.Search(ctx, brij.SearchRequest{
@@ -152,7 +159,7 @@ func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req Create
 	// intent can be created. Drill proactively rather than letting the intent
 	// creation fail on a stale menu; the drill is itself x402-paid.
 	if brij.IsBrowserTierOffer(offerID) {
-		if _, err := s.client.OfferDetails(ctx, brij.OfferDetailsRequest{OfferID: offerID}); err != nil {
+		if _, err := s.offerDetailsWithPendingRetry(ctx, offerID); err != nil {
 			return nil, fmt.Errorf("could not refresh this fare before locking: %w", err)
 		}
 	}
@@ -162,7 +169,7 @@ func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req Create
 		// once and retry; any other provider state-machine code becomes a
 		// readable user message.
 		if brij.IsBrowserTierOffer(offerID) && brij.ErrorCode(err) == "fare_menu_expired" {
-			if _, rerr := s.client.OfferDetails(ctx, brij.OfferDetailsRequest{OfferID: offerID}); rerr != nil {
+			if _, rerr := s.offerDetailsWithPendingRetry(ctx, offerID); rerr != nil {
 				return nil, fmt.Errorf("could not refresh this fare before locking: %w", rerr)
 			}
 			intent, err = s.client.CreateIntent(ctx, brij.CreateIntentRequest{OfferID: offerID})
@@ -208,6 +215,33 @@ func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req Create
 		ExpiresAt:   intent.ExpiresAt,
 		Status:      StatusHeld,
 	}, nil
+}
+
+// offerDetailsWithPendingRetry drills a browser-tier fare menu, retrying the
+// transient fares_pending (202: menu still being fetched) with backoff
+// instead of hard-failing a booking whose drill fee is already spent.
+// Bounded at 3 attempts so a stuck menu cannot burn unlimited x402 drills.
+func (s *Service) offerDetailsWithPendingRetry(ctx context.Context, offerID string) (*brij.OfferDetailsResponse, error) {
+	var err error
+	var details *brij.OfferDetailsResponse
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			}
+		}
+		details, err = s.client.OfferDetails(ctx, brij.OfferDetailsRequest{OfferID: offerID})
+		if err == nil || !brij.IsFaresPending(err) {
+			return details, err
+		}
+		if s.logger != nil {
+			s.logger.Warn("brij fare menu still fetching (fares_pending), retrying",
+				zap.String("offer_id", offerID), zap.Int("attempt", attempt+1))
+		}
+	}
+	return details, err
 }
 
 // persistIntent writes the intent row. hold_amount starts at zero; BookFlight

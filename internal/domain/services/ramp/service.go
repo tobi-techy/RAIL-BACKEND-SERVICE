@@ -1220,9 +1220,10 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, txID st
 	}
 
 	// syncQueued means RampHub is still syncing provider truth — re-fetch
-	// once before acting, so a stale terminal snapshot can't credit or
-	// reverse on outdated state.
-	if tx.SyncQueued && !tx.Completed && !tx.Terminal {
+	// once before acting, so a stale snapshot can't credit or reverse on
+	// outdated state. Unconditional on Completed/Terminal: a stale snapshot
+	// claiming a terminal outcome is exactly the case that must not credit.
+	if tx.SyncQueued {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

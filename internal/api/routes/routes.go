@@ -121,27 +121,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.String(http.StatusOK, "pong")
 	})
 
-	// Live confirmation cards (Face ID money actions). The extension opens
-	// /confirm/:id?t=… with a signed single-use token — no session, the token
-	// is the credential (short-lived magic link). Creating a confirmation
-	// never moves money; Face ID success + server accept does.
-	if container.ConfirmationHandlers != nil {
-		confirm := router.Group("/confirm")
-		{
-			confirm.GET("/:id", middleware.RateLimit(30), container.ConfirmationHandlers.Fetch)
-			confirm.POST("/:id/approve", middleware.RateLimit(10), container.ConfirmationHandlers.Approve)
-			confirm.POST("/:id/reject", middleware.RateLimit(10), container.ConfirmationHandlers.Reject)
-		}
-		// Chat-settles-first sync: Miriam reports the terminal state over the
-		// shared secret so the live card shows the same ending. Rail-key
-		// authed (no user JWT): the caller is the Miriam backend, and the
-		// confirm_id join plus the shared secret is the authorization.
-		router.POST("/api/v1/confirmations/:id/mark",
-			middleware.RequireRailServiceKey(container.Config.Confirmation.RailServiceKey, container.ZapLog),
-			container.ConfirmationHandlers.Mark)
-	}
-
-	// Global middleware - order matters for security
+	// Global middleware — registered BEFORE all routes (including /confirm
+	// below) so money-moving endpoints get Recovery, SecurityHeaders,
+	// RequestSizeLimit, InputValidation and the global rate limiter. gin
+	// only applies Use() to subsequently-registered routes, which is why
+	// this block must precede the confirm group. /ping above intentionally
+	// stays bare for uptime monitoring.
 	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
 	router.Use(middleware.RequestID())
 	router.Use(middleware.MetricsMiddleware())
@@ -161,6 +146,27 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.DeviceFingerprintExtractor())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
+
+	// Live confirmation cards (Face ID money actions). The extension opens
+	// /confirm/:id?t=… with a signed single-use token — no session, the token
+	// is the credential (short-lived magic link). Creating a confirmation
+	// never moves money; Face ID success + server accept does.
+	if container.ConfirmationHandlers != nil {
+		confirm := router.Group("/confirm")
+		{
+			confirm.GET("/:id", middleware.RateLimit(30), container.ConfirmationHandlers.Fetch)
+			confirm.POST("/:id/approve", middleware.RateLimit(10), container.ConfirmationHandlers.Approve)
+			confirm.POST("/:id/reject", middleware.RateLimit(10), container.ConfirmationHandlers.Reject)
+		}
+		// Chat-settles-first sync: Miriam reports the terminal state over the
+		// shared secret so the live card shows the same ending. Rail-key
+		// authed (no user JWT): the caller is the Miriam backend, and the
+		// confirm_id join plus the shared secret is the authorization.
+		router.POST("/api/v1/confirmations/:id/mark",
+			middleware.RateLimit(10),
+			middleware.RequireRailServiceKey(container.Config.Confirmation.RailServiceKey, container.ZapLog),
+			container.ConfirmationHandlers.Mark)
+	}
 
 	// CSRF protection
 	csrfStore := middleware.NewCSRFStore()

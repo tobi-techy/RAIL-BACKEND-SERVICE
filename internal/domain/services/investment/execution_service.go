@@ -577,7 +577,12 @@ func (s *Service) Withdraw(
 	case "solana-message":
 		signPayload = auth.Text
 	case "ecdsa":
-		signPayload = auth.Raw
+		// EVM digests must never go through the Solana (Ed25519) signer: an
+		// EIP-191 digest signed as a Solana message fails provider
+		// verification and wedges the execution in executing. Enrollment
+		// already rejects this shape (same ErrUnsupported) — match it here.
+		return s.failWithdrawal(ctx, execution, "unsupported_authorization",
+			fmt.Errorf("%w: this withdrawal needs an EVM signer Rail does not provide; the portfolio owner must be Solana-rooted", ErrUnsupported))
 	default:
 		return s.failWithdrawal(ctx, execution, "unsupported_authorization",
 			fmt.Errorf("%w: this withdrawal authorization kind (%q) needs a signer Rail does not provide", ErrUnsupported, auth.Kind))

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -138,15 +139,30 @@ func (c *Client) SetStrategySchedule(ctx context.Context, strategyID, frequency 
 	return c.do(ctx, http.MethodPut, "/strategies/"+strategyID+"/schedule", body, nil, requestOptions{})
 }
 
+// encodeQuery builds a "?k=v&..." suffix with proper percent-encoding.
+// Provider cursors are opaque (base64 with +/=): raw concatenation corrupts
+// pagination, so every query builder in this client must go through here.
+func encodeQuery(pairs ...[2]string) string {
+	v := url.Values{}
+	for _, p := range pairs {
+		if p[1] == "" {
+			continue
+		}
+		v.Set(p[0], p[1])
+	}
+	if len(v) == 0 {
+		return ""
+	}
+	return "?" + v.Encode()
+}
+
 // DiscoverStrategies lists public, mirrorable strategies.
 func (c *Client) DiscoverStrategies(ctx context.Context, collection, cursor string, limit int) ([]entities.GliderDiscoveredStrategy, string, error) {
-	query := "?collection=" + collection
-	if cursor != "" {
-		query += "&cursor=" + cursor
-	}
+	limitStr := ""
 	if limit > 0 {
-		query += "&limit=" + strconv.Itoa(limit)
+		limitStr = strconv.Itoa(limit)
 	}
+	query := encodeQuery([2]string{"collection", collection}, [2]string{"cursor", cursor}, [2]string{"limit", limitStr})
 	var out struct {
 		Strategies []entities.GliderDiscoveredStrategy `json:"strategies"`
 	}
@@ -326,17 +342,11 @@ func (c *Client) ValidateStrategy(ctx context.Context, in entities.GliderStrateg
 // ListStrategies returns the tenant's strategies, createdAt descending.
 // GET /strategies?cursor=&limit= (limit 1-200, default 50).
 func (c *Client) ListStrategies(ctx context.Context, filter entities.GliderStrategyListFilter) ([]entities.GliderStrategy, string, error) {
-	query := ""
-	params := []string{}
-	if filter.Cursor != "" {
-		params = append(params, "cursor="+filter.Cursor)
-	}
+	limitStr := ""
 	if filter.Limit > 0 {
-		params = append(params, "limit="+strconv.Itoa(filter.Limit))
+		limitStr = strconv.Itoa(filter.Limit)
 	}
-	if len(params) > 0 {
-		query = "?" + strings.Join(params, "&")
-	}
+	query := encodeQuery([2]string{"cursor", filter.Cursor}, [2]string{"limit", limitStr})
 	var out struct {
 		Strategies []entities.GliderStrategy `json:"strategies"`
 	}
@@ -360,17 +370,11 @@ func (c *Client) PatchStrategy(ctx context.Context, strategyID string, patch ent
 // ListStrategyVersions returns allocation history, newest first.
 // GET /strategies/{strategyId}/versions (cursor-paginated; isHead = active).
 func (c *Client) ListStrategyVersions(ctx context.Context, strategyID, cursor string, limit int) ([]entities.GliderStrategyVersion, string, error) {
-	query := ""
-	params := []string{}
-	if cursor != "" {
-		params = append(params, "cursor="+cursor)
-	}
+	limitStr := ""
 	if limit > 0 {
-		params = append(params, "limit="+strconv.Itoa(limit))
+		limitStr = strconv.Itoa(limit)
 	}
-	if len(params) > 0 {
-		query = "?" + strings.Join(params, "&")
-	}
+	query := encodeQuery([2]string{"cursor", cursor}, [2]string{"limit", limitStr})
 	var out struct {
 		Versions []entities.GliderStrategyVersion `json:"versions"`
 	}
@@ -531,7 +535,7 @@ func (c *Client) ActivateChains(ctx context.Context, portfolioID string, in enti
 func (c *Client) GetPortfolioPerformance(ctx context.Context, portfolioID, returnMethod string) (*entities.GliderPortfolioPerformance, error) {
 	path := "/portfolios/" + portfolioID + "/performance"
 	if returnMethod != "" {
-		path += "?returnMethod=" + returnMethod
+		path += encodeQuery([2]string{"returnMethod", returnMethod})
 	}
 	var out entities.GliderPortfolioPerformance
 	if err := c.do(ctx, http.MethodGet, path, nil, &out, requestOptions{retry: true}); err != nil {
@@ -572,26 +576,17 @@ func (c *Client) PatchPortfolio(ctx context.Context, portfolioID string, patch e
 // ListPortfoliosFiltered lists tenant portfolios with optional filters.
 // GET /portfolios?ownerAccountId=&strategyId=&status=&cursor=&limit=.
 func (c *Client) ListPortfoliosFiltered(ctx context.Context, filter entities.GliderPortfolioListFilter) ([]entities.GliderPortfolio, string, error) {
-	params := []string{}
-	if filter.OwnerAccountID != "" {
-		params = append(params, "ownerAccountId="+filter.OwnerAccountID)
-	}
-	if filter.StrategyID != "" {
-		params = append(params, "strategyId="+filter.StrategyID)
-	}
-	if filter.Status != "" {
-		params = append(params, "status="+filter.Status)
-	}
-	if filter.Cursor != "" {
-		params = append(params, "cursor="+filter.Cursor)
-	}
+	limitStr := ""
 	if filter.Limit > 0 {
-		params = append(params, "limit="+strconv.Itoa(filter.Limit))
+		limitStr = strconv.Itoa(filter.Limit)
 	}
-	query := ""
-	if len(params) > 0 {
-		query = "?" + strings.Join(params, "&")
-	}
+	query := encodeQuery(
+		[2]string{"ownerAccountId", filter.OwnerAccountID},
+		[2]string{"strategyId", filter.StrategyID},
+		[2]string{"status", filter.Status},
+		[2]string{"cursor", filter.Cursor},
+		[2]string{"limit", limitStr},
+	)
 	var out struct {
 		Portfolios []entities.GliderPortfolio `json:"portfolios"`
 	}

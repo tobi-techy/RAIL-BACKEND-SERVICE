@@ -3,6 +3,8 @@ package confirmation
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -145,8 +147,15 @@ func TestFailClosedNoExecutor(t *testing.T) {
 	}
 	_ = got
 	stored, _ := s.store.Load(c.ID)
-	if stored.State != entities.ConfirmationFailed {
-		t.Fatalf("expected failed, got %s", stored.State)
+	// Fail-closed happens BEFORE the single-use token is consumed: the card
+	// stays live (pending, token intact) so wiring the executor later — or
+	// settling via MarkExternal — can still complete it. A burned token
+	// would trap the card in failed with no retry path.
+	if stored.State != entities.ConfirmationPending {
+		t.Fatalf("expected pending (token not consumed), got %s", stored.State)
+	}
+	if stored.TokenUsed {
+		t.Fatal("single-use token must not be consumed by a fail-closed approve")
 	}
 }
 
@@ -161,5 +170,95 @@ func TestPreviewLayout(t *testing.T) {
 		if l.Caption == "" || l.Image == "" || l.Summary == "" {
 			t.Fatalf("state %s produced empty layout: %+v", st, l)
 		}
+	}
+}
+
+func TestFetchBadTokenOnPendingLeaksNothing(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	s.RegisterExecutor(entities.ConfirmationActionTransferSend, func(ctx context.Context, u uuid.UUID, c *entities.Confirmation) (string, error) {
+		return "sent", nil
+	})
+	c, _, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend, Payload: map[string]any{"amount": "₦20,000", "to_name": "Funsho"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pending card + bad token must error, never return amount/destination.
+	if rec, err := s.Fetch(ctx, c.ID, "bad.token"); err == nil || rec != nil {
+		t.Fatalf("pending card leaked on bad token: rec=%+v err=%v", rec, err)
+	}
+}
+
+func TestConcurrentApproveExecutesOnce(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	var calls int32
+	s.RegisterExecutor(entities.ConfirmationActionTransferSend, func(ctx context.Context, u uuid.UUID, c *entities.Confirmation) (string, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(50 * time.Millisecond)
+		return "sent", nil
+	})
+	c, url, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend, Payload: map[string]any{"amount": "₦20,000", "to_name": "Funsho"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := url[strings.Index(url, "?t=")+3:]
+	const racers = 8
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = s.Approve(ctx, uid, c.ID, tok, "pass")
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("executor ran %d times, want exactly 1", got)
+	}
+	stored, _ := s.store.Load(c.ID)
+	if stored.State != entities.ConfirmationCompleted {
+		t.Fatalf("expected completed, got %s", stored.State)
+	}
+}
+
+func TestApproveEmptyBiometricWithDeviceMaterialRejected(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	s.RegisterExecutor(entities.ConfirmationActionTransferSend, func(ctx context.Context, u uuid.UUID, c *entities.Confirmation) (string, error) {
+		return "sent", nil
+	})
+	c, url, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend, Payload: map[string]any{"amount": "₦20,000"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := url[strings.Index(url, "?t=")+3:]
+	// Empty biometric + enroll key is a protocol violation, not a legacy approve.
+	if _, err := s.ApproveWithDevice(ctx, uid, c.ID, tok, "", DeviceApproval{EnrollKey: "aGVsbG8="}); err == nil {
+		t.Fatal("expected rejection of empty biometric with enroll key")
+	}
+	stored, _ := s.store.Load(c.ID)
+	if stored.TokenUsed || stored.State != entities.ConfirmationPending {
+		t.Fatalf("rejected approve must not consume token: used=%v state=%s", stored.TokenUsed, stored.State)
+	}
+}
+
+func TestCreateClampsTTL(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	s.RegisterExecutor(entities.ConfirmationActionTransferSend, func(ctx context.Context, u uuid.UUID, c *entities.Confirmation) (string, error) {
+		return "sent", nil
+	})
+	before := time.Now().UTC()
+	c, _, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend, Payload: map[string]any{"amount": "₦1"}, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ExpiresAt.Sub(before) > 15*time.Minute+time.Second {
+		t.Fatalf("TTL not clamped: expires in %v", c.ExpiresAt.Sub(before))
 	}
 }

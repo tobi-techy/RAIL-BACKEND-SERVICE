@@ -2,8 +2,10 @@ package pajfunding
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -259,14 +261,29 @@ func (s *Service) NeedsVerification(ctx context.Context, userID uuid.UUID) bool 
 }
 
 // Initiate triggers a Paj OTP to the user's email or phone (E.164).
-// Returns "already_verified" if user has a valid session.
-// Skips if user already has a valid session.
+// Returns "already_verified" only when a valid session exists for the SAME
+// recipient: verifying with email A then initiating with phone B sends a
+// fresh OTP instead of silently running B's orders under A's Paj identity.
 func (s *Service) Initiate(ctx context.Context, userID uuid.UUID, email string) (alreadyVerified bool, err error) {
-	if _, err := s.getSessionToken(ctx, userID); err == nil {
+	if _, storedHash, serr := s.getSessionTokenWithRecipient(ctx, userID); serr == nil && storedHash != "" {
+		if storedHash == pajRecipientHash(email) {
+			return true, nil
+		}
+		// Recipient switched: fall through to a fresh OTP below.
+	} else if serr == nil {
+		// Legacy session with no bound recipient (pre-migration-317 rows):
+		// preserve old behavior and short-circuit.
 		return true, nil
 	}
 	_, err = s.pajClient.Initiate(ctx, email)
 	return false, err
+}
+
+// pajRecipientHash binds a session to its verified recipient without storing
+// PII: normalized (trimmed, lowercased) email/phone, SHA-256 hex.
+func pajRecipientHash(recipient string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(recipient))))
+	return hex.EncodeToString(sum[:])
 }
 
 // Verify confirms the OTP and caches the session token.
@@ -293,29 +310,41 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, email, otp, devi
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO paj_sessions (user_id, session_token_encrypted, expires_at, updated_at)
-		VALUES ($1, $2, $3, NOW())
+		INSERT INTO paj_sessions (user_id, session_token_encrypted, expires_at, recipient_hash, updated_at)
+		VALUES ($1, $2, $3, $4, NOW())
 		ON CONFLICT (user_id) DO UPDATE SET
 			session_token_encrypted = EXCLUDED.session_token_encrypted,
 			expires_at = EXCLUDED.expires_at,
+			recipient_hash = EXCLUDED.recipient_hash,
 			updated_at = NOW()`,
-		userID, encrypted, expiresAt)
+		userID, encrypted, expiresAt, pajRecipientHash(email))
 	return err
 }
 
 func (s *Service) getSessionToken(ctx context.Context, userID uuid.UUID) (string, error) {
+	token, _, err := s.getSessionTokenWithRecipient(ctx, userID)
+	return token, err
+}
+
+// getSessionTokenWithRecipient returns the decrypted session token plus the
+// bound recipient hash ("": legacy pre-migration-317 row, unbound).
+func (s *Service) getSessionTokenWithRecipient(ctx context.Context, userID uuid.UUID) (token, recipientHash string, err error) {
 	var encrypted string
 	var expiresAt time.Time
-	err := s.db.QueryRowContext(ctx,
-		`SELECT session_token_encrypted, expires_at FROM paj_sessions WHERE user_id = $1`,
-		userID).Scan(&encrypted, &expiresAt)
+	err = s.db.QueryRowContext(ctx,
+		`SELECT session_token_encrypted, expires_at, COALESCE(recipient_hash, '') FROM paj_sessions WHERE user_id = $1`,
+		userID).Scan(&encrypted, &expiresAt, &recipientHash)
 	if err != nil {
-		return "", fmt.Errorf("no paj session: %w", err)
+		return "", "", fmt.Errorf("no paj session: %w", err)
 	}
 	if time.Now().After(expiresAt) {
-		return "", fmt.Errorf("paj session expired")
+		return "", "", fmt.Errorf("paj session expired")
 	}
-	return crypto.Decrypt(encrypted, s.encryptionKey)
+	token, err = crypto.Decrypt(encrypted, s.encryptionKey)
+	if err != nil {
+		return "", "", err
+	}
+	return token, recipientHash, nil
 }
 
 func (s *Service) invalidateSessionIfUnauthorized(ctx context.Context, userID uuid.UUID, err error) error {

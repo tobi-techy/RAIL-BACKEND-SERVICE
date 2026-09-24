@@ -155,9 +155,9 @@ cmd/spectrum-bridge/data/
 node_modules/
 cmd/spectrum-bridge/node_modules/
 
-# Xcode (Flip iOS app + Messages extension)
-ios/Flip/**/xcuserdata/
-ios/Flip/**/*.xcworkspace/xcuserdata/
+# Xcode (Miriam iOS app + Messages extension)
+ios/Miriam/**/xcuserdata/
+ios/Miriam/**/*.xcworkspace/xcuserdata/
 DerivedData/
 *.moved-aside
-ios/Flip/build/
+ios/Miriam/build/

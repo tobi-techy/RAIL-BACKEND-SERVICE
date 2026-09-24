@@ -1,9 +1,10 @@
-# Miriam Messages extension — stub spec
+# Miriam Messages extension — spec
 
 Native iMessage extension UI for the reusable live confirmation card.
 Photon cannot render a native Face ID button; this extension is the product
-half that can. `MessagesViewController.swift.stub` is the drop-in skeleton
-(rename to `.swift` inside a real Xcode Messages Extension target).
+half that can. The canonical implementation lives at `ios/Miriam/MiriamMessages/`
+— this folder keeps only the contract spec below (the old drop-in skeleton was
+removed to avoid two divergent copies).
 
 ## Target checklist
 

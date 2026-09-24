@@ -12,6 +12,7 @@
 		FLIPBFEXT001000000000001 /* MessagesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00100000000001 /* MessagesViewController.swift */; };
 		FLIPBFEXT002000000000001 /* ConfirmAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00200000000001 /* ConfirmAPI.swift */; };
 		FLIPBFEXT003000000000001 /* DeviceKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00300000000001 /* DeviceKey.swift */; };
+		FLIPBFEXT004000000000001 /* KeychainRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00400000000001 /* KeychainRef.swift */; };
 		FLIPBFAPPEX01000000000001 /* MiriamMessages.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = FLIPFRPROD0200000000001 /* MiriamMessages.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FLIPBFTST001000000000001 /* ConfirmAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00200000000001 /* ConfirmAPI.swift */; };
 		FLIPBFTST002000000000001 /* ConfirmAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFRTST00100000000001 /* ConfirmAPITests.swift */; };
@@ -56,6 +57,7 @@
 		FLIPFREXT00100000000001 /* MessagesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesViewController.swift; sourceTree = "<group>"; };
 		FLIPFREXT00200000000001 /* ConfirmAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmAPI.swift; sourceTree = "<group>"; };
 		FLIPFREXT00300000000001 /* DeviceKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKey.swift; sourceTree = "<group>"; };
+		FLIPFREXT00400000000001 /* KeychainRef.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainRef.swift; sourceTree = "<group>"; };
 		FLIPFREXTINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		FLIPFREXTENT000000000001 /* MiriamMessages.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MiriamMessages.entitlements; sourceTree = "<group>"; };
 		FLIPFRTST00100000000001 /* ConfirmAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmAPITests.swift; sourceTree = "<group>"; };
@@ -129,6 +131,7 @@
 				FLIPFREXT00100000000001 /* MessagesViewController.swift */,
 				FLIPFREXT00200000000001 /* ConfirmAPI.swift */,
 				FLIPFREXT00300000000001 /* DeviceKey.swift */,
+				FLIPFREXT00400000000001 /* KeychainRef.swift */,
 				FLIPFREXTINFO00000000001 /* Info.plist */,
 				FLIPFREXTENT000000000001 /* MiriamMessages.entitlements */,
 			);
@@ -262,6 +265,7 @@
 				FLIPBFEXT001000000000001 /* MessagesViewController.swift in Sources */,
 				FLIPBFEXT002000000000001 /* ConfirmAPI.swift in Sources */,
 				FLIPBFEXT003000000000001 /* DeviceKey.swift in Sources */,
+				FLIPBFEXT004000000000001 /* KeychainRef.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

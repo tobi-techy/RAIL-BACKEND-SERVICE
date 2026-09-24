@@ -76,10 +76,13 @@ func (s *Service) SyncEnrollment(ctx context.Context, enrollmentID uuid.UUID) er
 	switch strings.ToLower(portfolio.Schedule.Status) {
 	case "paused", "stopped":
 		enrollment.Status = entities.InvestmentEnrollmentPaused
-	case "active":
+	case "active", "running":
+		// "running" is a provider alias for active seen in the wild; both
+		// mean automation is on.
 		enrollment.Status = entities.InvestmentEnrollmentActive
 	case "":
-		// The provider did not report a state; keep the locally known one.
+		// The provider did not report a state; keep the locally known one
+		// (never resurrect a paused enrollment on an empty field).
 	}
 	// A portfolio whose strategy version moved on is re-targeted by the provider
 	// itself; Rail records which version the portfolio now mirrors.
@@ -197,16 +200,18 @@ func (s *Service) settleExecution(ctx context.Context, executionID uuid.UUID, st
 	}
 	now := s.nowOr()
 	// Terminal provider states: completed | failed | cancelled. retrying and
-	// awaiting_user keep the execution in flight.
+	// awaiting_user keep the execution in flight. Adjacent spellings the
+	// provider has emitted are folded in so executions can't wedge in
+	// submitted/executing forever on an alias.
 	switch strings.ToLower(state.State) {
-	case "completed":
+	case "completed", "filled", "success", "succeeded", "settled":
 		execution.Status = entities.InvestmentExecutionFilled
 		execution.CompletedAt = &now
 		_ = s.recordEvent(ctx, execution.UserID, EventOrderFilled, entities.InvestmentActorWorker, map[string]any{
 			"order_id":     execution.ID.String(),
 			"operation_id": state.OperationID,
 		})
-	case "failed":
+	case "failed", "error":
 		execution.Status = entities.InvestmentExecutionFailed
 		execution.FailureCode = "provider_failed"
 		if state.Error != nil {
@@ -218,14 +223,14 @@ func (s *Service) settleExecution(ctx context.Context, executionID uuid.UUID, st
 			"operation_id": state.OperationID,
 			"reason":       execution.FailureReason,
 		})
-	case "cancelled":
+	case "cancelled", "canceled":
 		execution.Status = entities.InvestmentExecutionCancelled
 		execution.CompletedAt = &now
 		_ = s.recordEvent(ctx, execution.UserID, EventOrderCancelled, entities.InvestmentActorWorker, map[string]any{
 			"order_id":     execution.ID.String(),
 			"operation_id": state.OperationID,
 		})
-	case "running", "retrying", "awaiting_user":
+	case "running", "retrying", "awaiting_user", "executing", "processing":
 		execution.Status = entities.InvestmentExecutionExecuting
 	default:
 		execution.Status = entities.InvestmentExecutionSubmitted

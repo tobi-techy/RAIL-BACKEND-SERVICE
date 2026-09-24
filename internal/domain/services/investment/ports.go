@@ -339,3 +339,16 @@ func (s *Service) nowOr() time.Time {
 	}
 	return s.clock().UTC()
 }
+
+// signatureExpiry stamps signature-request rows with an explicit expiry
+// derived from ConfirmationTTL (default 15m). The provider type no longer
+// carries its own expires_at, so without this the column would be written
+// zero — and expiry sweeps could never distinguish live from dead requests.
+func (s *Service) signatureExpiry() *time.Time {
+	ttl := s.cfg.ConfirmationTTL
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	t := s.nowOr().Add(ttl)
+	return &t
+}

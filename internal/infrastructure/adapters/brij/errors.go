@@ -2,6 +2,7 @@ package brij
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -49,13 +50,26 @@ func (e *Error) IsConflictCode(code string) bool {
 func (e *Error) IsBadRequest() bool { return e.StatusCode == http.StatusBadRequest }
 
 // ErrorCode returns the BRIJ machine code of an *Error, or "" for any other
-// error. Use it to branch on provider state-machine codes without losing the
-// wrapped error chain.
+// error. It uses errors.As so wrapped errors (fmt %w) still classify — a
+// type assertion would silently disable the fare_menu_expired retry and the
+// intent_already_exists mapping the moment any caller wraps.
 func ErrorCode(err error) string {
-	if e, ok := err.(*Error); ok {
+	var e *Error
+	if errors.As(err, &e) {
 		return e.Code
 	}
 	return ""
+}
+
+// IsFaresPending reports whether err is the transient 202 fares_pending
+// (offer menu still being fetched): retry with backoff, don't fail the
+// booking — the drill fee is already spent.
+func IsFaresPending(err error) bool {
+	var pv *PaymentVerificationError
+	if errors.As(err, &pv) {
+		return pv.Code == "fares_pending"
+	}
+	return false
 }
 
 // IsRetryable reports whether the request may succeed on a retry (5xx + 429).

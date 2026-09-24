@@ -105,7 +105,7 @@ func TestSearchFlightsIsBounded(t *testing.T) {
 	}
 	svc := NewService(nil, client, Config{}, zap.NewNop())
 
-	offers, err := svc.SearchFlights(context.Background(), "los", "abv", "2026-12-01", 2)
+	offers, err := svc.SearchFlights(context.Background(), "los", "abv", "2026-12-01", 1)
 	if err != nil {
 		t.Fatalf("SearchFlights: %v", err)
 	}
@@ -118,8 +118,8 @@ func TestSearchFlightsIsBounded(t *testing.T) {
 	if sent["cheapest_per_itinerary"] != true {
 		t.Errorf("cheapest_per_itinerary = %v, want true", sent["cheapest_per_itinerary"])
 	}
-	if sent["adults"] != float64(2) {
-		t.Errorf("adults = %v, want 2", sent["adults"])
+	if sent["adults"] != float64(1) {
+		t.Errorf("adults = %v, want 1", sent["adults"])
 	}
 	if sent["origin_iata"] != "LOS" {
 		t.Errorf("origin_iata = %v, want LOS (uppercased)", sent["origin_iata"])
@@ -150,5 +150,27 @@ func TestSearchFlightsDefaultsAdults(t *testing.T) {
 	}
 	if sent["adults"] != float64(1) {
 		t.Errorf("adults = %v, want 1", sent["adults"])
+	}
+}
+
+// TestSearchFlightsRejectsMultiPassenger verifies the pre-paid guard: 2+
+// adults must fail before any x402-paid OfferDetails/intent call, since
+// BookFlight can never fulfill a multi-passenger intent.
+func TestSearchFlightsRejectsMultiPassenger(t *testing.T) {
+	var sent map[string]interface{}
+	srv := travelSearchServer(t, &sent)
+	defer srv.Close()
+
+	priv, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatalf("keypair: %v", err)
+	}
+	client, err := brij.NewClient(brij.Config{BaseURL: srv.URL, FundingPrivateKey: priv.String()}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	svc := NewService(nil, client, Config{}, zap.NewNop())
+	if _, err := svc.SearchFlights(context.Background(), "LOS", "ABV", "2026-12-01", 2); err == nil {
+		t.Fatal("expected multi-passenger rejection, got nil")
 	}
 }

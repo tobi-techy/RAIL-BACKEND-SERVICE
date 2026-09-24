@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -339,13 +340,32 @@ type IntentStatus struct {
 // Used when only the numeric ID is known (e.g. parsed out of a transfer
 // reference like "circle-cr:<tx>:<id>").
 func (c *Client) GetIntentByID(ctx context.Context, intentID int) (*IntentStatus, error) {
-	url := fmt.Sprintf("%s/intents/%d", c.config.BaseURL, intentID)
-	return c.getIntent(ctx, url)
+	intentURL := fmt.Sprintf("%s/intents/%d", c.config.BaseURL, intentID)
+	return c.getIntent(ctx, intentURL)
 }
 
 func (c *Client) GetIntentStatus(ctx context.Context, intentAddress string) (*IntentStatus, error) {
-	url := fmt.Sprintf("%s/intents/address/%s", c.config.BaseURL, url.PathEscape(intentAddress))
-	return c.getIntent(ctx, url)
+	intentURL := fmt.Sprintf("%s/intents/address/%s", c.config.BaseURL, url.PathEscape(intentAddress))
+	status, err := c.getIntent(ctx, intentURL)
+	if err == nil {
+		return status, nil
+	}
+	// Route fallback: if the address route 404s (docs vs prod mismatch),
+	// retry the legacy by-ID-shaped route once before giving up — every
+	// poll site (withdrawals, sweeps, autosweep, stuck-funds) depends on
+	// observing a terminal state, and a hard 404 would stall them all.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		legacy := fmt.Sprintf("%s/intents/%s", c.config.BaseURL, url.PathEscape(intentAddress))
+		if legacyStatus, lerr := c.getIntent(ctx, legacy); lerr == nil {
+			if c.logger != nil {
+				c.logger.Warn("chainrails address route 404, legacy route answered (verify docs)",
+					zap.String("address", intentAddress))
+			}
+			return legacyStatus, nil
+		}
+	}
+	return nil, err
 }
 
 // TriggerIntentProcessing manually kicks a funded-but-unstarted intent.
@@ -353,9 +373,12 @@ func (c *Client) GetIntentStatus(ctx context.Context, intentAddress string) (*In
 // misses the funding event — and it is mandatory on testnets, which have no
 // indexing support at all.
 func (c *Client) TriggerIntentProcessing(ctx context.Context, intentAddress string) error {
-	url := fmt.Sprintf("%s/intents/%s/trigger-processing", c.config.BaseURL, url.PathEscape(intentAddress))
+	if c == nil || c.httpClient == nil {
+		return fmt.Errorf("chainrails trigger-processing skipped: nil client")
+	}
+	intentURL := fmt.Sprintf("%s/intents/%s/trigger-processing", c.config.BaseURL, url.PathEscape(intentAddress))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, intentURL, nil)
 	if err != nil {
 		return err
 	}
@@ -384,9 +407,9 @@ type RefundIntentResult struct {
 // RefundExpiredIntent manually refunds an expired intent — the documented
 // escape hatch for recovering stuck funds when automation fails.
 func (c *Client) RefundExpiredIntent(ctx context.Context, intentAddress string) (*RefundIntentResult, error) {
-	url := fmt.Sprintf("%s/intents/%s/refund", c.config.BaseURL, url.PathEscape(intentAddress))
+	intentURL := fmt.Sprintf("%s/intents/%s/refund", c.config.BaseURL, url.PathEscape(intentAddress))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, intentURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -409,11 +432,19 @@ func (c *Client) RefundExpiredIntent(ctx context.Context, intentAddress string) 
 	return &result, nil
 }
 
-// IsTestnetChain reports whether a ChainRails chain name targets a testnet.
+// IsTestnetChain reports whether a chain name targets a testnet.
 // Testnet intents have no indexer support and must be trigger-processed
-// after funding (see TriggerIntentProcessing).
+// after funding (see TriggerIntentProcessing). Matches the full vocabulary
+// callers may pass: ChainRails names (BASE_TESTNET) and Circle-style names
+// (BASE-SEPOLIA) from the Blend path, plus AMOY/FUJI/DEVNET families.
 func IsTestnetChain(chain string) bool {
-	return strings.Contains(strings.ToUpper(chain), "TESTNET")
+	up := strings.ToUpper(chain)
+	for _, marker := range []string{"TESTNET", "SEPOLIA", "AMOY", "FUJI", "DEVNET"} {
+		if strings.Contains(up, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) getIntent(ctx context.Context, url string) (*IntentStatus, error) {

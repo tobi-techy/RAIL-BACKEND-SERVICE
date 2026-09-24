@@ -365,6 +365,11 @@ func (app *Application) initializeWorkers() error {
 		} else {
 			app.log.Warn("RampHub offramp recovery: no Circle adapter — reconciliation of post-transfer stuck orders disabled")
 		}
+		if app.container.ChainRailsClient != nil {
+			app.ramphubOfframpRecoveryWorker.SetChainRailsStatusChecker(&ramphubOfframpChainRailsStatusAdapter{client: app.container.ChainRailsClient})
+		} else {
+			app.log.Warn("RampHub offramp recovery: no ChainRails client — circle-cr bridged orders left for webhook/manual review")
+		}
 		go app.ramphubOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("RampHub offramp recovery worker started")
 	}
@@ -1842,6 +1847,35 @@ func (a *ramphubOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.
 		return ramphub_offramp_recovery.CircleTransferFailed, nil
 	default:
 		return ramphub_offramp_recovery.CircleTransferPending, nil
+	}
+}
+
+// ramphubOfframpChainRailsStatusAdapter translates a ChainRails intent state
+// into the RampHub recovery worker's ChainRailsIntentStatus enum, so
+// circle-cr bridged offramps resolve instead of stalling when the webhook
+// never lands. Uses the numeric-ID lookup (GET /intents/{id}).
+type ramphubOfframpChainRailsStatusAdapter struct {
+	client *chainrails.Client
+}
+
+func (a *ramphubOfframpChainRailsStatusAdapter) GetChainRailsIntentStatus(ctx context.Context, intentID int) (ramphub_offramp_recovery.ChainRailsIntentStatus, error) {
+	if a.client == nil {
+		return ramphub_offramp_recovery.ChainRailsIntentUnknown, nil
+	}
+	st, err := a.client.GetIntentByID(ctx, intentID)
+	if err != nil {
+		return ramphub_offramp_recovery.ChainRailsIntentUnknown, err
+	}
+	if st == nil {
+		return ramphub_offramp_recovery.ChainRailsIntentUnknown, nil
+	}
+	switch {
+	case chainrails.IsTerminalSuccess(st.Status):
+		return ramphub_offramp_recovery.ChainRailsIntentComplete, nil
+	case chainrails.IsTerminalFailure(st.Status):
+		return ramphub_offramp_recovery.ChainRailsIntentFailed, nil
+	default:
+		return ramphub_offramp_recovery.ChainRailsIntentPending, nil
 	}
 }
 

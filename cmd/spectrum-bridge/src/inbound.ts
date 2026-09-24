@@ -331,6 +331,8 @@ export async function routeInboundContent(
 ): Promise<void> {
   const { postToBackend, debouncer, log } = deps;
 
+  // The 8.2.1 SDK's Content union has no group-lifecycle members
+  // (addMember/removeMember/leaveSpace arrive as provider extensions).
   switch (content.type) {
     case "reply": {
       const next: InboundExtras = { ...extras, reply_to: content.target.id };
@@ -715,31 +717,12 @@ export async function routeInboundContent(
 
     // Group/membership lifecycle: the actor rides in `sender`, members in
     // `content.members`. Forwarded so the backend sees joins/leaves/renames
-    // instead of the conversation silently changing shape.
-    case "addMember":
-    case "removeMember":
-    case "leaveSpace":
+    // instead of the conversation silently changing shape. addMember /
+    // removeMember / leaveSpace are not in the 8.2.1 Content union (provider
+    // extensions) — they arrive via default below and share forwardGroupEvent.
     case "rename":
     case "avatar": {
-      await debouncer.flush(ctx.threadID);
-      const members =
-        (content as { members?: string[] }).members ??
-        ((content as { displayName?: string }).displayName
-          ? [(content as { displayName?: string }).displayName as string]
-          : undefined);
-      const inbound: InboundPayload = {
-        ...basePayload(ctx, message.id),
-        ...extras,
-        is_group_event: true,
-        group_event: content.type,
-        group_members: members,
-        text: "",
-      };
-      await postToBackend(INBOUND_PATH, inbound);
-      log.info(
-        { sender: ctx.senderId, thread: ctx.threadID, type: content.type },
-        "accepted inbound group event",
-      );
+      await forwardGroupEvent(content.type);
       return;
     }
 
@@ -809,8 +792,36 @@ export async function routeInboundContent(
 
     default: {
       const type = (content as { type?: string })?.type;
+      // Provider-extension group lifecycle (not in the 8.2.1 union):
+      // forward exactly like rename/avatar instead of dropping.
+      if (type === "addMember" || type === "removeMember" || type === "leaveSpace") {
+        await forwardGroupEvent(type);
+        return;
+      }
       log.warn({ type }, "unhandled inbound content type");
       return;
     }
+  }
+
+  async function forwardGroupEvent(event: string): Promise<void> {
+    await debouncer.flush(ctx.threadID);
+    const members =
+      (content as { members?: string[] }).members ??
+      ((content as { displayName?: string }).displayName
+        ? [(content as { displayName?: string }).displayName as string]
+        : undefined);
+    const inbound: InboundPayload = {
+      ...basePayload(ctx, message.id),
+      ...extras,
+      is_group_event: true,
+      group_event: event,
+      group_members: members,
+      text: "",
+    };
+    await postToBackend(INBOUND_PATH, inbound);
+    log.info(
+      { sender: ctx.senderId, thread: ctx.threadID, type: event },
+      "accepted inbound group event",
+    );
   }
 }

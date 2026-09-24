@@ -20,14 +20,29 @@ type IntentTriggerer interface {
 // addresses, or nil triggerers; failures only log (the intent may still be
 // picked up, and callers must not fail a funded transfer over this).
 func MaybeTriggerTestnetProcessing(ctx context.Context, t IntentTriggerer, sourceChain, intentAddress string, logger *zap.Logger) {
+	// Nil-interface check is not enough: a typed-nil *Client wrapped in the
+	// interface is non-nil here but panics on use. Guard via a nil-receiver
+	// check on the concrete type before calling through.
 	if t == nil || !IsTestnetChain(sourceChain) || strings.TrimSpace(intentAddress) == "" {
 		return
 	}
+	if c, ok := t.(*Client); ok && (c == nil || c.httpClient == nil) {
+		if logger != nil {
+			logger.Warn("chainrails testnet trigger skipped: nil client (fail-open, intent may stall until expiry)")
+		}
+		return
+	}
 	if err := t.TriggerIntentProcessing(ctx, intentAddress); err != nil {
+		if logger == nil {
+			return
+		}
 		logger.Warn("chainrails testnet trigger-processing failed (intent may stall until expiry)",
 			zap.String("source_chain", sourceChain),
 			zap.String("intent_address", intentAddress),
 			zap.Error(err))
+		return
+	}
+	if logger == nil {
 		return
 	}
 	logger.Info("chainrails testnet intent processing triggered",

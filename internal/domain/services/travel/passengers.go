@@ -79,6 +79,9 @@ func (p TravelPassenger) HasFlightDetails() (bool, []string) {
 // profiles carry sex as "Male"/"Female" and dob as MM/DD/YYYY; BRIJ accepts only
 // m|f and YYYY-MM-DD, so both are converted here (see brijGender and isoBornOn).
 // Passport fields ride along: browser-tier fares require them at book time.
+// Nationality falls back to passport_country: HasFlightDetails accepts either,
+// so a profile with only passport_country must still produce a bookable
+// passenger instead of failing validateTravelDocument at book time.
 func (p TravelPassenger) ToFlightPassenger() brij.PassengerInput {
 	return brij.PassengerInput{
 		GivenName:      strings.TrimSpace(p.FirstName),
@@ -88,7 +91,7 @@ func (p TravelPassenger) ToFlightPassenger() brij.PassengerInput {
 		Gender:         brijGender(p.Sex),
 		Email:          strings.TrimSpace(p.Email),
 		PhoneNumber:    strings.TrimSpace(p.Phone),
-		Nationality:    strings.TrimSpace(p.Nationality),
+		Nationality:    firstNonEmpty(strings.TrimSpace(p.Nationality), strings.TrimSpace(p.PassportCountry)),
 		PassportNumber: strings.TrimSpace(p.PassportNumber),
 		PassportExpiry: isoDate(p.PassportExpiry),
 	}

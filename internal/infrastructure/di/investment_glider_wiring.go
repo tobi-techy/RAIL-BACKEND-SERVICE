@@ -130,10 +130,13 @@ var requiredGliderScopes = []string{
 }
 
 // verifyGliderCredentials proves the configured API key is valid and reports
-// missing scopes. Authentication failures (401/403) abort startup: a key that
-// cannot authenticate would turn every user action into a provider error.
-// Missing scopes are logged loudly but do not block boot, since scope tiers
-// are provisioned out-of-band and a tier upgrade should not require a redeploy.
+// missing scopes. It NEVER aborts boot: Glider is one provider behind a
+// multi-product API, and a rotated key, tier mismatch, or Glider outage must
+// degrade investments (provider errors on investment calls, visible in
+// health/readiness) — never brick health checks, funding, chat, and
+// everything else sharing this binary. Missing scopes are logged loudly but
+// do not block boot, since scope tiers are provisioned out-of-band and a
+// tier upgrade should not require a redeploy.
 func (c *Container) verifyGliderCredentials(provider investmentsvc.Provider) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -142,7 +145,9 @@ func (c *Container) verifyGliderCredentials(provider investmentsvc.Provider) err
 	if err != nil {
 		var apiErr *glider.APIError
 		if errors.As(err, &apiErr) && (apiErr.IsUnauthorized() || apiErr.IsForbidden()) {
-			return fmt.Errorf("investment: glider api key rejected (%v)", err)
+			c.ZapLog.Error("investment: glider api key rejected at boot — investment calls will fail until the key is rotated (server keeps running)",
+				zap.Error(err))
+			return nil
 		}
 		c.ZapLog.Warn("investment: could not verify glider credentials at boot",
 			zap.Error(err))

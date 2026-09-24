@@ -82,6 +82,14 @@ func (h *Handler) Create(c *gin.Context) {
 		UserID: uid, Action: action, Payload: req.Payload,
 		Title: req.Title, Subtitle: req.Subtitle,
 	}
+	// Trust boundary: a JWT-authed app caller must never mint a Miriam
+	// challenge binding. miriam_confirm_id routes the card through the
+	// Miriam settle executor (RouteByMiriamConfirm); it is set server-side
+	// for Miriam-originated cards only. Strip it here so app cards always
+	// take their direct executor.
+	if in.Payload != nil {
+		delete(in.Payload, svc.MiriamConfirmPayloadKey)
+	}
 	if req.TTLSecond > 0 {
 		in.TTL = time.Duration(req.TTLSecond) * time.Second
 	}

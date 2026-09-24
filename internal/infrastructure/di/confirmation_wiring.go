@@ -51,10 +51,22 @@ const errConfirmationNoAutomation = confirmationSvcError("automation service not
 // in-place edits).
 func (c *Container) initializeConfirmationServices() {
 	cfg := c.Config.Confirmation
+	if !cfg.Enabled {
+		c.ZapLog.Info("confirmation cards disabled by config (CONFIRMATION_ENABLED=false)")
+		return
+	}
 	if cfg.TokenSecret == "" {
 		// Fail closed: without a signing secret no cards are staged and the
 		// endpoints report misconfiguration instead of minting unsigned URLs.
 		c.ZapLog.Warn("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET not set (fail-closed)")
+		return
+	}
+	if len(cfg.TokenSecret) < 32 {
+		c.ZapLog.Error("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET must be >=32 chars (fail-closed)")
+		return
+	}
+	if cfg.RailServiceKey != "" && len(cfg.RailServiceKey) < 32 {
+		c.ZapLog.Error("confirmation cards disabled: RAIL_SERVICE_KEY must be >=32 chars when set (fail-closed)")
 		return
 	}
 	base := strings.TrimSpace(cfg.BaseURL)
@@ -70,6 +82,12 @@ func (c *Container) initializeConfirmationServices() {
 		ConfirmBase: base,
 		TTL:         ttl,
 	}, nil, c.Logger)
+	// Postgres-backed device keys so restarts/replicas don't silently drop
+	// enrollment and fall back to token-only approves. Nil DB (tests) keeps
+	// the in-memory store.
+	if c.DB != nil {
+		svc.SetDeviceStore(confirmationSvc.NewPostgresDeviceStore(c.DB))
+	}
 
 	// Same card, different payloads: each action keeps its own backend handler.
 	// Cards minted by Miriam for one of its challenges carry

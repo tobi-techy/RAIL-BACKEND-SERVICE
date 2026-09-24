@@ -2435,6 +2435,13 @@ func validateChainPair(sourceChain, destChain string) error {
 	src := strings.ToUpper(sourceChain)
 	dst := strings.ToUpper(destChain)
 
+	// MATIC-AMOY has no ChainRails mapping (no POLYGON_TESTNET chain exists)
+	// and no Bridge rail: it passes generic chain checks but fails late at
+	// execution after funds are staged. Reject upfront with a clear message.
+	if src == "MATIC-AMOY" || dst == "MATIC-AMOY" {
+		return fmt.Errorf("MATIC-AMOY is not supported for withdrawals (no testnet rail exists) — use another chain")
+	}
+
 	if !SupportedChains[src] {
 		return fmt.Errorf("unsupported source chain: %s", sourceChain)
 	}
@@ -2553,7 +2560,11 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 	// Step 2: Map source blockchain to ChainRails
 	sourceChainRails, ok := circleChainToChainRails[blockchain]
 	if !ok {
-		return nil, fmt.Errorf("unsupported source chain for ChainRails: %s", blockchain)
+		// Fail fast with a routable message: the wallet's actual chain (not
+		// the requested one) has no ChainRails mapping. This runs before any
+		// intent creation or fund movement, so no hold needs reversing here —
+		// the caller treats it as a validation-class failure.
+		return nil, fmt.Errorf("unsupported wallet chain for ChainRails: %s (use another chain)", blockchain)
 	}
 
 	// Step 3: Map destination chain — match testnet/mainnet to source

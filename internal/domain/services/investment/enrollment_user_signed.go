@@ -245,6 +245,7 @@ func (s *Service) PrepareUserEnrollment(
 			ProviderFlowID: authorization.FlowID,
 			Payload:        roundTrip,
 			Status:         "prepared",
+			ExpiresAt:      s.signatureExpiry(),
 			CreatedAt:      s.nowOr(),
 			UpdatedAt:      s.nowOr(),
 		})

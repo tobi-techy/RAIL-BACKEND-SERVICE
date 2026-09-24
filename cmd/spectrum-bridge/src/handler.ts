@@ -402,7 +402,9 @@ export class MessageHandler {
    * Live confirmation cards (Face ID money actions). Initial sends render ONE
    * live mini-app card and record its handle by action_id; edits mutate that
    * same card in place — never a second bubble. Non-iMessage platforms get a
-   * text fallback with the confirm URL (the Face ID extension is iMessage-only).
+   * fetch-only notice WITHOUT the signed URL: the ?t= token is a bearer
+   * credential, and plaintext transcripts/logs must never carry it. The user
+   * opens the card on their iPhone (which holds the signed link) to approve.
    */
   private async handleConfirmationCard(space: Space, msg: OutboundMessage, isEdit: boolean): Promise<void> {
     const card = msg.confirmation_card;
@@ -411,7 +413,7 @@ export class MessageHandler {
       return;
     }
     if (msg.platform !== "imessage") {
-      const fallback = `${card.title}${card.subtitle ? `\n${card.subtitle}` : ""}\nApprove: ${card.confirm_url}`;
+      const fallback = `${card.title}${card.subtitle ? `\n${card.subtitle}` : ""}\nOpen on your iPhone to review and approve.`;
       await this.sendWithPacing(space, fallback, "text");
       return;
     }

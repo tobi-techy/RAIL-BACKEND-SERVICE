@@ -256,6 +256,7 @@ func (s *Service) enrollWithProvider(
 		Flow:           "enroll",
 		ProviderFlowID: authorization.FlowID,
 		Status:         "prepared",
+		ExpiresAt:      s.signatureExpiry(),
 		CreatedAt:      s.nowOr(),
 		UpdatedAt:      s.nowOr(),
 	}
