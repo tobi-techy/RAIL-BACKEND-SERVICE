@@ -18,6 +18,10 @@ export interface QueuedMessage {
   expiresAt: number;
   category: MessageCategory;
   createdAt: number;
+  /** Stable idempotency key across retries (best-practices/recovery-and-state).
+   *  Assigned at enqueue when the producer didn't supply one, so a crash
+   *  between provider-ack and bookkeeping still dedups on retry. */
+  clientGuid: string;
 }
 
 export interface QueueStats {
@@ -87,6 +91,15 @@ export class PersistentOutboundQueue {
           dropped++;
           continue;
         }
+        // Backfill pre-guid records so old queue files stay loadable.
+        if (!rec.clientGuid) {
+          rec.clientGuid =
+            typeof (rec.msg as { client_guid?: unknown }).client_guid === "string" &&
+            (((rec.msg as { client_guid?: string }).client_guid as string).length > 0)
+              ? ((rec.msg as { client_guid?: string }).client_guid as string)
+              : rec.id;
+          (rec.msg as { client_guid?: string }).client_guid = rec.clientGuid;
+        }
         this.records.set(rec.id, rec);
       }
       log.info({ count: this.records.size, dropped }, "loaded outbound queue from disk");
@@ -97,9 +110,11 @@ export class PersistentOutboundQueue {
   }
 
   /**
-   * Enqueue a message for later delivery. Returns the queued message id.
+   * Enqueue a message for later delivery. `notBefore` (epoch ms) floors the
+   * first attempt — used for backend-scheduled delivery via `send_after`.
+   * Returns the queued message id.
    */
-  enqueue(msg: OutboundMessage, category: MessageCategory = "normal"): string {
+  enqueue(msg: OutboundMessage, category: MessageCategory = "normal", opts?: { notBefore?: number }): string {
     if (!isValidOutboundMessage(msg)) {
       log.warn({ msg }, "refusing to enqueue invalid outbound message");
       return "";
@@ -122,15 +137,24 @@ export class PersistentOutboundQueue {
     const id = randomUUID();
     const now = Date.now();
     const ttl = category === "critical" ? this.opts.criticalTtlMs : this.opts.normalTtlMs;
+    // Stable client GUID: prefer the producer's (retry of the same logical
+    // send reuses it), else mint one so queue-level retries stay idempotent.
+    const clientGuid =
+      typeof (msg as { client_guid?: unknown }).client_guid === "string" &&
+      ((msg as { client_guid?: string }).client_guid as string).length > 0
+        ? ((msg as { client_guid?: string }).client_guid as string)
+        : randomUUID();
+    (msg as { client_guid?: string }).client_guid = clientGuid;
     const rec: QueuedMessage = {
       id,
       threadId: msg.thread_id,
       msg,
       attempts: 0,
-      nextRetryAt: now + this.opts.baseDelayMs,
+      nextRetryAt: Math.max(now + this.opts.baseDelayMs, opts?.notBefore ?? 0),
       expiresAt: now + ttl,
       category,
       createdAt: now,
+      clientGuid,
     };
     this.records.set(id, rec);
     this.dirty = true;
@@ -154,8 +178,17 @@ export class PersistentOutboundQueue {
 
   /**
    * Return messages that are ready for a delivery attempt, in insertion order.
+   * Expired messages are dropped as a side effect — they can also expire while
+   * waiting on a cold space, where no recordAttempt() would ever reap them.
    */
   getReady(now = Date.now()): QueuedMessage[] {
+    for (const [id, rec] of this.records) {
+      if (rec.expiresAt <= now) {
+        this.records.delete(id);
+        this.dirty = true;
+        log.info({ id, thread_id: rec.threadId, category: rec.category }, "message expired");
+      }
+    }
     return Array.from(this.records.values())
       .filter((r) => r.nextRetryAt <= now)
       .sort((a, b) => a.createdAt - b.createdAt);
@@ -195,6 +228,30 @@ export class PersistentOutboundQueue {
     rec.nextRetryAt = now + Math.min(delay, 300_000); // cap at 5 minutes
     this.dirty = true;
     return rec;
+  }
+
+  /**
+   * Push the next attempt out WITHOUT consuming the retry budget. Used when a
+   * send fails for a reason a retry cannot fix — a cold space handle. Burning
+   * attempts on that condition used to drop messages ~1 minute after a restart
+   * even though their TTL (4h normal / 24h critical) was designed to carry
+   * them until the space rehydrates or the user texts.
+   *
+   * Returns true if the message is still queued, false if it had already
+   * expired (in which case it is dropped here).
+   */
+  defer(id: string, delayMs: number, now = Date.now()): boolean {
+    const rec = this.records.get(id);
+    if (!rec) return false;
+    if (rec.expiresAt <= now) {
+      this.records.delete(id);
+      this.dirty = true;
+      log.info({ id, thread_id: rec.threadId, category: rec.category }, "message expired");
+      return false;
+    }
+    rec.nextRetryAt = now + delayMs;
+    this.dirty = true;
+    return true;
   }
 
   /**

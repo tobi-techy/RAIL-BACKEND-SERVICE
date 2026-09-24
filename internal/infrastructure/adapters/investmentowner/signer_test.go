@@ -146,11 +146,22 @@ type fakeTransactionSigner struct {
 	signed *circle.SignedTransaction
 	err    error
 	calls  int
+
+	message      string
+	messageSig   string
+	messageErr   error
+	messageCalls int
 }
 
 func (f *fakeTransactionSigner) SignTransaction(_ context.Context, _, _, _ string) (*circle.SignedTransaction, error) {
 	f.calls++
 	return f.signed, f.err
+}
+
+func (f *fakeTransactionSigner) SignMessage(_ context.Context, _, message string) (string, error) {
+	f.messageCalls++
+	f.message = message
+	return f.messageSig, f.messageErr
 }
 
 func TestCircleSignerUsesTheUsersWalletAsOwner(t *testing.T) {
@@ -167,18 +178,41 @@ func TestCircleSignerUsesTheUsersWalletAsOwner(t *testing.T) {
 	assert.Equal(t, "solana:localnet:7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2", account)
 }
 
-func TestCircleSignerRejectsMessageSigning(t *testing.T) {
+func TestCircleSignerSignsMessagesWithTheCustodyWallet(t *testing.T) {
 	userID := uuid.New()
 	wallets := &fakeWalletLookup{wallet: &entities.ManagedWallet{
 		UserID: userID, Chain: entities.WalletChainSolana, Address: "addr", CircleWalletID: "wallet-1",
 	}}
-	transactions := &fakeTransactionSigner{}
+	transactions := &fakeTransactionSigner{messageSig: "3W6r38STvZuBSmk2bbbct132SjEsYSARo3CJi3JQvNUaFoYu"}
 	signer, err := NewCircleSigner(wallets, transactions, "solana:localnet", entities.WalletChainSolana)
 	require.NoError(t, err)
 
+	signed, err := signer.SignSolanaMessage(context.Background(), userID, "withdraw authorization text")
+	require.NoError(t, err)
+	assert.Equal(t, "3W6r38STvZuBSmk2bbbct132SjEsYSARo3CJi3JQvNUaFoYu", signed)
+	assert.Equal(t, 1, transactions.messageCalls)
+	assert.Equal(t, "withdraw authorization text", transactions.message, "the exact stage-1 text must reach the custody provider")
+}
+
+func TestCircleSignerRejectsEmptyAndSurfacesSigningErrors(t *testing.T) {
+	userID := uuid.New()
+	wallets := &fakeWalletLookup{wallet: &entities.ManagedWallet{
+		UserID: userID, Chain: entities.WalletChainSolana, Address: "addr", CircleWalletID: "wallet-1",
+	}}
+	signer, err := NewCircleSigner(wallets, &fakeTransactionSigner{}, "solana:localnet", entities.WalletChainSolana)
+	require.NoError(t, err)
+
+	_, err = signer.SignSolanaMessage(context.Background(), userID, "   ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nothing to sign")
+
+	// A custody-side signing failure surfaces verbatim: callers must show the
+	// real reason, never fall back to some other key the smart account rejects.
+	failing := &fakeTransactionSigner{messageErr: ErrMessageSigningUnsupported}
+	signer, err = NewCircleSigner(wallets, failing, "solana:localnet", entities.WalletChainSolana)
+	require.NoError(t, err)
 	_, err = signer.SignSolanaMessage(context.Background(), userID, "withdraw:100")
 	require.ErrorIs(t, err, ErrMessageSigningUnsupported)
-	assert.Zero(t, transactions.calls, "message signing must not fall back to a transaction")
 }
 
 func TestCircleSignerPrefersSignedTransaction(t *testing.T) {

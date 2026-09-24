@@ -520,6 +520,25 @@ func (c *HTTPClient) SignTransaction(ctx context.Context, req *SignTransactionRe
 	}, nil
 }
 
+// SignMessage signs a plain-text (or 0x-hex when EncodedByHex is set) message
+// with a developer-controlled wallet. Solana wallets return a base58 Ed25519
+// signature over the message's UTF-8 bytes.
+func (c *HTTPClient) SignMessage(ctx context.Context, req *SignMessageRequest) (*SignMessageData, error) {
+	ciphertext, err := c.encryptEntitySecret()
+	if err != nil {
+		return nil, err
+	}
+
+	outReq := *req
+	outReq.EntitySecretCiphertext = ciphertext
+
+	var resp apiResponse[SignMessageData]
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/w3s/developer/sign/message", outReq, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Data, nil
+}
+
 func (c *HTTPClient) EstimateTransferFee(ctx context.Context, req *EstimateFeeRequest) (*FeeEstimate, error) {
 	var resp apiResponse[FeeEstimate]
 	if err := c.doRequest(ctx, http.MethodPost, "/v1/w3s/developer/transactions/transfer/estimateFee", req, &resp); err != nil {

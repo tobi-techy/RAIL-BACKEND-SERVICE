@@ -24,10 +24,13 @@ type GliderSwapPreferences struct {
 }
 
 // GliderSchedule is the provider's rebalance schedule. Runtime visibility
-// (nextDueAt/lastRebalanceAt) only appears on a portfolio, not a strategy.
+// (nextDueAt/lastRebalanceAt) only appears on a portfolio, not a strategy. The
+// portfolio-level Status is the provider's automation state: "active" (the
+// scheduler ticks) or "paused" (the integrator stopped automation).
 type GliderSchedule struct {
 	Type            string     `json:"type,omitempty"`
 	Frequency       string     `json:"frequency,omitempty"`
+	Status          string     `json:"status,omitempty"`
 	NextDueAt       *time.Time `json:"nextDueAt,omitempty"`
 	LastRebalanceAt *time.Time `json:"lastRebalanceAt,omitempty"`
 }
@@ -102,7 +105,10 @@ type GliderSwapPreferenceView struct {
 	ThresholdUSD   *decimal.Decimal `json:"thresholdUsd"`
 }
 
-// GliderStrategyInput is a create-strategy or publish-version request body.
+// GliderStrategyInput is a create-strategy request body. The provider accepts
+// name, allocation, schedule, preferences and isPublic here. Version publishing
+// uses GliderPublishVersionInput instead: POST /strategies/{id}/versions accepts
+// ONLY allocation and changeLog and rejects any other key with 400.
 type GliderStrategyInput struct {
 	Name        string                 `json:"name,omitempty"`
 	Description *string                `json:"description,omitempty"`
@@ -110,6 +116,22 @@ type GliderStrategyInput struct {
 	Schedule    *GliderSchedule        `json:"schedule,omitempty"`
 	Preferences *GliderPreferencesWire `json:"preferences,omitempty"`
 	IsPublic    *bool                  `json:"isPublic,omitempty"`
+}
+
+// GliderPublishVersionInput is the publish-version request body. The endpoint
+// is strict: unknown keys (including name, schedule, preferences or a
+// client-supplied version) return 400.
+type GliderPublishVersionInput struct {
+	Allocation GliderAllocation `json:"allocation"`
+	ChangeLog  string           `json:"changeLog,omitempty"` // max 500 chars
+}
+
+// GliderPublishedVersion is the publish-version response: the server-assigned
+// version number that just became the strategy's active version.
+type GliderPublishedVersion struct {
+	Version   int        `json:"version"`
+	IsHead    bool       `json:"isHead,omitempty"`
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
 }
 
 // GliderPreferencesWire matches the provider's request shape: the swap
@@ -125,18 +147,21 @@ type GliderSmartAccount struct {
 	SwigRoleID       *int   `json:"swigRoleId,omitempty"`
 }
 
-// GliderPortfolio is one enrolled user portfolio.
+// GliderPortfolio is one enrolled user portfolio. The real GET /portfolios/{id}
+// response has no top-level status, accountType or totalValueUsd: automation
+// state lives at Schedule.Status and live balances at the positions endpoint.
 type GliderPortfolio struct {
-	PortfolioID     string               `json:"portfolioId"`
-	StrategyID      string               `json:"strategyId,omitempty"`
-	StrategyVersion int                  `json:"strategyVersion,omitempty"`
-	Status          string               `json:"status,omitempty"`
-	AccountType     string               `json:"accountType,omitempty"`
-	SmartAccounts   []GliderSmartAccount `json:"smartAccounts,omitempty"`
-	Schedule        GliderSchedule       `json:"schedule,omitempty"`
-	TotalValueUSD   *decimal.Decimal     `json:"totalValueUsd,omitempty"`
-	CreatedAt       *time.Time           `json:"createdAt,omitempty"`
-	UpdatedAt       *time.Time           `json:"updatedAt,omitempty"`
+	PortfolioID         string               `json:"portfolioId"`
+	PortfolioName       string               `json:"portfolioName,omitempty"`
+	OwnerAccountID      string               `json:"ownerAccountId,omitempty"`
+	StrategyID          string               `json:"strategyId,omitempty"`
+	StrategyName        string               `json:"strategyName,omitempty"`
+	StrategyDescription string               `json:"strategyDescription,omitempty"`
+	StrategyVersion     int                  `json:"strategyVersion,omitempty"`
+	SmartAccounts       []GliderSmartAccount `json:"smartAccounts,omitempty"`
+	Schedule            GliderSchedule       `json:"schedule,omitempty"`
+	CreatedAt           *time.Time           `json:"createdAt,omitempty"`
+	UpdatedAt           *time.Time           `json:"updatedAt,omitempty"`
 }
 
 // GliderPosition is one live asset position inside a portfolio.
@@ -156,8 +181,17 @@ type GliderPositions struct {
 	PortfolioID   string           `json:"portfolioId"`
 	TotalValueUSD decimal.Decimal  `json:"totalValueUsd"`
 	Assets        []GliderPosition `json:"assets"`
-	Warnings      []string         `json:"warnings,omitempty"`
+	FetchedAt     *time.Time       `json:"fetchedAt,omitempty"`
+	Warnings      []GliderWarning  `json:"warnings,omitempty"`
 	AsOf          time.Time        `json:"-"`
+}
+
+// GliderWarning is one entry of the positions endpoint's structured warnings
+// array. The provider surfaces partial failures here (RPC_ERROR,
+// MISSING_PRICE, IN_TRANSIT_READ_FAILED, ...) instead of failing the request.
+type GliderWarning struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message,omitempty"`
 }
 
 // GliderOperationHandle is the provider's async operation handle.
@@ -178,14 +212,16 @@ type GliderOperationState struct {
 	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
 }
 
-// GliderAuthorization is the off-chain authorization a Solana portfolio owner
-// signs: kind "ecdsa" (EVM-rooted, sign raw via EIP-191) or "solana-message"
-// (Solana-rooted, sign text via ed25519).
+// GliderAuthorization is the stage-1 authorization union returned by the
+// withdraw flow: "ecdsa" (EVM / Solana Model A — sign Raw via EIP-191) or
+// "solana-message" (Solana Model B — sign Text verbatim as UTF-8 via ed25519).
+// Message carries the provider's structured signed-message object verbatim; it
+// is what stage 2 echoes back as its "message" field.
 type GliderAuthorization struct {
-	Kind    string `json:"kind,omitempty"`
-	Raw     string `json:"raw,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Message string `json:"message,omitempty"`
+	Kind    string          `json:"kind,omitempty"`
+	Raw     string          `json:"raw,omitempty"`
+	Text    string          `json:"text,omitempty"`
+	Message json.RawMessage `json:"message,omitempty"`
 }
 
 // GliderEnrollMessage is the provider's stage-1 signable message object
@@ -196,23 +232,23 @@ type GliderEnrollMessage struct {
 	Text string `json:"text,omitempty"`
 }
 
-// GliderEnrollAuthorization is stage 1 of the two-stage enroll flow.
+// GliderEnrollAuthorization is stage 1 of the two-stage enroll flow. The
+// flowId is the stage-2 idempotency anchor with a 24h TTL.
 type GliderEnrollAuthorization struct {
-	FlowID           string               `json:"flowId"`
-	AccountIndex     string               `json:"accountIndex"`
-	AgentAccountID   string               `json:"agentAccountId"`
-	ChainIDs         []int                `json:"chainIds,omitempty"`
-	AccountType      string               `json:"accountType,omitempty"`
-	SwigAccountID    string               `json:"swigAccountId,omitempty"`
+	FlowID         string `json:"flowId"`
+	AccountIndex   string `json:"accountIndex"`
+	AgentAccountID string `json:"agentAccountId"`
+	AccountType    string `json:"accountType,omitempty"`
+	SwigAccountID  string `json:"swigAccountId,omitempty"`
+	// DepositAccountID and SwigRoleID appear on Solana (SVM subaccount)
+	// enrollments; ReusedSwig reports whether an existing Swig was reused.
 	DepositAccountID string               `json:"depositAccountId,omitempty"`
 	SwigRoleID       *int                 `json:"swigRoleId,omitempty"`
 	ReusedSwig       bool                 `json:"reusedSwig,omitempty"`
 	Message          *GliderEnrollMessage `json:"message,omitempty"`
 	// Solana Model B: the base64 serialized transaction the owner signs and
 	// that stage 2 submits via signedSolanaTransaction.
-	SolanaTransaction  string               `json:"solanaTransaction,omitempty"`
-	Authorization      *GliderAuthorization `json:"authorization,omitempty"`
-	ExpiresAt          *time.Time           `json:"expiresAt,omitempty"`
+	SolanaTransaction string `json:"solanaTransaction,omitempty"`
 }
 
 // GliderEnrollSignatureInput is stage 1's request body.
@@ -226,10 +262,10 @@ type GliderEnrollSignatureInput struct {
 // GliderEnrollSubmitInput is stage 2's request body. Every stage-1 round-trip
 // field must be echoed verbatim.
 type GliderEnrollSubmitInput struct {
-	FlowID                  string `json:"flowId"`
-	AccountIndex            string `json:"accountIndex"`
-	AgentAccountID          string `json:"agentAccountId"`
-	ChainIDs                []int  `json:"chainIds"`
+	FlowID         string `json:"flowId"`
+	AccountIndex   string `json:"accountIndex"`
+	AgentAccountID string `json:"agentAccountId"`
+	ChainIDs       []int  `json:"chainIds"`
 	// OwnerAccountID and StrategyID are required by stage 2 and must echo the
 	// values used to start the flow.
 	OwnerAccountID          string `json:"ownerAccountId"`
@@ -253,23 +289,25 @@ type GliderWithdrawSignatureInput struct {
 	SettlementAssetID  string                `json:"settlementAssetId,omitempty"`
 }
 
-// GliderWithdrawAuthorization is withdrawal stage 1's response.
+// GliderWithdrawAuthorization is withdrawal stage 1's response. For EVM the
+// signable payload is TypedData (EIP-712); for Solana it is Authorization —
+// sign Authorization.Text (Model B, ed25519, base58 sig) or Authorization.Raw
+// (Model A, EIP-191). Authorization.Message is the provider's structured
+// signed-message object and MUST be echoed verbatim to stage 2.
 type GliderWithdrawAuthorization struct {
 	AuthorizationID string               `json:"authorizationId"`
 	ExpiresAt       *time.Time           `json:"expiresAt,omitempty"`
-	Message         string               `json:"message,omitempty"`
-	Authorization   *GliderAuthorization `json:"authorization,omitempty"`
 	TypedData       json.RawMessage      `json:"typedData,omitempty"`
+	Authorization   *GliderAuthorization `json:"authorization,omitempty"`
 }
 
-// GliderWithdrawSubmitInput is withdrawal stage 2's request body.
+// GliderWithdrawSubmitInput is withdrawal stage 2's request body. It carries
+// ONLY the stage-1 message object echoed verbatim and the owner's signature —
+// assets, recipient, liquidate and settlement are bound inside the signed
+// message, so re-stating them would fail signature verification.
 type GliderWithdrawSubmitInput struct {
-	Message            string                `json:"message"`
-	Signature          string                `json:"signature"`
-	RecipientAccountID string                `json:"recipientAccountId"`
-	Assets             []GliderWithdrawAsset `json:"assets"`
-	Liquidate          bool                  `json:"liquidate,omitempty"`
-	SettlementAssetID  string                `json:"settlementAssetId,omitempty"`
+	Message   json.RawMessage `json:"message"`
+	Signature string          `json:"signature"`
 }
 
 // GliderDiscoveredMetrics are the observable metrics of a public strategy.
@@ -305,9 +343,4 @@ type GliderIdentity struct {
 	TenantName  string   `json:"tenantName"`
 	TenantEmail string   `json:"tenantEmail"`
 	Scopes      []string `json:"scopes"`
-}
-
-// GliderAssetBreakdownRequest is the allocation-breakdown pre-flight.
-type GliderAssetBreakdownRequest struct {
-	Symbols []string `json:"symbols"`
 }

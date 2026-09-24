@@ -2,8 +2,10 @@ package pajfunding
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -73,6 +75,7 @@ type CircleTransferAdapter interface {
 // ChainRailsAdapter creates cross-chain transfer intents.
 type ChainRailsAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+	chainrailspkg.IntentTriggerer
 }
 
 // WithdrawalLimitsChecker validates withdrawal amounts against daily/monthly limits.
@@ -218,6 +221,10 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		return
 	}
 
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// is on its way. No-op on mainnet.
+	chainrailspkg.MaybeTriggerTestnetProcessing(ctx, s.chainRailsAdapter, source.chain, intent.IntentAddress, s.logger)
+
 	s.logger.Info("Circle→ChainRails→Paj bridge initiated",
 		zap.String("circle_tx_id", tx.ID),
 		zap.Int("cr_intent_id", intent.ID),
@@ -253,15 +260,30 @@ func (s *Service) NeedsVerification(ctx context.Context, userID uuid.UUID) bool 
 	return err != nil
 }
 
-// Initiate triggers a Paj OTP to the user's email.
-// Returns "already_verified" if user has a valid session.
-// Skips if user already has a valid session.
+// Initiate triggers a Paj OTP to the user's email or phone (E.164).
+// Returns "already_verified" only when a valid session exists for the SAME
+// recipient: verifying with email A then initiating with phone B sends a
+// fresh OTP instead of silently running B's orders under A's Paj identity.
 func (s *Service) Initiate(ctx context.Context, userID uuid.UUID, email string) (alreadyVerified bool, err error) {
-	if _, err := s.getSessionToken(ctx, userID); err == nil {
+	if _, storedHash, serr := s.getSessionTokenWithRecipient(ctx, userID); serr == nil && storedHash != "" {
+		if storedHash == pajRecipientHash(email) {
+			return true, nil
+		}
+		// Recipient switched: fall through to a fresh OTP below.
+	} else if serr == nil {
+		// Legacy session with no bound recipient (pre-migration-317 rows):
+		// preserve old behavior and short-circuit.
 		return true, nil
 	}
 	_, err = s.pajClient.Initiate(ctx, email)
 	return false, err
+}
+
+// pajRecipientHash binds a session to its verified recipient without storing
+// PII: normalized (trimmed, lowercased) email/phone, SHA-256 hex.
+func pajRecipientHash(recipient string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(recipient))))
+	return hex.EncodeToString(sum[:])
 }
 
 // Verify confirms the OTP and caches the session token.
@@ -288,29 +310,41 @@ func (s *Service) Verify(ctx context.Context, userID uuid.UUID, email, otp, devi
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO paj_sessions (user_id, session_token_encrypted, expires_at, updated_at)
-		VALUES ($1, $2, $3, NOW())
+		INSERT INTO paj_sessions (user_id, session_token_encrypted, expires_at, recipient_hash, updated_at)
+		VALUES ($1, $2, $3, $4, NOW())
 		ON CONFLICT (user_id) DO UPDATE SET
 			session_token_encrypted = EXCLUDED.session_token_encrypted,
 			expires_at = EXCLUDED.expires_at,
+			recipient_hash = EXCLUDED.recipient_hash,
 			updated_at = NOW()`,
-		userID, encrypted, expiresAt)
+		userID, encrypted, expiresAt, pajRecipientHash(email))
 	return err
 }
 
 func (s *Service) getSessionToken(ctx context.Context, userID uuid.UUID) (string, error) {
+	token, _, err := s.getSessionTokenWithRecipient(ctx, userID)
+	return token, err
+}
+
+// getSessionTokenWithRecipient returns the decrypted session token plus the
+// bound recipient hash ("": legacy pre-migration-317 row, unbound).
+func (s *Service) getSessionTokenWithRecipient(ctx context.Context, userID uuid.UUID) (token, recipientHash string, err error) {
 	var encrypted string
 	var expiresAt time.Time
-	err := s.db.QueryRowContext(ctx,
-		`SELECT session_token_encrypted, expires_at FROM paj_sessions WHERE user_id = $1`,
-		userID).Scan(&encrypted, &expiresAt)
+	err = s.db.QueryRowContext(ctx,
+		`SELECT session_token_encrypted, expires_at, COALESCE(recipient_hash, '') FROM paj_sessions WHERE user_id = $1`,
+		userID).Scan(&encrypted, &expiresAt, &recipientHash)
 	if err != nil {
-		return "", fmt.Errorf("no paj session: %w", err)
+		return "", "", fmt.Errorf("no paj session: %w", err)
 	}
 	if time.Now().After(expiresAt) {
-		return "", fmt.Errorf("paj session expired")
+		return "", "", fmt.Errorf("paj session expired")
 	}
-	return crypto.Decrypt(encrypted, s.encryptionKey)
+	token, err = crypto.Decrypt(encrypted, s.encryptionKey)
+	if err != nil {
+		return "", "", err
+	}
+	return token, recipientHash, nil
 }
 
 func (s *Service) invalidateSessionIfUnauthorized(ctx context.Context, userID uuid.UUID, err error) error {
@@ -890,9 +924,12 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Credit user's spend balance when onramp completes (USDC arrived in custody).
 	s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, tx)
 
-	// Notify user of onramp status changes
+	// Notify user of onramp status changes. mapPajStatus only ever returns
+	// pending/paid/completed/failed (Paj has no "processing" state), so match
+	// "paid" exactly — a dead "processing" arm here previously suggested a
+	// state that can never arrive.
 	if orderType == "onramp" && s.notifier != nil {
-		if newStatus == "paid" || newStatus == "processing" {
+		if newStatus == "paid" {
 			_ = s.notifier.NotifyDepositDetected(ctx, orderUserID, "NGN")
 		}
 	}
@@ -965,9 +1002,40 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 	return tx, nil
 }
 
+// RecoverStuckOnramp re-verifies a stuck onramp order against Paj's API and
+// applies the verified outcome (status persist + credit on completion).
+// Called by the onramp recovery worker. Returns the verified local status.
+// A non-nil error means "could not verify" (no session, provider unreachable
+// or unauthorized) — the caller must leave the order alone for the user's
+// re-authenticated poll or a later tick, never fail-mark it.
+func (s *Service) RecoverStuckOnramp(ctx context.Context, userID uuid.UUID, pajOrderID string) (string, error) {
+	token, err := s.getSessionToken(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("no verifiable paj session: %w", err)
+	}
+	tx, err := s.pajClient.GetTransaction(ctx, token, pajOrderID)
+	if err != nil {
+		return "", s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	newStatus := mapPajStatus(tx.Status)
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE paj_orders SET
+			status = $1, token_amount = $2, rate = $3,
+			last_webhook_status = $4, last_webhook_at = NOW(), updated_at = NOW()
+		WHERE paj_order_id = $5 AND (status NOT IN ('completed', 'failed') OR last_webhook_status LIKE 'unverified:%')`,
+		newStatus, tx.Amount, tx.Rate, tx.Status, pajOrderID); err != nil {
+		return "", fmt.Errorf("update paj order: %w", err)
+	}
+	s.creditOnrampIfCompleted(ctx, userID, pajOrderID, newStatus, tx)
+	if s.notifier != nil && newStatus == "paid" {
+		_ = s.notifier.NotifyDepositDetected(ctx, userID, "NGN")
+	}
+	return newStatus, nil
+}
+
 // creditOnrampIfCompleted credits the user's USDC balance and triggers the 70/30
 // allocation split when an onramp order completes.
-// Called from both HandleWebhook and PollOrderStatus to ensure credit happens
+// Called from webhook, poll, and recovery paths to ensure credit happens
 // regardless of which path detects the completion first.
 func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID, pajOrderID, newStatus string, tx *paj.PajTransaction) {
 	if newStatus != "completed" || tx.USDCAmount <= 0 {

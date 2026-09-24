@@ -48,6 +48,29 @@ export interface InboundPayload {
   is_reaction?: boolean;
   reaction_emoji?: string;
 
+  /** Inbound read receipt: the user read a message we sent. `sender` is the
+   *  reader, `read_target_id` is our outbound message id. */
+  is_read_receipt?: boolean;
+  read_target_id?: string;
+
+  /** Group/membership lifecycle: addMember/removeMember/leaveSpace/rename/
+   *  avatar/unsend observed in the conversation. `sender` is the actor. */
+  is_group_event?: boolean;
+  group_event?: string;
+  group_members?: string[];
+
+  /** Retraction of a previously sent message. */
+  is_unsend?: boolean;
+  unsend_of?: string;
+
+  /** The attachment type isn't one the pipeline handles (or it was oversized).
+   *  Posted WITHOUT bytes so the backend can ack instead of leaving the user
+   *  on read — nothing is dropped silently. */
+  is_unsupported?: boolean;
+  unsupported_mime?: string;
+  is_oversized?: boolean;
+  oversized_kind?: string;
+
   reply_to?: string;
   reply_to_text?: string;
   edit_of?: string;
@@ -62,6 +85,10 @@ export interface InboundExtras {
 
 const REPLY_QUOTE_MAX_CHARS = 200;
 const MAX_STATEMENT_BYTES = 4 * 1024 * 1024;
+// Images and voice notes share the PDF statement cap. Without it they are
+// read() whole into memory and base64'd (+37%) into the POST body — one large
+// iMessage photo per turn was enough to spike bridge memory.
+const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
 
 /**
  * Spectrum's Message carries `direction: "inbound" | "outbound"`. Poll votes,
@@ -86,16 +113,30 @@ export interface DebouncerOptions {
   maxWaitMs: number;
   /** Hard cap on buffered message count. */
   maxBuffer: number;
+  /**
+   * How many times a failed flush is requeued (with backoff) before the
+   * payload is dropped. Without this, a backend blip during the flush window
+   * silently lost the user's text — the debounced path had no redelivery.
+   */
+  maxFlushRetries?: number;
   /** Called when the first message enters an empty buffer (typing keeper). */
   onBufferStart?: (key: string) => void;
+  /** Called on every failed flush (including ones that will be retried). */
   onError?: (key: string, err: unknown) => void;
+  /** Called when a payload is dropped after exhausting the retry budget. */
+  onDropped?: (key: string, err: unknown) => void;
 }
 
 interface BufferState {
   entries: InboundPayload[];
   firstAt: number;
   timer: ReturnType<typeof setTimeout> | null;
+  /** Failed flush count for the payload currently buffered. */
+  retries: number;
 }
+
+const FLUSH_RETRY_MAX_DELAY_MS = 30_000;
+const DEFAULT_MAX_FLUSH_RETRIES = 3;
 
 export class InboundDebouncer {
   private buffers = new Map<string, BufferState>();
@@ -106,7 +147,7 @@ export class InboundDebouncer {
   add(key: string, payload: InboundPayload): void {
     let buf = this.buffers.get(key);
     if (!buf) {
-      buf = { entries: [], firstAt: Date.now(), timer: null };
+      buf = { entries: [], firstAt: Date.now(), timer: null, retries: 0 };
       this.buffers.set(key, buf);
       this.opts.onBufferStart?.(key);
     }
@@ -175,6 +216,34 @@ export class InboundDebouncer {
       await this.opts.post(key, merged);
     } catch (err) {
       this.opts.onError?.(key, err);
+      const retries = buf.retries + 1;
+      if (retries > (this.opts.maxFlushRetries ?? DEFAULT_MAX_FLUSH_RETRIES)) {
+        this.opts.onDropped?.(key, err);
+        return;
+      }
+      // Requeue the merged payload with backoff. If a new message created a
+      // fresh buffer while the flush was in flight, prepend to it (its timer
+      // will carry the retried text out); otherwise park it in its own buffer
+      // whose timer bypasses the add() hard-cap logic — the backoff IS the
+      // schedule we want.
+      const existing = this.buffers.get(key);
+      if (existing) {
+        existing.entries.unshift(merged);
+        existing.retries = Math.max(existing.retries, retries);
+        return;
+      }
+      const retryBuf: BufferState = {
+        entries: [merged],
+        firstAt: Date.now(),
+        timer: null,
+        retries,
+      };
+      this.buffers.set(key, retryBuf);
+      const delay = Math.min(
+        this.opts.debounceMs * 2 ** retries,
+        FLUSH_RETRY_MAX_DELAY_MS,
+      );
+      retryBuf.timer = setTimeout(() => void this.flush(key), delay);
     }
   }
 
@@ -184,6 +253,23 @@ export class InboundDebouncer {
       if (buf.timer) clearTimeout(buf.timer);
     }
     this.buffers.clear();
+  }
+
+  /**
+   * Flush every pending buffer (graceful shutdown). Buffers are drained
+   * through the normal merged-post path so in-flight bursts still reach the
+   * backend instead of being dropped with the process.
+   */
+  async flushAll(): Promise<void> {
+    const keys = Array.from(this.buffers.keys());
+    for (const key of keys) {
+      try {
+        await this.flush(key);
+      } catch {
+        // flush() already routes errors via onError; never let one thread's
+        // buffer block the rest during shutdown.
+      }
+    }
   }
 }
 
@@ -245,6 +331,8 @@ export async function routeInboundContent(
 ): Promise<void> {
   const { postToBackend, debouncer, log } = deps;
 
+  // The 8.2.1 SDK's Content union has no group-lifecycle members
+  // (addMember/removeMember/leaveSpace arrive as provider extensions).
   switch (content.type) {
     case "reply": {
       const next: InboundExtras = { ...extras, reply_to: content.target.id };
@@ -365,9 +453,32 @@ export async function routeInboundContent(
 
     case "voice": {
       await debouncer.flush(ctx.threadID);
+      const declared = (content as { size?: number }).size;
+      if (typeof declared === "number" && declared > MAX_MEDIA_BYTES) {
+        log.warn({ bytes: declared }, "oversized voice note (size metadata) — posting notice");
+        await postToBackend(INBOUND_PATH, {
+          ...basePayload(ctx, message.id),
+          ...extras,
+          is_oversized: true,
+          oversized_kind: "voice",
+          text: "",
+        });
+        return;
+      }
       let audioB64: string;
       try {
         const buf = await content.read();
+        if (buf.byteLength > MAX_MEDIA_BYTES) {
+          log.warn({ bytes: buf.byteLength }, "oversized voice note — posting notice");
+          await postToBackend(INBOUND_PATH, {
+            ...basePayload(ctx, message.id),
+            ...extras,
+            is_oversized: true,
+            oversized_kind: "voice",
+            text: "",
+          });
+          return;
+        }
         audioB64 = Buffer.from(buf).toString("base64");
       } catch (err) {
         log.error({ err }, "failed to read voice note");
@@ -436,16 +547,32 @@ export async function routeInboundContent(
           if (typeof contentSize === "number" && contentSize > MAX_STATEMENT_BYTES) {
             log.warn(
               { filename, bytes: contentSize },
-              "ignoring oversized statement attachment (size metadata)",
+              "oversized statement attachment (size metadata) — posting notice",
             );
+            await postToBackend(INBOUND_PATH, {
+              ...basePayload(ctx, message.id),
+              ...extras,
+              is_oversized: true,
+              oversized_kind: "document",
+              document_name: filename,
+              text: "",
+            });
             return;
           }
           const buf = await content.read();
           if (buf.byteLength > MAX_STATEMENT_BYTES) {
             log.warn(
               { filename, bytes: buf.byteLength },
-              "ignoring oversized statement attachment",
+              "oversized statement attachment — posting notice",
             );
+            await postToBackend(INBOUND_PATH, {
+              ...basePayload(ctx, message.id),
+              ...extras,
+              is_oversized: true,
+              oversized_kind: "document",
+              document_name: filename,
+              text: "",
+            });
             return;
           }
           documentB64 = Buffer.from(buf).toString("base64");
@@ -476,12 +603,48 @@ export async function routeInboundContent(
         return;
       }
       if (!content.mimeType?.startsWith("image/")) {
-        log.debug({ mime: content.mimeType }, "ignoring non-image attachment");
+        // Never leave the user on read: forward a lightweight unsupported-type
+        // notice so the backend can ack ("I can't open that yet").
+        log.info({ mime: content.mimeType, filename }, "unsupported attachment type — posting notice");
+        await debouncer.flush(ctx.threadID);
+        await postToBackend(INBOUND_PATH, {
+          ...basePayload(ctx, message.id),
+          ...extras,
+          is_unsupported: true,
+          unsupported_mime: content.mimeType,
+          document_name: filename,
+          text: "",
+        });
+        return;
+      }
+      const declaredImage = (content as { size?: number }).size;
+      if (typeof declaredImage === "number" && declaredImage > MAX_MEDIA_BYTES) {
+        log.warn({ filename, bytes: declaredImage }, "oversized image attachment (size metadata) — posting notice");
+        await postToBackend(INBOUND_PATH, {
+          ...basePayload(ctx, message.id),
+          ...extras,
+          is_oversized: true,
+          oversized_kind: "image",
+          document_name: filename,
+          text: "",
+        });
         return;
       }
       let imageB64: string;
       try {
         const buf = await content.read();
+        if (buf.byteLength > MAX_MEDIA_BYTES) {
+          log.warn({ filename, bytes: buf.byteLength }, "oversized image attachment — posting notice");
+          await postToBackend(INBOUND_PATH, {
+            ...basePayload(ctx, message.id),
+            ...extras,
+            is_oversized: true,
+            oversized_kind: "image",
+            document_name: filename,
+            text: "",
+          });
+          return;
+        }
         imageB64 = Buffer.from(buf).toString("base64");
       } catch (err) {
         log.error({ err }, "failed to read attachment");
@@ -532,24 +695,133 @@ export async function routeInboundContent(
       return;
     }
 
-    // Control signals, echo-only content, and membership events never reach
-    // the backend.
-    case "typing":
-    case "read":
-    case "poll":
+    // Inbound read receipt: someone read a message we sent. `sender` is the
+    // reader, `target` is our outbound message. Forwarded so the backend can
+    // track delivery; never needs a reply.
+    case "read": {
+      await debouncer.flush(ctx.threadID);
+      const targetId = (content as { target?: { id?: string } })?.target?.id;
+      const inbound: InboundPayload = {
+        ...basePayload(ctx, message.id),
+        is_read_receipt: true,
+        read_target_id: targetId,
+        text: "",
+      };
+      await postToBackend(INBOUND_PATH, inbound);
+      log.info(
+        { sender: ctx.senderId, thread: ctx.threadID, type: "read", target: targetId },
+        "accepted inbound read receipt",
+      );
+      return;
+    }
+
+    // Group/membership lifecycle: the actor rides in `sender`, members in
+    // `content.members`. Forwarded so the backend sees joins/leaves/renames
+    // instead of the conversation silently changing shape. addMember /
+    // removeMember / leaveSpace are not in the 8.2.1 Content union (provider
+    // extensions) — they arrive via default below and share forwardGroupEvent.
     case "rename":
-    case "avatar":
-    case "unsend":
+    case "avatar": {
+      await forwardGroupEvent(content.type);
+      return;
+    }
+
+    case "unsend": {
+      await debouncer.flush(ctx.threadID);
+      const targetId = (content as { target?: { id?: string } })?.target?.id;
+      const inbound: InboundPayload = {
+        ...basePayload(ctx, message.id),
+        ...extras,
+        is_unsend: true,
+        unsend_of: targetId,
+        text: "",
+      };
+      await postToBackend(INBOUND_PATH, inbound);
+      log.info(
+        { sender: ctx.senderId, thread: ctx.threadID, type: "unsend", target: targetId },
+        "accepted inbound unsend",
+      );
+      return;
+    }
+
+    // A user-shared link/app card carries a URL — deliver it as text so the
+    // backend sees what was shared. Provider-specific blobs are summarized,
+    // never dropped silently.
     case "richlink":
-    case "app":
-    case "custom":
+    case "app": {
+      const url =
+        (content as { url?: unknown }).url ??
+        (content as { raw?: unknown }).raw;
+      const text = typeof url === "string" && url.length > 0 ? url : "";
+      if (!text.trim()) {
+        log.debug({ type: content.type }, "link content without URL, skipping");
+        return;
+      }
+      const inbound: InboundPayload = {
+        ...basePayload(ctx, message.id),
+        ...extras,
+        text: text.trim(),
+      };
+      debouncer.add(ctx.threadID, inbound);
+      log.info(
+        { sender: ctx.senderId, thread: ctx.threadID, type: content.type },
+        "accepted inbound link",
+      );
+      return;
+    }
+
+    case "custom": {
+      log.info({ sender: ctx.senderId, thread: ctx.threadID }, "unsupported custom content — posting notice");
+      await debouncer.flush(ctx.threadID);
+      await postToBackend(INBOUND_PATH, {
+        ...basePayload(ctx, message.id),
+        ...extras,
+        is_unsupported: true,
+        unsupported_mime: "custom",
+        text: "",
+      });
+      return;
+    }
+
+    // Typing signals and outbound poll echoes never reach the backend. (Poll
+    // *votes* arrive as poll_option and are handled above.)
+    case "typing":
+    case "poll":
       log.debug({ type: content.type }, "skipping non-message inbound content");
       return;
 
     default: {
       const type = (content as { type?: string })?.type;
+      // Provider-extension group lifecycle (not in the 8.2.1 union):
+      // forward exactly like rename/avatar instead of dropping.
+      if (type === "addMember" || type === "removeMember" || type === "leaveSpace") {
+        await forwardGroupEvent(type);
+        return;
+      }
       log.warn({ type }, "unhandled inbound content type");
       return;
     }
+  }
+
+  async function forwardGroupEvent(event: string): Promise<void> {
+    await debouncer.flush(ctx.threadID);
+    const members =
+      (content as { members?: string[] }).members ??
+      ((content as { displayName?: string }).displayName
+        ? [(content as { displayName?: string }).displayName as string]
+        : undefined);
+    const inbound: InboundPayload = {
+      ...basePayload(ctx, message.id),
+      ...extras,
+      is_group_event: true,
+      group_event: event,
+      group_members: members,
+      text: "",
+    };
+    await postToBackend(INBOUND_PATH, inbound);
+    log.info(
+      { sender: ctx.senderId, thread: ctx.threadID, type: event },
+      "accepted inbound group event",
+    );
   }
 }

@@ -541,6 +541,34 @@ func RequireMiriamConfirmHeader(require bool, log *zap.Logger) gin.HandlerFunc {
 	}
 }
 
+// RequireRailServiceKey gates a backend-to-backend route behind the shared
+// Go<->Miriam secret (X-Rail-Service-Key header, constant-time compared). It
+// fails closed when the key is not configured: an unconfigured endpoint is
+// unavailable rather than unauthenticated.
+func RequireRailServiceKey(expected string, log *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if expected == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error": "endpoint not configured: RAIL_SERVICE_KEY is unset",
+			})
+			c.Abort()
+			return
+		}
+		got := c.GetHeader("X-Rail-Service-Key")
+		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+			if log != nil {
+				log.Warn("rail service key rejected")
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "a valid X-Rail-Service-Key header is required here",
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // AdminAuth checks if user has admin role (JWT fast-path + DB verification)
 func AdminAuth(db *sql.DB, log *logger.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {

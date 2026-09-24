@@ -30,6 +30,7 @@ import (
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
 	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
+	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	r2adapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/r2"
@@ -330,13 +331,24 @@ func (app *Application) initializeWorkers() error {
 		} else {
 			app.log.Warn("Paj offramp recovery: no Circle adapter — reconciliation of post-transfer stuck orders disabled")
 		}
+		if app.container.ChainRailsClient != nil {
+			app.pajOfframpRecoveryWorker.SetChainRailsStatusChecker(&pajOfframpChainRailsStatusAdapter{client: app.container.ChainRailsClient})
+		} else {
+			app.log.Warn("Paj offramp recovery: no ChainRails client — circle-cr bridged orders left for webhook/manual review")
+		}
 		go app.pajOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj offramp recovery worker started")
 	}
 
-	// Paj onramp recovery worker — marks stuck NGN deposits as failed for retry
+	// Paj onramp recovery worker — re-verifies stuck NGN deposits against
+	// Paj's API (crediting completions) instead of blindly fail-marking them.
 	if app.container.DB != nil && app.container.PajHandlers != nil {
 		app.pajOnrampRecoveryWorker = paj_onramp_recovery.NewWorker(app.container.DB, app.log.Zap())
+		if svc := app.container.PajHandlers.Service(); svc != nil {
+			app.pajOnrampRecoveryWorker.SetResolver(svc)
+		} else {
+			app.log.Warn("Paj onramp recovery: no funding service — stuck orders left for webhook/user poll")
+		}
 		go app.pajOnrampRecoveryWorker.Start(context.Background())
 		app.log.Info("Paj onramp recovery worker started")
 	}
@@ -352,6 +364,11 @@ func (app *Application) initializeWorkers() error {
 			app.ramphubOfframpRecoveryWorker.SetCircleStatusChecker(&ramphubOfframpCircleStatusAdapter{adapter: app.container.CircleAdapter})
 		} else {
 			app.log.Warn("RampHub offramp recovery: no Circle adapter — reconciliation of post-transfer stuck orders disabled")
+		}
+		if app.container.ChainRailsClient != nil {
+			app.ramphubOfframpRecoveryWorker.SetChainRailsStatusChecker(&ramphubOfframpChainRailsStatusAdapter{client: app.container.ChainRailsClient})
+		} else {
+			app.log.Warn("RampHub offramp recovery: no ChainRails client — circle-cr bridged orders left for webhook/manual review")
 		}
 		go app.ramphubOfframpRecoveryWorker.Start(context.Background())
 		app.log.Info("RampHub offramp recovery worker started")
@@ -1774,6 +1791,35 @@ func (a *pajOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.Cont
 	}
 }
 
+// pajOfframpChainRailsStatusAdapter translates a ChainRails intent state into
+// the Paj recovery worker's ChainRailsIntentStatus enum, so circle-cr bridged
+// offramps can be promoted or reversed instead of stalling to the hard
+// timeout. Uses the numeric-ID lookup (GET /intents/{id}).
+type pajOfframpChainRailsStatusAdapter struct {
+	client *chainrails.Client
+}
+
+func (a *pajOfframpChainRailsStatusAdapter) GetChainRailsIntentStatus(ctx context.Context, intentID int) (paj_offramp_recovery.ChainRailsIntentStatus, error) {
+	if a.client == nil {
+		return paj_offramp_recovery.ChainRailsIntentUnknown, nil
+	}
+	st, err := a.client.GetIntentByID(ctx, intentID)
+	if err != nil {
+		return paj_offramp_recovery.ChainRailsIntentUnknown, err
+	}
+	if st == nil {
+		return paj_offramp_recovery.ChainRailsIntentUnknown, nil
+	}
+	switch {
+	case chainrails.IsTerminalSuccess(st.Status):
+		return paj_offramp_recovery.ChainRailsIntentComplete, nil
+	case chainrails.IsTerminalFailure(st.Status):
+		return paj_offramp_recovery.ChainRailsIntentFailed, nil
+	default:
+		return paj_offramp_recovery.ChainRailsIntentPending, nil
+	}
+}
+
 // ramphubOfframpCircleStatusAdapter is the RampHub equivalent of
 // pajOfframpCircleStatusAdapter, translating Circle's transaction state into the
 // RampHub recovery worker's CircleTransferStatus enum.
@@ -1801,6 +1847,35 @@ func (a *ramphubOfframpCircleStatusAdapter) GetCircleTransferStatus(ctx context.
 		return ramphub_offramp_recovery.CircleTransferFailed, nil
 	default:
 		return ramphub_offramp_recovery.CircleTransferPending, nil
+	}
+}
+
+// ramphubOfframpChainRailsStatusAdapter translates a ChainRails intent state
+// into the RampHub recovery worker's ChainRailsIntentStatus enum, so
+// circle-cr bridged offramps resolve instead of stalling when the webhook
+// never lands. Uses the numeric-ID lookup (GET /intents/{id}).
+type ramphubOfframpChainRailsStatusAdapter struct {
+	client *chainrails.Client
+}
+
+func (a *ramphubOfframpChainRailsStatusAdapter) GetChainRailsIntentStatus(ctx context.Context, intentID int) (ramphub_offramp_recovery.ChainRailsIntentStatus, error) {
+	if a.client == nil {
+		return ramphub_offramp_recovery.ChainRailsIntentUnknown, nil
+	}
+	st, err := a.client.GetIntentByID(ctx, intentID)
+	if err != nil {
+		return ramphub_offramp_recovery.ChainRailsIntentUnknown, err
+	}
+	if st == nil {
+		return ramphub_offramp_recovery.ChainRailsIntentUnknown, nil
+	}
+	switch {
+	case chainrails.IsTerminalSuccess(st.Status):
+		return ramphub_offramp_recovery.ChainRailsIntentComplete, nil
+	case chainrails.IsTerminalFailure(st.Status):
+		return ramphub_offramp_recovery.ChainRailsIntentFailed, nil
+	default:
+		return ramphub_offramp_recovery.ChainRailsIntentPending, nil
 	}
 }
 

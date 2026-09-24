@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/glider"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +15,7 @@ const (
 
 func TestIngestAssetCatalogPreviewWritesNothing(t *testing.T) {
 	store := newMemoryStore()
-	provider := glider.NewSimulated(glider.SimulatedConfig{})
+	provider := newSimProvider()
 
 	report, err := IngestAssetCatalog(context.Background(), provider, &assetRepoAdapter{store: store}, CatalogIngestOptions{
 		Collection: "curated",
@@ -44,7 +43,7 @@ func TestIngestAssetCatalogPreviewWritesNothing(t *testing.T) {
 
 func TestIngestAssetCatalogWritesAllowlistedAssets(t *testing.T) {
 	store := newMemoryStore()
-	provider := glider.NewSimulated(glider.SimulatedConfig{})
+	provider := newSimProvider()
 
 	report, err := IngestAssetCatalog(context.Background(), provider, &assetRepoAdapter{store: store}, CatalogIngestOptions{
 		Confirm: true,
@@ -78,7 +77,7 @@ func TestIngestAssetCatalogWritesAllowlistedAssets(t *testing.T) {
 func TestIngestAssetCatalogNeverClobbersCuratedAssets(t *testing.T) {
 	store := newMemoryStore()
 	repo := &assetRepoAdapter{store: store}
-	provider := glider.NewSimulated(glider.SimulatedConfig{})
+	provider := newSimProvider()
 
 	_, err := IngestAssetCatalog(context.Background(), provider, repo, CatalogIngestOptions{Confirm: true})
 	require.NoError(t, err)
@@ -105,7 +104,7 @@ func TestIngestAssetCatalogNeverClobbersCuratedAssets(t *testing.T) {
 
 func TestIngestAssetCatalogRejectsMissingCollaborators(t *testing.T) {
 	store := newMemoryStore()
-	provider := glider.NewSimulated(glider.SimulatedConfig{})
+	provider := newSimProvider()
 
 	_, err := IngestAssetCatalog(context.Background(), nil, &assetRepoAdapter{store: store}, CatalogIngestOptions{})
 	require.Error(t, err)

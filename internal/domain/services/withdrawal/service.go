@@ -184,6 +184,7 @@ type StashYieldRedeemerForTransfer interface {
 type ChainRailsTransferAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
 	GetIntentStatus(ctx context.Context, intentAddress string) (*chainrailspkg.IntentStatus, error)
+	chainrailspkg.IntentTriggerer
 }
 
 // FraudChecker screens withdrawals for fraud risk.
@@ -1455,8 +1456,8 @@ func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdr
 			if err != nil {
 				continue
 			}
-			state := strings.ToUpper(status.Status)
-			if state == "COMPLETED" || state == "COMPLETE" || state == "SUCCESS" {
+			state := strings.ToUpper(strings.TrimSpace(status.Status))
+			if chainrailspkg.IsTerminalSuccess(state) {
 				if status.TxHash != "" {
 					_ = s.withdrawalRepo.UpdateTxHash(ctx, withdrawal.ID, status.TxHash)
 				}
@@ -1481,7 +1482,7 @@ func (s *WithdrawalService) pollChainRailsCompletion(ctx context.Context, withdr
 					"withdrawal_id", withdrawal.ID.String(), "tx_hash", status.TxHash)
 				return
 			}
-			if state == "REFUNDED" || state == "FAILED" || state == "EXPIRED" || state == "CANCELLED" {
+			if chainrailspkg.IsTerminalFailure(state) {
 				if failErr := s.failPendingWithdrawalLedgerEntry(ctx, withdrawal); failErr != nil {
 					s.logger.Error("async: failed to mark pending ledger as failed after ChainRails failure",
 						"error", failErr, "withdrawal_id", withdrawal.ID.String())
@@ -2434,6 +2435,13 @@ func validateChainPair(sourceChain, destChain string) error {
 	src := strings.ToUpper(sourceChain)
 	dst := strings.ToUpper(destChain)
 
+	// MATIC-AMOY has no ChainRails mapping (no POLYGON_TESTNET chain exists)
+	// and no Bridge rail: it passes generic chain checks but fails late at
+	// execution after funds are staged. Reject upfront with a clear message.
+	if src == "MATIC-AMOY" || dst == "MATIC-AMOY" {
+		return fmt.Errorf("MATIC-AMOY is not supported for withdrawals (no testnet rail exists) — use another chain")
+	}
+
 	if !SupportedChains[src] {
 		return fmt.Errorf("unsupported source chain: %s", sourceChain)
 	}
@@ -2516,10 +2524,13 @@ var circleChainToChainRails = map[string]struct{ chain, token string }{
 	"ARB":          {"ARBITRUM_MAINNET", "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"},
 	"OP-SEPOLIA":   {"OPTIMISM_TESTNET", "0x5fd84259d66Cd46123540766Be93DFE6D43130D7"},
 	"OP":           {"OPTIMISM_MAINNET", "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"},
-	"MATIC-AMOY":   {"POLYGON_MAINNET", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
-	"MATIC":        {"POLYGON_MAINNET", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
-	"AVAX-FUJI":    {"AVALANCHE_TESTNET", "0x5425890298aed601595a70AB815c96711a31Bc65"},
-	"AVAX":         {"AVALANCHE_MAINNET", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"},
+	// NOTE: MATIC-AMOY is deliberately absent. ChainRails documents no
+	// POLYGON_TESTNET chain, so an Amoy wallet has no valid intent source —
+	// mapping it to POLYGON_MAINNET would build a mainnet intent against
+	// testnet funds. Amoy withdrawals fail fast as unsupported instead.
+	"MATIC":     {"POLYGON_MAINNET", "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"},
+	"AVAX-FUJI": {"AVALANCHE_TESTNET", "0x5425890298aed601595a70AB815c96711a31Bc65"},
+	"AVAX":      {"AVALANCHE_MAINNET", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"},
 }
 
 var destChainToChainRails = map[string]string{
@@ -2549,7 +2560,11 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 	// Step 2: Map source blockchain to ChainRails
 	sourceChainRails, ok := circleChainToChainRails[blockchain]
 	if !ok {
-		return nil, fmt.Errorf("unsupported source chain for ChainRails: %s", blockchain)
+		// Fail fast with a routable message: the wallet's actual chain (not
+		// the requested one) has no ChainRails mapping. This runs before any
+		// intent creation or fund movement, so no hold needs reversing here —
+		// the caller treats it as a validation-class failure.
+		return nil, fmt.Errorf("unsupported wallet chain for ChainRails: %s (use another chain)", blockchain)
 	}
 
 	// Step 3: Map destination chain — match testnet/mainnet to source
@@ -2620,6 +2635,10 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 	if tx.State == "DENIED" || tx.State == "FAILED" || tx.State == "CANCELLED" {
 		return nil, fmt.Errorf("circle transfer %s", string(tx.State))
 	}
+
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// is on its way, otherwise the intent sits until expiry. No-op on mainnet.
+	chainrailspkg.MaybeTriggerTestnetProcessing(ctx, s.chainRailsAdapter, sourceChainRails.chain, intent.IntentAddress, s.logger.Zap())
 
 	// Debit ChainRails bridging fee from ledger AFTER successful Circle transfer
 	if crFee.IsPositive() && s.ledgerService != nil {
@@ -3368,8 +3387,8 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 			return withdrawal.Status, nil // non-fatal: retried on next sweep
 		}
 		state := strings.ToUpper(strings.TrimSpace(status.Status))
-		switch state {
-		case "COMPLETED", "COMPLETE", "SUCCESS":
+		switch {
+		case chainrailspkg.IsTerminalSuccess(state):
 			if status.TxHash != "" {
 				// tx_hash is non-critical metadata — a failed write must not block
 				// settling a withdrawal the chain already completed, else it strands
@@ -3387,7 +3406,7 @@ func (s *WithdrawalService) syncWithdrawalStatusFromProvider(ctx context.Context
 				return withdrawal.Status, err
 			}
 			return entities.WithdrawalStatusCompleted, nil
-		case "REFUNDED", "FAILED", "EXPIRED", "CANCELLED":
+		case chainrailspkg.IsTerminalFailure(state):
 			if err := s.failWithdrawal(ctx, withdrawal, "chainrails intent "+strings.ToLower(state)); err != nil {
 				return withdrawal.Status, err
 			}

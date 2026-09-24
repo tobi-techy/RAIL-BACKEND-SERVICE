@@ -2,6 +2,7 @@ package brij
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -38,6 +39,38 @@ func (e *Error) IsNotFound() bool { return e.StatusCode == http.StatusNotFound }
 
 // IsConflict reports whether the error is a 409 (state machine rejection).
 func (e *Error) IsConflict() bool { return e.StatusCode == http.StatusConflict }
+
+// IsConflictCode reports whether the error is a 409 with the given machine
+// code (e.g. fare_menu_expired, intent_already_exists).
+func (e *Error) IsConflictCode(code string) bool {
+	return e.StatusCode == http.StatusConflict && e.Code == code
+}
+
+// IsBadRequest reports whether the error is a 400 (validation rejection).
+func (e *Error) IsBadRequest() bool { return e.StatusCode == http.StatusBadRequest }
+
+// ErrorCode returns the BRIJ machine code of an *Error, or "" for any other
+// error. It uses errors.As so wrapped errors (fmt %w) still classify — a
+// type assertion would silently disable the fare_menu_expired retry and the
+// intent_already_exists mapping the moment any caller wraps.
+func ErrorCode(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return ""
+}
+
+// IsFaresPending reports whether err is the transient 202 fares_pending
+// (offer menu still being fetched): retry with backoff, don't fail the
+// booking — the drill fee is already spent.
+func IsFaresPending(err error) bool {
+	var pv *PaymentVerificationError
+	if errors.As(err, &pv) {
+		return pv.Code == "fares_pending"
+	}
+	return false
+}
 
 // IsRetryable reports whether the request may succeed on a retry (5xx + 429).
 func (e *Error) IsRetryable() bool {

@@ -237,11 +237,61 @@ func (r *OrderResponse) CryptoDepositAmount() float64 {
 // --- Order intent (active payment window) ---
 
 // OrderIntent is the active payment window for a customer/asset/chain.
+// Field names follow the documented schema (transactionStatus, intentStatus,
+// depositIntentExpiresAt, timeRemainingSeconds) with fallbacks for the legacy
+// keys (status, depositAddress, expiresAt) so either shape decodes. The API
+// returns 404 when no window exists — see GetOrderIntent.
 type OrderIntent struct {
-	TransactionID  string `json:"transactionId"`
-	Status         string `json:"status"`
-	DepositAddress string `json:"depositAddress"`
-	ExpiresAt      string `json:"expiresAt"`
+	TransactionID     string `json:"transactionId"`
+	TransactionStatus string `json:"transactionStatus"`
+	IntentStatus      string `json:"intentStatus"`
+	DepositAddress    string `json:"depositAddress"`
+	// ExpiresAt binds the documented depositIntentExpiresAt key; the
+	// legacy expiresAt key is captured in UnmarshalJSON.
+	ExpiresAt            string `json:"depositIntentExpiresAt"`
+	TimeRemainingSeconds int    `json:"timeRemainingSeconds"`
+	// Status holds the legacy status key (documented equivalent is
+	// IntentStatus); prefer StatusLabel().
+	Status string `json:"status"`
+}
+
+// UnmarshalJSON fills the legacy fallbacks (status → Status,
+// expiresAt → ExpiresAt) alongside the documented keys, so either shape
+// decodes. Documented keys win via StatusLabel(); the raw fields stay
+// available for callers that need the exact wire value.
+func (o *OrderIntent) UnmarshalJSON(data []byte) error {
+	type alias OrderIntent // avoid recursion
+	var raw struct {
+		alias
+		LegacyStatus    string `json:"status"`
+		LegacyExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*o = OrderIntent(raw.alias)
+	if o.Status == "" {
+		o.Status = raw.LegacyStatus
+	}
+	if o.ExpiresAt == "" {
+		o.ExpiresAt = raw.LegacyExpiresAt
+	}
+	return nil
+}
+
+// Status returns the most specific status label available, preferring the
+// documented intentStatus/transactionStatus over the legacy status key.
+func (o *OrderIntent) StatusLabel() string {
+	if o == nil {
+		return ""
+	}
+	if o.IntentStatus != "" {
+		return o.IntentStatus
+	}
+	if o.TransactionStatus != "" {
+		return o.TransactionStatus
+	}
+	return o.Status
 }
 
 // --- Transaction status (poll / webhook verification) ---
@@ -258,6 +308,13 @@ type Transaction struct {
 	SyncedAt      string `json:"synchronizedAt"`
 	Trackable     bool   `json:"trackable"`
 	Sandbox       bool   `json:"sandbox"`
+	// SyncQueued means RampHub is still syncing provider truth — the status
+	// above may be stale. Callers should re-fetch once before acting on a
+	// terminal result. Paychain carries extra settlement context when present
+	// (opaque object, kept raw).
+	SyncQueued  bool            `json:"syncQueued"`
+	Environment string          `json:"environment"`
+	Paychain    json.RawMessage `json:"paychain"`
 	// Optional fields (not always present on monitor-status).
 	Side        string  `json:"side,omitempty"`
 	Provider    string  `json:"provider,omitempty"`
@@ -344,13 +401,41 @@ type WebhookData struct {
 	Reference        string    `json:"reference"`
 	RequestReference string    `json:"requestReference"`
 	Status           string    `json:"status"`
-	Provider         string    `json:"platformUsed"`
-	Asset            string    `json:"cryptoSymbol"`
-	Chain            string    `json:"network"`
+	Provider         string    `json:"provider"`
+	Asset            string    `json:"asset"`
+	Chain            string    `json:"chain"`
 	FiatAmount       FlexFloat `json:"fiatAmount"`
 	TokenAmount      FlexFloat `json:"cryptoAmount"`
 	Rate             FlexFloat `json:"exchangeRate"`
 	TxHash           string    `json:"blockchainTxHash,omitempty"`
+}
+
+// UnmarshalJSON accepts both the documented webhook keys
+// (provider/asset/chain) and the legacy keys observed on live payloads
+// (platformUsed/cryptoSymbol/network), preferring the documented ones when
+// both are present — mirroring the Identifiers() approach for order IDs.
+func (d *WebhookData) UnmarshalJSON(data []byte) error {
+	type alias WebhookData // avoid recursion
+	var raw struct {
+		alias
+		AltProvider string `json:"platformUsed"`
+		AltAsset    string `json:"cryptoSymbol"`
+		AltChain    string `json:"network"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*d = WebhookData(raw.alias)
+	if d.Provider == "" {
+		d.Provider = raw.AltProvider
+	}
+	if d.Asset == "" {
+		d.Asset = raw.AltAsset
+	}
+	if d.Chain == "" {
+		d.Chain = raw.AltChain
+	}
+	return nil
 }
 
 // Identifiers returns every distinct, non-empty identifier RampHub may use to

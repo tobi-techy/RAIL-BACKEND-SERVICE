@@ -240,7 +240,7 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 	// per-intent idempotency key — Circle returns the original transfer if the
 	// earlier attempt actually went through, so this can never double-spend.
 	if sweep.IntentAddress != nil && *sweep.IntentAddress != "" && sweep.FundingAmount != nil {
-		if err := w.fundIntent(ctx, sweep, sourceWallet.CircleWalletID, *sweep.IntentAddress, *sweep.FundingAmount); err != nil {
+		if err := w.fundIntent(ctx, sweep, sourceWallet.CircleWalletID, *sweep.IntentAddress, *sweep.FundingAmount, crSourceChain); err != nil {
 			return err
 		}
 		w.logger.Info("Deposit sweep intent re-funded",
@@ -282,7 +282,7 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 		return fmt.Errorf("mark in_progress: %w", err)
 	}
 
-	if err := w.fundIntent(ctx, sweep, sourceWallet.CircleWalletID, intent.IntentAddress, fundingAmount); err != nil {
+	if err := w.fundIntent(ctx, sweep, sourceWallet.CircleWalletID, intent.IntentAddress, fundingAmount, crSourceChain); err != nil {
 		return err
 	}
 
@@ -298,7 +298,7 @@ func (w *Worker) processSweep(ctx context.Context, sweep *entities.DepositSweep)
 // wallet to the ChainRails intent address. The idempotency key is scoped to
 // (sweep, intent) so retries dedupe against the original transfer, and a
 // replacement intent would get its own key.
-func (w *Worker) fundIntent(ctx context.Context, sweep *entities.DepositSweep, circleWalletID, intentAddress string, amount decimal.Decimal) error {
+func (w *Worker) fundIntent(ctx context.Context, sweep *entities.DepositSweep, circleWalletID, intentAddress string, amount decimal.Decimal, crSourceChain string) error {
 	if w.circle == nil {
 		return fmt.Errorf("circle transferer not configured; cannot fund sweep intent")
 	}
@@ -320,7 +320,13 @@ func (w *Worker) fundIntent(ctx context.Context, sweep *entities.DepositSweep, c
 	// only considered funded once the transfer actually completed. On timeout
 	// the retry re-funds under the same idempotency key (Circle returns the
 	// original transfer) and waits again, so this converges without double-spend.
-	return w.waitTransferComplete(ctx, tx)
+	if err := w.waitTransferComplete(ctx, tx); err != nil {
+		return err
+	}
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// landed, otherwise the sweep intent sits until expiry. No-op on mainnet.
+	chainrails.MaybeTriggerTestnetProcessing(ctx, w.crClient, crSourceChain, intentAddress, w.logger)
+	return nil
 }
 
 // waitTransferComplete polls a Circle transfer until it completes, fails
@@ -423,15 +429,15 @@ func (w *Worker) reconcileStale(ctx context.Context) {
 				zap.String("sweep_id", sweep.ID.String()), zap.Error(err))
 			continue
 		}
-		switch strings.ToLower(status.Status) {
-		case "completed", "settled":
+		switch {
+		case chainrails.IsTerminalSuccess(status.Status):
 			_ = w.sweepRepo.MarkCompleted(ctx, sweep.ID, status.TxHash)
 			sweepsTotal.WithLabelValues("completed").Inc()
 			sweepDuration.Observe(time.Since(sweep.CreatedAt).Seconds())
 			sweepAttempts.Observe(float64(sweep.Attempts))
 			w.logger.Info("Reconciled stale sweep as completed",
 				zap.String("sweep_id", sweep.ID.String()), zap.String("tx_hash", status.TxHash))
-		case "refunded", "failed", "expired":
+		case chainrails.IsTerminalFailure(status.Status):
 			if err := w.sweepRepo.MarkTerminalFailed(ctx, sweep.ID, "reconciled: "+status.Status); err != nil {
 				w.logger.Error("Failed to mark reconciled sweep as terminal failed",
 					zap.String("sweep_id", sweep.ID.String()),

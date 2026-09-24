@@ -48,8 +48,6 @@ func TestUserEnrollPrepareThenComplete(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, entities.InvestmentActionAwaitingConfirmation, staged.Status)
 	require.NotNil(t, staged.Preview, "the allocate card needs a preview before anything is signed")
-	assert.True(t, staged.Live)
-	assert.False(t, staged.Simulated)
 	assert.Empty(t, staged.SignPayload, "no sign payload may be issued before confirmation")
 
 	ready := h.confirmUserPrepare(t, prep)
@@ -237,41 +235,34 @@ func TestUserEnrollRespectsMaxEnrollments(t *testing.T) {
 	require.ErrorIs(t, err, ErrPolicyBlocked, "complete must enforce the enrollment cap before staging")
 }
 
-func TestUserEnrollRefusesSimulation(t *testing.T) {
+func TestUserEnrollRefusesDisabledService(t *testing.T) {
 	h := newHarness(t)
-	h.service.cfg.Simulation = true
 	strategy := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+
+	// A disabled investment engine must never stage or complete an enrollment,
+	// and must never move money.
+	h.service.cfg.Enabled = false
 
 	prep := &UserEnrollPrepareRequest{
 		StrategyID:     strategy.Strategy.ID.String(),
 		OwnerAccountID: testOwnerAccount,
 		AmountUSD:      decimal.NewFromInt(100),
 	}
-	staged, err := h.service.PrepareUserEnrollment(context.Background(), h.userID, prep, entities.InvestmentActorMiriam)
-	require.NoError(t, err)
-	require.Equal(t, entities.InvestmentActionAwaitingConfirmation, staged.Status)
+	_, err := h.service.PrepareUserEnrollment(context.Background(), h.userID, prep, entities.InvestmentActorMiriam)
+	require.ErrorIs(t, err, ErrDisabled)
 
-	prep.ConfirmationToken = staged.Confirmation.Token
-	rejected, err := h.service.PrepareUserEnrollment(context.Background(), h.userID, prep, entities.InvestmentActorMiriam)
-	require.ErrorIs(t, err, ErrUnsupported, "simulation must never issue a sign payload")
-	require.NotNil(t, rejected)
-	assert.Equal(t, entities.InvestmentActionRejected, rejected.Status)
-	assert.Empty(t, rejected.SignPayload)
-
-	// Stage 2 fails closed even with a token: the funding leg is real while
-	// the provider is fake, so complete must never run in simulation mode.
 	comp := &UserEnrollCompleteRequest{
 		StrategyID:              strategy.Strategy.ID.String(),
 		OwnerAccountID:          testOwnerAccount,
-		FlowID:                  "sim_flow_invented",
+		FlowID:                  "flow_invented",
 		AccountIndex:            "0",
 		SignedSolanaTransaction: "signed:whatever",
 		AmountUSD:               decimal.NewFromInt(100),
 	}
 	_, err = h.service.CompleteUserEnrollment(context.Background(), h.userID, comp, entities.InvestmentActorMiriam)
-	require.ErrorIs(t, err, ErrUnsupported)
+	require.ErrorIs(t, err, ErrDisabled)
 	assert.Empty(t, h.store.enrollments)
-	assert.Equal(t, 0, h.funding.transfers, "simulation must never move real money")
+	assert.Equal(t, 0, h.funding.transfers, "a disabled engine must never move real money")
 }
 
 func TestUserEnrollCompleteRejectsInsufficientFunds(t *testing.T) {

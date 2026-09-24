@@ -518,23 +518,28 @@ func (s *Service) Withdraw(
 		"step_up":   true,
 	})
 
-	withdrawAssets := []entities.GliderWithdrawAsset{}
-	if !req.LiquidateAll {
-		asset, err := s.resolveAsset(ctx, req.AssetID, "", req.Symbol)
-		if err != nil {
-			return s.failWithdrawal(ctx, execution, "unknown_asset", fmt.Errorf("%w: unknown asset", ErrValidationFailed))
-		}
-		withdrawAssets = append(withdrawAssets, entities.GliderWithdrawAsset{
-			AssetID:   asset.CAIP19,
-			AmountRaw: amount.Shift(int32(asset.Decimals)).Truncate(0).String(),
-		})
+	withdrawAssets, settlementAssetID, err := s.buildWithdrawAssets(ctx, enrollment, req, amount)
+	if err != nil {
+		return s.failWithdrawal(ctx, execution, "invalid_withdrawal_assets", err)
 	}
 
-	authorization, err := s.provider.PrepareWithdrawal(ctx, enrollment.GliderPortfolioID, entities.GliderWithdrawSignatureInput{
-		RecipientAccountID: recipient,
-		Assets:             withdrawAssets,
-		Liquidate:          req.LiquidateAll,
-	})
+	// Stage 1: full-portfolio exits use the dedicated liquidate-all flow
+	// (POST .../liquidate-all/signature) where the server enumerates every
+	// holding above the tenant swap threshold on the recipient's chain.
+	// Partial withdrawals use POST .../withdraw/signature with our asset list.
+	var authorization *entities.GliderWithdrawAuthorization
+	if req.LiquidateAll {
+		authorization, err = s.provider.PrepareLiquidateAll(ctx, enrollment.GliderPortfolioID, entities.GliderLiquidateSignatureInput{
+			RecipientAccountID: recipient,
+			SettlementAssetID:  settlementAssetID,
+		})
+	} else {
+		authorization, err = s.provider.PrepareWithdrawal(ctx, enrollment.GliderPortfolioID, entities.GliderWithdrawSignatureInput{
+			RecipientAccountID: recipient,
+			Assets:             withdrawAssets,
+			SettlementAssetID:  settlementAssetID,
+		})
+	}
 	if err != nil {
 		return s.failWithdrawal(ctx, execution, "provider_rejected", s.mapProviderError(err))
 	}
@@ -559,28 +564,51 @@ func (s *Service) Withdraw(
 		return s.failWithdrawal(ctx, execution, "no_signer", fmt.Errorf("%w: no portfolio owner signer is configured", ErrUnsupported))
 	}
 
-	message := authorization.Message
-	authorizationJSON := ""
-	if authorization.Authorization != nil {
-		if message == "" {
-			message = authorization.Authorization.Text
-		}
-		authorizationJSON = authorization.Authorization.Raw
+	// Stage 2 must echo the provider's signed-message object byte-for-byte: the
+	// signature was computed over those exact bytes. Rail's Solana-rooted
+	// portfolios authorize via the solana-message kind (ed25519 over Text);
+	// typed-data (EVM ERC-1271 wallets) is not supported by this signer.
+	auth := authorization.Authorization
+	if auth == nil {
+		return s.failWithdrawal(ctx, execution, "provider_rejected", fmt.Errorf("%w: the provider returned no signable withdrawal authorization", ErrUnsupported))
 	}
-	signed, err := s.signer.SignSolanaMessage(ctx, userID, firstNonEmpty(message, authorizationJSON))
+	var signPayload string
+	switch auth.Kind {
+	case "solana-message":
+		signPayload = auth.Text
+	case "ecdsa":
+		// EVM digests must never go through the Solana (Ed25519) signer: an
+		// EIP-191 digest signed as a Solana message fails provider
+		// verification and wedges the execution in executing. Enrollment
+		// already rejects this shape (same ErrUnsupported) — match it here.
+		return s.failWithdrawal(ctx, execution, "unsupported_authorization",
+			fmt.Errorf("%w: this withdrawal needs an EVM signer Rail does not provide; the portfolio owner must be Solana-rooted", ErrUnsupported))
+	default:
+		return s.failWithdrawal(ctx, execution, "unsupported_authorization",
+			fmt.Errorf("%w: this withdrawal authorization kind (%q) needs a signer Rail does not provide", ErrUnsupported, auth.Kind))
+	}
+	signed, err := s.signer.SignSolanaMessage(ctx, userID, signPayload)
 	if err != nil {
 		s.markSignatureFailed(ctx, request, err)
 		return s.failWithdrawal(ctx, execution, "signature_failed", err)
 	}
 
-	handle, err := s.provider.SubmitWithdrawal(ctx, enrollment.GliderPortfolioID, entities.GliderWithdrawSubmitInput{
-		Message:            firstNonEmpty(message, authorizationJSON),
-		Signature:          signed,
-		RecipientAccountID: recipient,
-		Assets:             withdrawAssets,
-		Liquidate:          req.LiquidateAll,
-		SettlementAssetID:  "",
-	})
+	if len(auth.Message) == 0 {
+		s.markSignatureFailed(ctx, request, fmt.Errorf("no message object"))
+		return s.failWithdrawal(ctx, execution, "provider_rejected", fmt.Errorf("%w: the provider returned no signed message object to submit", ErrUnsupported))
+	}
+	var handle *entities.GliderOperationHandle
+	if req.LiquidateAll {
+		handle, err = s.provider.SubmitLiquidateAll(ctx, enrollment.GliderPortfolioID, entities.GliderWithdrawSubmitInput{
+			Message:   auth.Message,
+			Signature: signed,
+		})
+	} else {
+		handle, err = s.provider.SubmitWithdrawal(ctx, enrollment.GliderPortfolioID, entities.GliderWithdrawSubmitInput{
+			Message:   auth.Message,
+			Signature: signed,
+		})
+	}
 	if err != nil {
 		s.markSignatureFailed(ctx, request, err)
 		return s.failWithdrawal(ctx, execution, "provider_rejected", s.mapProviderError(err))
@@ -740,6 +768,84 @@ func (s *Service) findActiveEnrollment(
 	return enrollment, nil
 }
 
+// buildWithdrawAssets turns a USD withdrawal into the provider's per-asset
+// request. The provider wants atomic units of the actual asset, and every
+// asset must sit on the recipient's chain (the settlement account is the
+// user's Solana wallet). Liquidations enumerate the portfolio's real holdings
+// and swap everything into the settlement asset; partial withdrawals convert
+// the USD amount at the last observed price.
+func (s *Service) buildWithdrawAssets(
+	ctx context.Context,
+	enrollment *entities.InvestmentEnrollment,
+	req *entities.InvestmentWithdrawalRequest,
+	amountUSD decimal.Decimal,
+) ([]entities.GliderWithdrawAsset, string, error) {
+	holdings, err := s.holdings.ListByEnrollment(ctx, enrollment.ID)
+	if err != nil {
+		return nil, "", fmt.Errorf("list holdings: %w", err)
+	}
+
+	if req.LiquidateAll {
+		settlement := ""
+		if s.cfg.SettlementSymbol != "" {
+			if asset, err := s.resolveAsset(ctx, "", "", s.cfg.SettlementSymbol); err == nil && asset != nil {
+				settlement = asset.CAIP19
+			}
+		}
+		assets := make([]entities.GliderWithdrawAsset, 0, len(holdings))
+		for _, holding := range holdings {
+			if holding == nil || holding.Balance.IsZero() || holding.Balance.IsNegative() {
+				continue
+			}
+			if !strings.HasPrefix(holding.CAIP19, "solana:") {
+				return nil, "", fmt.Errorf("%w: this portfolio holds %s on another chain; a Solana settlement cannot liquidate it", ErrUnsupported, holding.Symbol)
+			}
+			raw := holding.BalanceRaw
+			if raw == "" {
+				raw = holding.Balance.Shift(int32(holding.Decimals)).Truncate(0).String()
+			}
+			assets = append(assets, entities.GliderWithdrawAsset{AssetID: holding.CAIP19, AmountRaw: raw})
+		}
+		if len(assets) == 0 {
+			return nil, "", fmt.Errorf("%w: this portfolio has no holdings to liquidate", ErrValidationFailed)
+		}
+		return assets, settlement, nil
+	}
+
+	asset, err := s.resolveAsset(ctx, req.AssetID, "", req.Symbol)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: unknown asset", ErrValidationFailed)
+	}
+	if !strings.HasPrefix(asset.CAIP19, "solana:") {
+		return nil, "", fmt.Errorf("%w: withdrawals settle to a Solana account, so %s must be held on Solana", ErrValidationFailed, asset.Symbol)
+	}
+
+	// Convert the USD amount into token units at the last observed price; the
+	// provider moves the asset, not dollars.
+	var holding *entities.InvestmentHolding
+	for _, candidate := range holdings {
+		if candidate == nil {
+			continue
+		}
+		if candidate.CAIP19 == asset.CAIP19 || strings.EqualFold(candidate.Symbol, asset.Symbol) {
+			holding = candidate
+			break
+		}
+	}
+	if holding == nil || holding.PriceUSD.LessThanOrEqual(decimal.Zero) {
+		return nil, "", fmt.Errorf("%w: no observed price for %s, so the amount cannot be converted", ErrValidationFailed, asset.Symbol)
+	}
+	units := amountUSD.Div(holding.PriceUSD)
+	raw := units.Shift(int32(asset.Decimals)).Truncate(0)
+	if raw.LessThanOrEqual(decimal.Zero) {
+		return nil, "", fmt.Errorf("%w: %s is smaller than the smallest possible amount of %s", ErrValidationFailed, amountUSD.StringFixed(2), asset.Symbol)
+	}
+	if holding.Balance.GreaterThan(decimal.Zero) && units.GreaterThan(holding.Balance) {
+		return nil, "", fmt.Errorf("%w: this portfolio only holds %s %s", ErrValidationFailed, holding.Balance.StringFixed(6), asset.Symbol)
+	}
+	return []entities.GliderWithdrawAsset{{AssetID: asset.CAIP19, AmountRaw: raw.String()}}, "", nil
+}
+
 // shiftedAllocation returns the version's allocation with one asset's weight
 // moved by the order size. The other legs absorb the difference so the weights
 // always sum to exactly 100.
@@ -828,9 +934,12 @@ func (s *Service) shiftedAllocation(
 	return legs, nil
 }
 
-// publishAndRebalance publishes the new allocation to the provider and asks for
-// an immediate convergence. It is the only place a live portfolio's target is
-// changed.
+// publishAndRebalance publishes the new allocation to the provider
+// (POST /strategies/{id}/versions) and asks for an immediate convergence
+// (POST /portfolios/{id}/rebalance). It is the only place a live portfolio's
+// target is changed. Glider has no buy/sell/limit-order endpoint, so an
+// "order" is an allocation shift the provider converges on rebalance: no
+// price guarantee, no per-trade execution report.
 func (s *Service) publishAndRebalance(
 	ctx context.Context,
 	userID uuid.UUID,
@@ -844,10 +953,17 @@ func (s *Service) publishAndRebalance(
 	if strategy.GliderStrategyID == nil || *strategy.GliderStrategyID == "" {
 		return fmt.Errorf("%w: this strategy has no provider binding", ErrUnsupported)
 	}
-	published, err := s.provider.PublishStrategyVersion(ctx, *strategy.GliderStrategyID, entities.GliderStrategyInput{
-		Allocation:  entities.GliderAllocation{Assets: allocation},
-		Schedule:    &entities.GliderSchedule{Type: "interval", Frequency: providerFrequency(version.RebalanceRules)},
-		Preferences: s.preferencesFor(version.ExecutionRules),
+	// The provider's publish endpoint accepts ONLY the allocation (plus an
+	// optional change log); anything else is rejected as an unknown key. The
+	// schedule and swap preferences are unchanged by an allocation shift and
+	// stay as they are on the provider.
+	changeLog := stringOf(payload["reason"])
+	if len(changeLog) > 500 {
+		changeLog = changeLog[:500]
+	}
+	published, err := s.provider.PublishStrategyVersion(ctx, *strategy.GliderStrategyID, entities.GliderPublishVersionInput{
+		Allocation: entities.GliderAllocation{Assets: allocation},
+		ChangeLog:  changeLog,
 	})
 	if err != nil {
 		return s.mapProviderError(err)

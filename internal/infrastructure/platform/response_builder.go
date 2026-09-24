@@ -23,6 +23,11 @@ const (
 	ContentTypeVoice    ContentType = "voice"    // voice() — spoken note (TTS)
 	ContentTypeCards    ContentType = "cards"    // structured InsightCards (rendered per platform)
 	ContentTypeReaction ContentType = "reaction" // react() — tapback on the user's message
+	// Live confirmation cards (Face ID money actions). The initial send renders
+	// a live mini-app card in place; edits mutate that same card — the bridge
+	// never sends a second bubble for state changes.
+	ContentTypeConfirmationCard     ContentType = "confirmationcard"      // send live card (records handle by action_id)
+	ContentTypeConfirmationCardEdit ContentType = "confirmationcard_edit" // edit the recorded card in place
 )
 
 // Delivery categories for the bridge's persistent outbound queue.
@@ -81,6 +86,11 @@ type OutboundMessage struct {
 	// structured insight cards (the engine's tool pipeline produces these for the
 	// in-app canvas; messaging renders them as portable per-platform card text)
 	Cards []entities.InsightCard `json:"cards,omitempty"`
+
+	// Live confirmation card (Face ID money actions). The bridge renders a
+	// Spectrum live mini-app card and records the message handle by ActionID so
+	// later edits mutate the same card in place.
+	ConfirmationCard *ConfirmationCardPayload `json:"confirmation_card,omitempty"`
 
 	// Category tells the bridge how long a message may live in the persistent
 	// outbound queue when the Space handle is cold. Critical messages (anomaly
@@ -200,6 +210,58 @@ func (b *ResponseBuilder) CardsResponse(identity *entities.PlatformIdentity, tex
 	m.Text = text
 	m.ContentType = ContentTypeCards
 	m.Cards = cards
+	return m
+}
+
+// ConfirmationCardPayload is the wire contract for the reusable live iMessage
+// confirmation card. One card for every high-stakes action — copy and amount
+// fields differ, infrastructure never does.
+//
+// Styling split: bubble chrome (caption/subcaption/image/summary) renders from
+// these static slots; the Face ID button, fonts, and motion live in our
+// Messages extension, never in the Photon layout.
+type ConfirmationCardPayload struct {
+	ActionID    string `json:"action_id"`
+	Action      string `json:"action"`
+	State       string `json:"state"`
+	ConfirmURL  string `json:"confirm_url"`
+	Title       string `json:"title"`
+	Subtitle    string `json:"subtitle,omitempty"`
+	Amount      string `json:"amount,omitempty"`
+	Asset       string `json:"asset,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Fee         string `json:"fee,omitempty"`
+	RiskLine    string `json:"risk_line,omitempty"`
+	ExpiresAt   string `json:"expires_at,omitempty"`
+	// Static bubble slots (Apple MSMessageTemplateLayout only).
+	Caption            string `json:"caption,omitempty"`
+	Subcaption         string `json:"subcaption,omitempty"`
+	TrailingCaption    string `json:"trailing_caption,omitempty"`
+	TrailingSubcaption string `json:"trailing_subcaption,omitempty"`
+	Image              string `json:"image,omitempty"`
+	Summary            string `json:"summary,omitempty"`
+}
+
+// ConfirmationCardResponse builds the initial live-card send. The bridge
+// records the card handle by ActionID for later in-place edits.
+func (b *ResponseBuilder) ConfirmationCardResponse(identity *entities.PlatformIdentity, threadID string, card *ConfirmationCardPayload) *OutboundMessage {
+	m := b.base(identity, threadID)
+	m.ContentType = ContentTypeConfirmationCard
+	m.Text = card.Title
+	m.ConfirmationCard = card
+	m.Category = MessageCategoryCritical
+	return m
+}
+
+// ConfirmationCardEditResponse builds an in-place edit of a live card. The
+// bridge resolves the recorded handle by ActionID and calls edit() — it must
+// never send a new bubble.
+func (b *ResponseBuilder) ConfirmationCardEditResponse(identity *entities.PlatformIdentity, threadID string, card *ConfirmationCardPayload) *OutboundMessage {
+	m := b.base(identity, threadID)
+	m.ContentType = ContentTypeConfirmationCardEdit
+	m.Text = card.Title
+	m.ConfirmationCard = card
+	m.Category = MessageCategoryCritical
 	return m
 }
 

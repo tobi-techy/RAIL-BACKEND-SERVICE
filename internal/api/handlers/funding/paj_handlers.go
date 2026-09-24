@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -53,23 +54,37 @@ func NewPajHandlers(service *pajfunding.Service, logger *zap.Logger) *PajHandler
 	return &PajHandlers{service: service, logger: logger}
 }
 
-// Initiate triggers a Paj OTP to the user's email.
-// POST /v1/funding/paj/initiate
+// Service exposes the underlying funding service for recovery wiring
+// (the onramp recovery worker re-verifies stuck orders through it).
+func (h *PajHandlers) Service() *pajfunding.Service { return h.service }
+
+// Initiate triggers a Paj OTP to the user's email or phone.
+// POST /v1/funding/paj/initiate — optional body {"phone": "+234..."} overrides
+// the auth-context email (Paj supports either recipient kind).
 func (h *PajHandlers) Initiate(c *gin.Context) {
 	userID, ok := requireUserID(c)
 	if !ok {
 		return
 	}
-	userEmail := c.GetString("user_email")
-	if userEmail == "" {
-		userEmail = c.GetString("email") // fallback: device-bound auth middleware uses "email"
+	recipient := ""
+	var body struct {
+		Phone string `json:"phone"`
 	}
-	if userEmail == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "MISSING_EMAIL", "message": "User email required"})
+	if err := c.ShouldBindJSON(&body); err == nil && isE164Phone(body.Phone) {
+		recipient = body.Phone
+	}
+	if recipient == "" {
+		recipient = c.GetString("user_email")
+		if recipient == "" {
+			recipient = c.GetString("email") // fallback: device-bound auth middleware uses "email"
+		}
+	}
+	if recipient == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "MISSING_RECIPIENT", "message": "User email required (or phone in body)"})
 		return
 	}
 
-	alreadyVerified, err := h.service.Initiate(c.Request.Context(), userID, userEmail)
+	alreadyVerified, err := h.service.Initiate(c.Request.Context(), userID, recipient)
 	if err != nil {
 		h.logger.Error("paj initiate failed", zap.Error(err))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "PAJ_INITIATE_FAILED", "message": "Failed to send verification code"})
@@ -79,31 +94,65 @@ func (h *PajHandlers) Initiate(c *gin.Context) {
 	if alreadyVerified {
 		c.JSON(http.StatusOK, gin.H{"status": "already_verified"})
 	} else {
-		c.JSON(http.StatusOK, gin.H{"status": "otp_sent", "email": maskEmail(userEmail)})
+		c.JSON(http.StatusOK, gin.H{"status": "otp_sent", "recipient": maskRecipient(recipient)})
 	}
 }
 
+// isE164Phone reports whether s looks like an E.164 phone number.
+func isE164Phone(s string) bool {
+	if len(s) < 7 || len(s) > 16 || s[0] != '+' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// maskRecipient masks an email or phone for API responses.
+func maskRecipient(recipient string) string {
+	if isE164Phone(recipient) {
+		if len(recipient) <= 5 {
+			return "***"
+		}
+		return recipient[:4] + "****" + recipient[len(recipient)-2:]
+	}
+	return maskEmail(recipient)
+}
+
 // Verify confirms the OTP and caches the Paj session.
-// POST /v1/funding/paj/verify
+// POST /v1/funding/paj/verify — body {"otp": "..."} plus optional
+// {"phone": "+234..."} when initiation used a phone number (must match the
+// recipient the OTP was sent to).
 func (h *PajHandlers) Verify(c *gin.Context) {
 	userID, ok := requireUserID(c)
 	if !ok {
 		return
 	}
-	userEmail := c.GetString("user_email")
-	if userEmail == "" {
-		userEmail = c.GetString("email")
-	}
-	if userEmail == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "MISSING_EMAIL", "message": "User email required"})
-		return
-	}
 
 	var req struct {
-		OTP string `json:"otp" binding:"required"`
+		OTP   string `json:"otp" binding:"required"`
+		Phone string `json:"phone"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "INVALID_REQUEST", "message": "OTP is required"})
+		return
+	}
+
+	recipient := ""
+	if isE164Phone(req.Phone) {
+		recipient = req.Phone
+	}
+	if recipient == "" {
+		recipient = c.GetString("user_email")
+		if recipient == "" {
+			recipient = c.GetString("email")
+		}
+	}
+	if recipient == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "MISSING_RECIPIENT", "message": "User email required (or phone in body)"})
 		return
 	}
 
@@ -112,7 +161,7 @@ func (h *PajHandlers) Verify(c *gin.Context) {
 		deviceID = c.GetHeader("X-Device-Fingerprint")
 	}
 
-	if err := h.service.Verify(c.Request.Context(), userID, userEmail, req.OTP, deviceID); err != nil {
+	if err := h.service.Verify(c.Request.Context(), userID, recipient, req.OTP, deviceID); err != nil {
 		h.logger.Warn("paj verify failed", zap.Error(err), zap.String("user_id", userID.String()))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "PAJ_VERIFY_FAILED", "message": "Invalid or expired verification code"})
 		return
@@ -300,6 +349,13 @@ func (h *PajHandlers) CreateOfframp(c *gin.Context) {
 // Since Paj doesn't sign webhooks, the service verifies by polling Paj's API.
 // POST /v1/webhooks/paj
 func (h *PajHandlers) HandleWebhook(c *gin.Context) {
+	start := time.Now()
+	defer func() {
+		if d := time.Since(start); d > 4*time.Second {
+			h.logger.Warn("paj webhook processing slow (includes live Paj verification call)",
+				zap.Int64("duration_ms", d.Milliseconds()))
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})

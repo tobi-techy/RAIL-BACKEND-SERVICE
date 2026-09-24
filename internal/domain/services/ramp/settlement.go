@@ -183,6 +183,10 @@ func (s *Service) executeCircleViaChainRails(ctx context.Context, userID uuid.UU
 		return
 	}
 
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// is on its way. No-op on mainnet.
+	chainrailspkg.MaybeTriggerTestnetProcessing(ctx, s.chainRailsAdapter, source.chain, intent.IntentAddress, s.logger)
+
 	s.logger.Info("Circle→ChainRails→RampHub bridge initiated",
 		zap.String("circle_tx_id", tx.ID),
 		zap.Int("cr_intent_id", intent.ID),

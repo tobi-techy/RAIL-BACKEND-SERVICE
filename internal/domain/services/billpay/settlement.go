@@ -142,6 +142,9 @@ func (s *Service) settleViaChainRails(ctx context.Context, userID uuid.UUID, wal
 		s.reverseHold(ctx, userID, airbillsID, totalHold, railFee, "circle_cr_"+string(tx.State))
 		return
 	}
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// is on its way. No-op on mainnet.
+	chainrailspkg.MaybeTriggerTestnetProcessing(ctx, s.chainRails, source.chain, intent.IntentAddress, s.logger)
 	s.markSent(ctx, airbillsID, fmt.Sprintf("circle-cr:%s:%d", tx.ID, intent.ID))
 	s.logger.Info("airbills Circle→ChainRails bridge initiated; deferring process to recovery",
 		zap.String("airbills_id", airbillsID), zap.String("circle_tx_id", tx.ID), zap.Int("cr_intent_id", intent.ID))

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -28,8 +29,49 @@ type Config struct {
 	WalletAddress string // Rail's USDC custody wallet address (onramp recipient)
 	TokenMint     string // USDC mint address on Solana
 	Chain         string // "SOLANA"
-	Timeout       time.Duration
-	MaxRetries    int
+	// BusinessUSDCFee is Rail's per-order cut in USDC, sent as businessUSDCFee
+	// on order creation. Zero (default) omits the field — Paj takes no cut.
+	BusinessUSDCFee float64
+	Timeout         time.Duration
+	MaxRetries      int
+}
+
+// FlexBool decodes a boolean that Paj sometimes renders as a JSON string
+// ("true"/"false") instead of a literal — the API reference shows isActive as
+// a string while the live API returns a bool. Accepts bool, string, and
+// number shapes so either wire form decodes.
+type FlexBool bool
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (b *FlexBool) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*b = false
+		return nil
+	}
+	if data[0] != '"' {
+		var v bool
+		if err := json.Unmarshal(data, &v); err == nil {
+			*b = FlexBool(v)
+			return nil
+		}
+		var n json.Number
+		if err := json.Unmarshal(data, &n); err == nil {
+			*b = n.String() != "0"
+			return nil
+		}
+		return fmt.Errorf("paj FlexBool: unrecognized literal %s", string(data))
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "active":
+		*b = true
+	default:
+		*b = false
+	}
+	return nil
 }
 
 // Client wraps the Paj Cash ramp API.
@@ -75,10 +117,10 @@ type DeviceSignature struct {
 }
 
 type VerifyResponse struct {
-	Recipient string `json:"recipient"`
-	IsActive  bool   `json:"isActive"`
-	ExpiresAt string `json:"expiresAt"`
-	Token     string `json:"token"`
+	Recipient string   `json:"recipient"`
+	IsActive  FlexBool `json:"isActive"`
+	ExpiresAt string   `json:"expiresAt"`
+	Token     string   `json:"token"`
 }
 
 // Initiate sends an OTP to the user's email or phone.
@@ -134,11 +176,11 @@ type RateResponse struct {
 }
 
 type Rate struct {
-	BaseCurrency   string  `json:"baseCurrency"`
-	TargetCurrency string  `json:"targetCurrency"`
-	IsActive       bool    `json:"isActive"`
-	Rate           float64 `json:"rate"`
-	Type           string  `json:"type"`
+	BaseCurrency   string   `json:"baseCurrency"`
+	TargetCurrency string   `json:"targetCurrency"`
+	IsActive       FlexBool `json:"isActive"`
+	Rate           float64  `json:"rate"`
+	Type           string   `json:"type"`
 }
 
 func (c *Client) GetRates(ctx context.Context) (*RateResponse, error) {
@@ -237,12 +279,13 @@ func (c *Client) CreateOnrampOrder(ctx context.Context, sessionToken string, fia
 		recipient = c.cfg.WalletAddress
 	}
 	req := CreateOnrampOrderRequest{
-		FiatAmount: fiatAmount,
-		Currency:   currency,
-		Recipient:  recipient,
-		Mint:       c.cfg.TokenMint,
-		Chain:      c.cfg.Chain,
-		WebhookURL: c.cfg.WebhookURL,
+		FiatAmount:      fiatAmount,
+		Currency:        currency,
+		Recipient:       recipient,
+		Mint:            c.cfg.TokenMint,
+		Chain:           c.cfg.Chain,
+		WebhookURL:      c.cfg.WebhookURL,
+		BusinessUSDCFee: c.cfg.BusinessUSDCFee,
 	}
 	var resp OnrampOrder
 	if err := c.post(ctx, "/pub/onramp", req, &sessionToken, &resp); err != nil {
@@ -278,13 +321,14 @@ type OfframpOrder struct {
 
 func (c *Client) CreateOfframpOrder(ctx context.Context, sessionToken, bankID, accountNumber string, fiatAmount float64, currency string) (*OfframpOrder, error) {
 	req := CreateOfframpOrderRequest{
-		Bank:          bankID,
-		AccountNumber: accountNumber,
-		Currency:      currency,
-		FiatAmount:    fiatAmount,
-		Mint:          c.cfg.TokenMint,
-		Chain:         c.cfg.Chain,
-		WebhookURL:    c.cfg.WebhookURL,
+		Bank:            bankID,
+		AccountNumber:   accountNumber,
+		Currency:        currency,
+		FiatAmount:      fiatAmount,
+		Mint:            c.cfg.TokenMint,
+		Chain:           c.cfg.Chain,
+		WebhookURL:      c.cfg.WebhookURL,
+		BusinessUSDCFee: c.cfg.BusinessUSDCFee,
 	}
 	var resp OfframpOrder
 	if err := c.post(ctx, "/pub/offramp", req, &sessionToken, &resp); err != nil {

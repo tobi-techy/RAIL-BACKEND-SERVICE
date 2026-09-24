@@ -61,11 +61,24 @@ func RegisterInvestmentGliderRoutes(
 		// ":id", so this never collides with GetStrategy.
 		investments.GET("/strategies/rail", h.ListRailStrategies)
 		investments.GET("/strategies/:id", h.GetStrategy)
+		investments.PATCH("/strategies/:id", h.PatchStrategyMetadata)
+		investments.GET("/strategies/:id/provider-versions", h.GetProviderStrategyVersions)
+		investments.GET("/strategies/:id/performance", h.GetStrategyPerformance)
+		investments.GET("/strategies/:id/schedule", h.GetStrategySchedule)
+		investments.GET("/strategies/:id/preferences", h.GetStrategyPreferences)
+		investments.GET("/strategies/:id/fees", h.GetStrategyFees)
 		investments.POST("/strategies/:id/versions", h.PublishStrategyVersion)
 		investments.GET("/strategies/:id/preview", h.PreviewRebalance)
 		investments.POST("/strategies/:id/pause", h.PauseStrategy)
 		investments.POST("/strategies/:id/resume", h.ResumeStrategy)
 		investments.POST("/strategies/:id/rebalance", h.TriggerRebalance)
+
+		// Enrollment reads backed by real Glider endpoints.
+		investments.GET("/enrollments/:id/performance", h.GetEnrollmentPerformance)
+		investments.GET("/enrollments/:id/sector-exposure", h.GetEnrollmentSectorExposure)
+		investments.PATCH("/enrollments/:id", h.RenameEnrollment)
+		investments.POST("/enrollments/:id/chains/signature", h.PrepareChainActivation)
+		investments.POST("/breakdown", h.GetAllocationBreakdown)
 
 		// Execution.
 		investments.POST("/enroll", h.Enroll)

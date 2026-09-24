@@ -1,0 +1,187 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/main
+/clear_db
+rail_service
+stack_service
+bin/
+dist/
+
+# Test binary
+*.test
+
+STACK Service API - MVP
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.env.staging
+.env.prod
+.env.bak
+*.env
+.env.temp
+!.env.example
+# CRITICAL: Never commit environment files with actual secrets
+
+# Security sensitive files
+*.key
+*.pem
+*.p12
+*.pfx
+*secret*
+*credentials*
+*store-secrets
+
+.secrets.baseline  # Generated file, not to be tracked
+
+# Additional secret patterns
+*.aes
+*.enc
+.creds
+credentials.json
+secrets.yaml
+secrets.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+**/.DS_Store
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Build artifacts
+build/
+out/
+
+# Configuration overrides
+configs/config.local.yaml
+configs/*.local.yaml
+configs/
+
+# Test artifacts
+test/results/
+test/coverage/
+
+# Docker
+.dockerignore
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Security audit results
+security-audit-*.txt
+vulnerability-scan-*.json
+
+# Auto-generated Postman collection
+postman_collection_generated.json
+postman_collection_auto_generated.json
+
+# Air (hot reload)
+tmp/
+dump.rdb
+
+# Infra secrets scripts (only .example templates are committed)
+infra/store-secrets*.sh
+infra/copy-staging-to-prod.sh
+!infra/store-secrets.sh.example
+
+# Umbra sidecar wallet keys — NEVER commit private keys
+umbra-sidecar/.devnet-wallet.json
+umbra-sidecar/*.json
+!umbra-sidecar/package.json
+!umbra-sidecar/tsconfig.json
+
+# Scripts with secrets
+scripts/encrypt_entity_secret.py
+scripts/circle_register_entity_secret.go.bak
+
+# Terraform
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.backup
+infra/terraform/.terraform.lock.hcl
+infra/terraform/plan.out
+backfill-va-details
+
+# Performance test artifacts
+k6.tar.gz
+
+# Local Miriam test CLI binary
+miriam_test_cli
+
+# Spectrum bridge local data (space store persistence)
+cmd/spectrum-bridge/data/
+
+# Foglamp local review metadata
+.foglamp/
+
+# Node.js dependency directories
+node_modules/
+cmd/spectrum-bridge/node_modules/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

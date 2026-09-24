@@ -63,6 +63,7 @@ type CircleWalletProvider interface {
 type ChainRailsBridge interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
 	GetIntentStatus(ctx context.Context, intentAddress string) (*chainrailspkg.IntentStatus, error)
+	chainrailspkg.IntentTriggerer
 }
 
 // DepositRouter routes user stash deposits into Blend.money on Base.

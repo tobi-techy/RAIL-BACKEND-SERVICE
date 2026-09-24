@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,23 +189,83 @@ func (c *Client) GetIntent(ctx context.Context, intentID string) (*BookingIntent
 	return &out.Intent, nil
 }
 
-// GetOrder fetches the airline order status (PNR). Requires the support code.
+// GetOrder fetches the airline order status (PNR). Paid 0.01 USDC via x402
+// ($0.01) and gated by the customer support code; refusals are never charged.
 func (c *Client) GetOrder(ctx context.Context, orderID, supportCode string) (*OrderStatus, error) {
 	headers := map[string]string{"X-Customer-Support-Code": supportCode}
 	var out OrderResponse
-	if err := c.do(ctx, http.MethodGet, "/air/orders/"+url.PathEscape(orderID), nil, &out, headers); err != nil {
+	if err := c.doX402(ctx, http.MethodGet, "/air/orders/"+url.PathEscape(orderID), nil, &out, headers); err != nil {
 		return nil, err
 	}
 	return &out.Order, nil
 }
 
+// OfferDetails drills into one offer: fresh price, the full fare menu
+// (fare_options), and paid-ancillary prices (available_services). Browser-tier
+// offers require a fresh fare menu before intents can be created.
+func (c *Client) OfferDetails(ctx context.Context, req OfferDetailsRequest) (*OfferDetailsResponse, error) {
+	var out OfferDetailsResponse
+	if err := c.doX402(ctx, http.MethodPost, "/air/offer-details", req, &out); err != nil {
+		return nil, err
+	}
+	if out.Offer.ID == "" {
+		// A 202 fares_pending body decodes as an empty offer (the menu is still
+		// being fetched and nothing was charged). Surface it as pending.
+		return nil, &PaymentVerificationError{Code: "fares_pending", Message: "the fare menu is still being fetched — retry shortly"}
+	}
+	return &out, nil
+}
+
+// usdcATA derives the funding wallet's mainnet USDC associated token account.
+func (c *Client) usdcATA() (solana.PublicKey, error) {
+	mint, err := solana.PublicKeyFromBase58(USDCAccount)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("brij: invalid USDC mint: %w", err)
+	}
+	ata, _, err := solana.FindAssociatedTokenAddress(c.pubkey, mint)
+	if err != nil {
+		return solana.PublicKey{}, fmt.Errorf("brij: derive USDC ATA: %w", err)
+	}
+	return ata, nil
+}
+
+// USDCBalanceAtomic returns the funding wallet's Solana mainnet USDC balance in
+// atomic units (6 decimals). The funding wallet pays every x402 fee and every
+// booking escrow; callers preflight a booking against it. An account that was
+// never funded surfaces as an RPC error — callers must fail OPEN (log and
+// proceed), never fail the booking on an unreadable balance.
+func (c *Client) USDCBalanceAtomic(ctx context.Context) (int64, error) {
+	srcATA, err := c.usdcATA()
+	if err != nil {
+		return 0, err
+	}
+	bal, err := c.rpc.GetTokenAccountBalance(ctx, srcATA, rpc.CommitmentFinalized)
+	if err != nil {
+		return 0, fmt.Errorf("brij: USDC balance: %w", err)
+	}
+	if bal == nil || bal.Value == nil {
+		return 0, fmt.Errorf("brij: USDC balance: empty RPC response")
+	}
+	amount, err := strconv.ParseInt(bal.Value.Amount, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("brij: USDC balance: parse %q: %w", bal.Value.Amount, err)
+	}
+	if amount < 0 {
+		return 0, fmt.Errorf("brij: USDC balance: negative balance %d", amount)
+	}
+	return amount, nil
+}
+
 // --- x402 exact-SVM payment ---
 
 // paymentRequirement mirrors the base64 PAYMENT-REQUIRED header payload.
+// resource is an opaque object from BRIJ (url/description/mimeType) — it is
+// kept as RawMessage rather than a string because BREAKing on a type mismatch
+// here would take down every paid call.
 type paymentRequirement struct {
 	X402Version int               `json:"x402Version"`
 	Error       string            `json:"error,omitempty"`
-	Resource    string            `json:"resource,omitempty"`
+	Resource    json.RawMessage   `json:"resource,omitempty"`
 	Accepts     []acceptedPayment `json:"accepts"`
 	Extensions  map[string]any    `json:"extensions,omitempty"`
 }
@@ -213,7 +274,7 @@ type acceptedPayment struct {
 	Scheme            string         `json:"scheme"`
 	Network           string         `json:"network"`
 	Asset             string         `json:"asset"`
-	Amount            int64          `json:"amount"`
+	Amount            x402Amount     `json:"amount"` // atomic units; BRIJ sends it as a string
 	PayTo             string         `json:"payTo"`
 	MaxTimeoutSeconds int64          `json:"maxTimeoutSeconds"`
 	Extra             map[string]any `json:"extra,omitempty"`
@@ -324,10 +385,10 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response,
 			Message: fmt.Sprintf("challenge asset %q is not Solana mainnet USDC", ac.Asset),
 		}
 	}
-	if c.maxPaymentBaseUnits > 0 && ac.Amount > c.maxPaymentBaseUnits {
+	if c.maxPaymentBaseUnits > 0 && ac.Amount.Int64() > c.maxPaymentBaseUnits {
 		return "", &PaymentVerificationError{
 			Code:    "amount_over_cap",
-			Message: fmt.Sprintf("challenge amount %d exceeds the configured per-request cap %d", ac.Amount, c.maxPaymentBaseUnits),
+			Message: fmt.Sprintf("challenge amount %d exceeds the configured per-request cap %d", ac.Amount.Int64(), c.maxPaymentBaseUnits),
 		}
 	}
 
@@ -366,37 +427,39 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response,
 	// Memo: seller-defined when provided, otherwise binds the payment to the
 	// requested resource and amount so each transaction is self-describing and
 	// distinct even when the challenge nonce is identical.
-	memoText, err := paymentMemo(ac.Extra, path, ac.Amount)
+	memoText, err := paymentMemo(ac.Extra, path, ac.Amount.Int64())
 	if err != nil {
 		return "", err
 	}
 
 	instructions := make([]solana.Instruction, 0, 4)
-	for _, build := range []func() (solana.Instruction, error){
-		func() (solana.Instruction, error) {
-			return computebudget.NewSetComputeUnitLimitInstructionBuilder().SetUnits(computeUnitCap).ValidateAndBuild()
-		},
-		func() (solana.Instruction, error) {
-			return computebudget.NewSetComputeUnitPriceInstructionBuilder().SetMicroLamports(priorityFee).ValidateAndBuild()
-		},
-		func() (solana.Instruction, error) {
-			return token.NewTransferCheckedInstruction(
-				uint64(ac.Amount),
-				USDCDecimals,
-				srcATA,
-				mint,
-				dstATA,
-				c.pubkey,
-				nil,
-			).ValidateAndBuild()
-		},
-	} {
-		ix, err := build()
-		if err != nil {
-			return "", fmt.Errorf("brij: build payment instruction: %w", err)
-		}
-		instructions = append(instructions, ix)
+	limitIx, err := computebudget.NewSetComputeUnitLimitInstructionBuilder().SetUnits(computeUnitCap).ValidateAndBuild()
+	if err != nil {
+		return "", fmt.Errorf("brij: build compute unit limit ix: %w", err)
 	}
+	instructions = append(instructions, limitIx)
+	// Sponsored fee paying with a 0 priority fee must not emit a price
+	// instruction: SetMicroLamports(0) fails the builder's validation.
+	if priorityFee > 0 {
+		priceIx, err := computebudget.NewSetComputeUnitPriceInstructionBuilder().SetMicroLamports(priorityFee).ValidateAndBuild()
+		if err != nil {
+			return "", fmt.Errorf("brij: build compute unit price ix: %w", err)
+		}
+		instructions = append(instructions, priceIx)
+	}
+	transferIx, err := token.NewTransferCheckedInstruction(
+		uint64(ac.Amount.Int64()),
+		USDCDecimals,
+		srcATA,
+		mint,
+		dstATA,
+		c.pubkey,
+		nil,
+	).ValidateAndBuild()
+	if err != nil {
+		return "", fmt.Errorf("brij: build payment instruction: %w", err)
+	}
+	instructions = append(instructions, transferIx)
 	instructions = append(instructions, solana.NewInstruction(solana.MemoProgramID, nil, []byte(memoText)))
 
 	tx, err := solana.NewTransaction(instructions, blockhash, solana.TransactionPayer(feePayer))

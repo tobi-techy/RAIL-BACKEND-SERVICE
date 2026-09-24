@@ -45,6 +45,7 @@ type Config struct {
 	Reconciliation   ReconciliationConfig   `mapstructure:"reconciliation"`
 	SocialAuth       SocialAuthConfig       `mapstructure:"social_auth"`
 	Platform         PlatformConfig         `mapstructure:"platform"`
+	Confirmation     ConfirmationConfig     `mapstructure:"confirmation"`
 	Eval             EvalConfig             `mapstructure:"eval"`
 	WebAuthn         WebAuthnConfig         `mapstructure:"webauthn"`
 	AI               AIConfig               `mapstructure:"ai"`
@@ -442,9 +443,6 @@ type InvestmentGliderConfig struct {
 	// Enabled turns the whole feature on. When false every endpoint reports
 	// NOT_SUPPORTED rather than failing obscurely.
 	Enabled bool `mapstructure:"enabled"`
-	// Simulation selects the in-process Glider provider. It must never be used
-	// in production: the simulation signs nothing and touches no chain.
-	Simulation bool `mapstructure:"simulation"`
 
 	// APIKey is the Glider tenant API key (x-api-key). Production-only.
 	APIKey string `mapstructure:"api_key"`
@@ -796,12 +794,13 @@ type ChainRailsConfig struct {
 
 // PajConfig contains Paj Cash NGN on/off ramp configuration.
 type PajConfig struct {
-	APIKey        string `mapstructure:"api_key"`
-	BaseURL       string `mapstructure:"base_url"`       // default: https://api.paj.cash
-	WebhookURL    string `mapstructure:"webhook_url"`    // Rail's webhook endpoint URL (Paj posts per-order)
-	WalletAddress string `mapstructure:"wallet_address"` // Rail's USDC custody wallet (onramp recipient)
-	TokenMint     string `mapstructure:"token_mint"`     // USDC mint address on Solana
-	Chain         string `mapstructure:"chain"`          // default: SOLANA
+	APIKey          string  `mapstructure:"api_key"`
+	BaseURL         string  `mapstructure:"base_url"`          // default: https://api.paj.cash
+	WebhookURL      string  `mapstructure:"webhook_url"`       // Rail's webhook endpoint URL (Paj posts per-order)
+	WalletAddress   string  `mapstructure:"wallet_address"`    // Rail's USDC custody wallet (onramp recipient)
+	TokenMint       string  `mapstructure:"token_mint"`        // USDC mint address on Solana
+	Chain           string  `mapstructure:"chain"`             // default: SOLANA
+	BusinessUSDCFee float64 `mapstructure:"business_usdc_fee"` // Rail's per-order USDC cut (0 = take no cut)
 }
 
 // RampHubConfig contains RampHub on/off ramp aggregator configuration.
@@ -941,6 +940,29 @@ type PlatformConfig struct {
 	AppDownloadURL         string `mapstructure:"app_download_url"`            // App download link shared during chat-first onboarding (e.g. TestFlight)
 	OnboardingEnabled      bool   `mapstructure:"onboarding_enabled"`          // Enable chat-first account creation for unlinked senders
 	PushNotificationRule   string `mapstructure:"push_notification_rule"`      // "always", "action_only", "never"
+}
+
+// ConfirmationConfig drives the reusable live iMessage confirmation card
+// (Face ID money actions). One primitive for every high-stakes action.
+type ConfirmationConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`             // Stage cards at all (default true when TokenSecret set)
+	TokenSecret       string `mapstructure:"token_secret"`        // HMAC secret for single-use confirm URLs (required)
+	BaseURL           string `mapstructure:"base_url"`            // Public confirm URL base, e.g. https://api.userail.money/confirm
+	TTLSeconds        int    `mapstructure:"ttl_seconds"`         // Card lifetime (default 300 = 5 min for money movement)
+	AppName           string `mapstructure:"app_name"`            // Mini-app display name (default Miriam)
+	ExtensionBundleID string `mapstructure:"extension_bundle_id"` // Our Messages extension; empty = Spectrum app() stopgap
+	AppleTeamID       string `mapstructure:"apple_team_id"`       // Required with ExtensionBundleID for customizedMiniApp
+	// RailServiceKey is the shared Go<->Miriam secret (X-Rail-Service-Key).
+	// It must match Miriam's settings.RAIL_SERVICE_KEY. Required for the
+	// Miriam settle path (settle executor, /mark endpoint, terminal
+	// callback); without it Miriam-originated cards fail closed.
+	RailServiceKey string `mapstructure:"rail_service_key"`
+	// MiriamBaseURL is the Miriam agent HTTP base for settle + terminal
+	// callbacks. Empty defaults to python_agent.base_url at wiring time.
+	MiriamBaseURL string `mapstructure:"miriam_base_url"`
+	// RequireDeviceSignature rejects token-only approves outright. Default
+	// false (upgrade path: enroll first, enforce later).
+	RequireDeviceSignature bool `mapstructure:"require_device_signature"`
 }
 
 // WebAuthnConfig contains WebAuthn/Passkey configuration
@@ -1382,11 +1404,9 @@ func setDefaults() {
 	viper.SetDefault("workers.miriam_event_driven", true)
 	viper.SetDefault("workers.miriam_adaptive_loop", true)
 	viper.SetDefault("workers.leader_election", false)
-	// Investment (Glider) defaults. The feature is off unless explicitly enabled,
-	// and it defaults to simulation so a misconfigured deployment cannot place
-	// real trades with a placeholder key.
+	// Investment (Glider) defaults. The feature is off unless explicitly
+	// enabled; when enabled it always drives the real Glider V2 API.
 	viper.SetDefault("investment_glider.enabled", false)
-	viper.SetDefault("investment_glider.simulation", true)
 	viper.SetDefault("investment_glider.base_url", "https://api.glider.fi/v2")
 	viper.SetDefault("investment_glider.timeout", 30)
 	viper.SetDefault("investment_glider.default_chain", "solana")
@@ -1473,6 +1493,12 @@ func setDefaults() {
 	viper.SetDefault("platform.onboarding_enabled", false)
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
 
+	// Live confirmation cards (Face ID money actions). The token secret gates
+	// everything: without it the service fails closed and no cards are staged.
+	viper.SetDefault("confirmation.enabled", true)
+	viper.SetDefault("confirmation.ttl_seconds", 300)
+	viper.SetDefault("confirmation.app_name", "Miriam")
+
 	// Python agent delegation (the LLM brain for messaging channels).
 	// MIRIAM (Python) is the default brain; the old in-process orchestrator is
 	// only a fallback when the Python agent is explicitly unavailable.
@@ -1524,6 +1550,46 @@ func overrideFromEnv() error {
 	}
 	if v := os.Getenv("PLATFORM_PUSH_NOTIFICATION_RULE"); v != "" {
 		viper.Set("platform.push_notification_rule", v)
+	}
+	// Live confirmation cards (Face ID money actions). CONFIRMATION_TOKEN_SECRET
+	// is required — without it no cards are staged (fail-closed). Bundle IDs
+	// gate the native Face ID button; empty means the Spectrum app() stopgap.
+	if v := os.Getenv("CONFIRMATION_TOKEN_SECRET"); v != "" {
+		viper.Set("confirmation.token_secret", v)
+	}
+	if v := os.Getenv("CONFIRMATION_BASE_URL"); v != "" {
+		viper.Set("confirmation.base_url", v)
+	}
+	if v := os.Getenv("CONFIRMATION_TTL_SECONDS"); v != "" {
+		if ttl, err := strconv.Atoi(v); err == nil {
+			viper.Set("confirmation.ttl_seconds", ttl)
+		}
+	}
+	if v := os.Getenv("IMESSAGE_APP_NAME"); v != "" {
+		viper.Set("confirmation.app_name", v)
+	}
+	if v := os.Getenv("IMESSAGE_EXTENSION_BUNDLE_ID"); v != "" {
+		viper.Set("confirmation.extension_bundle_id", v)
+	}
+	if v := os.Getenv("APPLE_TEAM_ID"); v != "" {
+		viper.Set("confirmation.apple_team_id", v)
+	}
+	// Shared Go<->Miriam secret for the card<->challenge binding (settle
+	// executor, /mark endpoint, terminal callback). Same value as Miriam's
+	// RAIL_SERVICE_KEY.
+	if v := os.Getenv("RAIL_SERVICE_KEY"); v != "" {
+		viper.Set("confirmation.rail_service_key", v)
+	}
+	// Miriam agent base override for the settle path. Empty falls back to
+	// python_agent.base_url (PYTHON_AGENT_URL) at wiring time.
+	if v := os.Getenv("CONFIRMATION_MIRIAM_BASE_URL"); v != "" {
+		viper.Set("confirmation.miriam_base_url", v)
+	}
+	// Strict device signatures: reject token-only approves outright. Leave off
+	// until the fleet is enrolled — strict with no enrolled keys rejects
+	// everything, including first-use enrollment.
+	if v := os.Getenv("CONFIRMATION_REQUIRE_DEVICE_SIGNATURE"); v == "true" || v == "1" {
+		viper.Set("confirmation.require_device_signature", true)
 	}
 	if v := os.Getenv("PYTHON_AGENT_ENABLED"); v == "true" || v == "1" {
 		viper.Set("python_agent.enabled", true)
@@ -1939,7 +2005,6 @@ func overrideFromEnv() error {
 	// must come from the environment / secret manager, never from config.yaml.
 	for _, binding := range [][2]string{
 		{"investment_glider.enabled", "INVESTMENT_GLIDER_ENABLED"},
-		{"investment_glider.simulation", "INVESTMENT_GLIDER_SIMULATION"},
 		{"investment_glider.api_key", "INVESTMENT_GLIDER_API_KEY"},
 		{"investment_glider.base_url", "INVESTMENT_GLIDER_BASE_URL"},
 		{"investment_glider.owner_account_prefix", "INVESTMENT_GLIDER_OWNER_ACCOUNT_PREFIX"},
@@ -1991,6 +2056,7 @@ func overrideFromEnv() error {
 	viper.BindEnv("paj.wallet_address", "PAJ_WALLET_ADDRESS")
 	viper.BindEnv("paj.token_mint", "PAJ_TOKEN_MINT")
 	viper.BindEnv("paj.chain", "PAJ_CHAIN")
+	viper.BindEnv("paj.business_usdc_fee", "PAJ_BUSINESS_USDC_FEE")
 
 	for _, kv := range [][2]string{
 		{"paj.api_key", "PAJ_API_KEY"},
@@ -1999,6 +2065,7 @@ func overrideFromEnv() error {
 		{"paj.wallet_address", "PAJ_WALLET_ADDRESS"},
 		{"paj.token_mint", "PAJ_TOKEN_MINT"},
 		{"paj.chain", "PAJ_CHAIN"},
+		{"paj.business_usdc_fee", "PAJ_BUSINESS_USDC_FEE"},
 	} {
 		if v := os.Getenv(kv[1]); v != "" {
 			viper.Set(kv[0], v)
@@ -2311,17 +2378,14 @@ func validateBlendConfig(config *Config) error {
 }
 
 // validateInvestmentGliderConfig refuses configurations that could act on real
-// money by accident: in production the real provider needs an API key, and
-// simulation must never be enabled there.
+// money by accident: the provider is always the real Glider API, so a
+// non-dev deployment must carry an API key.
 func validateInvestmentGliderConfig(config *Config) error {
 	inv := config.InvestmentGlider
 	if !inv.Enabled {
 		return nil
 	}
 	if !isDevEnvironment(config.Environment) {
-		if inv.Simulation {
-			return fmt.Errorf("investment_glider.simulation cannot be enabled in %s: the simulated provider signs nothing and touches no chain", config.Environment)
-		}
 		if strings.TrimSpace(inv.APIKey) == "" {
 			return fmt.Errorf("investment_glider.api_key is required when investment_glider.enabled is true in %s", config.Environment)
 		}

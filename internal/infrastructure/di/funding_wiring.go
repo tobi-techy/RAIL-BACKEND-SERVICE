@@ -38,6 +38,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// maxPajBusinessUSDCFee caps Rail's per-order USDC cut (PAJ_BUSINESS_USDC_FEE).
+// Above this the fee silently short-changes users and breaks reversal math,
+// so wiring fails closed instead of taking the cut.
+const maxPajBusinessUSDCFee = 10.0
+
 func (c *Container) initializeBridgeServices() {
 	if c.BridgeClient == nil {
 		c.ZapLog.Warn("Bridge client not configured, skipping Bridge services initialization")
@@ -180,37 +185,46 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	// two initialize independently (RampHub must work with Paj unconfigured).
 	var pajService *pajfunding.Service
 	if c.Config.Paj.APIKey != "" {
-		pajClient := pajadapter.NewClient(pajadapter.Config{
-			APIKey:        c.Config.Paj.APIKey,
-			BaseURL:       c.Config.Paj.BaseURL,
-			WebhookURL:    c.Config.Paj.WebhookURL,
-			WalletAddress: c.Config.Paj.WalletAddress,
-			TokenMint:     c.Config.Paj.TokenMint,
-			Chain:         c.Config.Paj.Chain,
-		}, c.ZapLog)
-		pajService = pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
-		pajService.SetDepositRepository(c.DepositRepo)
-		if c.NotificationService != nil {
-			pajService.SetNotificationService(c.NotificationService)
+		// Guardrail: a negative fee would inflate user payouts; an uncapped
+		// fee silently short-changes users and breaks reversal math
+		// (actualDebit > totalHold loops). Fail closed at wiring, not per-order.
+		if fee := c.Config.Paj.BusinessUSDCFee; fee < 0 || fee > maxPajBusinessUSDCFee {
+			c.ZapLog.Error("paj funding disabled: PAJ_BUSINESS_USDC_FEE out of range (fail-closed)",
+				zap.Float64("fee", fee), zap.Float64("max", maxPajBusinessUSDCFee))
+		} else {
+			pajClient := pajadapter.NewClient(pajadapter.Config{
+				APIKey:          c.Config.Paj.APIKey,
+				BaseURL:         c.Config.Paj.BaseURL,
+				WebhookURL:      c.Config.Paj.WebhookURL,
+				WalletAddress:   c.Config.Paj.WalletAddress,
+				TokenMint:       c.Config.Paj.TokenMint,
+				Chain:           c.Config.Paj.Chain,
+				BusinessUSDCFee: c.Config.Paj.BusinessUSDCFee,
+			}, c.ZapLog)
+			pajService = pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
+			pajService.SetDepositRepository(c.DepositRepo)
+			if c.NotificationService != nil {
+				pajService.SetNotificationService(c.NotificationService)
+			}
+			if c.WalletService != nil {
+				pajService.SetWalletProvider(c.WalletService)
+			}
+			if c.CircleAdapter != nil {
+				pajService.SetCircleTransfer(c.CircleAdapter)
+			}
+			if c.ChainRailsClient != nil {
+				pajService.SetChainRailsAdapter(c.ChainRailsClient)
+			}
+			if c.GameplayHooks != nil {
+				pajService.SetGameplayHooks(c.GameplayHooks)
+			}
+			if c.LimitsService != nil {
+				pajService.SetLimitsChecker(&PajLimitsAdapter{limitsService: c.LimitsService})
+				pajService.SetDepositLimits(c.LimitsService)
+			}
+			c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
+			c.ZapLog.Info("Paj Cash NGN ramp initialized")
 		}
-		if c.WalletService != nil {
-			pajService.SetWalletProvider(c.WalletService)
-		}
-		if c.CircleAdapter != nil {
-			pajService.SetCircleTransfer(c.CircleAdapter)
-		}
-		if c.ChainRailsClient != nil {
-			pajService.SetChainRailsAdapter(c.ChainRailsClient)
-		}
-		if c.GameplayHooks != nil {
-			pajService.SetGameplayHooks(c.GameplayHooks)
-		}
-		if c.LimitsService != nil {
-			pajService.SetLimitsChecker(&PajLimitsAdapter{limitsService: c.LimitsService})
-			pajService.SetDepositLimits(c.LimitsService)
-		}
-		c.PajHandlers = fundinghandlers.NewPajHandlers(pajService, c.ZapLog)
-		c.ZapLog.Info("Paj Cash NGN ramp initialized")
 	} else {
 		c.ZapLog.Warn("Paj API key is empty, skipping initialization")
 	}

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rail-service/rail_service/internal/domain/services/ramp"
@@ -206,6 +207,13 @@ func (h *RampHandlers) GetOrderStatus(c *gin.Context) {
 // HandleWebhook verifies the RampHub signature and processes the event.
 // POST /v1/webhooks/ramphub
 func (h *RampHandlers) HandleWebhook(c *gin.Context) {
+	start := time.Now()
+	defer func() {
+		if d := time.Since(start); d > 4*time.Second {
+			h.logger.Warn("ramphub webhook processing slow — provider may redeliver (delivery handling is idempotent)",
+				zap.Int64("duration_ms", d.Milliseconds()))
+		}
+	}()
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if err != nil {
 		h.logger.Error("ramphub webhook: failed to read body", zap.Error(err))

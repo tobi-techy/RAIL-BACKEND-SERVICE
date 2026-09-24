@@ -1,13 +1,20 @@
-import { Spectrum, type Space, type Message, typing } from "spectrum-ts";
+import { Spectrum, type Space, type Message } from "spectrum-ts";
 import { imessage } from "spectrum-ts/providers/imessage";
 import { telegram } from "spectrum-ts/providers/telegram";
 import { whatsappBusiness } from "spectrum-ts/providers/whatsapp-business";
 import express from "express";
 import crypto from "node:crypto";
+import type { Server } from "node:http";
 import { loadConfig } from "./config";
 import { MessageHandler, OutboundMessage } from "./handler";
+import { ConfirmationCardStore } from "./confirmation-store";
 import { getLogger, childLogger } from "./logger";
 import { SpaceStore } from "./space-store";
+import { SpaceResolver } from "./space-resolver";
+import { OutboundPacer } from "./outbound-pacer";
+import { DeliverabilityTracker } from "./deliverability";
+import { FailureAudit } from "./failure-audit";
+import { extractSpaceMeta } from "./space-meta";
 import { PersistentOutboundQueue, type QueuedMessage } from "./outbound-queue";
 import {
   InboundDebouncer,
@@ -19,19 +26,30 @@ import {
 const config = loadConfig();
 const log = getLogger();
 
+// Spectrum SDK lifecycle handles (bound in start(), torn down in shutdown()).
+// Module-scoped so signal handlers can drain them — the SDK's own stop()
+// closes the message stream, destroys provider clients, and flushes telemetry.
+let spectrumAgent: Awaited<ReturnType<typeof Spectrum>> | null = null;
+// Back-compat alias used by the webhook route below.
+let webhookAgent: Awaited<ReturnType<typeof Spectrum>> | null = null;
+let httpServer: Server | null = null;
+let shuttingDown = false;
+
 const app = express();
 
 // Webhook route MUST be registered BEFORE the global express.json() middleware.
 // express.json() consumes the request body stream; if it runs first, the route-level
 // express.raw() can't recover the raw bytes the Spectrum SDK needs for HMAC verification.
-// We use a deferred handler since the agent isn't created until start().
-let webhookAgent: Awaited<ReturnType<typeof Spectrum>> | null = null;
+// The agent is bound in start(); until then the route answers 503.
+// In `stream` transport mode this route is not registered (see below).
+const WEBHOOK_ENABLED = config.SPECTRUM_TRANSPORT_MODE !== "stream";
 
+if (WEBHOOK_ENABLED) {
 app.post(
   config.SPECTRUM_WEBHOOK_PATH,
   express.raw({ type: "*/*" }),
   async (req, res) => {
-    if (!webhookAgent) {
+    if (!webhookAgent || shuttingDown) {
       res.status(503).json({ error: "bridge not ready" });
       return;
     }
@@ -41,8 +59,15 @@ app.post(
           body: req.body as Uint8Array,
           headers: req.headers as Record<string, string>,
         },
-        async (space: Space, message: Message) => {
-          await handleInbound(space, message);
+        (space: Space, message: Message) => {
+          // Fire-and-forget per SDK semantics: the HTTP response is already
+          // sent by the time this runs, and throws are swallowed by the SDK.
+          // Own the errors here — audit + log — so failures stay visible and
+          // the dedup reservation is released for redelivery.
+          handleInbound(space, message).catch((err) => {
+            failures.record("webhook", message?.id ?? "unknown", { thread: space?.id }, err);
+            log.error({ err }, "webhook inbound handling error");
+          });
         },
       );
       res.status(result.status).set(result.headers).send(Buffer.from(result.body));
@@ -52,6 +77,7 @@ app.post(
     }
   },
 );
+}
 
 // Global JSON parser for /send and other JSON endpoints — registered AFTER the
 // webhook route so it doesn't consume the webhook's raw body.
@@ -63,7 +89,23 @@ app.use(
   }),
 );
 
-const handler = new MessageHandler();
+// Live confirmation card handles (action_id -> message id) so approve /
+// reject / expire / fill edits mutate the SAME card — across restarts too.
+const cardStore = new ConfirmationCardStore();
+await cardStore.load();
+cardStore.startAutoSave();
+
+const handler = new MessageHandler({
+  maxBubbles: config.OUTBOUND_MAX_BUBBLES,
+  miniApp: {
+    appName: config.IMESSAGE_APP_NAME,
+    extensionBundleId: config.IMESSAGE_EXTENSION_BUNDLE_ID,
+    teamId: config.APPLE_TEAM_ID,
+  },
+  cardStore,
+  cardAssetsDir: config.CONFIRM_CARD_ASSETS_DIR,
+});
+const failures = new FailureAudit();
 
 // Persistent space store — survives bridge restarts so we know which threads exist.
 const spaceStore = new SpaceStore();
@@ -71,17 +113,36 @@ await spaceStore.load();
 spaceStore.startAutoSave();
 
 // Persistent outbound queue — survives bridge restarts so proactive messages are
-// not lost when the live Space handle is cold. Messages flush when the user texts
-// again and the space warms up.
+// not lost when the live Space handle is cold. Messages rehydrate via the
+// SpaceResolver (im.space.get) or flush when the user texts again.
 const outboundQueue = new PersistentOutboundQueue();
 await outboundQueue.load();
 outboundQueue.startAutoSave();
 
-// Registry of Space handles seen on inbound messages, so the outbound consumer
-// can send to a conversation by id. Spectrum only surfaces Space objects through
-// the inbound stream, so we can only send to spaces the user has messaged from —
-// which covers every reply/confirmation path.
-const spaces = new Map<string, Space>();
+// Global cross-conversation send pacer (see outbound-pacer.ts). Per-bubble
+// typing delays humanize a single reply; this bucket stops fan-outs and
+// post-restart flushes from hitting the wire as a line-flagging burst.
+const pacer = new OutboundPacer({
+  capacity: config.PACER_BURST,
+  refillIntervalMs: config.PACER_REFILL_MS,
+});
+
+// Platform hard caps (5,000 outbound/server/day, 50 new convos/line/day).
+const deliverability = new DeliverabilityTracker({
+  dailyOutboundCap: config.DELIVERY_DAILY_CAP,
+  newConvosPerLinePerDay: config.DELIVERY_NEW_CONVOS_PER_LINE,
+});
+
+// Owns Space handles for outbound sends: live inbound handles first, then
+// rehydration from the persisted SpaceStore record via im.space.get (cheap,
+// purely local construction on the remote iMessage provider). The fetcher is
+// bound once Spectrum() exists; until then the live cache is all there is.
+const spaceResolver = new SpaceResolver({
+  get: async () => {
+    throw new Error("space resolver not bound (agent not started)");
+  },
+  lookup: (threadId: string) => spaceStore.get(threadId),
+});
 
 const HMAC_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 const MAX_SEEN_NONCES = 10_000;
@@ -98,7 +159,7 @@ const MAX_DEDUP_IDS = 5_000;
 const processedMessageIds = new Map<string, number>(); // msgId -> expiration
 
 // Periodically evict expired nonces and dedup ids.
-setInterval(() => {
+const sweeper = setInterval(() => {
   const now = Date.now();
   for (const [nonce, expiresAt] of seenNonces) {
     if (expiresAt < now) seenNonces.delete(nonce);
@@ -306,7 +367,7 @@ const debouncer = new InboundDebouncer({
   maxWaitMs: INBOUND_MAX_WAIT_MS,
   maxBuffer: INBOUND_MAX_BUFFER,
   onBufferStart: (threadID) => {
-    const space = spaces.get(threadID);
+    const space = spaceResolver.cached(threadID);
     if (space) startTypingKeeper(threadID, space);
   },
   onError: (threadID, err) => {
@@ -314,12 +375,12 @@ const debouncer = new InboundDebouncer({
   },
 });
 
-// Per-thread typing keepers. iMessage's native indicator expires within
-// seconds, and backend processing (LLM think time, tool calls) regularly takes
-// longer than the old single startTyping() + immediate stopTyping-in-finally.
-// The keeper refreshes the indicator every TYPING_REFRESH_MS until an outbound
-// reply actually goes out or a safety deadline hits, so the user sees "..."
-// for the whole wait instead of a dead indicator.
+// Per-thread typing keepers. The SDK's space.responding(fn) covers typing for
+// a single in-process send, but our "thinking" window spans HTTP hops
+// (debounce -> backend LLM -> /send), so no single fn scope covers it. The
+// keeper refreshes the native indicator until an outbound reply actually goes
+// out or a safety deadline hits. Every path that ends a turn — successful
+// send, send error, inbound error — must call stopTypingKeeper.
 const TYPING_REFRESH_MS = 20_000;
 const TYPING_MAX_MS = 90_000;
 
@@ -353,43 +414,84 @@ function stopTypingKeeper(threadID: string): void {
   clearInterval(keeper.refresh);
   clearTimeout(keeper.deadline);
   typingKeepers.delete(threadID);
-  spaces.get(threadID)?.stopTyping().catch((err) => {
+  spaceResolver.cached(threadID)?.stopTyping().catch((err) => {
     log.warn({ err, thread_id: threadID }, "stopTyping failed");
   });
 }
 
-async function sendToSpace(msg: OutboundMessage): Promise<boolean> {
-  const space = spaces.get(msg.thread_id);
+/** Outcome of a send attempt: ok | cold (no handle — defer, no retry spent) |
+ *  capped (deliverability cap — defer) | failed (provider error — backoff). */
+type SendOutcome = "ok" | "cold" | "capped" | "failed";
+
+async function sendToSpace(msg: OutboundMessage): Promise<SendOutcome> {
+  // Backend-scheduled delivery: the Go ProactiveGuard owns quiet-hours, but
+  // any send may carry send_after as an escape hatch. Honored here by
+  // (re)queueing with notBefore instead of sending early.
+  if (msg.send_after && msg.send_after > Date.now()) {
+    outboundQueue.enqueue(msg, msg.category ?? "normal", { notBefore: msg.send_after });
+    return "ok";
+  }
+  // Stable idempotency key for the handler-level retry dedup.
+  if (!msg.client_guid) msg.client_guid = crypto.randomUUID();
+
+  const space = await spaceResolver.resolve(msg.thread_id);
   if (!space) {
     const known = spaceStore.has(msg.thread_id);
     log.warn(
       { thread_id: msg.thread_id, known_space: known },
-      `no active space for thread_id="${msg.thread_id}"`,
+      `no space handle for thread_id="${msg.thread_id}" (will rehydrate or warm on next inbound)`,
     );
-    return false;
+    return "cold";
   }
+  // Transport-level deliverability caps — never burn the line on the wire.
+  if (!deliverability.checkOutbound()) {
+    log.warn({ thread_id: msg.thread_id }, "daily outbound cap reached, deferring send");
+    return "capped";
+  }
+  // First-contact sends count against the per-line new-conversation quota.
+  // Replies inside known threads never consult it.
+  const isFirstContact = !spaceStore.has(msg.thread_id) && normalizePlatform(msg.platform) === "imessage";
+  const line = spaceStore.get(msg.thread_id)?.phone ?? "imessage";
+  if (isFirstContact && !deliverability.checkNewConvo(line)) {
+    log.warn({ thread_id: msg.thread_id, line }, "new-conversation quota reached, deferring send");
+    return "capped";
+  }
+  // Cross-conversation pacing: one token per send so fan-outs and queue
+  // flushes never hit the wire as a line-flagging burst.
+  await pacer.acquire();
+  if (shuttingDown) return "capped";
   // A reply is going out now: end the processing indicator. The handler's own
   // pacing (typeThenSend) re-triggers typing between multi-bubble replies.
   stopTypingKeeper(msg.thread_id);
   try {
-    await handler.handleOutbound(space, msg);
+    await handler.handleOutbound(space, { ...msg, is_first: msg.is_first ?? isFirstContact });
+    deliverability.recordOutbound();
+    if (isFirstContact) deliverability.recordNewConvo(line);
     // Mark inbound message as read after successful reply
     const lastInbound = handler.getLastInboundMessage(msg.thread_id);
     if (lastInbound) {
       space.read(lastInbound).catch(() => {});
     }
-    return true;
+    return "ok";
   } catch (err) {
+    failures.record("outbound", msg.client_guid ?? msg.thread_id, msg, err);
     log.error({ err, thread_id: msg.thread_id }, "failed to send to space");
-    return false;
+    return "failed";
   }
 }
 
-// Send a queued message and update the queue based on the outcome.
+// Send a queued message and update the queue based on the outcome. Cold/capped
+// outcomes DEFER without spending the retry budget (a retry cannot fix a cold
+// handle or a spent quota — burning attempts there dropped messages ~1 minute
+// after a restart despite their 4h/24h TTLs).
 async function attemptQueuedSend(item: QueuedMessage): Promise<void> {
-  const sent = await sendToSpace(item.msg);
-  if (sent) {
+  const outcome = await sendToSpace(item.msg);
+  if (outcome === "ok") {
     outboundQueue.remove(item.id);
+    return;
+  }
+  if (outcome === "cold" || outcome === "capped") {
+    outboundQueue.defer(item.id, 30_000);
     return;
   }
 
@@ -404,6 +506,7 @@ async function attemptQueuedSend(item: QueuedMessage): Promise<void> {
 
 // Process outbound queue — retry messages that failed due to cold spaces.
 function processOutboundQueue(): void {
+  if (shuttingDown) return;
   const ready = outboundQueue.getReady();
   for (const item of ready) {
     attemptQueuedSend(item).catch((err) =>
@@ -412,7 +515,7 @@ function processOutboundQueue(): void {
   }
 }
 
-setInterval(processOutboundQueue, 5_000);
+const queueTimer = setInterval(processOutboundQueue, 5_000);
 
 // Flush any messages queued for a thread that just warmed up. Called after an
 // inbound message registers the space handle. This deliberately does not await
@@ -443,12 +546,17 @@ app.post("/send", (req, res) => {
   }
   const msg = req.body as OutboundMessage;
 
-  sendToSpace(msg).then((sent) => {
-    if (!sent) {
-      // Queue for retry — user will need to message again to warm the space,
-      // or the space will be re-discovered on next inbound. Critical messages
-      // get a longer TTL so anomaly alerts and money receipts survive longer.
-      outboundQueue.enqueue(msg, msg.category ?? "normal");
+  // sendToSpace owns scheduling: future send_after is (re)queued with
+  // notBefore, cold/capped outcomes defer without spending retry budget.
+  // The resolver rehydrates handles from disk, so proactive sends no longer
+  // wait for the user to text again.
+  sendToSpace(msg).then((outcome) => {
+    if (outcome !== "ok") {
+      outboundQueue.enqueue(
+        msg,
+        msg.category ?? "normal",
+        msg.send_after && msg.send_after > Date.now() ? { notBefore: msg.send_after } : undefined,
+      );
     }
   });
   res.json({ status: "queued" });
@@ -457,14 +565,25 @@ app.post("/send", (req, res) => {
 app.get(["/", "/health"], (_req, res) => {
   const stats = outboundQueue.getStats();
   res.json({
-    status: "ok",
-    spaces: spaces.size,
+    status: shuttingDown ? "draining" : "ok",
+    transport_mode: config.SPECTRUM_TRANSPORT_MODE,
+    webhook_enabled: WEBHOOK_ENABLED,
+    spaces: spaceResolver.size,
     known_threads: spaceStore.count(),
+    confirmation_cards: cardStore.count(),
     queued_outbound: stats.totalQueued,
     queued_by_thread: stats.byThread,
     queued_oldest_ms: stats.oldestMessage ? Date.now() - stats.oldestMessage : undefined,
+    pacer: { available: pacer.available(), pending: pacer.pending },
+    deliverability: deliverability.stats(),
+    recent_failures: failures.count(),
     uptime_sec: Math.floor(process.uptime()),
   });
+});
+
+// Recent failure audit (bounded, payload summaries only — no message bodies).
+app.get("/health/failures", (_req, res) => {
+  res.json({ failures: failures.recent(20) });
 });
 
 async function handleInbound(space: Space, message: Message): Promise<void> {
@@ -489,8 +608,14 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
 
   const threadID = space.id;
   const platform = normalizePlatform(message.platform);
-  spaces.set(threadID, space);
-  const isNewSpace = spaceStore.register(threadID, space.id);
+  spaceResolver.prime(threadID, space);
+  // Persist platform + line phone so the resolver can rebuild this handle
+  // after a restart (im.space.get requires `phone` with 2+ dedicated lines).
+  const meta = extractSpaceMeta(space, platform, message);
+  const isNewSpace = spaceStore.register(threadID, space.id, {
+    platform: meta.platform,
+    phone: meta.phone,
+  });
   handler.registerInboundMessage(message);
 
   // First time we've EVER seen this space (persisted across restarts): share
@@ -514,13 +639,18 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   if (!senderId) return;
 
   const content = message.content;
-  const log = childLogger({ sender: senderId, thread: threadID, msg_type: content.type });
+  const reqLog = childLogger({
+    sender: senderId,
+    thread: threadID,
+    msg_type: content.type,
+    ...(meta.senderService ? { service: meta.senderService } : {}),
+  });
 
   // Self-echo guard: Spectrum echoes our own outbound sends (including poll
   // votes on bot-authored polls) back through the inbound stream. The real
   // field is message.direction — the old `isFromMe` check never matched.
   if (isOutboundEcho(message)) {
-    log.debug({ msg_id: message.id }, "skipping outbound-direction echo");
+    reqLog.debug({ msg_id: message.id }, "skipping outbound-direction echo");
     return;
   }
 
@@ -531,16 +661,19 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
 
   try {
     await routeInboundContent(
-      { postToBackend, debouncer, log },
+      { postToBackend, debouncer, log: reqLog },
       { platform, senderId, threadID, spaceId: space.id },
       message,
       content,
     );
   } catch (err) {
-    // Release the dedup reservation so a redelivered copy of this message can
-    // still be processed — the backend never accepted it.
+    // The turn died before reaching the backend: stop the "..." indicator
+    // (else it runs to the 90s deadline on a dead turn) and release the dedup
+    // reservation so a redelivered copy of this message can still be processed.
+    stopTypingKeeper(threadID);
+    failures.record("inbound", message.id ?? threadID, { thread: threadID }, err);
     if (message.id) processedMessageIds.delete(message.id);
-    log.error({ err, thread_id: threadID }, "inbound handling failed");
+    reqLog.error({ err, thread_id: threadID }, "inbound handling failed");
   }
 }
 
@@ -593,16 +726,54 @@ async function start() {
     ...(config.SPECTRUM_WEBHOOK_SECRET ? { webhookSecret: config.SPECTRUM_WEBHOOK_SECRET } : {}),
   });
 
+  spectrumAgent = agent;
   webhookAgent = agent;
 
-  app.listen(config.BRIDGE_PORT, () => {
-    log.info({ port: config.BRIDGE_PORT }, "bridge HTTP server listening");
+  // Bind cold-handle rehydration now that the platform instance exists.
+  // im.space.get is a purely local construction on the remote provider —
+  // no network call — so lazy rehydration is cheap.
+  const im = imessage(agent);
+  spaceResolver.setFetcher((id: string, params?: { phone?: string }) => im.space.get(id, params));
+
+  if (config.SPECTRUM_TRANSPORT_MODE !== "stream" && !config.SPECTRUM_WEBHOOK_SECRET) {
+    log.warn(
+      "SPECTRUM_WEBHOOK_SECRET is unset: native webhook deliveries will be answered 500 by the SDK. " +
+        "Set the secret (or switch to Fusor/stream transport) before expecting webhook inbound.",
+    );
+  }
+  if (config.SPECTRUM_TRANSPORT_MODE === "both") {
+    log.warn("transport mode 'both' runs webhook + streaming iterator in parallel (double delivery, dedup load). Prefer 'webhook'.");
+  }
+
+  httpServer = app.listen(config.BRIDGE_PORT, () => {
+    log.info(
+      { port: config.BRIDGE_PORT, transport: config.SPECTRUM_TRANSPORT_MODE },
+      "bridge HTTP server listening",
+    );
   });
+
+  if (config.SPECTRUM_TRANSPORT_MODE === "webhook") {
+    log.info("webhook transport: streaming iterator disabled, inbound arrives via HTTP");
+    // Park forever (until shutdown) without opening the streaming connection.
+    await new Promise((resolve) => {
+      const t = setInterval(() => {
+        if (shuttingDown) {
+          clearInterval(t);
+          resolve(undefined);
+        }
+      }, 1000);
+    });
+    return;
+  }
 
   log.info("waiting for provider messages...");
 
   for await (const [space, message] of agent.messages) {
-    handleInbound(space, message).catch((err) => log.error({ err }, "inbound handling error"));
+    if (shuttingDown) break;
+    handleInbound(space, message).catch((err) => {
+      failures.record("stream", message?.id ?? "unknown", { thread: space?.id }, err);
+      log.error({ err }, "inbound handling error");
+    });
   }
 }
 
@@ -611,20 +782,55 @@ start().catch((err) => {
   process.exit(1);
 });
 
-process.on("SIGTERM", async () => {
-  log.info("shutting down...");
-  await spaceStore.flush();
-  spaceStore.stopAutoSave();
-  await outboundQueue.flush();
-  outboundQueue.stopAutoSave();
-  process.exit(0);
-});
+// Graceful shutdown: the SDK owns no signal handlers (it's a library), so the
+// process belongs to us. Order matters — stop intake, flush debounced bursts
+// to the backend, tear down Spectrum (closes the stream, destroys provider
+// clients, flushes telemetry), then persist and exit. Idempotent and
+// once-guarded so a second signal during drain doesn't cut it short.
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info({ signal }, "shutting down...");
 
-process.on("SIGINT", async () => {
-  log.info("shutting down (SIGINT)...");
-  await spaceStore.flush();
+  clearInterval(sweeper);
+  clearInterval(queueTimer);
   spaceStore.stopAutoSave();
-  await outboundQueue.flush();
+  cardStore.stopAutoSave();
   outboundQueue.stopAutoSave();
+
+  try {
+    await debouncer.flushAll();
+  } catch (err) {
+    log.warn({ err }, "debouncer flushAll during shutdown failed");
+  }
+  debouncer.dispose();
+
+  if (spectrumAgent) {
+    try {
+      await Promise.race([
+        spectrumAgent.stop(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("stop timeout")), 5000)),
+      ]);
+    } catch (err) {
+      log.warn({ err }, "spectrum stop failed or timed out");
+    }
+    spectrumAgent = null;
+    webhookAgent = null;
+  }
+
+  pacer.dispose();
+  for (const threadID of typingKeepers.keys()) stopTypingKeeper(threadID);
+
+  await spaceStore.flush();
+  await cardStore.flush();
+  await outboundQueue.flush();
+
+  if (httpServer) {
+    await new Promise<void>((resolve) => httpServer!.close(() => resolve()));
+    httpServer = null;
+  }
   process.exit(0);
-});
+}
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));

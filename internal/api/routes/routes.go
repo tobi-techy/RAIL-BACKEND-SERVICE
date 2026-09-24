@@ -121,7 +121,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.String(http.StatusOK, "pong")
 	})
 
-	// Global middleware - order matters for security
+	// Global middleware — registered BEFORE all routes (including /confirm
+	// below) so money-moving endpoints get Recovery, SecurityHeaders,
+	// RequestSizeLimit, InputValidation and the global rate limiter. gin
+	// only applies Use() to subsequently-registered routes, which is why
+	// this block must precede the confirm group. /ping above intentionally
+	// stays bare for uptime monitoring.
 	router.Use(tracing.HTTPMiddleware()) // Tracing should be early in the chain
 	router.Use(middleware.RequestID())
 	router.Use(middleware.MetricsMiddleware())
@@ -141,6 +146,27 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	router.Use(middleware.DeviceFingerprintExtractor())
 	router.Use(middleware.APIVersionMiddleware(container.Config.Server.SupportedVersions))
 	router.Use(middleware.PaginationMiddleware())
+
+	// Live confirmation cards (Face ID money actions). The extension opens
+	// /confirm/:id?t=… with a signed single-use token — no session, the token
+	// is the credential (short-lived magic link). Creating a confirmation
+	// never moves money; Face ID success + server accept does.
+	if container.ConfirmationHandlers != nil {
+		confirm := router.Group("/confirm")
+		{
+			confirm.GET("/:id", middleware.RateLimit(30), container.ConfirmationHandlers.Fetch)
+			confirm.POST("/:id/approve", middleware.RateLimit(10), container.ConfirmationHandlers.Approve)
+			confirm.POST("/:id/reject", middleware.RateLimit(10), container.ConfirmationHandlers.Reject)
+		}
+		// Chat-settles-first sync: Miriam reports the terminal state over the
+		// shared secret so the live card shows the same ending. Rail-key
+		// authed (no user JWT): the caller is the Miriam backend, and the
+		// confirm_id join plus the shared secret is the authorization.
+		router.POST("/api/v1/confirmations/:id/mark",
+			middleware.RateLimit(10),
+			middleware.RequireRailServiceKey(container.Config.Confirmation.RailServiceKey, container.ZapLog),
+			container.ConfirmationHandlers.Mark)
+	}
 
 	// CSRF protection
 	csrfStore := middleware.NewCSRFStore()
@@ -852,6 +878,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Messaging platform linking (iMessage/WhatsApp/Telegram). Issues the
 			// one-time handshake token users text to the bridge to bind their sender id.
+			if container.ConfirmationHandlers != nil {
+				confirmations := protected.Group("/confirmations")
+				{
+					confirmations.POST("", middleware.AuthRateLimit(10), container.ConfirmationHandlers.Create)
+				}
+			}
 			if container.PlatformHandler != nil {
 				platformGroup := protected.Group("/platform")
 				{
@@ -1771,7 +1803,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
 		admin.Use(middleware.CSRFProtection(csrfStore))
 		{
-			// Complete stuck PAJ orders (internal key auth)
+			// Complete a stuck PAJ order (internal key auth). Moves NO ledger
+			// funds — flip state only after verifying provider truth out-of-band.
+			// Requires a reason; refuses orders already claimed for
+			// credit/reversal (deposit_id set) so a flip can't contradict an
+			// in-flight ledger operation.
 			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
 				key := c.GetHeader("X-Internal-Key")
 				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
@@ -1783,13 +1819,28 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					c.JSON(400, gin.H{"error": "order_id required"})
 					return
 				}
+				var body struct {
+					Reason string `json:"reason"`
+				}
+				_ = c.ShouldBindJSON(&body)
+				reason := strings.TrimSpace(body.Reason)
+				if reason == "" {
+					c.JSON(400, gin.H{"error": "reason is required for manual state flips"})
+					return
+				}
 				result, err := container.DB.ExecContext(c.Request.Context(),
-					`UPDATE paj_orders SET status = 'completed', updated_at = NOW() WHERE paj_order_id = $1 AND status NOT IN ('completed', 'failed')`, orderID)
+					`UPDATE paj_orders SET status = 'completed', last_webhook_status = $2, updated_at = NOW() WHERE paj_order_id = $1 AND status NOT IN ('completed', 'failed') AND deposit_id IS NULL`,
+					orderID, "manual-completed:admin-api:"+reason)
 				if err != nil {
 					c.JSON(500, gin.H{"error": err.Error()})
 					return
 				}
 				rows, _ := result.RowsAffected()
+				container.Logger.Warn("manual paj order complete (no ledger movement)",
+					zap.String("paj_order_id", orderID),
+					zap.String("reason", reason),
+					zap.String("caller_ip", c.ClientIP()),
+					zap.Int64("rows_affected", rows))
 				c.JSON(200, gin.H{"updated": rows, "order_id": orderID})
 			})
 

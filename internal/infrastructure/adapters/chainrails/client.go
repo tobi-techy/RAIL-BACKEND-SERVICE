@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -327,9 +330,124 @@ type IntentStatus struct {
 	Sender           string `json:"sender"`
 }
 
-func (c *Client) GetIntentStatus(ctx context.Context, intentAddress string) (*IntentStatus, error) {
-	url := fmt.Sprintf("%s/intents/%s", c.config.BaseURL, intentAddress)
+// GetIntentStatus polls an intent by its on-chain address.
+// Per the ChainRails docs, GET /intents/{id} takes the numeric intent ID
+// while address lookup lives at GET /intents/address/{address}. All callers
+// pass an intent address, so this must hit the address route — the by-ID
+// route 404s for addresses and polling recovery could never observe a
+// terminal state otherwise.
+// GetIntentByID fetches an intent by its numeric ID (GET /intents/{id}).
+// Used when only the numeric ID is known (e.g. parsed out of a transfer
+// reference like "circle-cr:<tx>:<id>").
+func (c *Client) GetIntentByID(ctx context.Context, intentID int) (*IntentStatus, error) {
+	intentURL := fmt.Sprintf("%s/intents/%d", c.config.BaseURL, intentID)
+	return c.getIntent(ctx, intentURL)
+}
 
+func (c *Client) GetIntentStatus(ctx context.Context, intentAddress string) (*IntentStatus, error) {
+	intentURL := fmt.Sprintf("%s/intents/address/%s", c.config.BaseURL, url.PathEscape(intentAddress))
+	status, err := c.getIntent(ctx, intentURL)
+	if err == nil {
+		return status, nil
+	}
+	// Route fallback: if the address route 404s (docs vs prod mismatch),
+	// retry the legacy by-ID-shaped route once before giving up — every
+	// poll site (withdrawals, sweeps, autosweep, stuck-funds) depends on
+	// observing a terminal state, and a hard 404 would stall them all.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		legacy := fmt.Sprintf("%s/intents/%s", c.config.BaseURL, url.PathEscape(intentAddress))
+		if legacyStatus, lerr := c.getIntent(ctx, legacy); lerr == nil {
+			if c.logger != nil {
+				c.logger.Warn("chainrails address route 404, legacy route answered (verify docs)",
+					zap.String("address", intentAddress))
+			}
+			return legacyStatus, nil
+		}
+	}
+	return nil, err
+}
+
+// TriggerIntentProcessing manually kicks a funded-but-unstarted intent.
+// Per the ChainRails docs this is the required fallback when the indexer
+// misses the funding event — and it is mandatory on testnets, which have no
+// indexing support at all.
+func (c *Client) TriggerIntentProcessing(ctx context.Context, intentAddress string) error {
+	if c == nil || c.httpClient == nil {
+		return fmt.Errorf("chainrails trigger-processing skipped: nil client")
+	}
+	intentURL := fmt.Sprintf("%s/intents/%s/trigger-processing", c.config.BaseURL, url.PathEscape(intentAddress))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, intentURL, nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("chainrails trigger-processing failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
+	}
+	return nil
+}
+
+// RefundIntentResult is the outcome of POST /intents/{address}/refund.
+type RefundIntentResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	TxHash  string `json:"txHash"`
+}
+
+// RefundExpiredIntent manually refunds an expired intent — the documented
+// escape hatch for recovering stuck funds when automation fails.
+func (c *Client) RefundExpiredIntent(ctx context.Context, intentAddress string) (*RefundIntentResult, error) {
+	intentURL := fmt.Sprintf("%s/intents/%s/refund", c.config.BaseURL, url.PathEscape(intentAddress))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, intentURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("chainrails refund failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
+	}
+	var result RefundIntentResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("decode refund result: %w", err)
+	}
+	return &result, nil
+}
+
+// IsTestnetChain reports whether a chain name targets a testnet.
+// Testnet intents have no indexer support and must be trigger-processed
+// after funding (see TriggerIntentProcessing). Matches the full vocabulary
+// callers may pass: ChainRails names (BASE_TESTNET) and Circle-style names
+// (BASE-SEPOLIA) from the Blend path, plus AMOY/FUJI/DEVNET families.
+func IsTestnetChain(chain string) bool {
+	up := strings.ToUpper(chain)
+	for _, marker := range []string{"TESTNET", "SEPOLIA", "AMOY", "FUJI", "DEVNET"} {
+		if strings.Contains(up, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) getIntent(ctx context.Context, url string) (*IntentStatus, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

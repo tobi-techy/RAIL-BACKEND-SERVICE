@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/glider"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -632,7 +631,7 @@ func (f *fakeSigner) SignSolanaTransaction(_ context.Context, _ uuid.UUID, tx st
 
 type fakeFunding struct {
 	store         *memoryStore
-	provider      *glider.Simulated
+	provider      *simProvider
 	available     decimal.Decimal
 	recipient     string
 	transfers     int
@@ -684,7 +683,7 @@ func (f *fakeFunding) RecipientAccount(_ context.Context, _ uuid.UUID) (string, 
 type harness struct {
 	service  *Service
 	store    *memoryStore
-	provider *glider.Simulated
+	provider *simProvider
 	signer   *fakeSigner
 	funding  *fakeFunding
 	userID   uuid.UUID
@@ -705,7 +704,7 @@ func newHarness(t *testing.T) *harness {
 		},
 	)
 
-	provider := glider.NewSimulated(glider.SimulatedConfig{})
+	provider := newSimProvider()
 	signer := &fakeSigner{}
 	funding := &fakeFunding{store: store, provider: provider, available: decimal.NewFromInt(100000), recipient: "solana:testnet:RailSettlementAddress"}
 

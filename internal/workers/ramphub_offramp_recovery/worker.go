@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,11 +40,30 @@ type CircleStatusChecker interface {
 	GetCircleTransferStatus(ctx context.Context, circleTxID string) (CircleTransferStatus, error)
 }
 
+// ChainRailsIntentStatus is the subset of ChainRails intent state the worker
+// acts on for "circle-cr:<tx>:<id>" bridged orders.
+type ChainRailsIntentStatus int
+
+const (
+	ChainRailsIntentUnknown ChainRailsIntentStatus = iota
+	ChainRailsIntentPending
+	ChainRailsIntentComplete
+	ChainRailsIntentFailed
+)
+
+// ChainRailsStatusChecker fetches the terminal state of a ChainRails intent by
+// its numeric ID. Without it, bridged orders are left for webhook/manual
+// review (never auto-completed, never auto-refunded).
+type ChainRailsStatusChecker interface {
+	GetChainRailsIntentStatus(ctx context.Context, intentID int) (ChainRailsIntentStatus, error)
+}
+
 type Worker struct {
 	db               *sql.DB
 	ledger           LedgerReverser
 	notifier         Notifier
 	circle           CircleStatusChecker
+	chainrails       ChainRailsStatusChecker
 	logger           *zap.Logger
 	checkInterval    time.Duration
 	maxPendingAge    time.Duration
@@ -70,6 +90,11 @@ func NewWorker(db *sql.DB, ledger LedgerReverser, logger *zap.Logger) *Worker {
 func (w *Worker) SetNotifier(n Notifier)                       { w.notifier = n }
 func (w *Worker) SetCircleStatusChecker(c CircleStatusChecker) { w.circle = c }
 
+// SetChainRailsStatusChecker wires ChainRails intent lookup so
+// "circle-cr:" bridged orders resolve to completion or reversal instead of
+// sitting pending forever when the webhook never lands.
+func (w *Worker) SetChainRailsStatusChecker(c ChainRailsStatusChecker) { w.chainrails = c }
+
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("Starting RampHub offramp recovery worker",
 		zap.Duration("check_interval", w.checkInterval),
@@ -94,7 +119,99 @@ func (w *Worker) recover(ctx context.Context) {
 	w.reverseAbandonedOrders(ctx)
 	w.reverseFailedTransfers(ctx)
 	w.reconcileStuckOrders(ctx)
+	w.reconcileBridgedOrders(ctx)
 	w.failExpiredOrders(ctx)
+}
+
+// reconcileBridgedOrders resolves "circle-cr:<circleTxID>:<intentID>" orders
+// whose webhook never landed. A Circle failure means funding never left the
+// wallet (safe to reverse). A Circle completion means funds sit in the
+// ChainRails intent — only the intent state can promote or reverse from
+// there. Without a ChainRails checker the order is left for webhook/manual
+// review, but it is LOGGED loudly so it never sits silently.
+func (w *Worker) reconcileBridgedOrders(ctx context.Context) {
+	if w.circle == nil {
+		return
+	}
+	completeAgeSeconds := int(w.completeAfterAge.Seconds())
+	rows, err := w.db.QueryContext(ctx, `
+		SELECT ramphub_transaction_id, user_id, fiat_amount, bridge_transfer_id, COALESCE(hold_amount, token_amount, 0)
+		FROM ramphub_orders
+		WHERE order_type = 'offramp' AND status IN ('pending','processing','paid')
+		  AND bridge_transfer_id LIKE 'circle-cr:%'
+		  AND deposit_id IS NULL
+		  AND created_at < NOW() - make_interval(secs => $1)
+		ORDER BY created_at ASC LIMIT 25`, completeAgeSeconds)
+	if err != nil {
+		w.logger.Error("ramphub offramp bridged reconciliation: query failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+
+	var candidates []stuckOrder
+	for rows.Next() {
+		var c stuckOrder
+		if err := rows.Scan(&c.TxID, &c.UserID, &c.FiatAmount, &c.BridgeTransferID, &c.HoldAmount); err != nil {
+			w.logger.Error("ramphub offramp bridged reconciliation: scan failed", zap.Error(err))
+			continue
+		}
+		candidates = append(candidates, c)
+	}
+	for _, c := range candidates {
+		if err := w.reconcileBridgedOrder(ctx, c); err != nil {
+			w.logger.Error("ramphub offramp bridged reconciliation: failed", zap.Error(err), zap.String("ramphub_tx_id", c.TxID))
+		}
+	}
+}
+
+func (w *Worker) reconcileBridgedOrder(ctx context.Context, c stuckOrder) error {
+	rest := strings.TrimPrefix(c.BridgeTransferID, "circle-cr:")
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		w.logger.Warn("ramphub offramp reconciliation: malformed circle-cr bridge id",
+			zap.String("ramphub_tx_id", c.TxID),
+			zap.String("bridge_transfer_id", c.BridgeTransferID))
+		return nil
+	}
+	circleTxID, intentIDS := parts[0], parts[1]
+
+	state, err := w.circle.GetCircleTransferStatus(ctx, circleTxID)
+	if err != nil {
+		return fmt.Errorf("circle status check: %w", err)
+	}
+	if state == CircleTransferFailed {
+		// Funding never left the wallet — reverse the hold.
+		return w.reverseStuckOrder(ctx, c.TxID, c.UserID, "circle_cr_bridge_circle_failed")
+	}
+	if state != CircleTransferComplete {
+		return nil // first leg still in flight; retry next cycle.
+	}
+
+	if w.chainrails == nil {
+		w.logger.Warn("ramphub offramp reconciliation: circle-cr bridge funded but no ChainRails checker wired — leaving for webhook/manual review",
+			zap.String("ramphub_tx_id", c.TxID),
+			zap.String("bridge_transfer_id", c.BridgeTransferID))
+		return nil
+	}
+	intentID, convErr := strconv.Atoi(intentIDS)
+	if convErr != nil {
+		w.logger.Warn("ramphub offramp reconciliation: unparsable intent id in circle-cr bridge id",
+			zap.String("ramphub_tx_id", c.TxID),
+			zap.String("bridge_transfer_id", c.BridgeTransferID))
+		return nil
+	}
+	intentState, err := w.chainrails.GetChainRailsIntentStatus(ctx, intentID)
+	if err != nil {
+		return fmt.Errorf("chainrails intent check: %w", err)
+	}
+	switch intentState {
+	case ChainRailsIntentComplete:
+		return w.promoteCompleted(ctx, c)
+	case ChainRailsIntentFailed:
+		return w.reverseStuckOrder(ctx, c.TxID, c.UserID, "circle_cr_bridge_intent_failed")
+	default:
+		return nil // intent still settling; retry next cycle.
+	}
 }
 
 // reverseFailedTransfers promptly refunds offramps whose direct Circle transfer
@@ -116,6 +233,7 @@ func (w *Worker) reverseFailedTransfers(ctx context.Context) {
 		FROM ramphub_orders
 		WHERE order_type = 'offramp' AND status IN ('pending','processing')
 		  AND bridge_transfer_id LIKE 'circle:%'
+		  AND bridge_transfer_id NOT LIKE 'circle-cr:%'
 		  AND deposit_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
 		ORDER BY created_at ASC LIMIT 25`, minAgeSeconds)
@@ -217,6 +335,7 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 		FROM ramphub_orders
 		WHERE order_type = 'offramp' AND status IN ('pending','processing','paid')
 		  AND bridge_transfer_id LIKE 'circle:%'
+		  AND bridge_transfer_id NOT LIKE 'circle-cr:%'
 		  AND deposit_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
 		ORDER BY created_at ASC LIMIT 25`, completeAgeSeconds)

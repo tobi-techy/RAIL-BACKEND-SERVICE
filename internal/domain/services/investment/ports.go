@@ -8,6 +8,7 @@ package investment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -24,7 +25,6 @@ import (
 // here (or in per-user limits) so compliance rules never live in a prompt.
 type Config struct {
 	Enabled      bool
-	Simulation   bool
 	DefaultChain string
 	// SolanaChainIDs are the numeric chain ids sent to the provider for Solana
 	// enrollment; the provider contract expects a subset of its configured
@@ -73,24 +73,48 @@ type Limits struct {
 // and only with parameters derived from stored state.
 type Provider interface {
 	Whoami(ctx context.Context) (*entities.GliderIdentity, error)
+	ListScopes(ctx context.Context) ([]entities.GliderScope, error)
 	CreateStrategy(ctx context.Context, in entities.GliderStrategyInput) (*entities.GliderStrategy, error)
-	PublishStrategyVersion(ctx context.Context, strategyID string, in entities.GliderStrategyInput) (*entities.GliderStrategy, error)
+	ValidateStrategy(ctx context.Context, in entities.GliderStrategyInput) error
+	PublishStrategyVersion(ctx context.Context, strategyID string, in entities.GliderPublishVersionInput) (*entities.GliderPublishedVersion, error)
 	GetStrategy(ctx context.Context, strategyID string) (*entities.GliderStrategy, error)
+	ListStrategies(ctx context.Context, filter entities.GliderStrategyListFilter) ([]entities.GliderStrategy, string, error)
+	PatchStrategy(ctx context.Context, strategyID string, patch entities.GliderStrategyPatch) (*entities.GliderStrategy, error)
+	ListStrategyVersions(ctx context.Context, strategyID, cursor string, limit int) ([]entities.GliderStrategyVersion, string, error)
+	GetStrategyPerformance(ctx context.Context, strategyID string) (*entities.GliderStrategyPerformance, error)
+	GetStrategySchedule(ctx context.Context, strategyID string) (*entities.GliderSchedule, error)
 	SetStrategySchedule(ctx context.Context, strategyID, frequency string) error
+	GetStrategyPreferences(ctx context.Context, strategyID string) (*entities.GliderPreferences, error)
+	PatchStrategyPreferences(ctx context.Context, strategyID string, patch map[string]any) (*entities.GliderPreferences, error)
+	GetStrategyFees(ctx context.Context, strategyID string) (*entities.GliderFeeView, error)
+	PatchStrategyFees(ctx context.Context, strategyID string, patch map[string]any) (*entities.GliderFeeView, error)
+	GetTenantPreferences(ctx context.Context) (*entities.GliderPreferences, error)
+	PatchTenantPreferences(ctx context.Context, patch map[string]any) (*entities.GliderPreferences, error)
+	GetTenantFees(ctx context.Context) (*entities.GliderFeeView, error)
+	PatchTenantFees(ctx context.Context, patch map[string]any) (*entities.GliderFeeView, error)
 	DiscoverStrategies(ctx context.Context, collection, cursor string, limit int) ([]entities.GliderDiscoveredStrategy, string, error)
 
 	PrepareEnrollment(ctx context.Context, in entities.GliderEnrollSignatureInput) (*entities.GliderEnrollAuthorization, error)
 	SubmitEnrollment(ctx context.Context, in entities.GliderEnrollSubmitInput) (*entities.GliderPortfolio, error)
 	GetPortfolio(ctx context.Context, portfolioID string) (*entities.GliderPortfolio, error)
 	ListPortfolios(ctx context.Context) ([]entities.GliderPortfolio, error)
+	ListPortfoliosFiltered(ctx context.Context, filter entities.GliderPortfolioListFilter) ([]entities.GliderPortfolio, string, error)
+	PatchPortfolio(ctx context.Context, portfolioID string, patch entities.GliderPortfolioPatch) (*entities.GliderPortfolio, error)
 	GetPositions(ctx context.Context, portfolioID string) (*entities.GliderPositions, error)
+	GetPortfolioPerformance(ctx context.Context, portfolioID, returnMethod string) (*entities.GliderPortfolioPerformance, error)
+	GetSectorExposure(ctx context.Context, portfolioID string) (*entities.GliderSectorExposure, error)
+	GetAllocationBreakdown(ctx context.Context, in entities.GliderBreakdownInput) (json.RawMessage, error)
 	StartPortfolio(ctx context.Context, portfolioID string) error
 	StopPortfolio(ctx context.Context, portfolioID string) error
 	TriggerRebalance(ctx context.Context, portfolioID string) (*entities.GliderOperationHandle, error)
 	GetOperation(ctx context.Context, portfolioID, operationID string) (*entities.GliderOperationState, error)
+	PrepareChainActivation(ctx context.Context, portfolioID string, in entities.GliderChainActivationInput) (*entities.GliderChainActivationMessage, error)
+	ActivateChains(ctx context.Context, portfolioID string, in entities.GliderChainActivationSubmit) (*entities.GliderPortfolio, error)
 
 	PrepareWithdrawal(ctx context.Context, portfolioID string, in entities.GliderWithdrawSignatureInput) (*entities.GliderWithdrawAuthorization, error)
 	SubmitWithdrawal(ctx context.Context, portfolioID string, in entities.GliderWithdrawSubmitInput) (*entities.GliderOperationHandle, error)
+	PrepareLiquidateAll(ctx context.Context, portfolioID string, in entities.GliderLiquidateSignatureInput) (*entities.GliderWithdrawAuthorization, error)
+	SubmitLiquidateAll(ctx context.Context, portfolioID string, in entities.GliderWithdrawSubmitInput) (*entities.GliderOperationHandle, error)
 }
 
 // OwnerSigner is the portfolio owner authority. The plan's decision is
@@ -314,4 +338,17 @@ func (s *Service) nowOr() time.Time {
 		return time.Now().UTC()
 	}
 	return s.clock().UTC()
+}
+
+// signatureExpiry stamps signature-request rows with an explicit expiry
+// derived from ConfirmationTTL (default 15m). The provider type no longer
+// carries its own expires_at, so without this the column would be written
+// zero — and expiry sweeps could never distinguish live from dead requests.
+func (s *Service) signatureExpiry() *time.Time {
+	ttl := s.cfg.ConfirmationTTL
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	t := s.nowOr().Add(ttl)
+	return &t
 }

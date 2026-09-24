@@ -150,11 +150,26 @@ func RecoverStuckBaseToSolana(ctx context.Context, cc *circle.HTTPClient, cr *ch
 		}
 		s := strings.ToUpper(strings.TrimSpace(st.Status))
 		fmt.Fprintf(out, "  intent status=%s tx=%s\n", s, st.TxHash)
-		switch s {
-		case "COMPLETED", "COMPLETE", "SUCCESS", "SUCCEEDED", "SETTLED", "FULFILLED":
+		switch {
+		case chainrails.IsTerminalSuccess(s):
 			fmt.Fprintf(out, "\n✅ Recovered. %s USDC bridged to %s on Solana. dest tx=%s\n", p.DestAmount.StringFixed(6), p.ToSolanaAddr, st.TxHash)
 			return nil
-		case "FAILED", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED", "REFUNDED":
+		case chainrails.IsTerminalFailure(s):
+			if s == "EXPIRED" {
+				// Fire the documented refund escape hatch so funds parked in
+				// the expired intent return to the wallet without waiting on
+				// automation.
+				fmt.Fprintln(out, "  intent expired — requesting ChainRails refund...")
+				if res, rerr := cr.RefundExpiredIntent(ctx, intent.IntentAddress); rerr != nil {
+					return fmt.Errorf("chainrails intent expired and refund request failed: %w (funds remain in intent %s; retry refund manually)", rerr, intent.IntentAddress)
+				} else {
+					fmt.Fprintf(out, "  refund requested: success=%v message=%q tx=%s\n", res.Success, res.Message, res.TxHash)
+					if !res.Success {
+						return fmt.Errorf("chainrails refund not accepted: %s", res.Message)
+					}
+					return nil
+				}
+			}
 			return fmt.Errorf("chainrails intent ended in %s — funds refunded to %s per ChainRails policy", s, wallet.Address)
 		}
 	}

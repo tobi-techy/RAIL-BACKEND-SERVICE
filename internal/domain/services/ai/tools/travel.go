@@ -16,7 +16,7 @@ import (
 func RegisterTravelTools(r *Registry) {
 	r.Register(NewTool(
 		"search_flights",
-		"Search live one-way flight offers for a route and date. origin and destination are 3-letter IATA airport codes (e.g. LOS, ABV, MAN); depart_date is YYYY-MM-DD. Returns offers with id, origin_iata, destination_iata, departing_at, arriving_at, total_amount_decimal (fare in USDC) and expires_at — all needed by create_flight_intent.",
+		"Search live one-way flight offers for a route and date. origin and destination are 3-letter IATA airport codes (e.g. LOS, ABV, MAN); depart_date is YYYY-MM-DD. Returns up to 20 offers (cheapest per itinerary) with id, origin_iata, destination_iata, departing_at, arriving_at, fare_brand_name, cabin_class, checked_bags_included, conditions, and total_amount_decimal (fare in USDC) — all needed by create_flight_intent. If the user asks for a fare that is missing from this first page, do not claim it does not exist — the view is capped, not exhaustive.",
 		SimpleArgs(map[string]map[string]interface{}{
 			"origin":      StringParam("Departure airport IATA code, e.g. LOS"),
 			"destination": StringParam("Arrival airport IATA code, e.g. ABV"),
@@ -63,20 +63,23 @@ func RegisterTravelTools(r *Registry) {
 
 	r.Register(NewTool(
 		"book_flight",
-		"Book a locked flight for the user now. Pass intent_id from create_flight_intent and exactly one passenger with given_name, family_name, born_on (YYYY-MM-DD), title (mr/mrs/ms/miss/dr), gender (m/f), email, and phone_number (E.164, e.g. +447400123456). Reuse saved travelers from list_travel_passengers and ask for any missing fields. This holds the user's funds for the escrow + Rail fee and requires user confirmation with Face ID.",
+		"Book a locked flight for the user now. Pass intent_id from create_flight_intent and exactly one passenger with given_name, family_name, born_on (YYYY-MM-DD), title (mr/mrs/ms/miss/dr), gender (m/f), email, and phone_number (E.164, e.g. +447400123456). Browser-provider fares (trip.com, ryanair) additionally require nationality (passport country), passport_number and passport_expiry (YYYY-MM-DD). Reuse saved travelers from list_travel_passengers and ask for any missing fields. This holds the user's funds for the escrow + Rail fee and requires user confirmation with Face ID.",
 		SimpleArgs(map[string]map[string]interface{}{
 			"intent_id": StringParam("Intent id from create_flight_intent"),
 			"passenger": map[string]interface{}{
 				"type":        "object",
 				"description": "The adult passenger booking the flight",
 				"properties": map[string]interface{}{
-					"given_name":   map[string]interface{}{"type": "string", "description": "First name, exactly as on the passport"},
-					"family_name":  map[string]interface{}{"type": "string", "description": "Last name, exactly as on the passport"},
-					"born_on":      map[string]interface{}{"type": "string", "description": "Date of birth, YYYY-MM-DD"},
-					"title":        map[string]interface{}{"type": "string", "description": "Title: mr, mrs, ms, miss or dr"},
-					"gender":       map[string]interface{}{"type": "string", "description": "Gender: m or f"},
-					"email":        map[string]interface{}{"type": "string", "description": "Passenger email address"},
-					"phone_number": map[string]interface{}{"type": "string", "description": "Passenger phone, E.164 format e.g. +447400123456"},
+					"given_name":      map[string]interface{}{"type": "string", "description": "First name, exactly as on the passport"},
+					"family_name":     map[string]interface{}{"type": "string", "description": "Last name, exactly as on the passport"},
+					"born_on":         map[string]interface{}{"type": "string", "description": "Date of birth, YYYY-MM-DD"},
+					"title":           map[string]interface{}{"type": "string", "description": "Title: mr, mrs, ms, miss or dr"},
+					"gender":          map[string]interface{}{"type": "string", "description": "Gender: m or f"},
+					"email":           map[string]interface{}{"type": "string", "description": "Passenger email address"},
+					"phone_number":    map[string]interface{}{"type": "string", "description": "Passenger phone, E.164 format e.g. +447400123456"},
+					"nationality":     map[string]interface{}{"type": "string", "description": "Nationality / passport issuing country (required for trip.com and ryanair fares)"},
+					"passport_number": map[string]interface{}{"type": "string", "description": "Passport number (required for trip.com and ryanair fares)"},
+					"passport_expiry": map[string]interface{}{"type": "string", "description": "Passport expiry, YYYY-MM-DD (required for trip.com and ryanair fares)"},
 				},
 				"required": []string{"given_name", "family_name", "born_on", "title", "gender", "email", "phone_number"},
 			},

@@ -10,6 +10,7 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
+	confirmationHandlers "github.com/rail-service/rail_service/internal/api/handlers/confirmation"
 	evalhandlers "github.com/rail-service/rail_service/internal/api/handlers/eval"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	opportunityhandlers "github.com/rail-service/rail_service/internal/api/handlers/opportunities"
@@ -33,6 +34,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/billpay"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
+	confirmationSvc "github.com/rail-service/rail_service/internal/domain/services/confirmation"
 	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/document"
@@ -488,6 +490,10 @@ type Container struct {
 	platformLinking      *platform.LinkingService
 	EvalHandler          *evalhandlers.Handler
 
+	// Live confirmation cards (Face ID money actions, one primitive for all actions)
+	ConfirmationService  *confirmationSvc.Service
+	ConfirmationHandlers *confirmationHandlers.Handler
+
 	// Mono (open-banking data + DirectPay)
 	MonoService        *monosvc.Service
 	MonoWebhookHandler *webhooks.MonoWebhookHandler
@@ -758,6 +764,11 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 
 	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
 	container.initializePlatformMessaging()
+
+	// Live confirmation cards (Face ID money actions). Runs after domain
+	// services (P2P, automation, investment executors) and platform messaging
+	// (bridge dispatcher for card delivery + in-place edits).
+	container.initializeConfirmationServices()
 
 	// Chat-first onboarding for unlinked senders — must run after
 	// initializePlatformMessaging (processor/linking) and after

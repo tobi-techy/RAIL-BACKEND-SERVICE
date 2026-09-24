@@ -58,6 +58,7 @@ type CircleTransferAdapter interface {
 // ChainRailsAdapter bridges EVM-held USDC to Airbills' Solana deposit address.
 type ChainRailsAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+	chainrailspkg.IntentTriggerer
 }
 
 // CurrencyRateProvider returns the live USD/NGN rate for display and pre-checks.

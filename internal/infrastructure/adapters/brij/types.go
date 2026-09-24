@@ -11,15 +11,72 @@
 //     Async: poll GET /air/intents/{id} until status is booked or refunded.
 //   - POST /air/refund-requests — 0.10 USDC, files a manual refund request.
 //   - GET  /air/intents/{id}     — intent status (no payment required).
-//   - GET  /air/orders/{id}      — PNR + order status, needs the support code.
+//   - GET  /air/orders/{id}      — PNR + order status, paid 0.01 USDC via x402
+//     and still gated by the customer support code. Refusals are never charged.
+//   - POST /air/offer-details    — drill into one offer (fresh price, fare menu,
+//     bag prices); browser-tier offers 0.10, fastbooking 0.01.
 //
 // Ids always travel in the request body, never in the path (except the two GET
 // read endpoints above).
 package brij
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
+
+// BrowserTierOffer prefixes. These offers book through a browser-driven
+// fulfiller (trip.com, ryanair.com) rather than an airline API: they need a
+// fresh fare menu (POST /air/offer-details) before intent creation and the
+// passenger's travel document at book time.
+const (
+	BrowserTierTripcom = "trip.com:"
+	BrowserTierRyanair = "ryanair:"
+)
+
+// x402Amount is an x402 payment amount. BRIJ serializes atomic amounts as
+// decimal strings in the PAYMENT-REQUIRED challenge (e.g. "100000"); be lenient
+// and accept a plain JSON number too, so a server-side format change can never
+// break the whole payment handshake again.
+type x402Amount int64
+
+// Int64 returns the atomic amount.
+func (a x402Amount) Int64() int64 { return int64(a) }
+
+// UnmarshalJSON accepts both a JSON string ("100000") and a JSON number (100000).
+func (a *x402Amount) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || bytes.Equal(b, []byte("null")) {
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil {
+			return fmt.Errorf("x402 amount %q is not an integer", s)
+		}
+		*a = x402Amount(v)
+		return nil
+	}
+	var v int64
+	if err := json.Unmarshal(b, &v); err != nil {
+		return fmt.Errorf("x402 amount is not an integer: %w", err)
+	}
+	*a = x402Amount(v)
+	return nil
+}
+
+// IsBrowserTierOffer reports whether the offer books through a browser-driven
+// fulfiller that requires a travel document at book time.
+func IsBrowserTierOffer(offerID string) bool {
+	id := strings.ToLower(offerID)
+	return strings.HasPrefix(id, BrowserTierTripcom) || strings.HasPrefix(id, BrowserTierRyanair)
+}
 
 // Booking intent status values returned by the BRIJ API.
 const (
@@ -39,11 +96,23 @@ const (
 )
 
 // SearchRequest searches live flight offers. All fares are one-way, per adult.
+// Limit and CheapestPerItinerary default to "no cap / cheapest instance" on the
+// BRIJ side, but full search responses can exceed 300 KB; LLM-driven callers
+// should always bound the result set (see travel.Service.SearchFlights).
 type SearchRequest struct {
-	OriginIATA      string `json:"origin_iata"`
-	DestinationIATA string `json:"destination_iata"`
-	DepartDate      string `json:"depart_date"` // YYYY-MM-DD
-	Adults          int    `json:"adults"`      // default 1
+	OriginIATA           string `json:"origin_iata"`
+	DestinationIATA      string `json:"destination_iata"`
+	DepartDate           string `json:"depart_date"` // YYYY-MM-DD
+	Adults               int    `json:"adults"`      // default 1
+	ReturnDate           string `json:"return_date,omitempty"`
+	CabinClass           string `json:"cabin_class,omitempty"`
+	Limit                *int   `json:"limit,omitempty"`
+	CheapestPerItinerary *bool  `json:"cheapest_per_itinerary,omitempty"`
+	Sort                 string `json:"sort,omitempty"`
+	MaxStops             *int   `json:"max_stops,omitempty"`
+	DepartureAfter       string `json:"departure_after,omitempty"`
+	DepartureBefore      string `json:"departure_before,omitempty"`
+	MaxPrice             string `json:"max_price,omitempty"`
 }
 
 // SearchResponse is the 200 body of POST /air/search.
@@ -51,29 +120,100 @@ type SearchResponse struct {
 	Search SearchResult `json:"search"`
 }
 
-// SearchResult carries the request id plus the matched offers.
+// SearchResult carries the request id plus the matched offers. Progressive
+// searches may return Status "enriching" with a SearchID to poll via
+// /air/search-updates; a SearchID alone is a capability token, not all offers.
 type SearchResult struct {
 	RequestID string         `json:"request_id"`
+	SearchID  string         `json:"search_id,omitempty"`
+	Status    string         `json:"status,omitempty"`
 	Offers    []OfferSummary `json:"offers"`
 }
 
 // OfferSummary is a single flight offer. TotalAmount is the atomic amount the
-// API uses for money comparisons; TotalAmountDecimal is the human form.
+// API uses for money comparisons; TotalAmountDecimal is the human form. Fare
+// fields (brand, cabin, bags, conditions) distinguish the same physical flight
+// sold under different fares — the model needs them to avoid answering "there
+// is no refundable/business fare" from a truncated list.
 type OfferSummary struct {
-	ID                      string   `json:"id"`
-	OwnerName               string   `json:"owner_name"`
-	OriginIATA              string   `json:"origin_iata"`
-	DestinationIATA         string   `json:"destination_iata"`
-	DepartingAt             string   `json:"departing_at"`
-	ArrivingAt              string   `json:"arriving_at"`
-	TotalAmount             int64    `json:"total_amount"`
-	TotalAmountDecimal      string   `json:"total_amount_decimal"`
-	TotalCurrency           string   `json:"total_currency"`
-	ExpiresAt               string   `json:"expires_at"`
-	RequiresInstantPayment  bool     `json:"requires_instant_payment"`
-	PriceGuaranteeExpiresAt string   `json:"price_guarantee_expires_at"`
-	PaymentRequiredBy       string   `json:"payment_required_by"`
-	PassengerIDs            []string `json:"passenger_ids"`
+	ID                        string            `json:"id"`
+	OwnerName                 string            `json:"owner_name"`
+	OriginIATA                string            `json:"origin_iata"`
+	DestinationIATA           string            `json:"destination_iata"`
+	DepartingAt               string            `json:"departing_at"`
+	ArrivingAt                string            `json:"arriving_at"`
+	Stops                     *int              `json:"stops,omitempty"`
+	Duration                  string            `json:"duration,omitempty"`
+	FareBrandName             string            `json:"fare_brand_name,omitempty"`
+	CabinClass                string            `json:"cabin_class,omitempty"`
+	CheckedBagsIncluded       *int              `json:"checked_bags_included,omitempty"`
+	CarryOnBagsIncluded       *int              `json:"carry_on_bags_included,omitempty"`
+	Conditions                *FareConditions   `json:"conditions,omitempty"`
+	IdentityDocumentsRequired bool              `json:"identity_documents_required"`
+	TotalEmissionsKG          string            `json:"total_emissions_kg,omitempty"`
+	TotalAmount               int64             `json:"total_amount"`
+	TotalAmountDecimal        string            `json:"total_amount_decimal"`
+	TotalCurrency             string            `json:"total_currency"`
+	ExpiresAt                 string            `json:"expires_at,omitempty"`
+	RequiresInstantPayment    bool              `json:"requires_instant_payment"`
+	PriceGuaranteeExpiresAt   string            `json:"price_guarantee_expires_at,omitempty"`
+	PaymentRequiredBy         string            `json:"payment_required_by,omitempty"`
+	PassengerIDs              []string          `json:"passenger_ids,omitempty"`
+	FareOptions               []OfferFareOption `json:"fare_options,omitempty"`
+}
+
+// FareConditions is the machine-readable change/refund ruleset of a fare. Null
+// means the airline did not disclose the value — unknown, never zero/false.
+type FareConditions struct {
+	ChangeAllowed         *bool  `json:"change_allowed,omitempty"`
+	ChangePenaltyAmount   string `json:"change_penalty_amount,omitempty"`
+	ChangePenaltyCurrency string `json:"change_penalty_currency,omitempty"`
+	RefundAllowed         *bool  `json:"refund_allowed,omitempty"`
+	RefundPenaltyAmount   string `json:"refund_penalty_amount,omitempty"`
+	RefundPenaltyCurrency string `json:"refund_penalty_currency,omitempty"`
+}
+
+// OfferFareOption is one bookable fare of a flight, as returned by grouped
+// searches and POST /air/offer-details (cheapest first).
+type OfferFareOption struct {
+	OfferID             string              `json:"offer_id,omitempty"`
+	TotalAmountDecimal  string              `json:"total_amount_decimal,omitempty"`
+	TotalCurrency       string              `json:"total_currency,omitempty"`
+	FareBrandName       string              `json:"fare_brand_name,omitempty"`
+	Cabin               string              `json:"cabin,omitempty"`
+	Refundable          bool                `json:"refundable"`
+	Changeable          bool                `json:"changeable"`
+	CheckedBagsIncluded int                 `json:"checked_bags_included"`
+	FareIndex           *int                `json:"fare_index,omitempty"`
+	SeatsLeft           *int                `json:"seats_left,omitempty"`
+	Conditions          []FareTextCondition `json:"conditions,omitempty"`
+}
+
+// FareTextCondition is a supplier verbatim wording pairing (browser tier only).
+type FareTextCondition struct {
+	Type string `json:"type,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+// OfferDetailsRequest drills into one offer (fresh price, fare menu, bags).
+type OfferDetailsRequest struct {
+	OfferID string `json:"offer_id"`
+}
+
+// OfferDetailsResponse is the 200 body of POST /air/offer-details.
+type OfferDetailsResponse struct {
+	Offer             OfferSummary   `json:"offer"`
+	AvailableServices []OfferService `json:"available_services"`
+}
+
+// OfferService is a purchasable extra (e.g. checked bag) on the offer's fare.
+type OfferService struct {
+	Type               string `json:"type"`
+	MaximumQuantity    int    `json:"maximum_quantity"`
+	TotalAmountDecimal string `json:"total_amount_decimal"`
+	TotalCurrency      string `json:"total_currency"`
+	BaggageType        string `json:"baggage_type,omitempty"`
+	MaximumWeightKg    *int   `json:"maximum_weight_kg,omitempty"`
 }
 
 // CreateIntentRequest locks an offer against the Rail funding wallet.
@@ -91,13 +231,15 @@ type IntentResponse struct {
 // BookingIntent is the full intent projection. CustomerSupportCode is returned
 // exactly once — at intent creation — and again inside the /book response; the
 // GET /air/intents projection omits it. Persist it; it is required to read an
-// order or file a refund.
+// order or file a refund. PassengerCount is how many passengers /air/book must
+// supply (the offer is priced for that many).
 type BookingIntent struct {
 	ID                     string `json:"id"`
 	CustomerSupportCode    string `json:"customer_support_code"`
 	FundingWallet          string `json:"funding_wallet"`
 	RefundWallet           string `json:"refund_wallet"`
 	OfferID                string `json:"offer_id"`
+	PassengerCount         int    `json:"passenger_count"`
 	ExpectedTicketAmount   int64  `json:"expected_ticket_amount"`
 	ExpectedTicketCurrency string `json:"expected_ticket_currency"`
 	ExpectedEscrowAmount   int64  `json:"expected_escrow_amount"`
@@ -143,17 +285,22 @@ func (i *BookingIntent) IsTerminal() bool {
 	return i.Status == StatusBooked || i.Status == StatusRefunded
 }
 
-// PassengerInput is a single adult passenger as accepted by /air/book. Values
-// mirror the upstream airline contract: title is mr/mrs/ms/miss/dr and gender
-// is exactly m or f. Booking is one-way, one adult per booking.
+// PassengerInput is a passenger as accepted by /air/book. Values mirror the
+// upstream airline contract: title is mr/mrs/ms/miss/dr and gender is exactly m
+// or f. Booking is one-way, one adult per booking. Passport fields are ignored
+// by fastbooking fares but are REQUIRED for browser-tier (trip.com:/ryanair:)
+// offers — refused before payment when missing.
 type PassengerInput struct {
-	GivenName   string `json:"given_name"`
-	FamilyName  string `json:"family_name"`
-	BornOn      string `json:"born_on"` // YYYY-MM-DD
-	Title       string `json:"title"`
-	Gender      string `json:"gender"` // m | f
-	Email       string `json:"email"`
-	PhoneNumber string `json:"phone_number"` // E.164, e.g. +447400123456
+	GivenName      string `json:"given_name"`
+	FamilyName     string `json:"family_name"`
+	BornOn         string `json:"born_on"` // YYYY-MM-DD
+	Title          string `json:"title"`
+	Gender         string `json:"gender"` // m | f
+	Email          string `json:"email"`
+	PhoneNumber    string `json:"phone_number"` // E.164, e.g. +447400123456
+	Nationality    string `json:"nationality,omitempty"`
+	PassportNumber string `json:"passport_number,omitempty"`
+	PassportExpiry string `json:"passport_expiry,omitempty"` // YYYY-MM-DD, in the future
 }
 
 // BookRequest carries the intent id (in the body, never the path) plus exactly
