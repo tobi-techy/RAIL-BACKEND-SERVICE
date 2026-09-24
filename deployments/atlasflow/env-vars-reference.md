@@ -68,6 +68,18 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 | `PLATFORM_BRIDGE_MESSAGING_ADDRESS` | The bridge's iMessage handle (e.g. `+15555550100`). Users text the link token here. Required for account linking deep links. |
 | `PLATFORM_ONBOARDING_ENABLED` | `true` |
 
+### Blockers for live Face ID cards (Miriam app extension)
+
+| Variable | Notes |
+|---|---|
+| `CONFIRMATION_TOKEN_SECRET` | **SECRET** ≥32 chars. Without it no cards are staged (fail-closed). |
+| `CONFIRMATION_BASE_URL` | `https://api.userail.money/confirm` (Cloudflare already routes this to the backend; edge worker never caches `/confirm/*` — not in `CACHE_CONFIG`). |
+| `RAIL_SERVICE_KEY` | **SECRET** ≥32 chars. Must MATCH Miriam's `RAIL_SERVICE_KEY` (settle executor, `/mark`, terminal callback). |
+| `CONFIRMATION_REQUIRE_DEVICE_SIGNATURE` | Leave unset/`false` until phones enroll; then `true`. |
+| `IMESSAGE_APP_NAME` | `Miriam` (bridge env, card display name). |
+| `IMESSAGE_EXTENSION_BUNDLE_ID` | `com.railmoney.rail.messages` (bridge env — flips cards to the native extension path). |
+| `APPLE_TEAM_ID` | `A239A6TG6R` (bridge env). |
+
 ### Sidecar URLs (set after those projects are running)
 
 | Variable | Value |
@@ -159,7 +171,11 @@ Create as AtlasFlow project `spectrum-bridge`, root `cmd/spectrum-bridge/`, port
 | `NODE_ENV` | `production` | |
 | `LOG_LEVEL` | `info` | |
 | `SPECTRUM_WEBHOOK_PATH` | `/spectrum/webhook` | |
-| `SPECTRUM_WEBHOOK_SECRET` | optional | **SECRET** |
+| `SPECTRUM_WEBHOOK_SECRET` | optional | **SECRET** — required in practice for webhook transport (unset = SDK answers native deliveries 500) |
+| `SPECTRUM_TRANSPORT_MODE` | `webhook` | `webhook` (prod) \| `stream` (local dev) \| `both` (legacy, double delivery) |
+| `OUTBOUND_MAX_BUBBLES` | `3` | max message bubbles per backend turn (each counts toward the daily cap) |
+| `DELIVERY_DAILY_CAP` | `5000` | hard outbound/server/day cap (ban risk past it) |
+| `DELIVERY_NEW_CONVOS_PER_LINE` | `50` | new conversations/line/day |
 | `TELEGRAM_BOT_TOKEN` | optional, enables Telegram | **SECRET** |
 | `WHATSAPP_ACCESS_TOKEN` | optional | **SECRET** |
 | `WHATSAPP_PHONE_NUMBER_ID` | optional | |

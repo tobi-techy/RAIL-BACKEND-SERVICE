@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
@@ -57,9 +58,38 @@ func (s *Service) BookFlight(ctx context.Context, userID uuid.UUID, req BookFlig
 	if order.Status != StatusHeld {
 		return nil, fmt.Errorf("this flight is no longer bookable (status %s)", order.Status)
 	}
+	if order.PassengerCount > 1 {
+		// The intent is priced for more passengers than one booking carries.
+		// /air/book would reject the single-passenger payload AFTER the escrow
+		// is paid, so refuse here — before any money moves.
+		return nil, fmt.Errorf("this fare is priced for %d passengers; multi-passenger booking is not supported yet", order.PassengerCount)
+	}
 	escrow := order.ExpectedEscrow
 	if err := s.validateAmount(escrow); err != nil {
 		return nil, err
+	}
+	// Browser-tier offers (trip.com:, ryanair:) require the traveler's passport
+	// at /air/book. Validate before charging the user so a
+	// travel_document_required rejection can never hit after payment.
+	if brij.IsBrowserTierOffer(order.OfferID) {
+		if err := validateTravelDocument(&req.Passenger); err != nil {
+			return nil, err
+		}
+	}
+	// Preflight the funding wallet: it pays the escrow from its own USDC. If it
+	// cannot cover this booking, hold the user's money nowhere — fail before
+	// charging. RPC hiccups fail OPEN (log + proceed) so one degraded RPC can't
+	// block booking, but a confirmed short balance is a hard stop.
+	balance, err := s.client.USDCBalanceAtomic(ctx)
+	if err != nil {
+		s.logger.Warn("brij: funding wallet balance preflight failed (continuing)",
+			zap.Error(err), zap.String("order_id", order.ID.String()), zap.String("intent_id", intentID))
+	} else if balance < escrowAtomic(escrow) {
+		s.logger.Error("brij: funding wallet cannot cover escrow",
+			zap.Int64("balance", balance),
+			zap.String("escrow", escrow.StringFixed(2)),
+			zap.String("order_id", order.ID.String()), zap.String("intent_id", intentID))
+		return nil, fmt.Errorf("flight booking is temporarily unavailable — try again shortly")
 	}
 	railFee := s.railFee(escrow)
 	totalHold := escrow.Add(railFee)
@@ -372,4 +402,32 @@ func validatePassenger(p *brij.PassengerInput) error {
 		return fmt.Errorf("passenger phone must be E.164 (e.g. +447400123456)")
 	}
 	return nil
+}
+
+// validateTravelDocument enforces the travel-document fields browser-tier fares
+// require at /air/book: nationality plus an unexpired passport number/expiry.
+// It runs BEFORE any user funds or escrow money move.
+func validateTravelDocument(p *brij.PassengerInput) error {
+	if p == nil {
+		return fmt.Errorf("a passenger is required")
+	}
+	if strings.TrimSpace(p.Nationality) == "" {
+		return fmt.Errorf("this fare needs the passenger's nationality (passport country)")
+	}
+	if strings.TrimSpace(p.PassportNumber) == "" {
+		return fmt.Errorf("this fare needs the passenger's passport number")
+	}
+	exp := strings.TrimSpace(p.PassportExpiry)
+	if !datePattern.MatchString(exp) {
+		return fmt.Errorf("passport expiry must be YYYY-MM-DD (e.g. 2030-04-12)")
+	}
+	if t, err := time.Parse("2006-01-02", exp); err != nil || t.Before(time.Now()) {
+		return fmt.Errorf("this passport has expired or the expiry is invalid")
+	}
+	return nil
+}
+
+// escrowAtomic converts a USDC decimal amount to on-chain atomic units (6 dp).
+func escrowAtomic(amountUSDC decimal.Decimal) int64 {
+	return amountUSDC.Mul(decimal.NewFromInt(1_000_000)).IntPart()
 }

@@ -181,12 +181,13 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	var pajService *pajfunding.Service
 	if c.Config.Paj.APIKey != "" {
 		pajClient := pajadapter.NewClient(pajadapter.Config{
-			APIKey:        c.Config.Paj.APIKey,
-			BaseURL:       c.Config.Paj.BaseURL,
-			WebhookURL:    c.Config.Paj.WebhookURL,
-			WalletAddress: c.Config.Paj.WalletAddress,
-			TokenMint:     c.Config.Paj.TokenMint,
-			Chain:         c.Config.Paj.Chain,
+			APIKey:          c.Config.Paj.APIKey,
+			BaseURL:         c.Config.Paj.BaseURL,
+			WebhookURL:      c.Config.Paj.WebhookURL,
+			WalletAddress:   c.Config.Paj.WalletAddress,
+			TokenMint:       c.Config.Paj.TokenMint,
+			Chain:           c.Config.Paj.Chain,
+			BusinessUSDCFee: c.Config.Paj.BusinessUSDCFee,
 		}, c.ZapLog)
 		pajService = pajfunding.NewService(sqlxDB, pajClient, &WithdrawalLedgerAdapter{ledgerService: c.LedgerService}, c.AllocationService, &PajDepositLedgerAdapter{ledgerService: c.LedgerService}, c.RedisClient, c.Config.Security.EncryptionKey, c.ZapLog)
 		pajService.SetDepositRepository(c.DepositRepo)

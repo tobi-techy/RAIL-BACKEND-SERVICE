@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,11 +105,18 @@ func (c *Client) CreateOrder(ctx context.Context, req OrderRequest) (*OrderRespo
 }
 
 // GetOrderIntent returns the active payment window for a customer/token/network.
+// RampHub returns 404 when no window exists — that surfaces as
+// ErrNoActiveIntent, not a failure, so callers can treat "no window" as a
+// normal state.
 func (c *Client) GetOrderIntent(ctx context.Context, customerID, token, network string) (*OrderIntent, error) {
 	path := fmt.Sprintf("/api/developer/orders/intent?customerId=%s&token=%s&network=%s",
 		url.QueryEscape(customerID), url.QueryEscape(token), url.QueryEscape(network))
 	var resp OrderIntent
 	if err := c.get(ctx, path, &resp); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil, ErrNoActiveIntent
+		}
 		return nil, fmt.Errorf("ramphub get order intent: %w", err)
 	}
 	return &resp, nil

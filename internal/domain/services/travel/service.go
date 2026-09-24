@@ -85,7 +85,11 @@ func NewService(db *sqlx.DB, client *brij.Client, cfg Config, logger *zap.Logger
 func (s *Service) SetLedger(l LedgerService)            { s.ledger = l }
 func (s *Service) SetTicketMessenger(d TicketMessenger) { s.deliverer = d }
 
-// SearchFlights returns live flight offers for a one-way route.
+// SearchFlights returns live flight offers for a one-way route. Full search
+// responses can exceed 300 KB and the fare is load-scaled per result, so the
+// result set is always bounded server-side (20 offers, one per itinerary
+// cheapest-first) and every returned offer carries its fare/brand/conditions so
+// the caller can distinguish fares instead of guessing from a truncated list.
 func (s *Service) SearchFlights(ctx context.Context, origin, destination, departDate string, adults int) ([]brij.OfferSummary, error) {
 	if s.client == nil {
 		return nil, fmt.Errorf("flight booking is not configured")
@@ -93,11 +97,15 @@ func (s *Service) SearchFlights(ctx context.Context, origin, destination, depart
 	if adults <= 0 {
 		adults = 1
 	}
+	limit := 20
+	cheapest := true
 	result, err := s.client.Search(ctx, brij.SearchRequest{
-		OriginIATA:      strings.ToUpper(strings.TrimSpace(origin)),
-		DestinationIATA: strings.ToUpper(strings.TrimSpace(destination)),
-		DepartDate:      strings.TrimSpace(departDate),
-		Adults:          adults,
+		OriginIATA:           strings.ToUpper(strings.TrimSpace(origin)),
+		DestinationIATA:      strings.ToUpper(strings.TrimSpace(destination)),
+		DepartDate:           strings.TrimSpace(departDate),
+		Adults:               adults,
+		Limit:                &limit,
+		CheapestPerItinerary: &cheapest,
 	})
 	if err != nil {
 		return nil, err
@@ -140,9 +148,36 @@ func (s *Service) CreateIntent(ctx context.Context, userID uuid.UUID, req Create
 	if offerID == "" {
 		return nil, fmt.Errorf("offer id is required — search for a flight first")
 	}
+	// Browser-tier offers (trip.com:, ryanair:) need a fresh fare menu before an
+	// intent can be created. Drill proactively rather than letting the intent
+	// creation fail on a stale menu; the drill is itself x402-paid.
+	if brij.IsBrowserTierOffer(offerID) {
+		if _, err := s.client.OfferDetails(ctx, brij.OfferDetailsRequest{OfferID: offerID}); err != nil {
+			return nil, fmt.Errorf("could not refresh this fare before locking: %w", err)
+		}
+	}
 	intent, err := s.client.CreateIntent(ctx, brij.CreateIntentRequest{OfferID: offerID})
 	if err != nil {
-		return nil, fmt.Errorf("could not lock this flight: %w", err)
+		// The menu can still go stale between the drill and the lock. Refresh it
+		// once and retry; any other provider state-machine code becomes a
+		// readable user message.
+		if brij.IsBrowserTierOffer(offerID) && brij.ErrorCode(err) == "fare_menu_expired" {
+			if _, rerr := s.client.OfferDetails(ctx, brij.OfferDetailsRequest{OfferID: offerID}); rerr != nil {
+				return nil, fmt.Errorf("could not refresh this fare before locking: %w", rerr)
+			}
+			intent, err = s.client.CreateIntent(ctx, brij.CreateIntentRequest{OfferID: offerID})
+		}
+		if err != nil {
+			switch brij.ErrorCode(err) {
+			case "fare_check_failed":
+				return nil, fmt.Errorf("this fare could not be re-validated right now — try again in a few minutes")
+			case "browser_booking_unavailable":
+				return nil, fmt.Errorf("this fare is no longer available for booking")
+			case "intent_already_exists":
+				return nil, fmt.Errorf("this flight is already locked for booking")
+			}
+			return nil, fmt.Errorf("could not lock this flight: %w", err)
+		}
 	}
 	if strings.TrimSpace(intent.ID) == "" || strings.TrimSpace(intent.CustomerSupportCode) == "" {
 		return nil, fmt.Errorf("BRIJ returned an incomplete intent")
@@ -183,14 +218,18 @@ func (s *Service) persistIntent(ctx context.Context, userID uuid.UUID, req Creat
 	if !escrow.IsPositive() {
 		return uuid.Nil, fmt.Errorf("BRIJ returned an invalid escrow amount (%s) for offer %q", escrow.String(), intent.OfferID)
 	}
+	passengerCount := intent.PassengerCount
+	if passengerCount <= 0 {
+		passengerCount = 1
+	}
 	route := fmt.Sprintf("%s to %s", strings.TrimSpace(req.Origin), strings.TrimSpace(req.Destination))
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO travel_orders (id, user_id, mode, provider, status, route, departure_terminal, destination_terminal, trip_date,
-			intent_id, offer_id, customer_support_code, expected_escrow_amount, escrow_mint, escrow_address, amount_ngn, amount_usdc, hold_amount)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,0,$16,0)`,
+			intent_id, offer_id, customer_support_code, expected_escrow_amount, escrow_mint, escrow_address, passenger_count, amount_ngn, amount_usdc, hold_amount)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17,0)`,
 		orderID, userID, ModeFlight, nullStr(req.Airline), StatusHeld, nullStr(route), nullStr(req.Origin), nullStr(req.Destination),
 		nullStr(dateOnly(req.DepartingAt)), intent.ID, intent.OfferID, intent.CustomerSupportCode,
-		escrow, nullStr(intent.ExpectedEscrowMint), nullStr(intent.EscrowAddress), escrow); err != nil {
+		escrow, nullStr(intent.ExpectedEscrowMint), nullStr(intent.EscrowAddress), passengerCount, escrow); err != nil {
 		return uuid.Nil, err
 	}
 	return orderID, nil
@@ -337,6 +376,7 @@ type orderRow struct {
 	SupportCode       string
 	ExpectedEscrow    decimal.Decimal
 	EscrowAmount      decimal.Decimal
+	PassengerCount    int
 	AirlineOrderID    string
 	OrderRef          string
 	BookingRef        string
@@ -356,14 +396,14 @@ func (s *Service) loadOrderByIntent(ctx context.Context, userID uuid.UUID, inten
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), status,
 		       COALESCE(intent_id,''), COALESCE(offer_id,''), COALESCE(customer_support_code,''),
-		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0),
+		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0), COALESCE(passenger_count,1),
 		       COALESCE(airline_order_id,''), COALESCE(order_ref,''), COALESCE(booking_reference,''),
 		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered,
 		       refund_requested_at, COALESCE(refund_status,''), COALESCE(refund_contact,''), refund_credited_at, created_at
 		FROM travel_orders WHERE intent_id=$1 AND user_id=$2`, intentID, userID)
 	var o orderRow
 	err := row.Scan(&o.ID, &o.UserID, &o.Mode, &o.Provider, &o.Route, &o.TripDate, &o.Status,
-		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount,
+		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount, &o.PassengerCount,
 		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent,
 		&o.RefundRequestedAt, &o.RefundStatus, &o.RefundContact, &o.RefundCreditedAt, &o.CreatedAt)
 	if err == sql.ErrNoRows {
@@ -380,14 +420,14 @@ func (s *Service) loadOrderByID(ctx context.Context, id uuid.UUID) (*orderRow, e
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, user_id, mode, COALESCE(provider,''), COALESCE(route,''), COALESCE(trip_date,''), status,
 		       COALESCE(intent_id,''), COALESCE(offer_id,''), COALESCE(customer_support_code,''),
-		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0),
+		       COALESCE(expected_escrow_amount,0), COALESCE(escrow_amount_usdc,0), COALESCE(passenger_count,1),
 		       COALESCE(airline_order_id,''), COALESCE(order_ref,''), COALESCE(booking_reference,''),
 		       COALESCE(hold_amount,0), passengers, receipt, ticket_delivered,
 		       refund_requested_at, COALESCE(refund_status,''), COALESCE(refund_contact,''), refund_credited_at, created_at
 		FROM travel_orders WHERE id=$1`, id)
 	var o orderRow
 	err := row.Scan(&o.ID, &o.UserID, &o.Mode, &o.Provider, &o.Route, &o.TripDate, &o.Status,
-		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount,
+		&o.IntentID, &o.OfferID, &o.SupportCode, &o.ExpectedEscrow, &o.EscrowAmount, &o.PassengerCount,
 		&o.AirlineOrderID, &o.OrderRef, &o.BookingRef, &o.HoldAmount, &o.Passengers, &o.Receipt, &o.TicketSent,
 		&o.RefundRequestedAt, &o.RefundStatus, &o.RefundContact, &o.RefundCreditedAt, &o.CreatedAt)
 	if err == sql.ErrNoRows {

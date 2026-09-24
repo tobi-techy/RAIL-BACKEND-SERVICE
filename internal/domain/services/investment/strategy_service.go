@@ -122,14 +122,21 @@ func (s *Service) CreateStrategy(
 		UpdatedAt:      now,
 	}
 
-	// The provider strategy is created with the normalized allocation so the
-	// provider never receives weights it would reject.
-	created, err := s.provider.CreateStrategy(ctx, entities.GliderStrategyInput{
+	// Pre-flight against the real provider gates (POST /strategies/validate)
+	// so a locally-valid allocation the provider would reject (blocklist,
+	// unknown asset) fails before anything is persisted.
+	strategyInput := entities.GliderStrategyInput{
 		Name:        strategy.Name,
 		Allocation:  entities.GliderAllocation{Assets: report.NormalizedAllocation},
 		Schedule:    &entities.GliderSchedule{Type: "interval", Frequency: providerFrequency(rules)},
 		Preferences: s.preferencesFor(entities.InvestmentExecutionRules{}),
-	})
+	}
+	if err := s.provider.ValidateStrategy(ctx, strategyInput); err != nil {
+		return nil, fmt.Errorf("provider rejected strategy: %w", s.mapProviderError(err))
+	}
+	// The provider strategy is created with the normalized allocation so the
+	// provider never receives weights it would reject.
+	created, err := s.provider.CreateStrategy(ctx, strategyInput)
 	if err != nil {
 		return nil, fmt.Errorf("create provider strategy: %w", s.mapProviderError(err))
 	}
@@ -282,10 +289,16 @@ func (s *Service) PublishStrategyVersion(
 
 	var publishedVersion *int
 	if strategy.GliderStrategyID != nil {
-		published, err := s.provider.PublishStrategyVersion(ctx, *strategy.GliderStrategyID, entities.GliderStrategyInput{
-			Allocation:  entities.GliderAllocation{Assets: report.NormalizedAllocation},
-			Schedule:    &entities.GliderSchedule{Type: "interval", Frequency: providerFrequency(rules)},
-			Preferences: s.preferencesFor(execution),
+		// The provider's publish endpoint accepts ONLY the allocation (plus an
+		// optional change log); schedule and preferences are separate endpoints
+		// and would be rejected as unknown keys here.
+		changeLog := req.Rationale
+		if len(changeLog) > 500 {
+			changeLog = changeLog[:500]
+		}
+		published, err := s.provider.PublishStrategyVersion(ctx, *strategy.GliderStrategyID, entities.GliderPublishVersionInput{
+			Allocation: entities.GliderAllocation{Assets: report.NormalizedAllocation},
+			ChangeLog:  changeLog,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("publish provider version: %w", s.mapProviderError(err))
@@ -293,6 +306,13 @@ func (s *Service) PublishStrategyVersion(
 		if published.Version > 0 {
 			value := published.Version
 			publishedVersion = &value
+		}
+		// The schedule is only re-issued when the cadence actually changed;
+		// PUT /strategies/{id}/schedule fans out to every enrolled portfolio.
+		if providerFrequency(rules) != providerFrequency(current.RebalanceRules) {
+			if err := s.provider.SetStrategySchedule(ctx, *strategy.GliderStrategyID, providerFrequency(rules)); err != nil {
+				return nil, fmt.Errorf("update provider schedule: %w", s.mapProviderError(err))
+			}
 		}
 	}
 

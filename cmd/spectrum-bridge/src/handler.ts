@@ -1,6 +1,14 @@
-import { type Space, type Message, markdown, reply, typing, richlink, app, poll, voice } from "spectrum-ts";
+import { type Space, type Message, markdown, typing, richlink, app, poll, voice } from "spectrum-ts";
 import { effect, imessage, type IMessageMessageEffect } from "spectrum-ts/providers/imessage";
 import { childLogger } from "./logger";
+import {
+  editConfirmationCard,
+  loadPreviewImage,
+  sendConfirmationCard,
+  type ConfirmationCardPayload,
+  type MiniAppConfig,
+} from "./confirmation-card";
+import type { ConfirmationCardStore } from "./confirmation-store";
 
 const log = childLogger({ module: "handler" });
 
@@ -29,6 +37,8 @@ export interface OutboundMessage {
     | "voice"
     | "cards"
     | "reaction"
+    | "confirmationcard"
+    | "confirmationcard_edit"
     | "text";
 
   // reply
@@ -53,12 +63,32 @@ export interface OutboundMessage {
   audio_mime?: string;
   duration_sec?: number;
 
+  // Live confirmation card (Face ID money actions — one primitive, every action).
+  // The initial send records the card handle by action_id; edits mutate it.
+  confirmation_card?: ConfirmationCardPayload;
+
   // structured insight cards (rendered as per-platform card text)
   cards?: InsightCard[];
 
   // delivery category: critical messages survive longer in the bridge's
   // persistent outbound queue when the Space handle is cold.
   category?: "critical" | "normal";
+
+  // Stable idempotency key across retries (best-practices/recovery-and-state).
+  // The queue mints one when absent; retries of the same logical send reuse it
+  // so a crash between provider-ack and bookkeeping still dedups.
+  client_guid?: string;
+
+  // True when this is the first outbound ever to this thread. Links/media are
+  // suppressed on first contact (deliverability: Apple suppresses link taps
+  // until a reply lands) — the text goes out, the link is dropped with a warn.
+  is_first?: boolean;
+
+  // Epoch ms: hold the message in the bridge's persistent queue until this
+  // time. The Go backend's ProactiveGuard already enforces per-user quiet
+  // hours; this is the escape hatch for any send the backend wants the
+  // bridge to time.
+  send_after?: number;
 }
 
 const EFFECTS: Record<string, IMessageMessageEffect> = {
@@ -71,16 +101,38 @@ const EFFECTS: Record<string, IMessageMessageEffect> = {
   sparkles: imessage.effect.message.sparkles,
   spotlight: imessage.effect.message.spotlight,
   echo: imessage.effect.message.echo,
+  slam: imessage.effect.message.slam,
+  loud: imessage.effect.message.loud,
+  gentle: imessage.effect.message.gentle,
+  invisible: imessage.effect.message.invisible,
 };
 
 export class MessageHandler {
   private seen = new Map<string, number>();
   private readonly dedupWindowMs = 2000;
+  /** Stable-GUID dedup for idempotent retries: survives the 2s text window. */
+  private seenGuids = new Map<string, number>();
+  private readonly guidDedupWindowMs = 10 * 60 * 1000;
+  private readonly maxBubbles: number;
+  private readonly miniApp: MiniAppConfig;
+  private readonly cardStore?: ConfirmationCardStore;
+  private readonly cardAssetsDir: string;
   private messageStore = new Map<string, Message>();
   private lastInboundByThread = new Map<string, Message>();
   private pendingReplyLookups = new Map<string, Promise<Message | undefined>>();
 
-  constructor() {
+  constructor(
+    opts: {
+      maxBubbles?: number;
+      miniApp?: MiniAppConfig;
+      cardStore?: ConfirmationCardStore;
+      cardAssetsDir?: string;
+    } = {},
+  ) {
+    this.maxBubbles = Math.min(Math.max(opts.maxBubbles ?? 3, 1), 10);
+    this.miniApp = opts.miniApp ?? { appName: "Miriam" };
+    this.cardStore = opts.cardStore;
+    this.cardAssetsDir = opts.cardAssetsDir ?? "";
     setInterval(() => this.evictStaleMessages(), 60_000);
   }
 
@@ -101,6 +153,15 @@ export class MessageHandler {
   }
 
   private evictStaleMessages(): void {
+    // The outbound dedup window is tiny (2s), so anything older is dead weight:
+    // without this sweep `seen` grew unbounded for the life of the process.
+    const now = Date.now();
+    for (const [key, at] of this.seen) {
+      if (now - at >= this.dedupWindowMs) this.seen.delete(key);
+    }
+    for (const [guid, at] of this.seenGuids) {
+      if (now - at >= this.guidDedupWindowMs) this.seenGuids.delete(guid);
+    }
     if (this.messageStore.size > 500) {
       const entries = [...this.messageStore.entries()];
       for (const [id] of entries.slice(0, entries.length - 250)) {
@@ -195,7 +256,7 @@ export class MessageHandler {
       return;
     }
 
-    const dedupKey = `${msg.user_id}:${contentType}:${msg.text}:${msg.reply_to || ""}`;
+    const dedupKey = `${msg.user_id}:${contentType}:${msg.text}:${msg.reply_to || ""}:${msg.client_guid || ""}`;
     const now = Date.now();
     const last = this.seen.get(dedupKey);
     if (last && now - last < this.dedupWindowMs) {
@@ -203,6 +264,17 @@ export class MessageHandler {
       return;
     }
     this.seen.set(dedupKey, now);
+    // Stable-GUID idempotency: a retry of the same logical send (queue retry,
+    // crash between ack and bookkeeping) reuses client_guid and is dropped
+    // even past the 2s text window.
+    if (msg.client_guid) {
+      const guidLast = this.seenGuids.get(msg.client_guid);
+      if (guidLast && now - guidLast < this.guidDedupWindowMs) {
+        log.debug({ client_guid: msg.client_guid }, "deduplicated outbound retry by client_guid");
+        return;
+      }
+      this.seenGuids.set(msg.client_guid, now);
+    }
 
     // Polls (Confirm/Cancel) are iMessage-only. On platforms without poll
     // support (Telegram, WhatsApp), fall back to a YES/NO text prompt that the
@@ -229,7 +301,7 @@ export class MessageHandler {
           title = "Your call";
           log.warn({ rawTitle, rawText, thread_id: msg.thread_id }, "poll title was empty/ellipsis, fell back to Your call");
         }
-        log.info({ title, rawTitle, rawText, options, thread_id: msg.thread_id }, "sending poll");
+        log.info({ title, options, thread_id: msg.thread_id }, "sending poll");
         // Always send the question as a message bubble BEFORE the poll so the
         // user sees words even when the poll title duplicates the text. The
         // backend's pollWords now always sets leadIn when text present, but
@@ -240,14 +312,9 @@ export class MessageHandler {
         } else if (rawTitle && rawTitle !== title) {
           await this.sendWithPacing(space, rawTitle, "text");
         }
-        // Log the actual poll object that will be built and sent, and catch
-        // any Zod validation before it hits the iMessage provider's cache.
-        try {
-          const built = await poll(title, options).build();
-          log.info({ builtTitle: built.title, builtOptions: built.options.map(o=>o.title), thread_id: msg.thread_id }, "poll built successfully");
-        } catch (e) {
-          log.error({ err: e, title, options, thread_id: msg.thread_id }, "poll build failed - would have caused failed to cache");
-        }
+        // The guard above keeps the title valid; a build failure here surfaces
+        // through sendToSpace's catch like any other send error. (The old
+        // probe-build-for-logging built every poll twice.)
         await space.send(poll(title, options));
         return;
       }
@@ -256,9 +323,15 @@ export class MessageHandler {
         if (msg.reply_to) {
           const parent = await this.resolveParentMessage(space, msg.reply_to);
           if (parent) {
-            await space.send(typing());
-            await this.delay(this.typingDurationMs(msg.text));
-            await space.send(reply(markdown(msg.text), parent));
+            // Prefer the message-level sugar; on platforms without thread
+            // support reply() resolves as a no-op or throws UnsupportedError —
+            // fall back to a guaranteed plain send so the words still land.
+            try {
+              await parent.reply(markdown(msg.text));
+            } catch {
+              log.warn({ reply_to: msg.reply_to }, "threaded reply unsupported, sending as markdown");
+              await this.sendWithPacing(space, msg.text, "markdown");
+            }
           } else {
             log.warn({ reply_to: msg.reply_to }, "parent message not found, sending as markdown");
             await this.sendWithPacing(space, msg.text, "markdown");
@@ -280,12 +353,22 @@ export class MessageHandler {
 
       case "appcard": {
         if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
+        // Deliverability: no links/media in the first message — Apple
+        // suppresses link taps until a reply lands. Text goes out, link drops.
+        if (msg.is_first && msg.card_url) {
+          log.warn({ thread_id: msg.thread_id }, "suppressed app link on first-contact message");
+          return;
+        }
         if (msg.card_url) await space.send(app(msg.card_url));
         return;
       }
 
       case "richlink": {
         if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
+        if (msg.is_first && msg.card_url) {
+          log.warn({ thread_id: msg.thread_id }, "suppressed rich link on first-contact message");
+          return;
+        }
         if (msg.card_url) await space.send(richlink(msg.card_url));
         return;
       }
@@ -300,6 +383,12 @@ export class MessageHandler {
         return;
       }
 
+      case "confirmationcard":
+      case "confirmationcard_edit": {
+        await this.handleConfirmationCard(space, msg, contentType === "confirmationcard_edit");
+        return;
+      }
+
       case "markdown":
         await this.sendWithPacing(space, msg.text, "markdown");
         return;
@@ -309,10 +398,65 @@ export class MessageHandler {
     }
   }
 
-  private async sendWithPacing(space: Space, text: string, format: "markdown" | "text"): Promise<void> {
-    const bubbles = text.split(/\n\s*\n/).map((s) => s.trim()).filter((s) => s.length > 0);
+  /**
+   * Live confirmation cards (Face ID money actions). Initial sends render ONE
+   * live mini-app card and record its handle by action_id; edits mutate that
+   * same card in place — never a second bubble. Non-iMessage platforms get a
+   * text fallback with the confirm URL (the Face ID extension is iMessage-only).
+   */
+  private async handleConfirmationCard(space: Space, msg: OutboundMessage, isEdit: boolean): Promise<void> {
+    const card = msg.confirmation_card;
+    if (!card?.action_id || !card?.confirm_url) {
+      log.warn({ thread_id: msg.thread_id }, "confirmation card with no action_id/confirm_url, dropping (no duplicate bubble)");
+      return;
+    }
+    if (msg.platform !== "imessage") {
+      const fallback = `${card.title}${card.subtitle ? `\n${card.subtitle}` : ""}\nApprove: ${card.confirm_url}`;
+      await this.sendWithPacing(space, fallback, "text");
+      return;
+    }
+    const image = await loadPreviewImage(this.cardAssetsDir, card.state);
+    if (!isEdit) {
+      // One live card. No text recap alongside it — the card IS the message.
+      const sent = await sendConfirmationCard(space, card, this.miniApp, image);
+      if (sent?.id) this.messageStore.set(sent.id, sent);
+      this.cardStore?.record(card.action_id, msg.thread_id, sent?.id ?? "", card.state);
+      return;
+    }
+    const record = this.cardStore?.get(card.action_id);
+    let original: Message | undefined;
+    if (record?.message_id) {
+      original = this.messageStore.get(record.message_id);
+      if (!original) {
+        try {
+          original = await space.getMessage(record.message_id);
+          if (original) this.messageStore.set(record.message_id, original);
+        } catch (err) {
+          log.warn({ err, action_id: card.action_id }, "confirmation edit target unresolvable");
+        }
+      }
+    }
+    // Throws when unresolvable: the backend persists state anyway and retries
+    // the edit. Never fall back to a fresh send — that would duplicate the card.
+    const updated = await editConfirmationCard(space, original, card, this.miniApp, image);
+    if (updated?.id && record) {
+      this.messageStore.set(updated.id, updated);
+      this.cardStore?.record(card.action_id, msg.thread_id, record.message_id, card.state);
+    }
+  }
 
-    if (bubbles.length === 0) return;
+  private async sendWithPacing(space: Space, text: string, format: "markdown" | "text"): Promise<void> {    const all = text.split(/\n\s*\n/).map((s) => s.trim()).filter((s) => s.length > 0);
+
+    if (all.length === 0) return;
+
+    // Bubble cap: every bubble counts toward the 5,000/day server cap and adds
+    // seconds of typing delay. Merge the overflow into the last bubble so one
+    // backend turn never fans out into N sends.
+    let bubbles = all;
+    if (all.length > this.maxBubbles) {
+      bubbles = [...all.slice(0, this.maxBubbles - 1), all.slice(this.maxBubbles - 1).join("\n\n")];
+      log.warn({ bubbles_before: all.length, bubbles_after: bubbles.length }, "capped outbound bubbles");
+    }
 
     for (let i = 0; i < bubbles.length; i++) {
       await this.typeThenSend(space, bubbles[i], format);

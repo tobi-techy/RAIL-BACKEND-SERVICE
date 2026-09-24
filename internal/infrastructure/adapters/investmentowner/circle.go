@@ -15,12 +15,12 @@ import (
 // This is the production posture: the owner account is the user's Circle Solana
 // wallet, so the smart account is owned by the user's key and Rail never holds a
 // second key of its own. The trade-off is that Rail can only complete a flow the
-// custody provider can actually sign. Circle can sign raw transactions
-// (`SignTransaction`), which covers Solana enrollment (Model A); it exposes no
-// ed25519 message-signing endpoint in the adapter we consume, so a Solana-rooted
-// message authorization (withdrawals, chain activation) returns
-// ErrMessageSigningUnsupported instead of producing a signature no smart account
-// would accept.
+// custody provider can actually sign. Circle's developer wallets sign raw
+// transactions (SignTransaction), which covers Solana enrollment (Model B), and
+// sign plain-text messages (SignMessage → POST /w3s/developer/sign/message),
+// which covers Glider's solana-message withdrawal authorizations: the returned
+// signature is base58 Ed25519 over the message's UTF-8 bytes. EVM typed-data
+// (ERC-1271) authorizations remain unsupported.
 type CircleSigner struct {
 	wallets WalletLookup
 	signer  CircleTransactionSigner
@@ -30,6 +30,9 @@ type CircleSigner struct {
 // CircleTransactionSigner is the slice of the Circle adapter this signer needs.
 type CircleTransactionSigner interface {
 	SignTransaction(ctx context.Context, walletID, rawTransaction, memo string) (*circle.SignedTransaction, error)
+	// SignMessage signs a plain-text message with the wallet's key and returns
+	// the chain-native signature encoding (base58 Ed25519 for Solana).
+	SignMessage(ctx context.Context, walletID, message string) (string, error)
 }
 
 // NewCircleSigner builds the custody-backed owner signer.
@@ -52,9 +55,19 @@ func (s *CircleSigner) OwnerAccount(ctx context.Context, userID uuid.UUID) (stri
 	return s.cfg.ownerAccountID(wallet.Address)
 }
 
-// SignSolanaMessage cannot be satisfied by the custody provider today.
-func (s *CircleSigner) SignSolanaMessage(_ context.Context, _ uuid.UUID, _ string) (string, error) {
-	return "", fmt.Errorf("%w: the custody provider cannot sign a Solana message, so this step needs the user's wallet or a message-signing custody flow", ErrMessageSigningUnsupported)
+// SignSolanaMessage signs a plain-text authorization (e.g. a Glider withdrawal
+// stage-1 solana-message payload) with the user's custody wallet via Circle's
+// sign-message endpoint. The returned base58 Ed25519 signature covers the
+// message's UTF-8 bytes, which is exactly what the provider verifies.
+func (s *CircleSigner) SignSolanaMessage(ctx context.Context, userID uuid.UUID, message string) (string, error) {
+	if strings.TrimSpace(message) == "" {
+		return "", fmt.Errorf("investment owner: nothing to sign")
+	}
+	wallet, err := s.wallet(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	return s.signer.SignMessage(ctx, wallet.CircleWalletID, message)
 }
 
 // SignSolanaTransaction signs the provider's unsigned transaction with the

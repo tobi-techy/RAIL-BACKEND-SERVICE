@@ -78,16 +78,39 @@ func (p TravelPassenger) HasFlightDetails() (bool, []string) {
 // ToFlightPassenger maps a saved profile to a BRIJ flight passenger. Stored
 // profiles carry sex as "Male"/"Female" and dob as MM/DD/YYYY; BRIJ accepts only
 // m|f and YYYY-MM-DD, so both are converted here (see brijGender and isoBornOn).
+// Passport fields ride along: browser-tier fares require them at book time.
 func (p TravelPassenger) ToFlightPassenger() brij.PassengerInput {
 	return brij.PassengerInput{
-		GivenName:   strings.TrimSpace(p.FirstName),
-		FamilyName:  strings.TrimSpace(p.LastName),
-		BornOn:      isoBornOn(p.DOB),
-		Title:       strings.ToLower(strings.TrimSpace(p.Title)),
-		Gender:      brijGender(p.Sex),
-		Email:       strings.TrimSpace(p.Email),
-		PhoneNumber: strings.TrimSpace(p.Phone),
+		GivenName:      strings.TrimSpace(p.FirstName),
+		FamilyName:     strings.TrimSpace(p.LastName),
+		BornOn:         isoBornOn(p.DOB),
+		Title:          strings.ToLower(strings.TrimSpace(p.Title)),
+		Gender:         brijGender(p.Sex),
+		Email:          strings.TrimSpace(p.Email),
+		PhoneNumber:    strings.TrimSpace(p.Phone),
+		Nationality:    strings.TrimSpace(p.Nationality),
+		PassportNumber: strings.TrimSpace(p.PassportNumber),
+		PassportExpiry: isoDate(p.PassportExpiry),
 	}
+}
+
+// isoDate converts a stored MM/DD/YYYY date to YYYY-MM-DD. Already-ISO values
+// pass through unchanged; unparseable values return "" so validateTravelDocument
+// surfaces a clear error at book time.
+func isoDate(s string) string {
+	d := strings.TrimSpace(s)
+	if d == "" {
+		return ""
+	}
+	if t, err := time.Parse("01/02/2006", d); err == nil {
+		return t.Format("2006-01-02")
+	}
+	if len(d) == 10 && d[4] == '-' && d[7] == '-' {
+		if t, err := time.Parse("2006-01-02", d); err == nil {
+			return t.Format("2006-01-02")
+		}
+	}
+	return ""
 }
 
 // brijGender maps a stored sex value to the BRIJ m|f contract. Unrecognized
@@ -281,13 +304,16 @@ func (s *Service) autoSavePassenger(ctx context.Context, userID uuid.UUID, p bri
 		return
 	}
 	profile := TravelPassenger{
-		Title:     strings.ToLower(strings.TrimSpace(p.Title)),
-		FirstName: strings.TrimSpace(p.GivenName),
-		LastName:  strings.TrimSpace(p.FamilyName),
-		DOB:       strings.TrimSpace(p.BornOn),
-		Sex:       sexFromGender(p.Gender),
-		Email:     email,
-		Phone:     strings.TrimSpace(p.PhoneNumber),
+		Title:          strings.ToLower(strings.TrimSpace(p.Title)),
+		FirstName:      strings.TrimSpace(p.GivenName),
+		LastName:       strings.TrimSpace(p.FamilyName),
+		DOB:            strings.TrimSpace(p.BornOn),
+		Sex:            sexFromGender(p.Gender),
+		Email:          email,
+		Phone:          strings.TrimSpace(p.PhoneNumber),
+		Nationality:    strings.TrimSpace(p.Nationality),
+		PassportNumber: strings.TrimSpace(p.PassportNumber),
+		PassportExpiry: strings.TrimSpace(p.PassportExpiry),
 	}
 	list, err := s.ListPassengers(ctx, userID)
 	if err != nil {
@@ -306,6 +332,9 @@ func (s *Service) autoSavePassenger(ctx context.Context, userID uuid.UUID, p bri
 		merged.Sex = firstNonEmpty(merged.Sex, profile.Sex)
 		merged.Email = firstNonEmpty(merged.Email, profile.Email)
 		merged.Phone = firstNonEmpty(merged.Phone, profile.Phone)
+		merged.Nationality = firstNonEmpty(merged.Nationality, profile.Nationality)
+		merged.PassportNumber = firstNonEmpty(merged.PassportNumber, profile.PassportNumber)
+		merged.PassportExpiry = firstNonEmpty(merged.PassportExpiry, profile.PassportExpiry)
 		if !merged.IsPrimary && len(list) == 1 {
 			merged.IsPrimary = true
 		}

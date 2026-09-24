@@ -206,13 +206,16 @@ func (a *travelExecAdapter) flightPassengerFromArg(args map[string]interface{}, 
 		gender = "f"
 	}
 	return brij.PassengerInput{
-		GivenName:   strings.TrimSpace(travelArgString(p, "given_name")),
-		FamilyName:  strings.TrimSpace(travelArgString(p, "family_name")),
-		BornOn:      travelDateToISO(travelArgString(p, "born_on")),
-		Title:       strings.ToLower(strings.TrimSpace(travelArgString(p, "title"))),
-		Gender:      gender,
-		Email:       strings.TrimSpace(travelArgString(p, "email")),
-		PhoneNumber: strings.TrimSpace(travelArgString(p, "phone_number")),
+		GivenName:      strings.TrimSpace(travelArgString(p, "given_name")),
+		FamilyName:     strings.TrimSpace(travelArgString(p, "family_name")),
+		BornOn:         travelDateToISO(travelArgString(p, "born_on")),
+		Title:          strings.ToLower(strings.TrimSpace(travelArgString(p, "title"))),
+		Gender:         gender,
+		Email:          strings.TrimSpace(travelArgString(p, "email")),
+		PhoneNumber:    strings.TrimSpace(travelArgString(p, "phone_number")),
+		Nationality:    strings.TrimSpace(travelArgString(p, "nationality")),
+		PassportNumber: strings.TrimSpace(travelArgString(p, "passport_number")),
+		PassportExpiry: travelDateToISO(travelArgString(p, "passport_expiry")),
 	}
 }
 

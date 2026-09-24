@@ -44,6 +44,14 @@ func (s *Service) SyncEnrollment(ctx context.Context, enrollmentID uuid.UUID) er
 		s.recordSyncError(ctx, enrollment, err)
 		return fmt.Errorf("get positions: %w", s.mapProviderError(err))
 	}
+	// Partial provider failures arrive as structured warnings on a 200, not as
+	// errors. They are logged so gaps are visible without failing the sync.
+	for _, warning := range holdings.Warnings {
+		s.log.Warn("provider position warning",
+			"enrollment_id", enrollment.ID.String(),
+			"kind", warning.Kind,
+			"message", warning.Message)
+	}
 
 	now := s.nowOr()
 	normalized := s.normalizeHoldings(ctx, enrollment, holdings)
@@ -60,16 +68,18 @@ func (s *Service) SyncEnrollment(ctx context.Context, enrollmentID uuid.UUID) er
 	if portfolio.Schedule.LastRebalanceAt != nil {
 		enrollment.LastRebalanceAt = portfolio.Schedule.LastRebalanceAt
 	}
-	if portfolio.Status != "" {
-		enrollment.AutomationStatus = portfolio.Status
+	// Automation state comes from schedule.status ("active" | "paused") — the
+	// provider does not publish a top-level portfolio status.
+	if portfolio.Schedule.Status != "" {
+		enrollment.AutomationStatus = portfolio.Schedule.Status
 	}
-	switch strings.ToLower(portfolio.Status) {
-	case "stopped", "paused":
+	switch strings.ToLower(portfolio.Schedule.Status) {
+	case "paused", "stopped":
 		enrollment.Status = entities.InvestmentEnrollmentPaused
-	case "active", "running", "":
-		if enrollment.Status != entities.InvestmentEnrollmentPaused || enrollment.AutomationStatus == "active" {
-			enrollment.Status = entities.InvestmentEnrollmentActive
-		}
+	case "active":
+		enrollment.Status = entities.InvestmentEnrollmentActive
+	case "":
+		// The provider did not report a state; keep the locally known one.
 	}
 	// A portfolio whose strategy version moved on is re-targeted by the provider
 	// itself; Rail records which version the portfolio now mirrors.
@@ -186,15 +196,17 @@ func (s *Service) settleExecution(ctx context.Context, executionID uuid.UUID, st
 		return nil
 	}
 	now := s.nowOr()
+	// Terminal provider states: completed | failed | cancelled. retrying and
+	// awaiting_user keep the execution in flight.
 	switch strings.ToLower(state.State) {
-	case "completed", "filled", "success":
+	case "completed":
 		execution.Status = entities.InvestmentExecutionFilled
 		execution.CompletedAt = &now
 		_ = s.recordEvent(ctx, execution.UserID, EventOrderFilled, entities.InvestmentActorWorker, map[string]any{
 			"order_id":     execution.ID.String(),
 			"operation_id": state.OperationID,
 		})
-	case "failed", "error":
+	case "failed":
 		execution.Status = entities.InvestmentExecutionFailed
 		execution.FailureCode = "provider_failed"
 		if state.Error != nil {
@@ -206,14 +218,14 @@ func (s *Service) settleExecution(ctx context.Context, executionID uuid.UUID, st
 			"operation_id": state.OperationID,
 			"reason":       execution.FailureReason,
 		})
-	case "cancelled", "canceled":
+	case "cancelled":
 		execution.Status = entities.InvestmentExecutionCancelled
 		execution.CompletedAt = &now
 		_ = s.recordEvent(ctx, execution.UserID, EventOrderCancelled, entities.InvestmentActorWorker, map[string]any{
 			"order_id":     execution.ID.String(),
 			"operation_id": state.OperationID,
 		})
-	case "running", "executing", "processing":
+	case "running", "retrying", "awaiting_user":
 		execution.Status = entities.InvestmentExecutionExecuting
 	default:
 		execution.Status = entities.InvestmentExecutionSubmitted

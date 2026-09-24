@@ -1,0 +1,212 @@
+//  MiriamMessagesExtension — MessagesViewController.swift (STUB SPEC)
+//
+//  Target: iMessage extension, bundle id e.g. com.railmoney.rail.messages,
+//  team id from APPLE_TEAM_ID. The live card (customizedMiniApp, live: true)
+//  opens THIS extension, not Safari, not a webview.
+//
+//  Flow:
+//   1. Parse url → actionId + token (?t=expiry.sig).
+//   2. GET {base}/confirm/{actionId}?t={token} → payload or dead state.
+//      Expired/used → render dead state, and the backend edits the transcript
+//      card to match (single source of truth: the server).
+//   3. Compact UI: what / how much / where / fee / risk line. One primary
+//      button "Approve with Face ID", secondary "Cancel".
+//   4. Primary tap → LocalAuthentication deviceOwnerAuthenticationWithBiometrics.
+//      No custom PIN sheet unless biometrics unavailable AND policy allows
+//      device passcode fallback.
+//   5. Success → POST {base}/confirm/{actionId}/approve {t, biometric:"pass"}.
+//      Backend executes (order/transfer/sweep/limit change), then calls
+//      Spectrum edit() so the transcript card matches.
+//   6. Extension updates its live UI immediately (Approved → Completed/Failed)
+//      from the API response. NEVER show "filled" unless the API says so.
+//
+//  NEVER: custom PIN sheet as the happy path, Safari for Face ID, a labeled
+//  web button with no LocalAuthentication, or executing on card open.
+
+import Messages
+import UIKit
+import LocalAuthentication
+
+// MARK: - Payload (mirrors GET /confirm/:id)
+
+struct ConfirmationPayload: Decodable {
+    let actionId: String
+    let action: String          // invest.buy | transfer.send | save.sweep | …
+    let state: String           // pending | … | expired
+    let title: String
+    let subtitle: String?
+    let amount: String?
+    let asset: String?
+    let destination: String?
+    let fee: String?
+    let riskLine: String?
+    let expiresAt: String?
+    let result: String?
+    let dead: Bool
+    let live: Bool
+}
+
+// MARK: - View controller
+
+final class MessagesViewController: MSMessagesAppViewController {
+
+    private var actionId: String?
+    private var token: String?          // ?t=expiry.sig, single-use
+    private var baseURL: URL?
+
+    private let titleLabel = UILabel()
+    private let detailLabel = UILabel()
+    private let riskLabel = UILabel()
+    private let approveButton = UIButton(type: .system)
+    private let cancelButton = UIButton(type: .system)
+    private let statusLabel = UILabel()
+
+    // MARK: Presentation
+
+    override func willBecomeActive(with conversation: MSConversation) {
+        super.willBecomeActive(with: conversation)
+        guard let url = conversation.selectedMessage?.url else { renderDead("No action link."); return }
+        guard parse(url: url) else { renderDead("This link is invalid."); return }
+        setCompactUI()
+        fetchPayload()
+    }
+
+    // MARK: 1. URL parse
+
+    /// url shape: https://<base>/confirm/{actionId}?t={expiry}.{sig}
+    private func parse(url: URL) -> Bool {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.count >= 2, parts[parts.count - 2] == "confirm" else { return false }
+        guard let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let t = items.first(where: { $0.name == "t" })?.value, !t.isEmpty else { return false }
+        actionId = parts.last
+        token = t
+        baseURL = URL(string: "\(url.scheme ?? "https")://\(url.host ?? "")")
+        return actionId != nil
+    }
+
+    // MARK: 2. Fetch
+
+    private func fetchPayload() {
+        guard let base = baseURL, let id = actionId, let t = token else { renderDead("This link is invalid."); return }
+        var comps = URLComponents(url: base.appendingPathComponent("confirm/\(id)"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "t", value: t)]
+        URLSession.shared.dataTask(with: comps.url!) { [weak self] data, _, _ in
+            DispatchQueue.main.async {
+                guard let self, let data,
+                      let payload = try? JSONDecoder().decode(APIEnvelope.self, from: data).confirmation else {
+                    self?.renderDead("Couldn't load this request."); return
+                }
+                payload.dead || !payload.live ? self.renderDead(self.deadCopy(for: payload))
+                                             : self.renderPending(payload)
+            }
+        }.resume()
+    }
+
+    private struct APIEnvelope: Decodable { let confirmation: ConfirmationPayload }
+
+    // MARK: 3. Compact UI
+
+    private func renderPending(_ p: ConfirmationPayload) {
+        titleLabel.text = p.title
+        var lines: [String] = []
+        if let s = p.subtitle, !s.isEmpty { lines.append(s) }
+        if let a = p.amount, !a.isEmpty { lines.append("Amount: \(a)") }
+        if let d = p.destination, !d.isEmpty { lines.append("Where: \(d)") }
+        if let f = p.fee, !f.isEmpty { lines.append("Fee: \(f)") }
+        detailLabel.text = lines.joined(separator: "\n")
+        riskLabel.text = p.riskLine
+        approveButton.setTitle("Approve with Face ID", for: .normal)
+        approveButton.isEnabled = true
+        approveButton.addTarget(self, action: #selector(didTapApprove), for: .touchUpInside)
+        cancelButton.setTitle("Cancel", for: .normal)
+        cancelButton.addTarget(self, action: #selector(didTapCancel), for: .touchUpInside)
+    }
+
+    // MARK: 4. Face ID (LocalAuthentication — the ONLY biometric path)
+
+    @objc private func didTapApprove() {
+        approveButton.isEnabled = false
+        statusLabel.text = "Confirming…"
+        let ctx = LAContext()
+        var error: NSError?
+        // Biometrics only on the happy path. Passcode fallback solely when
+        // biometrics are unavailable AND policy allows it.
+        let policy: LAPolicy = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+            ? .deviceOwnerAuthenticationWithBiometrics
+            : .deviceOwnerAuthentication
+        ctx.evaluatePolicy(policy, localizedReason: titleLabel.text ?? "Approve this action") { [weak self] success, err in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if success { self.submitDecision(approved: true, biometric: "pass") }
+                else if (err as? LAError)?.code == .userCancel {
+                    self.submitDecision(approved: false, biometric: "cancel")
+                } else {
+                    self.statusLabel.text = "Not recognized — try again."
+                    self.approveButton.isEnabled = true
+                    // Log biometric fail (pass/fail/cancel only, no biometric data).
+                }
+            }
+        }
+    }
+
+    // MARK: 5. Approve / Cancel
+
+    private func submitDecision(approved: Bool, biometric: String) {
+        guard let base = baseURL, let id = actionId, let t = token else { return }
+        let verb = approved ? "approve" : "reject"
+        var req = URLRequest(url: base.appendingPathComponent("confirm/\(id)/\(verb)"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["t": t, "biometric": biometric])
+        statusLabel.text = approved ? "Approved — working on it…" : "Cancelling…"
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+            DispatchQueue.main.async {
+                guard let self, let data,
+                      let payload = try? JSONDecoder().decode(APIEnvelope.self, from: data).confirmation else {
+                    self?.statusLabel.text = "Something went wrong."
+                    self?.approveButton.isEnabled = true
+                    return
+                }
+                // 6. Live UI follows the SERVER verdict, never local optimism.
+                switch payload.state {
+                case "completed": self.renderDone(payload.result ?? "Done")
+                case "failed": self.statusLabel.text = "Couldn't complete: \(payload.result ?? "error")"
+                case "rejected", "expired": self.renderDead(self.deadCopy(for: payload))
+                default: self.statusLabel.text = "Approved — working on it…"
+                }
+            }
+        }.resume()
+    }
+
+    @objc private func didTapCancel() { submitDecision(approved: false, biometric: "cancel") }
+
+    // MARK: Terminal states
+
+    private func renderDone(_ copy: String) {
+        statusLabel.text = copy
+        approveButton.isEnabled = false
+        cancelButton.isEnabled = false
+    }
+
+    private func renderDead(_ copy: String) {
+        statusLabel.text = copy
+        approveButton.isEnabled = false
+        cancelButton.isEnabled = false
+    }
+
+    private func deadCopy(for p: ConfirmationPayload) -> String {
+        switch p.state {
+        case "expired": return "Expired — ask Miriam again."
+        case "rejected": return "Cancelled — nothing moved."
+        case "completed": return p.result ?? "Done."
+        case "failed": return "Couldn't complete: \(p.result ?? "error")"
+        default: return "This request is no longer live."
+        }
+    }
+
+    private func setCompactUI() {
+        // Compact presentation, one primary + one secondary button.
+        // Real layout code (stack views, Dynamic Type) goes here.
+    }
+}

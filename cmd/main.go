@@ -429,7 +429,7 @@ func diagnoseYield(ctx context.Context, userID string, out io.Writer) error {
 func runSeedCatalog(args []string) error {
 	fs := flag.NewFlagSet("seed-catalog", flag.ContinueOnError)
 	collection := fs.String("collection", "curated", "provider discovery collection: curated or top_performing")
-	limit := fs.Int("limit", 100, "max discovered strategies to scan (1-100)")
+	limit := fs.Int("limit", 50, "max discovered strategies to scan (provider caps a page at 50)")
 	confirm := fs.Bool("confirm", false, "write the catalog (default: preview only, nothing changes)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -445,7 +445,7 @@ func runSeedCatalog(args []string) error {
 	if !cfg.InvestmentGlider.Enabled {
 		return fmt.Errorf("the investment engine is disabled: set INVESTMENT_GLIDER_ENABLED=true")
 	}
-	if !cfg.InvestmentGlider.Simulation && strings.TrimSpace(cfg.InvestmentGlider.APIKey) == "" {
+	if strings.TrimSpace(cfg.InvestmentGlider.APIKey) == "" {
 		return fmt.Errorf("INVESTMENT_GLIDER_API_KEY is not configured")
 	}
 
@@ -457,16 +457,11 @@ func runSeedCatalog(args []string) error {
 	// Build the provider directly from config, mirroring how recover-funds builds
 	// its clients: the command inherits the deployment's credentials without a
 	// full application bootstrap.
-	var provider investmentsvc.Provider
-	if cfg.InvestmentGlider.Simulation {
-		provider = glider.NewSimulated(glider.SimulatedConfig{})
-	} else {
-		provider = glider.NewClient(glider.Config{
-			BaseURL: cfg.InvestmentGlider.BaseURL,
-			APIKey:  cfg.InvestmentGlider.APIKey,
-			Timeout: time.Duration(cfg.InvestmentGlider.Timeout) * time.Second,
-		}, logger)
-	}
+	provider := glider.NewClient(glider.Config{
+		BaseURL: cfg.InvestmentGlider.BaseURL,
+		APIKey:  cfg.InvestmentGlider.APIKey,
+		Timeout: time.Duration(cfg.InvestmentGlider.Timeout) * time.Second,
+	}, logger)
 
 	db, err := database.NewConnection(cfg.Database, cfg.Environment)
 	if err != nil {

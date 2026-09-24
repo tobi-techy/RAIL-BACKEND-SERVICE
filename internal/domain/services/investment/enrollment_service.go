@@ -256,7 +256,6 @@ func (s *Service) enrollWithProvider(
 		Flow:           "enroll",
 		ProviderFlowID: authorization.FlowID,
 		Status:         "prepared",
-		ExpiresAt:      authorization.ExpiresAt,
 		CreatedAt:      s.nowOr(),
 		UpdatedAt:      s.nowOr(),
 	}
@@ -270,7 +269,7 @@ func (s *Service) enrollWithProvider(
 		FlowID:         authorization.FlowID,
 		AccountIndex:   authorization.AccountIndex,
 		AgentAccountID: authorization.AgentAccountID,
-		ChainIDs:       chainIDsOr(authorization.ChainIDs, s.cfg.SolanaChainIDs),
+		ChainIDs:       s.cfg.SolanaChainIDs,
 		AccountType:    authorization.AccountType,
 		// Stage 2 must echo the owner and strategy used to open the flow.
 		OwnerAccountID: ownerAccount,
@@ -279,26 +278,27 @@ func (s *Service) enrollWithProvider(
 
 	switch {
 	case strings.TrimSpace(authorization.SolanaTransaction) != "":
+		// Solana-rooted owner (Model B): stage 1 returned a serialized Solana
+		// transaction the owner signs with their wallet key.
 		signed, err := s.signer.SignSolanaTransaction(ctx, userID, authorization.SolanaTransaction)
 		if err != nil {
 			s.markSignatureFailed(ctx, request, err)
 			return nil, fmt.Errorf("sign enrollment authorization: %w", err)
 		}
 		submit.SignedSolanaTransaction = signed
-	case authorization.Authorization != nil && authorization.Authorization.Text != "":
-		signed, err := s.signer.SignSolanaMessage(ctx, userID, authorization.Authorization.Text)
-		if err != nil {
-			s.markSignatureFailed(ctx, request, err)
-			return nil, fmt.Errorf("sign enrollment authorization: %w", err)
-		}
-		submit.Signature = signed
-	case authorization.Message != nil && authorization.Message.Text != "":
+	case authorization.Message != nil && strings.TrimSpace(authorization.Message.Text) != "":
 		signed, err := s.signer.SignSolanaMessage(ctx, userID, authorization.Message.Text)
 		if err != nil {
 			s.markSignatureFailed(ctx, request, err)
 			return nil, fmt.Errorf("sign enrollment authorization: %w", err)
 		}
 		submit.Signature = signed
+	case authorization.Message != nil && strings.TrimSpace(authorization.Message.Raw) != "":
+		// EVM-rooted owners (Model A) get an informational digest plus a
+		// slot-bound Swig authorization the client must build and sign; Rail's
+		// signer cannot produce one, and signing the digest itself is invalid.
+		s.markSignatureFailed(ctx, request, fmt.Errorf("unsupported enrollment flow"))
+		return nil, fmt.Errorf("%w: this enrollment needs an EVM-rooted authorization Rail does not build; the portfolio owner must be Solana-rooted", ErrUnsupported)
 	default:
 		return nil, fmt.Errorf("%w: the provider returned nothing to sign", ErrUnsupported)
 	}
@@ -525,13 +525,6 @@ func swigRoleFor(portfolio *entities.GliderPortfolio) *int {
 		}
 	}
 	return nil
-}
-
-func chainIDsOr(values, fallback []int) []int {
-	if len(values) > 0 {
-		return values
-	}
-	return fallback
 }
 
 // normaliseFundingSource maps caller wording onto the two ledger sources the

@@ -39,6 +39,25 @@ func (e *Error) IsNotFound() bool { return e.StatusCode == http.StatusNotFound }
 // IsConflict reports whether the error is a 409 (state machine rejection).
 func (e *Error) IsConflict() bool { return e.StatusCode == http.StatusConflict }
 
+// IsConflictCode reports whether the error is a 409 with the given machine
+// code (e.g. fare_menu_expired, intent_already_exists).
+func (e *Error) IsConflictCode(code string) bool {
+	return e.StatusCode == http.StatusConflict && e.Code == code
+}
+
+// IsBadRequest reports whether the error is a 400 (validation rejection).
+func (e *Error) IsBadRequest() bool { return e.StatusCode == http.StatusBadRequest }
+
+// ErrorCode returns the BRIJ machine code of an *Error, or "" for any other
+// error. Use it to branch on provider state-machine codes without losing the
+// wrapped error chain.
+func ErrorCode(err error) string {
+	if e, ok := err.(*Error); ok {
+		return e.Code
+	}
+	return ""
+}
+
 // IsRetryable reports whether the request may succeed on a retry (5xx + 429).
 func (e *Error) IsRetryable() bool {
 	return e.StatusCode >= 500 || e.StatusCode == http.StatusTooManyRequests

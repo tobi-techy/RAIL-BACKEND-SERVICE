@@ -61,18 +61,18 @@ func (r *DepositRouter) resolveUserBaseWallet(ctx context.Context, userID uuid.U
 // Used to resolve the correct wallet for a given chain when Blend's payload
 // specifies which chain the vault action must execute on.
 var chainIDToCircleChains = map[int64][]string{
-	1:         {"ETH"},
-	8453:      {"BASE"},
-	42161:     {"ARB"},
-	10:        {"OP"},
-	137:       {"MATIC"},
-	43114:     {"AVAX"},
-	11155111:  {"ETH-SEPOLIA"},
-	84532:     {"BASE-SEPOLIA"},
-	421614:    {"ARB-SEPOLIA"},
-	11155420:  {"OP-SEPOLIA"},
-	80002:     {"MATIC-AMOY"},
-	43113:     {"AVAX-FUJI"},
+	1:        {"ETH"},
+	8453:     {"BASE"},
+	42161:    {"ARB"},
+	10:       {"OP"},
+	137:      {"MATIC"},
+	43114:    {"AVAX"},
+	11155111: {"ETH-SEPOLIA"},
+	84532:    {"BASE-SEPOLIA"},
+	421614:   {"ARB-SEPOLIA"},
+	11155420: {"OP-SEPOLIA"},
+	80002:    {"MATIC-AMOY"},
+	43113:    {"AVAX-FUJI"},
 }
 
 // resolveUserWalletByChainID resolves the user's Circle wallet for a specific EVM chain.
@@ -307,6 +307,11 @@ func (r *DepositRouter) ensureBridgeFunded(ctx context.Context, route *depositRo
 	if _, err := r.waitCircleTransfer(ctx, transfer); err != nil {
 		return err
 	}
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// landed. No-op on mainnet.
+	if bridge, _ := r.getChainRails(); bridge != nil {
+		chainrailspkg.MaybeTriggerTestnetProcessing(ctx, bridge, route.BridgeSourceChain.String, intentAddr, r.logger)
+	}
 	return nil
 }
 
@@ -420,20 +425,15 @@ func chainRailsFundingAmount(intent *chainrailspkg.CreateIntentResponse, request
 	return amount, nil
 }
 
+// isChainRailsComplete / isChainRailsTerminalFailure delegate to the
+// canonical ChainRails status helpers so every poll site classifies
+// identically (see adapters/chainrails/status.go).
 func isChainRailsComplete(status string) bool {
-	switch strings.ToUpper(strings.TrimSpace(status)) {
-	case "COMPLETED", "COMPLETE", "SUCCESS", "SUCCEEDED", "SETTLED", "FULFILLED":
-		return true
-	}
-	return false
+	return chainrailspkg.IsTerminalSuccess(status)
 }
 
 func isChainRailsTerminalFailure(status string) bool {
-	switch strings.ToUpper(strings.TrimSpace(status)) {
-	case "FAILED", "FAILURE", "CANCELLED", "CANCELED", "EXPIRED", "REJECTED", "REFUNDED":
-		return true
-	}
-	return false
+	return chainrailspkg.IsTerminalFailure(status)
 }
 
 func isCircleTransferComplete(state circlepkg.TransactionState) bool {

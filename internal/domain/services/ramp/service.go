@@ -658,11 +658,36 @@ func (s *Service) createRampHubBuyOrder(ctx context.Context, userID uuid.UUID, f
 	}
 	order, err := s.ramphubClient.CreateOrder(ctx, req)
 	if err != nil && ramphub.IsActiveIntentConflict(err) {
-		// Take over the existing payment window and retry once.
+		// Per the docs, inspect the active window before replacing it — the
+		// conflict response alone doesn't say what we'd clobber. We still
+		// take over the window (server-driven flow has no UI to ask), but the
+		// window details land in logs for support.
+		s.logActiveIntentWindow(ctx, userID, asset, chain)
 		req.OverrideActiveIntent = true
 		order, err = s.ramphubClient.CreateOrder(ctx, req)
 	}
 	return order, err
+}
+
+// logActiveIntentWindow fetches the customer's current payment window for
+// asset/chain and logs what an override will replace. Best-effort: a missing
+// window (or lookup failure) only logs.
+func (s *Service) logActiveIntentWindow(ctx context.Context, userID uuid.UUID, asset, chain string) {
+	if s.ramphubClient == nil {
+		return
+	}
+	intent, err := s.ramphubClient.GetOrderIntent(ctx, rampCustomerID(userID), asset, chain)
+	if err != nil {
+		s.logger.Info("ramphub active intent conflict but no window readable",
+			zap.String("user_id", userID.String()), zap.Error(err))
+		return
+	}
+	s.logger.Warn("ramphub active intent conflict — overriding existing window",
+		zap.String("user_id", userID.String()),
+		zap.String("active_tx_id", intent.TransactionID),
+		zap.String("active_status", intent.StatusLabel()),
+		zap.String("active_expires_at", intent.ExpiresAt),
+		zap.Int("active_seconds_remaining", intent.TimeRemainingSeconds))
 }
 
 // buyBankDetails extracts the pay-in account the customer must transfer to,
@@ -869,9 +894,8 @@ func (s *Service) CreateOfframp(ctx context.Context, userID uuid.UUID, bankCode,
 	order, err := s.ramphubClient.CreateOrder(ctx, sellReq)
 	if err != nil && ramphub.IsActiveIntentConflict(err) {
 		// Stale buy intent from a prior session is blocking this sell order.
-		// Take over the existing payment window and retry once.
-		s.logger.Warn("RampHub offramp: active intent conflict, overriding",
-			zap.String("user_id", userID.String()))
+		// Inspect the window first (docs flow), then take it over and retry.
+		s.logActiveIntentWindow(ctx, userID, settlementAsset, offrampSettlementChain)
 		sellReq.OverrideActiveIntent = true
 		order, err = s.ramphubClient.CreateOrder(ctx, sellReq)
 	}
@@ -1193,6 +1217,23 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, txID st
 	tx, err := s.ramphubClient.MonitorStatus(ctx, txID)
 	if err != nil {
 		return nil, err
+	}
+
+	// syncQueued means RampHub is still syncing provider truth — re-fetch
+	// once before acting, so a stale terminal snapshot can't credit or
+	// reverse on outdated state.
+	if tx.SyncQueued && !tx.Completed && !tx.Terminal {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+		if fresh, ferr := s.ramphubClient.MonitorStatus(ctx, txID); ferr != nil {
+			s.logger.Warn("ramphub poll: sync-queued re-fetch failed, using first snapshot",
+				zap.Error(ferr), zap.String("ramphub_tx_id", txID))
+		} else {
+			tx = fresh
+		}
 	}
 
 	newStatus := tx.MappedStatus()

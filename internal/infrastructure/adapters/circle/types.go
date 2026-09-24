@@ -225,6 +225,27 @@ type SignedTransactionData struct {
 	TxHash            string `json:"txHash,omitempty"`
 }
 
+// --- Message Signing ---
+
+// SignMessageRequest is the body for POST /v1/w3s/developer/sign/message.
+// Message may be plain text (signed as UTF-8 bytes) or a 0x-prefixed
+// even-length hex string when EncodedByHex is true. Identify the wallet by
+// WalletID, or by WalletAddress + Blockchain. Solana and Aptos wallets return
+// Ed25519 signatures in the chain's native encoding (base58 for Solana).
+type SignMessageRequest struct {
+	EntitySecretCiphertext string     `json:"entitySecretCiphertext"`
+	WalletID               string     `json:"walletId,omitempty"`
+	WalletAddress          string     `json:"walletAddress,omitempty"`
+	Blockchain             Blockchain `json:"blockchain,omitempty"`
+	Message                string     `json:"message"`
+	EncodedByHex           bool       `json:"encodedByHex,omitempty"`
+	Memo                   string     `json:"memo,omitempty"`
+}
+
+type SignMessageData struct {
+	Signature string `json:"signature"`
+}
+
 // --- Fee Estimation ---
 
 type EstimateFeeRequest struct {

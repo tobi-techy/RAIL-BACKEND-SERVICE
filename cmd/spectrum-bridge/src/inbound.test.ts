@@ -228,7 +228,7 @@ describe("routeInboundContent", () => {
     debouncer.dispose();
   });
 
-  it("drops oversized PDF statement attachments before posting", async () => {
+  it("posts an oversized notice (not bytes) for huge PDFs", async () => {
     const posts: InboundPayload[] = [];
     const debouncer = makeDebouncer(posts);
     const deps = makeRouter(posts, debouncer);
@@ -241,7 +241,9 @@ describe("routeInboundContent", () => {
 
     await route(deps, fakeMessage("pdf-2", oversized));
 
-    expect(posts.length).toBe(0);
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_oversized).toBe(true);
+    expect(posts[0].document_b64).toBeUndefined();
     debouncer.dispose();
   });
 
@@ -361,16 +363,73 @@ describe("routeInboundContent", () => {
     debouncer.dispose();
   });
 
-  it("does not post typing/read/poll echo content", async () => {
+  it("does not post typing/poll echo content, but forwards read receipts", async () => {
     const posts: InboundPayload[] = [];
     const debouncer = makeDebouncer(posts);
     const deps = makeRouter(posts, debouncer);
 
     await route(deps, fakeMessage("m1", { type: "typing", state: "start" } as unknown as Content));
-    await route(deps, fakeMessage("m2", { type: "read", target: fakeMessage("x", { type: "text", text: "y" } as Content) } as unknown as Content));
     await route(deps, fakeMessage("m3", { type: "poll", title: "Confirm?", options: [{ title: "Confirm" }] } as unknown as Content));
     expect(posts.length).toBe(0);
     expect(debouncer.hasPending(ctx.threadID)).toBe(false);
+
+    // Inbound read receipt: forwarded so the backend can track delivery.
+    const target = fakeMessage("x", { type: "text", text: "y" } as Content);
+    await route(deps, fakeMessage("m2", { type: "read", target } as unknown as Content));
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_read_receipt).toBe(true);
+    expect(posts[0].read_target_id).toBe("x");
+    debouncer.dispose();
+  });
+
+  it("forwards group lifecycle events instead of dropping them", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+
+    await route(deps, fakeMessage("g1", { type: "addMember", members: ["+15550000001"] } as unknown as Content));
+    await route(deps, fakeMessage("g2", { type: "leaveSpace" } as unknown as Content));
+    expect(posts.length).toBe(2);
+    expect(posts[0].is_group_event).toBe(true);
+    expect(posts[0].group_event).toBe("addMember");
+    expect(posts[0].group_members).toEqual(["+15550000001"]);
+    expect(posts[1].group_event).toBe("leaveSpace");
+    debouncer.dispose();
+  });
+
+  it("acks unsupported attachments instead of leaving the user on read", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+    const zip = {
+      type: "attachment",
+      name: "archive.zip",
+      mimeType: "application/zip",
+      read: async () => new Uint8Array([0x50, 0x4b]),
+    } as unknown as Content;
+
+    await route(deps, fakeMessage("z1", zip));
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_unsupported).toBe(true);
+    expect(posts[0].unsupported_mime).toBe("application/zip");
+    debouncer.dispose();
+  });
+
+  it("posts oversized notices instead of silently dropping", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+    const oversized = {
+      type: "attachment",
+      name: "large.pdf",
+      mimeType: "application/pdf",
+      size: 99 * 1024 * 1024,
+      read: async () => new Uint8Array([0x25]),
+    } as unknown as Content;
+
+    await route(deps, fakeMessage("pdf-3", oversized));
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_oversized).toBe(true);
     debouncer.dispose();
   });
 
@@ -393,6 +452,9 @@ describe("routeInboundContent", () => {
       debounceMs: 20,
       maxWaitMs: 5000,
       maxBuffer: 5,
+      // No retries: assert exactly one error report. (With retries enabled the
+      // failed flush is requeued with backoff and onError fires per attempt.)
+      maxFlushRetries: 0,
       onError: (_k, err) => errors.push(err),
     });
     d.add("chat-1", payload("hi", "m1"));

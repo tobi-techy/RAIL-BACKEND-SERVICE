@@ -199,6 +199,16 @@ func (h *ChainRailsHandlers) CreateSession(c *gin.Context) {
 // --- POST /v1/webhooks/chainrails ---
 
 func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
+	// ChainRails requires a 2xx within 5s or it redelivers. Track slow
+	// processing so deadline pressure is visible (redelivery itself is safe:
+	// every path below is idempotent).
+	start := time.Now()
+	defer func() {
+		if d := time.Since(start); d > 4*time.Second {
+			h.logger.Warn("ChainRails webhook processing near delivery deadline — redelivery likely",
+				"duration_ms", d.Milliseconds())
+		}
+	}()
 	rawBody, err := c.GetRawData()
 	if err != nil {
 		chainrailsWebhooksTotal.WithLabelValues("unknown", "bad_request").Inc()
@@ -265,8 +275,11 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 			}
 		}
 		h.handleIntentCompleted(c, &event)
-	case "intent.refunded":
-		chainrailsWebhooksTotal.WithLabelValues("intent.refunded", "received").Inc()
+	case "intent.refunded", "intent.expired":
+		// An expired intent never settles, so it shares the refunded path:
+		// withdrawal → RefundChainRailsWithdrawal, sweep → FailSweep,
+		// plain deposit → ack (worker timeouts previously owned this alone).
+		chainrailsWebhooksTotal.WithLabelValues(event.Type, "received").Inc()
 		if event.Data.Metadata != nil {
 			if _, isWithdrawal := event.Data.Metadata["withdrawal_id"]; isWithdrawal {
 				h.handleWithdrawalIntentRefunded(c, &event)
@@ -277,7 +290,7 @@ func (h *ChainRailsHandlers) HandleWebhook(c *gin.Context) {
 				return
 			}
 		}
-		h.logger.Info("ChainRails deposit refund received", "event_id", event.ID)
+		h.logger.Info("ChainRails deposit refund received", "type", event.Type, "event_id", event.ID)
 		c.JSON(http.StatusOK, gin.H{"received": true})
 	case "intent.funded", "intent.initiated":
 		chainrailsWebhooksTotal.WithLabelValues(event.Type, "acknowledged").Inc()

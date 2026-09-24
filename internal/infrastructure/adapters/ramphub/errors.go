@@ -13,6 +13,10 @@ import (
 // provider directory miss).
 var ErrAccountResolveFailed = errors.New("ramphub: bank account could not be resolved")
 
+// ErrNoActiveIntent is returned by GetOrderIntent when RampHub responds 404,
+// i.e. no active payment window exists for the customer/asset/chain.
+var ErrNoActiveIntent = errors.New("ramphub: no active payment window")
+
 // APIError is returned when RampHub responds with a non-success HTTP status.
 type APIError struct {
 	StatusCode int

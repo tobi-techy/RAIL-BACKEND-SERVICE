@@ -28,7 +28,7 @@ The infrastructure is intentionally scoped: every mutation the agent *wants* to 
 │         │               │                │             │       │
 │  ┌──────┴───────────────┴────────────────┴─────────────┴─────┐ │
 │  │              Infrastructure Layer                            │ │
-│  │  • Glider HTTP client (+ simulated in-process provider)     │ │
+│  │  • Glider HTTP client (real V2 API, always on)               │ │
 │  │  • Owner signer port (Derived for M1, Circle for prod)      │ │
 │  │  • Postgres repositories (strategies, enrollments, etc.)    │ │
 │  │  • Funding adapter (reuses WithdrawalService)               │ │
@@ -103,11 +103,11 @@ Computes drift, proposed trades, fees, slippage, post-trade allocation, and pass
 ## 5. Glider Provider Integration
 
 ### 5.1 API Surface (41 operations)
-- **Strategies**: Create, publish version, get, set schedule, discover public
+- **Strategies**: Create, publish version (allocation + changeLog only — strict body), get, set schedule (PUT, on cadence change), discover public
 - **Enrollment**: Two-stage (signature request → submit with owner signature) — idempotent on `flowId`
-- **Portfolios**: Get, list, positions, start/stop, trigger rebalance (429 cooldown)
-- **Withdrawals**: Two-stage (signature → submit), idempotent on authorization nonce
-- **Operations**: Poll async state, deposit simulation (test only)
+- **Portfolios**: Get (automation state at `schedule.status`), list, positions (structured `warnings[]` objects, `fetchedAt`), start/stop, trigger rebalance (429 cooldown)
+- **Withdrawals**: Two-stage (signature → submit); stage 2 echoes the stage-1 `message` object **verbatim** + signature — nothing else
+- **Operations**: Poll async state (`accepted → running → completed | failed | cancelled`, plus `retrying`/`awaiting_user`)
 
 ### 5.2 Client (`internal/infrastructure/adapters/glider/client.go`)
 - `x-api-key` header, correlation ID, `Accept: application/json`
@@ -115,12 +115,13 @@ Computes drift, proposed trades, fees, slippage, post-trade allocation, and pass
 - `Retry-After` honored for 429
 - Structured `APIError` with `IsCooldown`, `IsRetryable`, `IsConflict`, etc.
 - Fails closed if API key missing
+- Credentials + scopes verified at boot via `Whoami` (401/403 aborts startup; missing scopes warn)
 
-### 5.3 Simulated Provider (`internal/infrastructure/adapters/glider/simulated.go`)
-In-process deterministic provider for tests and CI. No network calls.
-- Enforces rebalance cooldown
-- `FailNext` injection, `SimulateDeposit`, `SetPrice`
-- Idempotent enrollment replay on same `flowId`
+### 5.3 No Simulated Provider
+The former in-process simulated provider has been **removed**. The provider is
+always the real Glider V2 HTTP client; there is no `simulation` config switch.
+Domain tests use a test-only double (`testprovider_test.go`, never compiled
+into the binary) that implements the `Provider` port.
 
 ---
 
@@ -139,7 +140,7 @@ type OwnerSigner interface {
 | Implementation | Use Case |
 |----------------|----------|
 | `DerivedSigner` (HKDF ed25519) | M1 development, staging — **never prod unless explicitly accepted** |
-| `CircleSigner` | Production — uses user's custody wallet via Circle's `SignTransaction`; message signing returns `ErrMessageSigningUnsupported` |
+| `CircleSigner` | Production — uses user's custody wallet via Circle: `SignTransaction` (enrollment) and `SignMessage` (`POST /w3s/developer/sign/message`, withdrawals — base58 Ed25519 over the message's UTF-8 bytes). EVM typed-data (ERC-1271) authorizations remain unsupported. |
 
 The port is isolated: swapping to user-held keys is configuration, not code change.
 
@@ -293,7 +294,7 @@ Run via `make migrate-up` (golang-migrate, file-based from `migrations/`).
 ```bash
 # Go
 go test -race ./internal/domain/services/investment/...          # engines + e2e service
-go test -race ./internal/infrastructure/adapters/glider/...       # client + simulated
+go test -race ./internal/infrastructure/adapters/glider/...       # real HTTP client
 go test -race ./internal/infrastructure/adapters/investmentowner/... # signer tests
 go test -race ./...                                               # full suite
 
@@ -367,7 +368,7 @@ cd /Users/tobi/Development/MIRIAM
 | Services | `internal/domain/services/investment/{service,strategy_service,enrollment_service,execution_service,discovery,sync}.go` |
 | Service tests | `internal/domain/services/investment/service_test.go` |
 | Repositories | `internal/infrastructure/repositories/investment_{strategy,portfolio,ledger,policy}_repository.go` |
-| Glider adapter | `internal/infrastructure/adapters/glider/{client,errors,simulated}.go` + `client_test.go` |
+| Glider adapter | `internal/infrastructure/adapters/glider/{client,errors}.go` + `client_test.go` |
 | Owner signer | `internal/infrastructure/adapters/investmentowner/{signer,derived,circle}.go` + `signer_test.go` |
 | API handlers | `internal/api/handlers/investment/handlers.go` |
 | API routes | `internal/api/routes/investment_glider_routes.go` |

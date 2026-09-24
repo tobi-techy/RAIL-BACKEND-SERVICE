@@ -1,0 +1,1 @@
+ALTER TABLE travel_orders DROP COLUMN IF EXISTS passenger_count;

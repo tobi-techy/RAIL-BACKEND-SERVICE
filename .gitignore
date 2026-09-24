@@ -154,3 +154,10 @@ cmd/spectrum-bridge/data/
 # Node.js dependency directories
 node_modules/
 cmd/spectrum-bridge/node_modules/
+
+# Xcode (Flip iOS app + Messages extension)
+ios/Flip/**/xcuserdata/
+ios/Flip/**/*.xcworkspace/xcuserdata/
+DerivedData/
+*.moved-aside
+ios/Flip/build/

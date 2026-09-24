@@ -31,8 +31,9 @@ func (s *Service) ListInvestors(ctx context.Context, collection, cursor string, 
 	if limit <= 0 {
 		limit = 25
 	}
-	if limit > 100 {
-		limit = 100
+	// The provider caps a discovery page at 50 strategies.
+	if limit > 50 {
+		limit = 50
 	}
 	discovered, next, err := s.provider.DiscoverStrategies(ctx, collection, cursor, limit)
 	if err != nil {
@@ -65,22 +66,26 @@ func (s *Service) GetInvestor(ctx context.Context, investorID string) (*entities
 
 	// Discovery is the authoritative list of mirrorable strategies; search it
 	// first so a non-public strategy can never be presented as mirrorable.
-	cursor := ""
-	for page := 0; page < 10; page++ {
-		discovered, next, err := s.provider.DiscoverStrategies(ctx, "", cursor, 100)
-		if err != nil {
-			return nil, fmt.Errorf("discover strategies: %w", s.mapProviderError(err))
-		}
-		for _, item := range discovered {
-			if item.StrategyID == investorID {
-				investor := s.investorFromDiscovered(item)
-				return &investor, nil
+	// The provider requires an explicit collection and caps pages at 50, so
+	// both collections are paged before concluding a strategy is not public.
+	for _, collection := range []string{"curated", "top_performing"} {
+		cursor := ""
+		for page := 0; page < 10; page++ {
+			discovered, next, err := s.provider.DiscoverStrategies(ctx, collection, cursor, 50)
+			if err != nil {
+				return nil, fmt.Errorf("discover strategies: %w", s.mapProviderError(err))
 			}
+			for _, item := range discovered {
+				if item.StrategyID == investorID {
+					investor := s.investorFromDiscovered(item)
+					return &investor, nil
+				}
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
 		}
-		if next == "" {
-			break
-		}
-		cursor = next
 	}
 	return nil, fmt.Errorf("%w: that strategy is not published for mirroring", ErrNotFound)
 }

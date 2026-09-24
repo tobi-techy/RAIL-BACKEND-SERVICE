@@ -73,6 +73,7 @@ type CircleTransferAdapter interface {
 // ChainRailsAdapter creates cross-chain transfer intents.
 type ChainRailsAdapter interface {
 	CreateIntent(ctx context.Context, req *chainrailspkg.CreateIntentRequest) (*chainrailspkg.CreateIntentResponse, error)
+	chainrailspkg.IntentTriggerer
 }
 
 // WithdrawalLimitsChecker validates withdrawal amounts against daily/monthly limits.
@@ -218,6 +219,10 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		return
 	}
 
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// is on its way. No-op on mainnet.
+	chainrailspkg.MaybeTriggerTestnetProcessing(ctx, s.chainRailsAdapter, source.chain, intent.IntentAddress, s.logger)
+
 	s.logger.Info("Circle→ChainRails→Paj bridge initiated",
 		zap.String("circle_tx_id", tx.ID),
 		zap.Int("cr_intent_id", intent.ID),
@@ -253,7 +258,7 @@ func (s *Service) NeedsVerification(ctx context.Context, userID uuid.UUID) bool 
 	return err != nil
 }
 
-// Initiate triggers a Paj OTP to the user's email.
+// Initiate triggers a Paj OTP to the user's email or phone (E.164).
 // Returns "already_verified" if user has a valid session.
 // Skips if user already has a valid session.
 func (s *Service) Initiate(ctx context.Context, userID uuid.UUID, email string) (alreadyVerified bool, err error) {
@@ -890,9 +895,12 @@ func (s *Service) HandleWebhook(ctx context.Context, payload *paj.WebhookPayload
 	// Credit user's spend balance when onramp completes (USDC arrived in custody).
 	s.creditOnrampIfCompleted(ctx, orderUserID, payload.ID, newStatus, tx)
 
-	// Notify user of onramp status changes
+	// Notify user of onramp status changes. mapPajStatus only ever returns
+	// pending/paid/completed/failed (Paj has no "processing" state), so match
+	// "paid" exactly — a dead "processing" arm here previously suggested a
+	// state that can never arrive.
 	if orderType == "onramp" && s.notifier != nil {
-		if newStatus == "paid" || newStatus == "processing" {
+		if newStatus == "paid" {
 			_ = s.notifier.NotifyDepositDetected(ctx, orderUserID, "NGN")
 		}
 	}
@@ -965,9 +973,40 @@ func (s *Service) PollOrderStatus(ctx context.Context, userID uuid.UUID, pajOrde
 	return tx, nil
 }
 
+// RecoverStuckOnramp re-verifies a stuck onramp order against Paj's API and
+// applies the verified outcome (status persist + credit on completion).
+// Called by the onramp recovery worker. Returns the verified local status.
+// A non-nil error means "could not verify" (no session, provider unreachable
+// or unauthorized) — the caller must leave the order alone for the user's
+// re-authenticated poll or a later tick, never fail-mark it.
+func (s *Service) RecoverStuckOnramp(ctx context.Context, userID uuid.UUID, pajOrderID string) (string, error) {
+	token, err := s.getSessionToken(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("no verifiable paj session: %w", err)
+	}
+	tx, err := s.pajClient.GetTransaction(ctx, token, pajOrderID)
+	if err != nil {
+		return "", s.invalidateSessionIfUnauthorized(ctx, userID, err)
+	}
+	newStatus := mapPajStatus(tx.Status)
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE paj_orders SET
+			status = $1, token_amount = $2, rate = $3,
+			last_webhook_status = $4, last_webhook_at = NOW(), updated_at = NOW()
+		WHERE paj_order_id = $5 AND (status NOT IN ('completed', 'failed') OR last_webhook_status LIKE 'unverified:%')`,
+		newStatus, tx.Amount, tx.Rate, tx.Status, pajOrderID); err != nil {
+		return "", fmt.Errorf("update paj order: %w", err)
+	}
+	s.creditOnrampIfCompleted(ctx, userID, pajOrderID, newStatus, tx)
+	if s.notifier != nil && newStatus == "paid" {
+		_ = s.notifier.NotifyDepositDetected(ctx, userID, "NGN")
+	}
+	return newStatus, nil
+}
+
 // creditOnrampIfCompleted credits the user's USDC balance and triggers the 70/30
 // allocation split when an onramp order completes.
-// Called from both HandleWebhook and PollOrderStatus to ensure credit happens
+// Called from webhook, poll, and recovery paths to ensure credit happens
 // regardless of which path detects the completion first.
 func (s *Service) creditOnrampIfCompleted(ctx context.Context, userID uuid.UUID, pajOrderID, newStatus string, tx *paj.PajTransaction) {
 	if newStatus != "completed" || tx.USDCAmount <= 0 {

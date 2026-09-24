@@ -4,6 +4,7 @@ package ramphub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -62,10 +63,14 @@ func TestSandboxLifecycle(t *testing.T) {
 	// --- 2. Order intent (active payment window) ---
 	intent, err := client.GetOrderIntent(ctx, cust, "USDC", "solana")
 	if err != nil {
-		t.Logf("GetOrderIntent error (may be expected if window not exposed): %v", err)
+		if errors.Is(err, ErrNoActiveIntent) {
+			t.Logf("GetOrderIntent: no active window (documented 404 path)")
+		} else {
+			t.Logf("GetOrderIntent error (may be expected if window not exposed): %v", err)
+		}
 	} else {
 		t.Logf("INTENT: tx=%s status=%s depositAddress=%q expiresAt=%s",
-			intent.TransactionID, intent.Status, intent.DepositAddress, intent.ExpiresAt)
+			intent.TransactionID, intent.StatusLabel(), intent.DepositAddress, intent.ExpiresAt)
 	}
 
 	// --- 3. Active-intent conflict + override ---

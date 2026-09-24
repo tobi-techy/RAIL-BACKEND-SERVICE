@@ -109,10 +109,12 @@ func (c *Client) CreateStrategy(ctx context.Context, in entities.GliderStrategyI
 	return &out, nil
 }
 
-// PublishStrategyVersion publishes a new allocation version. Enrolled
-// portfolios re-target on their next scheduled rebalance.
-func (c *Client) PublishStrategyVersion(ctx context.Context, strategyID string, in entities.GliderStrategyInput) (*entities.GliderStrategy, error) {
-	var out entities.GliderStrategy
+// PublishStrategyVersion publishes a new allocation version. The endpoint
+// accepts only the allocation (plus an optional change log) — anything else is
+// rejected with 400. Enrolled portfolios re-target on their next scheduled
+// rebalance.
+func (c *Client) PublishStrategyVersion(ctx context.Context, strategyID string, in entities.GliderPublishVersionInput) (*entities.GliderPublishedVersion, error) {
+	var out entities.GliderPublishedVersion
 	path := fmt.Sprintf("/strategies/%s/versions", strategyID)
 	if err := c.do(ctx, http.MethodPost, path, in, &out, requestOptions{}); err != nil {
 		return nil, err
@@ -184,25 +186,27 @@ func (c *Client) GetPortfolio(ctx context.Context, portfolioID string) (*entitie
 	return &out, nil
 }
 
-// ListPortfolios lists the tenant's portfolios.
+// ListPortfolios lists the tenant's portfolios (first page, no filters).
+// Prefer ListPortfoliosFiltered for cursor/filter support.
 func (c *Client) ListPortfolios(ctx context.Context) ([]entities.GliderPortfolio, error) {
-	var out struct {
-		Portfolios []entities.GliderPortfolio `json:"portfolios"`
-	}
-	if _, err := c.doWithCursor(ctx, http.MethodGet, "/portfolios", nil, &out, requestOptions{retry: true}); err != nil {
-		return nil, err
-	}
-	return out.Portfolios, nil
+	portfolios, _, err := c.ListPortfoliosFiltered(ctx, entities.GliderPortfolioListFilter{})
+	return portfolios, err
 }
 
-// GetPositions reads live balances and USD values for a portfolio.
+// GetPositions reads live balances and USD values for a portfolio. The
+// provider surfaces partial failures as structured warnings rather than errors;
+// AsOf prefers the provider's fetchedAt over local clock time.
 func (c *Client) GetPositions(ctx context.Context, portfolioID string) (*entities.GliderPositions, error) {
 	var out entities.GliderPositions
 	if err := c.do(ctx, http.MethodGet, "/portfolios/"+portfolioID+"/positions", nil, &out, requestOptions{retry: true}); err != nil {
 		return nil, err
 	}
 	out.PortfolioID = portfolioID
-	out.AsOf = time.Now().UTC()
+	if out.FetchedAt != nil {
+		out.AsOf = *out.FetchedAt
+	} else {
+		out.AsOf = time.Now().UTC()
+	}
 	return &out, nil
 }
 
@@ -255,6 +259,347 @@ func (c *Client) SubmitWithdrawal(ctx context.Context, portfolioID string, in en
 		return nil, err
 	}
 	return &out, nil
+}
+
+// ListScopes returns every scope defined in the system.
+// GET /scopes requires no authentication, so it never fails closed on a
+// missing API key.
+func (c *Client) ListScopes(ctx context.Context) ([]entities.GliderScope, error) {
+	if strings.TrimSpace(c.apiKey) == "" {
+		return c.listScopesUnauthenticated(ctx)
+	}
+	var out struct {
+		Scopes []entities.GliderScope `json:"scopes"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/scopes", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return out.Scopes, nil
+}
+
+func (c *Client) listScopesUnauthenticated(ctx context.Context) ([]entities.GliderScope, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/scopes", nil)
+	if err != nil {
+		return nil, fmt.Errorf("glider: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "RailBackend/1.0 (Stocklana; +https://rail.app)")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: GET /scopes: %v", ErrProviderUnavailable, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("%w: read body: %v", ErrProviderUnavailable, err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("glider: decode response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, &APIError{StatusCode: resp.StatusCode, Message: truncate(string(raw), 240)}
+	}
+	var out struct {
+		Scopes []entities.GliderScope `json:"scopes"`
+	}
+	if len(env.Data) > 0 {
+		if err := json.Unmarshal(env.Data, &out); err != nil {
+			return nil, fmt.Errorf("glider: decode data: %w", err)
+		}
+	}
+	return out.Scopes, nil
+}
+
+// ValidateStrategy runs the same gates as POST /strategies without persisting.
+// POST /strategies/validate — 200 {valid:true} or 400 with create-shaped error.
+func (c *Client) ValidateStrategy(ctx context.Context, in entities.GliderStrategyInput) error {
+	var out struct {
+		Valid bool `json:"valid"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/strategies/validate", in, &out, requestOptions{}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ListStrategies returns the tenant's strategies, createdAt descending.
+// GET /strategies?cursor=&limit= (limit 1-200, default 50).
+func (c *Client) ListStrategies(ctx context.Context, filter entities.GliderStrategyListFilter) ([]entities.GliderStrategy, string, error) {
+	query := ""
+	params := []string{}
+	if filter.Cursor != "" {
+		params = append(params, "cursor="+filter.Cursor)
+	}
+	if filter.Limit > 0 {
+		params = append(params, "limit="+strconv.Itoa(filter.Limit))
+	}
+	if len(params) > 0 {
+		query = "?" + strings.Join(params, "&")
+	}
+	var out struct {
+		Strategies []entities.GliderStrategy `json:"strategies"`
+	}
+	next, err := c.doWithCursor(ctx, http.MethodGet, "/strategies"+query, nil, &out, requestOptions{retry: true})
+	if err != nil {
+		return nil, "", err
+	}
+	return out.Strategies, next, nil
+}
+
+// PatchStrategy patches display metadata only (name, description, isPublic).
+// PATCH /strategies/{strategyId} — strict body, unknown keys 400.
+func (c *Client) PatchStrategy(ctx context.Context, strategyID string, patch entities.GliderStrategyPatch) (*entities.GliderStrategy, error) {
+	var out entities.GliderStrategy
+	if err := c.do(ctx, http.MethodPatch, "/strategies/"+strategyID, patch, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListStrategyVersions returns allocation history, newest first.
+// GET /strategies/{strategyId}/versions (cursor-paginated; isHead = active).
+func (c *Client) ListStrategyVersions(ctx context.Context, strategyID, cursor string, limit int) ([]entities.GliderStrategyVersion, string, error) {
+	query := ""
+	params := []string{}
+	if cursor != "" {
+		params = append(params, "cursor="+cursor)
+	}
+	if limit > 0 {
+		params = append(params, "limit="+strconv.Itoa(limit))
+	}
+	if len(params) > 0 {
+		query = "?" + strings.Join(params, "&")
+	}
+	var out struct {
+		Versions []entities.GliderStrategyVersion `json:"versions"`
+	}
+	next, err := c.doWithCursor(ctx, http.MethodGet, "/strategies/"+strategyID+"/versions"+query, nil, &out, requestOptions{retry: true})
+	if err != nil {
+		return nil, "", err
+	}
+	return out.Versions, next, nil
+}
+
+// GetStrategyPerformance returns the TWR target-allocation curve.
+// GET /strategies/{strategyId}/performance.
+func (c *Client) GetStrategyPerformance(ctx context.Context, strategyID string) (*entities.GliderStrategyPerformance, error) {
+	var out entities.GliderStrategyPerformance
+	if err := c.do(ctx, http.MethodGet, "/strategies/"+strategyID+"/performance", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetStrategySchedule returns the configured cadence (type+frequency).
+// GET /strategies/{strategyId}/schedule — null data means no cadence on record.
+func (c *Client) GetStrategySchedule(ctx context.Context, strategyID string) (*entities.GliderSchedule, error) {
+	var out *entities.GliderSchedule
+	if err := c.do(ctx, http.MethodGet, "/strategies/"+strategyID+"/schedule", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetStrategyPreferences returns stored swap overrides (null = system default).
+// GET /strategies/{strategyId}/preferences.
+func (c *Client) GetStrategyPreferences(ctx context.Context, strategyID string) (*entities.GliderPreferences, error) {
+	var out entities.GliderPreferences
+	if err := c.do(ctx, http.MethodGet, "/strategies/"+strategyID+"/preferences", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchStrategyPreferences merges swap overrides (omit=preserve, null=clear).
+// PATCH /strategies/{strategyId}/preferences.
+func (c *Client) PatchStrategyPreferences(ctx context.Context, strategyID string, patch map[string]any) (*entities.GliderPreferences, error) {
+	var out entities.GliderPreferences
+	if err := c.do(ctx, http.MethodPatch, "/strategies/"+strategyID+"/preferences", patch, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetStrategyFees returns the per-strategy integrator-fee override.
+// GET /strategies/{strategyId}/fees — {swapBps: int|null}.
+func (c *Client) GetStrategyFees(ctx context.Context, strategyID string) (*entities.GliderFeeView, error) {
+	var out entities.GliderFeeView
+	if err := c.do(ctx, http.MethodGet, "/strategies/"+strategyID+"/fees", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchStrategyFees merges the per-strategy fee override (omit=preserve).
+// PATCH /strategies/{strategyId}/fees. Pass {"swapBps":null} to clear via raw map.
+func (c *Client) PatchStrategyFees(ctx context.Context, strategyID string, patch map[string]any) (*entities.GliderFeeView, error) {
+	var out entities.GliderFeeView
+	if err := c.do(ctx, http.MethodPatch, "/strategies/"+strategyID+"/fees", patch, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetTenantPreferences returns tenant swap defaults. GET /tenant/preferences.
+func (c *Client) GetTenantPreferences(ctx context.Context) (*entities.GliderPreferences, error) {
+	var out entities.GliderPreferences
+	if err := c.do(ctx, http.MethodGet, "/tenant/preferences", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchTenantPreferences merges tenant swap defaults. PATCH /tenant/preferences.
+func (c *Client) PatchTenantPreferences(ctx context.Context, patch map[string]any) (*entities.GliderPreferences, error) {
+	var out entities.GliderPreferences
+	if err := c.do(ctx, http.MethodPatch, "/tenant/preferences", patch, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetTenantFees returns tenant fee defaults. GET /tenant/fees.
+func (c *Client) GetTenantFees(ctx context.Context) (*entities.GliderFeeView, error) {
+	var out entities.GliderFeeView
+	if err := c.do(ctx, http.MethodGet, "/tenant/fees", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchTenantFees merges tenant fee defaults. PATCH /tenant/fees.
+func (c *Client) PatchTenantFees(ctx context.Context, patch map[string]any) (*entities.GliderFeeView, error) {
+	var out entities.GliderFeeView
+	if err := c.do(ctx, http.MethodPatch, "/tenant/fees", patch, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PrepareLiquidateAll enumerates every holding above the swap threshold on the
+// recipient's chain. POST /portfolios/{id}/liquidate-all/signature.
+func (c *Client) PrepareLiquidateAll(ctx context.Context, portfolioID string, in entities.GliderLiquidateSignatureInput) (*entities.GliderWithdrawAuthorization, error) {
+	var out entities.GliderWithdrawAuthorization
+	if err := c.do(ctx, http.MethodPost, "/portfolios/"+portfolioID+"/liquidate-all/signature", in, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SubmitLiquidateAll echoes message verbatim + signature.
+// POST /portfolios/{id}/liquidate-all — 202 {operationId}, idempotent on nonce.
+func (c *Client) SubmitLiquidateAll(ctx context.Context, portfolioID string, in entities.GliderWithdrawSubmitInput) (*entities.GliderOperationHandle, error) {
+	var out entities.GliderOperationHandle
+	if err := c.do(ctx, http.MethodPost, "/portfolios/"+portfolioID+"/liquidate-all", in, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PrepareChainActivation returns the signable message for new chains.
+// POST /portfolios/{id}/chains/signature — EVM only, Solana 400.
+func (c *Client) PrepareChainActivation(ctx context.Context, portfolioID string, in entities.GliderChainActivationInput) (*entities.GliderChainActivationMessage, error) {
+	var out struct {
+		Message entities.GliderChainActivationMessage `json:"message"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/portfolios/"+portfolioID+"/chains/signature", in, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out.Message, nil
+}
+
+// ActivateChains creates one smart account per chain. POST /portfolios/{id}/chains.
+// Idempotent on the signed payload (same chainIds+signature replays).
+func (c *Client) ActivateChains(ctx context.Context, portfolioID string, in entities.GliderChainActivationSubmit) (*entities.GliderPortfolio, error) {
+	var out struct {
+		PortfolioID   string                        `json:"portfolioId"`
+		SmartAccounts []entities.GliderSmartAccount `json:"smartAccounts"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/portfolios/"+portfolioID+"/chains", in, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	portfolio, err := c.GetPortfolio(ctx, portfolioID)
+	if err != nil {
+		return &entities.GliderPortfolio{PortfolioID: out.PortfolioID, SmartAccounts: out.SmartAccounts}, nil
+	}
+	return portfolio, nil
+}
+
+// GetPortfolioPerformance returns the daily curve (MWR default, TWR optional).
+// GET /portfolios/{id}/performance?returnMethod=MWR|TWR.
+func (c *Client) GetPortfolioPerformance(ctx context.Context, portfolioID, returnMethod string) (*entities.GliderPortfolioPerformance, error) {
+	path := "/portfolios/" + portfolioID + "/performance"
+	if returnMethod != "" {
+		path += "?returnMethod=" + returnMethod
+	}
+	var out entities.GliderPortfolioPerformance
+	if err := c.do(ctx, http.MethodGet, path, nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetSectorExposure returns equity exposure by canonical sector.
+// GET /portfolios/{id}/sector-exposure.
+func (c *Client) GetSectorExposure(ctx context.Context, portfolioID string) (*entities.GliderSectorExposure, error) {
+	var out entities.GliderSectorExposure
+	if err := c.do(ctx, http.MethodGet, "/portfolios/"+portfolioID+"/sector-exposure", nil, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetAllocationBreakdown aggregates holdings into sector/industry/theme buckets.
+// POST /assets/allocation-breakdown.
+func (c *Client) GetAllocationBreakdown(ctx context.Context, in entities.GliderBreakdownInput) (json.RawMessage, error) {
+	var out json.RawMessage
+	if err := c.do(ctx, http.MethodPost, "/assets/allocation-breakdown", in, &out, requestOptions{retry: true}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// PatchPortfolio renames a portfolio. PATCH /portfolios/{id} — strict body.
+func (c *Client) PatchPortfolio(ctx context.Context, portfolioID string, patch entities.GliderPortfolioPatch) (*entities.GliderPortfolio, error) {
+	var out entities.GliderPortfolio
+	if err := c.do(ctx, http.MethodPatch, "/portfolios/"+portfolioID, patch, &out, requestOptions{}); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListPortfoliosFiltered lists tenant portfolios with optional filters.
+// GET /portfolios?ownerAccountId=&strategyId=&status=&cursor=&limit=.
+func (c *Client) ListPortfoliosFiltered(ctx context.Context, filter entities.GliderPortfolioListFilter) ([]entities.GliderPortfolio, string, error) {
+	params := []string{}
+	if filter.OwnerAccountID != "" {
+		params = append(params, "ownerAccountId="+filter.OwnerAccountID)
+	}
+	if filter.StrategyID != "" {
+		params = append(params, "strategyId="+filter.StrategyID)
+	}
+	if filter.Status != "" {
+		params = append(params, "status="+filter.Status)
+	}
+	if filter.Cursor != "" {
+		params = append(params, "cursor="+filter.Cursor)
+	}
+	if filter.Limit > 0 {
+		params = append(params, "limit="+strconv.Itoa(filter.Limit))
+	}
+	query := ""
+	if len(params) > 0 {
+		query = "?" + strings.Join(params, "&")
+	}
+	var out struct {
+		Portfolios []entities.GliderPortfolio `json:"portfolios"`
+	}
+	next, err := c.doWithCursor(ctx, http.MethodGet, "/portfolios"+query, nil, &out, requestOptions{retry: true})
+	if err != nil {
+		return nil, "", err
+	}
+	return out.Portfolios, next, nil
 }
 
 // do performs one provider call, decoding the response envelope.

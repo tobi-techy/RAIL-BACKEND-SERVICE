@@ -194,6 +194,10 @@ func (r *DepositRouter) doSweepFromChainToSolana(ctx context.Context, acct *blen
 		return fmt.Errorf("Circle funding transfer did not settle: %w", err)
 	}
 
+	// Testnets have no ChainRails indexer — kick processing now that funding
+	// landed. No-op on mainnet.
+	chainrailspkg.MaybeTriggerTestnetProcessing(ctx, bridge, source.chain, intent.IntentAddress, r.logger)
+
 	r.logger.Info("blend sweep: chain→Solana bridge funded, ChainRails settling",
 		zap.String("redemption_id", redemptionID.String()),
 		zap.String("user_id", acct.UserID.String()),

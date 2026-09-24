@@ -39,8 +39,6 @@ type UserEnrollPrepareResponse struct {
 	Preview      *entities.InvestmentAllocationPreview `json:"preview,omitempty"`
 	Policy       *entities.InvestmentPolicyDecision    `json:"policy,omitempty"`
 	Confirmation *entities.InvestmentPendingAction     `json:"confirmation,omitempty"`
-	Live         bool                                  `json:"live"`
-	Simulated    bool                                  `json:"simulated"`
 }
 
 // UserEnrollCompleteRequest submits the wallet-signed transaction.
@@ -60,9 +58,10 @@ type UserEnrollCompleteRequest struct {
 	ConfirmationToken       string          `json:"confirmation_token,omitempty"`
 }
 
-// PrepareUserEnrollment runs Glider stage 1 for a user-held Solana wallet and
-// stages the confirmation the allocate card is bound to. Fail-closed: when the
-// provider is simulated the response says so and carries no sign payload.
+// PrepareUserEnrollment runs Glider stage 1 (POST /enroll/signature) for a
+// user-held Solana wallet and stages the confirmation the allocate card is
+// bound to. Fail-closed: any provider error aborts before a sign payload is
+// returned; production always calls the real HTTP provider.
 //
 // This is confirmation 1 of 2 for a user-signed enrollment. It binds the
 // intent (strategy + owner + amount + source) before any provider flow exists.
@@ -105,8 +104,6 @@ func (s *Service) PrepareUserEnrollment(
 		return &UserEnrollPrepareResponse{
 			Status:     entities.InvestmentActionCompleted,
 			StrategyID: req.StrategyID,
-			Live:       !s.cfg.Simulation,
-			Simulated:  s.cfg.Simulation,
 		}, nil
 	}
 
@@ -209,26 +206,12 @@ func (s *Service) PrepareUserEnrollment(
 			Preview:      preview,
 			Policy:       decision,
 			Confirmation: outcome.Pending,
-			Live:         !s.cfg.Simulation,
-			Simulated:    s.cfg.Simulation,
 		}, nil
 	}
 
 	if decision.Verdict == entities.InvestmentVerdictRequiresAuthentication {
 		return &UserEnrollPrepareResponse{Status: entities.InvestmentActionRejected, Policy: decision},
 			fmt.Errorf("%w: %s", ErrPolicyBlocked, strings.Join(decision.Reasons, "; "))
-	}
-
-	if s.cfg.Simulation {
-		// Fail closed: never hand out a fake sign payload in the demo path.
-		return &UserEnrollPrepareResponse{
-			Status:       entities.InvestmentActionRejected,
-			Policy:       decision,
-			Live:         false,
-			Simulated:    true,
-			Preview:      preview,
-			Confirmation: outcome.Pending,
-		}, fmt.Errorf("%w: Glider is not live (simulation mode); no sign payload issued", ErrUnsupported)
 	}
 
 	authorization, err := s.provider.PrepareEnrollment(ctx, entities.GliderEnrollSignatureInput{
@@ -250,7 +233,7 @@ func (s *Service) PrepareUserEnrollment(
 		"flow_id":          authorization.FlowID,
 		"account_index":    authorization.AccountIndex,
 		"agent_account_id": authorization.AgentAccountID,
-		"chain_ids":        chainIDsOr(authorization.ChainIDs, s.cfg.SolanaChainIDs),
+		"chain_ids":        s.cfg.SolanaChainIDs,
 		"amount_usd":       req.AmountUSD.String(),
 		"source":           normaliseFundingSource(req.Source),
 	})
@@ -262,17 +245,13 @@ func (s *Service) PrepareUserEnrollment(
 			ProviderFlowID: authorization.FlowID,
 			Payload:        roundTrip,
 			Status:         "prepared",
-			ExpiresAt:      authorization.ExpiresAt,
 			CreatedAt:      s.nowOr(),
 			UpdatedAt:      s.nowOr(),
 		})
 	}
 
 	message := ""
-	if authorization.Authorization != nil {
-		message = authorization.Authorization.Text
-	}
-	if message == "" && authorization.Message != nil {
+	if authorization.Message != nil {
 		message = authorization.Message.Text
 	}
 	return &UserEnrollPrepareResponse{
@@ -282,13 +261,12 @@ func (s *Service) PrepareUserEnrollment(
 		AgentAccount: authorization.AgentAccountID,
 		OwnerAccount: strings.TrimSpace(req.OwnerAccountID),
 		StrategyID:   req.StrategyID,
-		ChainIDs:     chainIDsOr(authorization.ChainIDs, s.cfg.SolanaChainIDs),
+		ChainIDs:     s.cfg.SolanaChainIDs,
 		SignPayload:  authorization.SolanaTransaction,
 		Message:      message,
 		DepositHint:  authorization.DepositAccountID,
 		Preview:      preview,
 		Policy:       decision,
-		Live:         true,
 	}, nil
 }
 
@@ -308,11 +286,6 @@ func (s *Service) CompleteUserEnrollment(
 ) (*entities.InvestmentEnrollResponse, error) {
 	if !s.cfg.Enabled {
 		return nil, ErrDisabled
-	}
-	if s.cfg.Simulation {
-		// Fail closed: the provider is fake in simulation mode but the funding
-		// leg is real, so stage 2 must never run here.
-		return nil, fmt.Errorf("%w: Glider is not live (simulation mode); user-signed enrollment is disabled", ErrUnsupported)
 	}
 	if req == nil || strings.TrimSpace(req.FlowID) == "" {
 		return nil, fmt.Errorf("%w: flow_id is required", ErrValidationFailed)

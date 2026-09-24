@@ -351,6 +351,24 @@ func (a *Adapter) SignTransaction(ctx context.Context, walletID, rawTransaction,
 	})
 }
 
+// SignMessage signs an arbitrary message with a Circle developer-controlled
+// wallet. A Solana wallet returns a base58 Ed25519 signature over the
+// message's UTF-8 bytes — the encoding Glider's solana-message withdrawal
+// authorizations expect.
+func (a *Adapter) SignMessage(ctx context.Context, walletID, message string) (string, error) {
+	resp, err := a.client.SignMessage(ctx, &SignMessageRequest{
+		WalletID: walletID,
+		Message:  message,
+	})
+	if err != nil {
+		return "", fmt.Errorf("circle sign message: %w", err)
+	}
+	if resp == nil || strings.TrimSpace(resp.Signature) == "" {
+		return "", fmt.Errorf("circle sign message: the custody provider returned an empty signature")
+	}
+	return resp.Signature, nil
+}
+
 // ExecuteContract submits an EVM contract call from a Circle wallet. Use for ERC20 approve,
 // DeFi protocol deposits/withdrawals, etc. Provide CallData (hex) OR AbiFunctionSignature + AbiParameters.
 func (a *Adapter) ExecuteContract(ctx context.Context, req *CreateContractExecutionRequest) (*Transaction, error) {

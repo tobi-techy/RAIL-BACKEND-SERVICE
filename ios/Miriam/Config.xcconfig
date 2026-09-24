@@ -1,0 +1,7 @@
+// Miriam shared build configuration. The ONLY file that names your Apple
+// identity: set FLIP_TEAM_ID to your 10-character Team ID (Xcode >
+// Settings > Accounts, or developer.apple.com > Membership) and build.
+// Bundle IDs can be overridden here too. Nothing else references the team.
+FLIP_TEAM_ID = A239A6TG6R
+FLIP_HOST_BUNDLE_ID = com.railmoney.rail
+FLIP_EXTENSION_BUNDLE_ID = com.railmoney.rail.messages

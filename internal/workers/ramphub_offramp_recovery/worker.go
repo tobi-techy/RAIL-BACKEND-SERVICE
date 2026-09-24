@@ -116,6 +116,7 @@ func (w *Worker) reverseFailedTransfers(ctx context.Context) {
 		FROM ramphub_orders
 		WHERE order_type = 'offramp' AND status IN ('pending','processing')
 		  AND bridge_transfer_id LIKE 'circle:%'
+		  AND bridge_transfer_id NOT LIKE 'circle-cr:%'
 		  AND deposit_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
 		ORDER BY created_at ASC LIMIT 25`, minAgeSeconds)
@@ -217,6 +218,7 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 		FROM ramphub_orders
 		WHERE order_type = 'offramp' AND status IN ('pending','processing','paid')
 		  AND bridge_transfer_id LIKE 'circle:%'
+		  AND bridge_transfer_id NOT LIKE 'circle-cr:%'
 		  AND deposit_id IS NULL
 		  AND created_at < NOW() - make_interval(secs => $1)
 		ORDER BY created_at ASC LIMIT 25`, completeAgeSeconds)

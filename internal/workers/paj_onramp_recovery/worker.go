@@ -3,35 +3,31 @@ package paj_onramp_recovery
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
-// PajClient is the subset of the PAJ client needed for polling order status.
-type PajClient interface {
-	GetTransaction(ctx context.Context, sessionToken, orderID string) (*PajTransaction, error)
+// StuckOnrampResolver re-verifies a stuck onramp order against Paj's API and
+// applies the verified outcome (status persist + credit on completion).
+// Returns the verified local status ("pending", "paid", "completed",
+// "failed"). A non-nil error means the order could not be verified and must
+// be left alone. Implemented by *pajfunding.Service; wired via SetResolver.
+type StuckOnrampResolver interface {
+	RecoverStuckOnramp(ctx context.Context, userID uuid.UUID, pajOrderID string) (string, error)
 }
 
-// PajTransaction mirrors the fields we need from the PAJ API response.
-type PajTransaction struct {
-	ID         string  `json:"id"`
-	Status     string  `json:"status"`
-	USDCAmount float64 `json:"usdcAmount"`
-	Amount     float64 `json:"amount"`
-	Rate       float64 `json:"rate"`
-}
+// abandonedAfterAge bounds how long an order Paj still reports as INIT (user
+// never paid) is kept before being failed so the user can retry. Orders Paj
+// reports as PAID or better are never fail-marked — funds may be with Paj.
+const abandonedAfterAge = 24 * time.Hour
 
-// DepositCreditor credits a user's balance when an onramp order completes.
-type DepositCreditor interface {
-	CreditOnrampFromRecovery(ctx context.Context, userID uuid.UUID, pajOrderID string, usdcAmount float64, rate float64) error
-}
-
-// Worker periodically finds stuck PAJ onramp orders and attempts to resolve them.
+// Worker periodically finds stuck PAJ onramp orders and resolves them against
+// Paj's API via the resolver — never by guessing.
 type Worker struct {
 	db            *sql.DB
+	resolver      StuckOnrampResolver
 	logger        *zap.Logger
 	checkInterval time.Duration
 	maxPendingAge time.Duration
@@ -46,6 +42,18 @@ func NewWorker(db *sql.DB, logger *zap.Logger) *Worker {
 		maxPendingAge: 1 * time.Hour,
 		stopCh:        make(chan struct{}),
 	}
+}
+
+// SetResolver wires live Paj verification + crediting. Without it the worker
+// cannot verify provider truth, so it leaves stuck orders alone instead of
+// fail-marking orders whose funds may already be with Paj.
+func (w *Worker) SetResolver(r StuckOnrampResolver) { w.resolver = r }
+
+type stuckOrder struct {
+	PajOrderID string
+	UserID     uuid.UUID
+	FiatAmount float64
+	CreatedAt  time.Time
 }
 
 func (w *Worker) Start(ctx context.Context) {
@@ -71,37 +79,31 @@ func (w *Worker) Start(ctx context.Context) {
 func (w *Worker) Stop() { close(w.stopCh) }
 
 func (w *Worker) recover(ctx context.Context) {
+	if w.resolver == nil {
+		w.logger.Warn("paj onramp recovery: no resolver wired — leaving stuck orders for webhook/user poll (refusing to fail-mark unverified orders)")
+		return
+	}
 	maxAgeSeconds := int(w.maxPendingAge.Seconds())
 
 	// Find onramp orders stuck in pending/processing with no deposit_id (not yet credited).
-	// Also pick up orders that received an unverified webhook (session was expired at the time).
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT paj_order_id, user_id, fiat_amount, COALESCE(token_amount, 0), status, last_webhook_status
-		FROM paj_orders
-		WHERE order_type = 'onramp'
-		  AND status NOT IN ('completed', 'failed')
-		  AND deposit_id IS NULL
-		  AND created_at < NOW() - make_interval(secs => $1)
-		LIMIT 10`, maxAgeSeconds)
+	SELECT paj_order_id, user_id, fiat_amount, created_at
+	FROM paj_orders
+	WHERE order_type = 'onramp'
+	  AND status NOT IN ('completed', 'failed')
+	  AND deposit_id IS NULL
+	  AND created_at < NOW() - make_interval(secs => $1)
+	LIMIT 10`, maxAgeSeconds)
 	if err != nil {
 		w.logger.Error("paj onramp recovery: query failed", zap.Error(err))
 		return
 	}
 	defer rows.Close()
 
-	type stuckOrder struct {
-		PajOrderID        string
-		UserID            uuid.UUID
-		FiatAmount        float64
-		TokenAmount       float64
-		Status            string
-		LastWebhookStatus *string
-	}
-
 	var stuck []stuckOrder
 	for rows.Next() {
 		var o stuckOrder
-		if err := rows.Scan(&o.PajOrderID, &o.UserID, &o.FiatAmount, &o.TokenAmount, &o.Status, &o.LastWebhookStatus); err != nil {
+		if err := rows.Scan(&o.PajOrderID, &o.UserID, &o.FiatAmount, &o.CreatedAt); err != nil {
 			w.logger.Error("paj onramp recovery: scan failed", zap.Error(err))
 			continue
 		}
@@ -115,33 +117,55 @@ func (w *Worker) recover(ctx context.Context) {
 	w.logger.Info("paj onramp recovery: found stuck orders", zap.Int("count", len(stuck)))
 
 	for _, o := range stuck {
-		// If we received an unverified webhook indicating completion, log it for manual review.
-		if o.LastWebhookStatus != nil && strings.Contains(*o.LastWebhookStatus, "unverified:COMPLETED") {
-			w.logger.Warn("paj onramp recovery: order has unverified COMPLETED webhook — needs manual credit or user re-auth",
+		// Re-verify against Paj's API — the resolver persists the verified
+		// status and credits on completion.
+		status, err := w.resolver.RecoverStuckOnramp(ctx, o.UserID, o.PajOrderID)
+		if err != nil {
+			// Unverifiable (no session, provider unreachable): leave the
+			// order for the user's re-authenticated poll or a later tick.
+			// Never fail-mark what we cannot verify.
+			w.logger.Info("paj onramp recovery: order unverifiable, leaving for user poll/retry",
 				zap.String("paj_order_id", o.PajOrderID),
 				zap.String("user_id", o.UserID.String()),
-				zap.Float64("fiat_amount", o.FiatAmount))
-			// Don't mark as failed — leave it for the user to poll when they re-authenticate.
+				zap.Error(err))
 			continue
 		}
-
-		// Mark as failed after being stuck too long — user can retry
-		_, err := w.db.ExecContext(ctx, `
-			UPDATE paj_orders
-			SET status = 'failed', updated_at = NOW(),
-				deposit_id = gen_random_uuid()
-			WHERE paj_order_id = $1
-			  AND status NOT IN ('completed', 'failed')
-			  AND deposit_id IS NULL`,
-			o.PajOrderID)
-		if err != nil {
-			w.logger.Error("paj onramp recovery: mark failed", zap.Error(err), zap.String("paj_order_id", o.PajOrderID))
-			continue
+		switch status {
+		case "completed", "failed":
+			w.logger.Info("paj onramp recovery: order resolved from provider truth",
+				zap.String("paj_order_id", o.PajOrderID),
+				zap.String("status", status))
+		case "pending":
+			// Paj reports INIT: the user never paid. Only fail-mark once the
+			// order is old enough to be abandoned — anything fresher (or
+			// PAID, handled below) stays until the webhook lands.
+			if time.Since(o.CreatedAt) < abandonedAfterAge {
+				continue
+			}
+			w.failAbandoned(ctx, o)
+		default:
+			// "paid" or anything in flight — leave for the webhook.
 		}
-
-		w.logger.Warn("paj onramp recovery: marked stuck order as failed — user should retry or contact support",
-			zap.String("paj_order_id", o.PajOrderID),
-			zap.String("user_id", o.UserID.String()),
-			zap.Float64("fiat_amount", o.FiatAmount))
 	}
+}
+
+// failAbandoned marks a never-paid, day-old order failed so the user can
+// retry. Only called for orders Paj itself reports as INIT.
+func (w *Worker) failAbandoned(ctx context.Context, o stuckOrder) {
+	_, err := w.db.ExecContext(ctx, `
+	UPDATE paj_orders
+	SET status = 'failed', updated_at = NOW(),
+		deposit_id = gen_random_uuid()
+	WHERE paj_order_id = $1
+	  AND status NOT IN ('completed', 'failed')
+	  AND deposit_id IS NULL`,
+		o.PajOrderID)
+	if err != nil {
+		w.logger.Error("paj onramp recovery: mark abandoned failed", zap.Error(err), zap.String("paj_order_id", o.PajOrderID))
+		return
+	}
+	w.logger.Warn("paj onramp recovery: marked never-paid order as failed after 24h — user can retry",
+		zap.String("paj_order_id", o.PajOrderID),
+		zap.String("user_id", o.UserID.String()),
+		zap.Float64("fiat_amount", o.FiatAmount))
 }

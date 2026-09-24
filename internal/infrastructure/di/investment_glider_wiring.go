@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,8 +26,8 @@ import (
 )
 
 // initializeInvestmentGliderServices wires the Glider-backed investment engine:
-// the provider (real or simulated), the portfolio-owner signer, the funding leg,
-// the deterministic domain service, the HTTP handlers and the sync worker.
+// the real provider client, the portfolio-owner signer, the funding leg, the
+// deterministic domain service, the HTTP handlers and the sync worker.
 //
 // Everything policy-relevant is derived from config here, so the AI agent can
 // never influence limits, allowlists or the signer.
@@ -53,6 +54,9 @@ func (c *Container) initializeInvestmentGliderServices(sqlxDB *sqlx.DB) error {
 
 	provider, err := c.buildInvestmentProvider(cfg)
 	if err != nil {
+		return err
+	}
+	if err := c.verifyGliderCredentials(provider); err != nil {
 		return err
 	}
 	signer, err := c.buildInvestmentOwnerSigner(cfg)
@@ -97,28 +101,73 @@ func (c *Container) initializeInvestmentGliderServices(sqlxDB *sqlx.DB) error {
 	)
 
 	c.ZapLog.Info("investment (Glider) services initialized",
-		zap.Bool("simulation", cfg.Simulation),
 		zap.String("owner_signer", cfg.OwnerSigner),
 		zap.Int("sync_interval_minutes", cfg.SyncIntervalMinutes))
 	return nil
 }
 
-// buildInvestmentProvider selects the real Glider client or the in-process
-// simulation. In production the real client is the only option (config
-// validation rejects simulation there).
+// buildInvestmentProvider builds the real Glider HTTP client. There is no
+// simulated fallback: a missing API key fails closed at call time (401) and a
+// missing key in a non-dev environment is rejected by config validation.
 func (c *Container) buildInvestmentProvider(cfg config.InvestmentGliderConfig) (investmentsvc.Provider, error) {
-	if cfg.Simulation {
-		c.ZapLog.Warn("investment provider is SIMULATED: no chain calls, no real money will move")
-		return glider.NewSimulated(glider.SimulatedConfig{}), nil
-	}
 	if strings.TrimSpace(cfg.APIKey) == "" {
-		return nil, fmt.Errorf("investment: glider api key is required when simulation is disabled")
+		return nil, fmt.Errorf("investment: glider api key is required when investment_glider is enabled")
 	}
 	return glider.NewClient(glider.Config{
 		BaseURL: cfg.BaseURL,
 		APIKey:  cfg.APIKey,
 		Timeout: time.Duration(cfg.Timeout) * time.Second,
 	}, c.ZapLog), nil
+}
+
+// requiredGliderScopes are the API-key scopes the investment engine needs for
+// its flows. A key missing one of these will fail at the first real user
+// action, so the scope set is verified at boot instead.
+var requiredGliderScopes = []string{
+	"strategies:read", "strategies:write",
+	"portfolios:read", "portfolios:write", "portfolios:withdraw",
+	"enroll:write",
+}
+
+// verifyGliderCredentials proves the configured API key is valid and reports
+// missing scopes. Authentication failures (401/403) abort startup: a key that
+// cannot authenticate would turn every user action into a provider error.
+// Missing scopes are logged loudly but do not block boot, since scope tiers
+// are provisioned out-of-band and a tier upgrade should not require a redeploy.
+func (c *Container) verifyGliderCredentials(provider investmentsvc.Provider) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	identity, err := provider.Whoami(ctx)
+	if err != nil {
+		var apiErr *glider.APIError
+		if errors.As(err, &apiErr) && (apiErr.IsUnauthorized() || apiErr.IsForbidden()) {
+			return fmt.Errorf("investment: glider api key rejected (%v)", err)
+		}
+		c.ZapLog.Warn("investment: could not verify glider credentials at boot",
+			zap.Error(err))
+		return nil
+	}
+
+	granted := map[string]bool{}
+	for _, scope := range identity.Scopes {
+		granted[scope] = true
+	}
+	var missing []string
+	for _, scope := range requiredGliderScopes {
+		if !granted[scope] {
+			missing = append(missing, scope)
+		}
+	}
+	if len(missing) > 0 {
+		c.ZapLog.Warn("investment: glider api key is missing required scopes; affected flows will fail at call time",
+			zap.Strings("missing_scopes", missing),
+			zap.String("tenant", identity.TenantName))
+	}
+	c.ZapLog.Info("investment: glider credentials verified",
+		zap.String("tenant", identity.TenantName),
+		zap.Int("scopes_granted", len(identity.Scopes)))
+	return nil
 }
 
 // buildInvestmentOwnerSigner selects who signs the two-stage owner
@@ -170,7 +219,6 @@ func (c *Container) buildInvestmentFundingAdapter(cfg config.InvestmentGliderCon
 func investmentServiceConfig(cfg config.InvestmentGliderConfig) investmentsvc.Config {
 	return investmentsvc.Config{
 		Enabled:               cfg.Enabled,
-		Simulation:            cfg.Simulation,
 		DefaultChain:          orDefault(cfg.DefaultChain, "solana"),
 		SolanaChainIDs:        cfg.SolanaChainIDs,
 		OwnerAccountPrefix:    cfg.OwnerAccountPrefix,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,26 @@ type CircleStatusChecker interface {
 	GetCircleTransferStatus(ctx context.Context, circleTxID string) (CircleTransferStatus, error)
 }
 
+// ChainRailsIntentStatus is the subset of ChainRails intent state the worker
+// needs to resolve circle-cr: bridged offramps.
+type ChainRailsIntentStatus int
+
+const (
+	ChainRailsIntentUnknown ChainRailsIntentStatus = iota
+	ChainRailsIntentPending
+	ChainRailsIntentComplete
+	ChainRailsIntentFailed
+)
+
+// ChainRailsStatusChecker fetches the terminal state of a ChainRails intent by
+// its numeric ID. Used for "circle-cr:<tx>:<id>" bridge IDs: once Circle
+// confirms funds reached the intent address, only ChainRails knows whether
+// delivery to PAJ completed. Optional — without it, bridged orders are left
+// for the webhook/manual review (never auto-completed, never auto-refunded).
+type ChainRailsStatusChecker interface {
+	GetChainRailsIntentStatus(ctx context.Context, intentID int) (ChainRailsIntentStatus, error)
+}
+
 // Worker periodically finds stuck Paj offramp orders and either reverses the
 // hold (transfer never started), reverses+claims the order (Circle confirmed
 // failure), or promotes the order to completed (Circle confirmed success and
@@ -51,6 +72,7 @@ type Worker struct {
 	ledger           LedgerReverser
 	notifier         Notifier
 	circle           CircleStatusChecker
+	chainrails       ChainRailsStatusChecker
 	logger           *zap.Logger
 	checkInterval    time.Duration
 	maxPendingAge    time.Duration
@@ -81,6 +103,11 @@ func (w *Worker) SetNotifier(n Notifier) { w.notifier = n }
 // skipped (we only reverse pre-transfer-stuck orders) — better to leave a
 // stuck order than to fabricate a completion.
 func (w *Worker) SetCircleStatusChecker(c CircleStatusChecker) { w.circle = c }
+
+// SetChainRailsStatusChecker wires ChainRails intent lookup so
+// "circle-cr:" bridged orders can be resolved to completion or reversal.
+// Without it, bridged orders are left for the webhook/manual review.
+func (w *Worker) SetChainRailsStatusChecker(c ChainRailsStatusChecker) { w.chainrails = c }
 
 func (w *Worker) Start(ctx context.Context) {
 	w.logger.Info("Starting Paj offramp recovery worker",
@@ -171,10 +198,10 @@ type stuckOrder struct {
 
 // reconcileStuckOrders finalizes offramps where the USDC transfer was
 // initiated (bridge_transfer_id IS NOT NULL) but the webhook never landed.
-// Each candidate is verified against Circle: on COMPLETE we promote the order
-// (PAJ has had completeAfterAge to deliver NGN); on FAILED/CANCELLED/DENIED we
-// reverse the hold. ChainRails (cr:) transfers are skipped — webhooks remain
-// the source of truth for those.
+// Direct "circle:" transfers are verified against Circle: on COMPLETE we
+// promote the order (PAJ has had completeAfterAge to deliver NGN); on
+// FAILED/CANCELLED/DENIED we reverse the hold. "circle-cr:" bridged orders
+// resolve via Circle (first leg) then the ChainRails intent (second leg).
 func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 	if w.circle == nil {
 		// Without provider verification we can't safely auto-complete; abort
@@ -185,6 +212,9 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 
 	completeAgeSeconds := int(w.completeAfterAge.Seconds())
 
+	// NOTE: "circle-cr:<tx>:<id>" passes the filters below (it does not match
+	// 'cr:%') and is resolved by reconcileBridgedOrder — Circle first leg,
+	// ChainRails intent second leg.
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT paj_order_id, user_id, fiat_amount, bridge_transfer_id,
 		       COALESCE(hold_amount, token_amount, 0)
@@ -225,13 +255,20 @@ func (w *Worker) reconcileStuckOrders(ctx context.Context) {
 	}
 }
 
-// reconcileStuckOrder polls Circle for the actual transfer state and either
-// promotes (USDC reached PAJ) or reverses (USDC never left / Circle failed)
-// the order. Returns nil for transient states — the next cycle will retry.
+// reconcileStuckOrder polls the provider for the actual transfer state and
+// either promotes (USDC reached PAJ) or reverses (USDC never left / provider
+// failed) the order. Returns nil for transient states — the next cycle will
+// retry. Two bridge ID shapes exist:
+//   - "circle:<txID>" — direct Circle transfer to PAJ; Circle is the source
+//     of truth for the whole move.
+//   - "circle-cr:<circleTxID>:<intentID>" — Circle funded a ChainRails intent
+//     which delivers to PAJ; Circle confirms the first leg, ChainRails the
+//     second. Anything else is an unexpected shape we'd rather not guess at.
 func (w *Worker) reconcileStuckOrder(ctx context.Context, c stuckOrder) error {
-	// pajfunding stores Circle transfers as "circle:<txID>". The recon query
-	// already filters out ChainRails (cr:%), so anything without a circle:
-	// prefix here is an unexpected shape we'd rather not guess at.
+	if rest, ok := strings.CutPrefix(c.BridgeTransferID, "circle-cr:"); ok {
+		return w.reconcileBridgedOrder(ctx, c, rest)
+	}
+	// pajfunding stores direct Circle transfers as "circle:<txID>".
 	if !strings.HasPrefix(c.BridgeTransferID, "circle:") {
 		w.logger.Warn("paj offramp reconciliation: unrecognized bridge_transfer_id prefix",
 			zap.String("paj_order_id", c.PajOrderID),
@@ -258,6 +295,59 @@ func (w *Worker) reconcileStuckOrder(ctx context.Context, c stuckOrder) error {
 		// PENDING / UNKNOWN — leave for the next cycle. The order remains in
 		// 'pending' (user sees Processing) until Circle reaches a terminal state.
 		return nil
+	}
+}
+
+// reconcileBridgedOrder resolves a "circle-cr:<circleTxID>:<intentID>" order.
+// A Circle failure means funding never left the wallet (safe to reverse). A
+// Circle completion means funds sit in the ChainRails intent — only the
+// ChainRails intent state can promote or reverse from there.
+func (w *Worker) reconcileBridgedOrder(ctx context.Context, c stuckOrder, rest string) error {
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		w.logger.Warn("paj offramp reconciliation: malformed circle-cr bridge id",
+			zap.String("paj_order_id", c.PajOrderID),
+			zap.String("bridge_transfer_id", c.BridgeTransferID))
+		return nil
+	}
+	circleTxID, intentIDS := parts[0], parts[1]
+
+	state, err := w.circle.GetCircleTransferStatus(ctx, circleTxID)
+	if err != nil {
+		return fmt.Errorf("circle status check: %w", err)
+	}
+	if state == CircleTransferFailed {
+		// Funding never left the wallet — reverse the hold.
+		return w.reverseConfirmedFailure(ctx, c)
+	}
+	if state != CircleTransferComplete {
+		return nil // first leg still in flight; retry next cycle.
+	}
+
+	if w.chainrails == nil {
+		w.logger.Warn("paj offramp reconciliation: circle-cr bridge funded but no ChainRails checker wired — leaving for webhook/manual review",
+			zap.String("paj_order_id", c.PajOrderID),
+			zap.String("bridge_transfer_id", c.BridgeTransferID))
+		return nil
+	}
+	intentID, convErr := strconv.Atoi(intentIDS)
+	if convErr != nil {
+		w.logger.Warn("paj offramp reconciliation: unparsable intent id in circle-cr bridge id",
+			zap.String("paj_order_id", c.PajOrderID),
+			zap.String("bridge_transfer_id", c.BridgeTransferID))
+		return nil
+	}
+	intentState, err := w.chainrails.GetChainRailsIntentStatus(ctx, intentID)
+	if err != nil {
+		return fmt.Errorf("chainrails intent check: %w", err)
+	}
+	switch intentState {
+	case ChainRailsIntentComplete:
+		return w.promoteCompleted(ctx, c)
+	case ChainRailsIntentFailed:
+		return w.reverseConfirmedFailure(ctx, c)
+	default:
+		return nil // intent still settling; retry next cycle.
 	}
 }
 
@@ -410,10 +500,13 @@ func (w *Worker) reverseStuckOrder(ctx context.Context, pajOrderID string, userI
 	return nil
 }
 
-// failExpiredOrders is a hard safety net: any offramp order still pending after
-// hardMaxAge (6h) is force-failed and the hold reversed, regardless of
-// bridge_transfer_id status. This prevents orders from being stuck indefinitely
-// when Circle status is perpetually pending or the webhook never arrives.
+// failExpiredOrders is a hard safety net: offramp orders still pending after
+// hardMaxAge (6h) WITHOUT an initiated transfer (bridge_transfer_id IS NULL)
+// are force-failed and the hold reversed — funds provably never left, so the
+// reversal is safe. Orders with a started transfer are NEVER touched here:
+// reversing after USDC left for PAJ would double-spend (user gets USDC back
+// AND the NGN payout). Those escalate to a loud log for webhook/reconcile/
+// manual review instead (see flagStartedButStuck).
 func (w *Worker) failExpiredOrders(ctx context.Context) {
 	if w.ledger == nil {
 		return
@@ -421,13 +514,14 @@ func (w *Worker) failExpiredOrders(ctx context.Context) {
 
 	hardAgeSeconds := int(w.hardMaxAge.Seconds())
 	rows, err := w.db.QueryContext(ctx, `
-		SELECT paj_order_id, user_id, COALESCE(hold_amount, token_amount, 0), fiat_amount
-		FROM paj_orders
-		WHERE order_type = 'offramp'
-		  AND status = 'pending'
-		  AND deposit_id IS NULL
-		  AND created_at < NOW() - make_interval(secs => $1)
-		LIMIT 20`, hardAgeSeconds)
+	SELECT paj_order_id, user_id, COALESCE(hold_amount, token_amount, 0), fiat_amount
+	FROM paj_orders
+	WHERE order_type = 'offramp'
+	  AND status = 'pending'
+	  AND deposit_id IS NULL
+	  AND (bridge_transfer_id IS NULL OR bridge_transfer_id = '')
+	  AND created_at < NOW() - make_interval(secs => $1)
+	LIMIT 20`, hardAgeSeconds)
 	if err != nil {
 		w.logger.Error("paj offramp hard-timeout: query failed", zap.Error(err))
 		return
@@ -486,5 +580,40 @@ func (w *Worker) failExpiredOrders(ctx context.Context) {
 			zap.String("user_id", o.UserID.String()),
 			zap.String("amount", claimedHold.String()),
 			zap.Float64("fiat_amount", o.FiatAmount))
+	}
+
+	w.flagStartedButStuck(ctx, hardAgeSeconds)
+}
+
+// flagStartedButStuck escalates offramp orders that have had funds in flight
+// past the hard timeout without reaching a terminal state. These are never
+// auto-reversed (funds may already be with PAJ) — they need webhook,
+// reconcile, or manual review.
+func (w *Worker) flagStartedButStuck(ctx context.Context, hardAgeSeconds int) {
+	rows, err := w.db.QueryContext(ctx, `
+	SELECT paj_order_id, user_id, bridge_transfer_id
+	FROM paj_orders
+	WHERE order_type = 'offramp'
+	  AND status = 'pending'
+	  AND deposit_id IS NULL
+	  AND bridge_transfer_id IS NOT NULL
+	  AND bridge_transfer_id <> ''
+	  AND created_at < NOW() - make_interval(secs => $1)
+	LIMIT 20`, hardAgeSeconds)
+	if err != nil {
+		w.logger.Error("paj offramp hard-timeout: escalation query failed", zap.Error(err))
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var orderID, transferID string
+		var userID uuid.UUID
+		if err := rows.Scan(&orderID, &userID, &transferID); err != nil {
+			continue
+		}
+		w.logger.Error("paj offramp stuck past hard timeout WITH funds in flight — needs manual review, NOT auto-reversed",
+			zap.String("paj_order_id", orderID),
+			zap.String("user_id", userID.String()),
+			zap.String("bridge_transfer_id", transferID))
 	}
 }

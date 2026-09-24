@@ -93,6 +93,64 @@ func (d *BridgeDispatcher) SendToUser(ctx context.Context, userID uuid.UUID, tit
 	return d.deliver(ctx, userID, composeMessage(title, body), category, critical)
 }
 
+// SendConfirmationCard delivers one live Face ID card for a high-stakes
+// action. Confirmation cards always bypass quiet-hours/frequency guards: the
+// user just asked to move money and is staring at the transcript waiting.
+// threadID may be empty, in which case the last thread is resolved.
+func (d *BridgeDispatcher) SendConfirmationCard(ctx context.Context, userID uuid.UUID, threadID string, card *ConfirmationCardPayload) error {
+	if card == nil || card.ActionID == "" || card.ConfirmURL == "" {
+		return fmt.Errorf("confirmation card needs action_id + confirm_url")
+	}
+	if threadID == "" {
+		resolved, err := d.threads.GetLastPlatformThread(ctx, userID, string(d.platform))
+		if err != nil {
+			return fmt.Errorf("resolve thread for %s: %w", d.platform, err)
+		}
+		threadID = resolved
+	}
+	if threadID == "" {
+		return fmt.Errorf("no active platform thread for confirmation card")
+	}
+	return d.send(ctx, &OutboundMessage{
+		Platform:         d.platform,
+		UserID:           userID.String(),
+		ThreadID:         threadID,
+		Text:             card.Title,
+		ContentType:      ContentTypeConfirmationCard,
+		ConfirmationCard: card,
+		Category:         MessageCategoryCritical,
+	})
+}
+
+// SendConfirmationEdit mutates a live card in place after approve / reject /
+// expire / fill. The bridge resolves the recorded handle by ActionID and calls
+// edit() — never a second bubble. Edit failure is returned so the caller can
+// persist CardEditFailed and retry the edit without duplicating the card.
+func (d *BridgeDispatcher) SendConfirmationEdit(ctx context.Context, userID uuid.UUID, threadID string, card *ConfirmationCardPayload) error {
+	if card == nil || card.ActionID == "" || card.ConfirmURL == "" {
+		return fmt.Errorf("confirmation edit needs action_id + confirm_url")
+	}
+	if threadID == "" {
+		resolved, err := d.threads.GetLastPlatformThread(ctx, userID, string(d.platform))
+		if err != nil {
+			return fmt.Errorf("resolve thread for %s: %w", d.platform, err)
+		}
+		threadID = resolved
+	}
+	if threadID == "" {
+		return fmt.Errorf("no active platform thread for confirmation edit")
+	}
+	return d.send(ctx, &OutboundMessage{
+		Platform:         d.platform,
+		UserID:           userID.String(),
+		ThreadID:         threadID,
+		Text:             card.Title,
+		ContentType:      ContentTypeConfirmationCardEdit,
+		ConfirmationCard: card,
+		Category:         MessageCategoryCritical,
+	})
+}
+
 func (d *BridgeDispatcher) deliver(ctx context.Context, userID uuid.UUID, message, category string, critical bool) error {
 	if strings.TrimSpace(message) == "" {
 		return nil
