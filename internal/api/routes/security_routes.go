@@ -52,6 +52,9 @@ func SetupSecurityRoutesEnhanced(
 	deviceTrackingService *security.DeviceTrackingService,
 	loginProtectionService *security.LoginProtectionService,
 ) {
+	// Hackathon confirmation email-OTP routes (CONFIRMATION_DEMO_EMAIL_OTP).
+	ApplyEngineHooks(router)
+
 	// Initialize services
 	sessionService := session.NewService(db, nil, zapLog)
 	twofaService := twofa.NewService(db, zapLog, cfg.Security.EncryptionKey, nil)
