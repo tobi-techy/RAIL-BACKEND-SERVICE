@@ -21,6 +21,7 @@ const (
 	AssuranceTokenOnly     = "token_only"     // signed URL possession only (legacy/stopgap)
 	AssuranceEnrolled      = "enrolled"       // first approval: key enrolled via trust-on-first-use
 	AssuranceSecureEnclave = "secure_enclave" // signature from an enrolled Enclave key
+	AssuranceEmailOTP      = "email_otp"      // hackathon/demo: 6-digit email OTP (CONFIRMATION_DEMO_EMAIL_OTP)
 )
 
 // DeviceKey is one iPhone's biometric-bound approval key. The private half
