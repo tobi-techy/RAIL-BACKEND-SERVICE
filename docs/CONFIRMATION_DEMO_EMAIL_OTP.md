@@ -11,6 +11,8 @@ CONFIRMATION_REQUIRE_DEVICE_SIGNATURE=false
 
 Default is off (production Face ID path unchanged). Also needs existing `CONFIRMATION_TOKEN_SECRET`, Unosend/email, and Redis (for multi-replica OTP store).
 
+Flag is loaded into `Config.Confirmation.DemoEmailOTP` from the env var (see `.env.example`).
+
 ## Flow
 
 1. Stage card as today (`Create`).
@@ -18,6 +20,8 @@ Default is off (production Face ID path unchanged). Also needs existing `CONFIRM
 3. User receives 6-digit email (reuses auth Unosend mailer).
 4. `POST /confirm/:id/otp/approve` or `POST /api/v1/confirmations/:id/otp/approve` with `{ "t": "...", "code": "123456" }`.
 5. On success, settle with assurance `email_otp`. Miriam settle via `confirm_id` is unchanged.
+
+Routes are registered in `SetupRoutes` next to Face ID approve/reject (not via boot hooks).
 
 ## Fail-closed
 

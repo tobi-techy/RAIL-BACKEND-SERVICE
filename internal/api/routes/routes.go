@@ -157,11 +157,22 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			confirm.GET("/:id", middleware.RateLimit(30), container.ConfirmationHandlers.Fetch)
 			confirm.POST("/:id/approve", middleware.RateLimit(10), container.ConfirmationHandlers.Approve)
 			confirm.POST("/:id/reject", middleware.RateLimit(10), container.ConfirmationHandlers.Reject)
+			// Hackathon/demo email OTP (CONFIRMATION_DEMO_EMAIL_OTP). Token-gated
+			// like approve; Face ID approve is rejected while the flag is on.
+			confirm.POST("/:id/otp/send", middleware.RateLimit(5), container.ConfirmationHandlers.SendOTP)
+			confirm.POST("/:id/otp/approve", middleware.RateLimit(10), container.ConfirmationHandlers.ApproveOTP)
 		}
 		// Chat-settles-first sync: Miriam reports the terminal state over the
 		// shared secret so the live card shows the same ending. Rail-key
 		// authed (no user JWT): the caller is the Miriam backend, and the
 		// confirm_id join plus the shared secret is the authorization.
+		// Design endpoints for Miriam/clients: email OTP send/approve (token t).
+		router.POST("/api/v1/confirmations/:id/otp/send",
+			middleware.RateLimit(5),
+			container.ConfirmationHandlers.SendOTP)
+		router.POST("/api/v1/confirmations/:id/otp/approve",
+			middleware.RateLimit(10),
+			container.ConfirmationHandlers.ApproveOTP)
 		router.POST("/api/v1/confirmations/:id/mark",
 			middleware.RateLimit(10),
 			middleware.RequireRailServiceKey(container.Config.Confirmation.RailServiceKey, container.ZapLog),

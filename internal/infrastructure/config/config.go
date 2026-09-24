@@ -963,6 +963,11 @@ type ConfirmationConfig struct {
 	// RequireDeviceSignature rejects token-only approves outright. Default
 	// false (upgrade path: enroll first, enforce later).
 	RequireDeviceSignature bool `mapstructure:"require_device_signature"`
+	// DemoEmailOTP enables the hackathon email-OTP confirmation path and
+	// rejects Face ID / token-only Approve (fail-closed). Default false so
+	// production Face ID is unchanged. When true, also leave
+	// RequireDeviceSignature=false (Face ID is skipped for the demo).
+	DemoEmailOTP bool `mapstructure:"demo_email_otp"`
 }
 
 // WebAuthnConfig contains WebAuthn/Passkey configuration
@@ -1497,6 +1502,7 @@ func setDefaults() {
 	// everything: without it the service fails closed and no cards are staged.
 	viper.SetDefault("confirmation.enabled", true)
 	viper.SetDefault("confirmation.ttl_seconds", 300)
+	viper.SetDefault("confirmation.demo_email_otp", false)
 	viper.SetDefault("confirmation.app_name", "Miriam")
 
 	// Python agent delegation (the LLM brain for messaging channels).
@@ -1590,6 +1596,13 @@ func overrideFromEnv() error {
 	// everything, including first-use enrollment.
 	if v := os.Getenv("CONFIRMATION_REQUIRE_DEVICE_SIGNATURE"); v == "true" || v == "1" {
 		viper.Set("confirmation.require_device_signature", true)
+	}
+	// Hackathon/demo: email OTP instead of Face ID for money confirmation cards.
+	// Fail-closed off by default. When enabled, Face ID Approve is rejected and
+	// clients must use /otp/send + /otp/approve. Leave REQUIRE_DEVICE_SIGNATURE
+	// false while this is on (Face ID is skipped for the demo).
+	if v := os.Getenv("CONFIRMATION_DEMO_EMAIL_OTP"); v == "true" || v == "1" {
+		viper.Set("confirmation.demo_email_otp", true)
 	}
 	if v := os.Getenv("PYTHON_AGENT_ENABLED"); v == "true" || v == "1" {
 		viper.Set("python_agent.enabled", true)

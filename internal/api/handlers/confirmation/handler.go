@@ -31,7 +31,6 @@ func NewHandler(service *svc.Service, send CardSender, logger *zap.Logger) *Hand
 		logger = zap.NewNop()
 	}
 	h := &Handler{svc: service, send: send, logger: logger}
-	publishOTPHandler(h)
 	return h
 }
 

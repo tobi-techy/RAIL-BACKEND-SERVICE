@@ -156,10 +156,13 @@ func (c *Container) initializeConfirmationServices() {
 	// Hackathon/demo email OTP: when enabled, reject Face ID/token-only approve
 	// and require /otp/send + /otp/approve. Force RequireDeviceSignature off so
 	// the Face ID path is not simultaneously required.
-	// Env-only hackathon flag (works even if Config.DemoEmailOTP is absent).
-	demoEmailOTP := false
-	if v := os.Getenv("CONFIRMATION_DEMO_EMAIL_OTP"); v == "true" || v == "1" {
-		demoEmailOTP = true
+	// Hackathon flag: Config.DemoEmailOTP (from CONFIRMATION_DEMO_EMAIL_OTP) wins;
+	// keep env fallback for operators who toggle without rebuild.
+	demoEmailOTP := cfg.DemoEmailOTP
+	if !demoEmailOTP {
+		if v := os.Getenv("CONFIRMATION_DEMO_EMAIL_OTP"); v == "true" || v == "1" {
+			demoEmailOTP = true
+		}
 	}
 	if demoEmailOTP {
 		svc.SetDemoEmailOTP(true)
