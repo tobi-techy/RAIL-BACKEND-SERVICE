@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -155,7 +156,12 @@ func (c *Container) initializeConfirmationServices() {
 	// Hackathon/demo email OTP: when enabled, reject Face ID/token-only approve
 	// and require /otp/send + /otp/approve. Force RequireDeviceSignature off so
 	// the Face ID path is not simultaneously required.
-	if cfg.DemoEmailOTP {
+	// Env-only hackathon flag (works even if Config.DemoEmailOTP is absent).
+	demoEmailOTP := false
+	if v := os.Getenv("CONFIRMATION_DEMO_EMAIL_OTP"); v == "true" || v == "1" {
+		demoEmailOTP = true
+	}
+	if demoEmailOTP {
 		svc.SetDemoEmailOTP(true)
 		svc.SetStrictDeviceSignature(false)
 		var store confirmationSvc.OTPStore
