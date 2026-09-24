@@ -152,7 +152,29 @@ func (c *Container) initializeConfirmationServices() {
 	// Device-bound approvals: Secure Enclave keys enrolled trust-on-first-use,
 	// signatures required once enrolled. Strict mode (reject token-only
 	// outright) stays off until the fleet is enrolled.
-	svc.SetStrictDeviceSignature(cfg.RequireDeviceSignature)
+	// Hackathon/demo email OTP: when enabled, reject Face ID/token-only approve
+	// and require /otp/send + /otp/approve. Force RequireDeviceSignature off so
+	// the Face ID path is not simultaneously required.
+	if cfg.DemoEmailOTP {
+		svc.SetDemoEmailOTP(true)
+		svc.SetStrictDeviceSignature(false)
+		var store confirmationSvc.OTPStore
+		if c.RedisClient != nil {
+			store = &confirmationSvc.RedisOTPStore{Client: c.RedisClient}
+		}
+		var mailer confirmationSvc.EmailSender
+		if c.EmailService != nil {
+			mailer = c.EmailService
+		}
+		var users confirmationSvc.UserEmailLookup
+		if c.UserRepo != nil {
+			users = userEmailLookup{repo: c.UserRepo}
+		}
+		svc.SetEmailOTPDeps(mailer, users, store)
+		c.ZapLog.Warn("CONFIRMATION_DEMO_EMAIL_OTP enabled: Face ID approve rejected; email OTP required for money cards")
+	} else {
+		svc.SetStrictDeviceSignature(cfg.RequireDeviceSignature)
+	}
 	if d := c.MiriamBridgeDispatcher; d != nil {
 		svc.SetCardEditor(func(ctx context.Context, conf *entities.Confirmation) error {
 			threadID, _ := conf.Payload["thread_id"].(string)
@@ -211,4 +233,25 @@ func formatCountdown(d time.Duration) string {
 		total = 0
 	}
 	return fmt.Sprintf("%d:%02d", total/60, total%60)
+}
+
+// userEmailLookup adapts UserRepo to the confirmation OTP email seam.
+type userEmailLookup struct {
+	repo interface {
+		GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+	}
+}
+
+func (u userEmailLookup) EmailForUser(ctx context.Context, userID uuid.UUID) (string, error) {
+	if u.repo == nil {
+		return "", fmt.Errorf("user repository not configured")
+	}
+	profile, err := u.repo.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if profile == nil {
+		return "", fmt.Errorf("user not found")
+	}
+	return profile.Email, nil
 }
