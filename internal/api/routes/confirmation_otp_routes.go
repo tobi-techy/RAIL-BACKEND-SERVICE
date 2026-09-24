@@ -5,7 +5,22 @@ import (
 
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
+	"github.com/rail-service/rail_service/internal/platform/runtimereg"
 )
+
+func init() {
+	OnEngine(func(router *gin.Engine) {
+		v, ok := runtimereg.Get("di_container")
+		if !ok || v == nil {
+			return
+		}
+		c, ok := v.(*di.Container)
+		if !ok || c == nil {
+			return
+		}
+		RegisterConfirmationOTPRoutes(router, c)
+	})
+}
 
 // RegisterConfirmationOTPRoutes mounts hackathon/demo email-OTP endpoints for
 // money confirmation cards (CONFIRMATION_DEMO_EMAIL_OTP). Token-gated like
