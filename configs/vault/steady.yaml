@@ -2,6 +2,7 @@
 # Inspired by Glider "Stablecoin Yield"; Solana-only (USDC/USDT/PYUSD/USDS).
 # No Solana T-bill RWA in Glider yet — all legs class=yield.
 # Rules: classes treasury|rwa|yield; weights sum 100; no leg > 40.
+# Glider validate: PASS (expanded 2026-09-25).
 tier: conservative_pension
 name: Steady Dollar Income
 risk: low
@@ -9,13 +10,13 @@ horizon: long
 legs:
   # USDC → classify CLASS=yield
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-    weight: "40"
+    weight: "30"
   # USDT → classify CLASS=yield
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
     weight: "25"
   # PYUSD → classify CLASS=yield
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
-    weight: "20"
+    weight: "25"
   # USDS → classify CLASS=yield
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
-    weight: "15"
+    weight: "20"

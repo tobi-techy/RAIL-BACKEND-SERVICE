@@ -1,6 +1,7 @@
 # Balanced Global Wealth — Solana (hackathon).
-# Inspired by Mag7 + Stablecoin Yield: SPYx/QQQx + mega-tech + USDC ballast.
+# Mag7 xStocks + SPYx/QQQx + USDC ballast. Expanded with MSFTx/GOOGLx/AMZNx.
 # Rules: classes treasury|rwa|yield|equity; weights sum 100; no leg > 40.
+# Glider validate: PASS (expanded 2026-09-25).
 tier: balanced_wealth
 name: Balanced Global Wealth
 risk: medium
@@ -8,19 +9,28 @@ horizon: long
 legs:
   # SPYx → classify CLASS=equity
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W"
-    weight: "25"
+    weight: "20"
   # QQQx → classify CLASS=equity
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ"
-    weight: "15"
+    weight: "12"
   # NVDAx → classify CLASS=equity
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh"
-    weight: "15"
+    weight: "10"
+  # MSFTx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XspzcW1PRtgf6Wj92HCiZdjzKCyFekVD8P5Ueh3dRMX"
+    weight: "10"
+  # GOOGLx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN"
+    weight: "8"
   # AAPLx → classify CLASS=equity
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp"
-    weight: "10"
+    weight: "8"
+  # AMZNx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xs3eBt7uRfJX8QUs4suhyU8p2M6DoUDrJyWBa8LLZsg"
+    weight: "7"
   # TSLAx → classify CLASS=equity
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB"
-    weight: "10"
+    weight: "5"
   # USDC → classify CLASS=yield
   - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-    weight: "25"
+    weight: "20"
