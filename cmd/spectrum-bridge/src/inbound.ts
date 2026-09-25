@@ -318,6 +318,66 @@ function textOfContent(content: Content): string | undefined {
 }
 
 /**
+ * Inbound arms the SDK's native-webhook deserializer has no `case` for. It
+ * wraps them as `custom` and keeps the original payload under `.raw`, so a poll
+ * tap arrives looking exactly like an unreadable sticker: the router answered
+ * "custom → unsupported" and the backend told the user "I can't open that kind
+ * of message" instead of counting their answer.
+ *
+ * Only arms this router has a branch for are recovered, and only ones the SDK
+ * does NOT already map: when a type it maps (text, attachment, reaction, …)
+ * surfaces as `custom` its own parser threw, and re-running the router on the
+ * same payload would throw again.
+ */
+const RECOVERABLE_CUSTOM_TYPES = new Set([
+  "poll_option", // poll tap — onboarding answers and Confirm/Cancel
+  "poll", // poll body echo — never a message, skipped downstream
+  "typing", // typing indicator — never a message, skipped downstream
+  "read", // read receipt — forwarded, never answered
+  "unsend", // the user retracted one of our messages
+  "edit", // the user edited a message they sent
+  "effect", // message sent with an effect
+  "markdown",
+  "app",
+]);
+
+/** Unwrap content the webhook deserializer bagged as `custom`, when routable. */
+export function recoverCustomContent(raw: unknown): Content | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const type = (raw as { type?: unknown }).type;
+  if (typeof type !== "string" || !RECOVERABLE_CUSTOM_TYPES.has(type)) {
+    return undefined;
+  }
+  return raw as Content;
+}
+
+/**
+ * The iMessage provider mints `custom` with `imessage_type:
+ * "unsupported-message"` for ANY event that has no text and no attachments:
+ * read receipts, delivered receipts, stickers, handwriting. The payload
+ * carries zero user content, and production logs show these arriving in
+ * bursts as the user reads each paced outbound bubble — answering "I can't
+ * open that kind of message" to a read receipt is worse than staying quiet,
+ * so the sentinel is acked silently.
+ */
+export function isNoContentEvent(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  return (raw as Record<string, unknown>).imessage_type === "unsupported-message";
+}
+
+/** Log-safe summary of an unreadable payload (types and keys, no bodies). */
+function describeCustom(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") return { raw_kind: typeof raw };
+  const o = raw as Record<string, unknown>;
+  return {
+    raw_type: typeof o.type === "string" ? o.type : undefined,
+    // Provider-level fallback the SDK mints for stickers/app bubbles.
+    imessage_type: typeof o.imessage_type === "string" ? o.imessage_type : undefined,
+    raw_keys: Object.keys(o).slice(0, 12),
+  };
+}
+
+/**
  * Route one piece of inbound content. Recursive: reply/edit/effect unwrap
  * their inner content and re-enter with extras attached; group iterates its
  * member messages. Nothing is dropped silently — unknown types warn-log.
@@ -771,7 +831,37 @@ export async function routeInboundContent(
     }
 
     case "custom": {
-      log.info({ sender: ctx.senderId, thread: ctx.threadID }, "unsupported custom content — posting notice");
+      // The webhook deserializer bags every arm it doesn't map as `custom`.
+      // Unwrap the ones we can route (poll taps above all) before answering
+      // "can't open that" — a tap is a decision, not an unreadable bubble.
+      const raw = (content as { raw?: unknown }).raw;
+      const recovered = recoverCustomContent(raw);
+      if (recovered) {
+        log.info(
+          {
+            sender: ctx.senderId,
+            thread: ctx.threadID,
+            recovered_type: (raw as { type: string }).type,
+          },
+          "recovered content the webhook deserializer wrapped as custom",
+        );
+        await routeInboundContent(deps, ctx, message, recovered, extras);
+        return;
+      }
+      // Provider-minted no-content events (read receipts above all): nothing
+      // user-sent to answer. A burst of these tracks the user reading our
+      // paced bubbles — ack, don't reply.
+      if (isNoContentEvent(raw)) {
+        log.info(
+          { sender: ctx.senderId, thread: ctx.threadID, ...describeCustom(raw) },
+          "no-content event (likely a read receipt) — acking silently",
+        );
+        return;
+      }
+      log.info(
+        { sender: ctx.senderId, thread: ctx.threadID, ...describeCustom(raw) },
+        "unsupported custom content — posting notice",
+      );
       await debouncer.flush(ctx.threadID);
       await postToBackend(INBOUND_PATH, {
         ...basePayload(ctx, message.id),

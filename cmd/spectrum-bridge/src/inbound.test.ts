@@ -397,6 +397,113 @@ describe("routeInboundContent", () => {
     debouncer.dispose();
   });
 
+  it("recovers a poll tap the webhook deserializer wrapped as custom", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+
+    // Shape Spectrum's native webhook delivers: the SDK has no `poll_option`
+    // case, so it hands the payload to the router as custom.raw.
+    const wrappedVote = {
+      type: "custom",
+      raw: {
+        type: "poll_option",
+        option: { title: "Confirm" },
+        poll: { type: "poll", title: "Move ₦20k to savings?", options: [{ title: "Confirm" }] },
+        selected: true,
+        title: "Confirm",
+      },
+    } as unknown as Content;
+
+    await route(deps, fakeMessage("m1", wrappedVote));
+
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_poll_vote).toBe(true);
+    expect(posts[0].is_unsupported).toBeUndefined();
+    expect(posts[0].text).toBe("Confirm");
+    expect(posts[0].poll_title).toBe("Move ₦20k to savings?");
+    debouncer.dispose();
+  });
+
+  it("ignores a recovered poll tap that was deselected", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+
+    await route(
+      deps,
+      fakeMessage("m1", {
+        type: "custom",
+        raw: {
+          type: "poll_option",
+          option: { title: "Cancel" },
+          poll: { type: "poll", title: "Confirm?", options: [{ title: "Cancel" }] },
+          selected: false,
+          title: "Cancel",
+        },
+      } as unknown as Content),
+    );
+
+    expect(posts.length).toBe(0);
+    debouncer.dispose();
+  });
+
+  it("skips a recovered typing indicator instead of answering it", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+
+    await route(
+      deps,
+      fakeMessage("m1", { type: "custom", raw: { type: "typing", state: "start" } } as unknown as Content),
+    );
+
+    expect(posts.length).toBe(0);
+    debouncer.dispose();
+  });
+
+  it("acks the provider's no-content events silently instead of replying to read receipts", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+
+    // What the provider mints for any no-text/no-attachment event: read
+    // receipts, delivered receipts, stickers. Production logs showed bursts
+    // of these as the user read each paced outbound bubble — each used to
+    // trigger a "I can't open that kind of message" reply.
+    await route(
+      deps,
+      fakeMessage("m1", {
+        type: "custom",
+        raw: { imessage_type: "unsupported-message" },
+      } as unknown as Content),
+    );
+
+    expect(posts.length).toBe(0);
+    debouncer.dispose();
+  });
+
+  it("still posts the unsupported notice for a structured unknown custom", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+
+    // An unknown arm that carries real structure (not the provider's
+    // no-content sentinel) still gets the courtesy notice.
+    await route(
+      deps,
+      fakeMessage("m1", {
+        type: "custom",
+        raw: { type: "future-widget", payload: { id: "w1" } },
+      } as unknown as Content),
+    );
+
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_unsupported).toBe(true);
+    expect(posts[0].unsupported_mime).toBe("custom");
+    debouncer.dispose();
+  });
+
   it("acks unsupported attachments instead of leaving the user on read", async () => {
     const posts: InboundPayload[] = [];
     const debouncer = makeDebouncer(posts);
