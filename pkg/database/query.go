@@ -82,7 +82,10 @@ func BuildWhereClause(conditions map[string]interface{}) (string, []interface{},
 // If you need to distinguish "caller asked for an invalid column" from "no
 // ordering requested", use BuildOrderByClauseStrict which returns an error.
 func BuildOrderByClause(orderBy string, allowedColumns []string) string {
-	clause, _ := BuildOrderByClauseStrict(orderBy, allowedColumns)
+	clause, err := BuildOrderByClauseStrict(orderBy, allowedColumns)
+	if err != nil {
+		return ""
+	}
 	return clause
 }
 
