@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -24,6 +25,11 @@ func WithDefaultQueryTimeout(ctx context.Context) (context.Context, context.Canc
 	return WithQueryTimeout(ctx, DefaultQueryTimeout)
 }
 
+// columnNamePattern allows only safe SQL identifiers (optionally table-qualified).
+// Column names are interpolated into the query string, so anything else is
+// rejected to prevent SQL injection via map keys.
+var columnNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`)
+
 func BuildWhereClause(conditions map[string]interface{}) (string, []interface{}) {
 	if len(conditions) == 0 {
 		return "", nil
@@ -34,9 +40,16 @@ func BuildWhereClause(conditions map[string]interface{}) (string, []interface{})
 	paramIndex := 1
 
 	for key, value := range conditions {
+		if !columnNamePattern.MatchString(key) {
+			continue
+		}
 		clauses = append(clauses, fmt.Sprintf("%s = $%d", key, paramIndex))
 		args = append(args, value)
 		paramIndex++
+	}
+
+	if len(clauses) == 0 {
+		return "", nil
 	}
 
 	return " WHERE " + strings.Join(clauses, " AND "), args
