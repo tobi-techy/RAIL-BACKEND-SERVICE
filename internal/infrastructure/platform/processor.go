@@ -101,6 +101,12 @@ type InboundMessage struct {
 	// EditOf marks an edited message; the new text arrives in Text.
 	EditOf string `json:"edit_of,omitempty"`
 
+	// The bridge could not turn this into text (a sticker, an app bubble, or
+	// any other custom payload). Text is empty. Do not hand it to the guest
+	// brain: an empty turn is not a model failure and must not be retried.
+	IsUnsupported   bool   `json:"is_unsupported,omitempty"`
+	UnsupportedMIME string `json:"unsupported_mime,omitempty"`
+
 	// Delivery attempt counters from the bridge's signed body. Attempt is
 	// 1-based. Both are zero on older bridges, which IsFinalAttempt reads as
 	// "no redelivery is coming".
@@ -323,6 +329,13 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		log.Printf("drop unparseable inbound message: %v", err)
 		return nil
+	}
+
+	// Stickers and other custom bubbles arrive with no words. Answer once and
+	// ack. Sending them to the guest brain errors with "no user text", which
+	// the bridge treats as retryable and the user sees as a stuck chat.
+	if msg.IsUnsupported {
+		return p.sendToSender(ctx, msg, "I can't open that kind of message. Text me what you need.")
 	}
 
 	// Transcribe a voice note into text before anything else sees it. If we can't,

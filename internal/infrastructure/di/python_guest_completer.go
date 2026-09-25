@@ -63,7 +63,7 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 	}
 	text := lastGuestUserText(messages)
 	if strings.TrimSpace(text) == "" {
-		return nil, fmt.Errorf("python guest completer received no user text")
+		return nil, platform.ErrGuestNoUserText
 	}
 
 	uid := guestSyntheticID(sender)
