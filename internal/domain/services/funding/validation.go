@@ -78,11 +78,12 @@ func (v *ValidationService) SetDepositSecurityStore(store DepositSecurityStore) 
 	v.depositSecurityStore = store
 }
 
-// ValidateWebhookSignature validates webhook signature
+// ValidateWebhookSignature validates webhook signature.
+// Fail-closed: if no webhook secret is configured, every call is rejected.
+// Failing open here would let anyone forge deposit webhooks and credit funds.
 func (v *ValidationService) ValidateWebhookSignature(payload []byte, signature string, timestamp int64) error {
 	if v.webhookValidator == nil {
-		// No webhook secret configured - skip validation in development
-		return nil
+		return fmt.Errorf("webhook signature validation is not configured")
 	}
 	return v.webhookValidator.ValidateRequest(payload, signature, timestamp, "")
 }
