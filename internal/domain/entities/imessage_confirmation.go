@@ -138,15 +138,11 @@ type Confirmation struct {
 	CompletedAt   *time.Time         `json:"completed_at,omitempty"`
 	ResultSummary string             `json:"result_summary,omitempty"`
 	// Assurance is how strongly the approve is bound to the device owner:
-	// token_only | enrolled | secure_enclave. Set at approve time, transient
-	// (not part of the idempotency contract). The server never sees
-	// biometrics — secure_enclave means the call carried a signature from a
-	// Secure Enclave key whose use requires Face ID.
-	Assurance string `json:"assurance,omitempty"`
-	// EnrolledKeyID echoes the device key enrolled by THIS approve call
-	// (trust-on-first-use), so the extension learns its server key id. Empty
-	// on every other path.
-	EnrolledKeyID  string `json:"enrolled_key_id,omitempty"`
+	// token_only | passkey. Set at approve time, transient (not part of the
+	// idempotency contract). The server never sees biometrics — passkey means
+	// the call carried a WebAuthn assertion from an enrolled passkey with
+	// user verification.
+	Assurance      string `json:"assurance,omitempty"`
 	TokenUsed      bool   `json:"-"`
 	CardEditFailed bool   `json:"card_edit_failed,omitempty"`
 }

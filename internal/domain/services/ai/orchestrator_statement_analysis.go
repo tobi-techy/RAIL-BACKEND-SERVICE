@@ -8,8 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
+	"github.com/rail-service/rail_service/internal/domain/services/statement"
 	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
+	"github.com/shopspring/decimal"
 )
 
 // ToolGetBankStatementAnalysis lets Miriam pull a detailed breakdown of the
@@ -18,6 +19,10 @@ import (
 // mapped to Baby Steps. She calls this after the user uploads a statement
 // to deliver the "spending pattern reveal" aha moment.
 const ToolGetBankStatementAnalysis = "get_bank_statement_analysis"
+
+// ToolCorrectStatementCategory records a user correction that overrides
+// narration categorization for matching statement lines.
+const ToolCorrectStatementCategory = "correct_statement_category"
 
 // BankStatementAnalysisTool returns the tool definition for the tools registry.
 func BankStatementAnalysisTool() infraai.Tool {
@@ -69,9 +74,11 @@ func (a *BankStatementAnalysisAdapter) SetMonoAnalysis(mono MonoAnalysisProvider
 // categoryBreakdown holds a single category's spending analysis.
 type categoryBreakdown struct {
 	Category   string  `json:"category"`
+	Label      string  `json:"label"`
 	Total      float64 `json:"total"`
 	PctOfSpend float64 `json:"pct_of_spend"`
 	MonthlyAvg float64 `json:"monthly_avg"`
+	Essential  bool    `json:"essential"`
 }
 
 // recurringItem holds a recurring payment entry.
@@ -112,7 +119,8 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 	}
 
 	// If no transactions at all, try Mono data before giving up.
-	if totalIncome.IsZero() && totalExpense.IsZero() {
+	// A statement that is only transfers still has a period; it is not "no data".
+	if totalIncome.IsZero() && totalExpense.IsZero() && periodStart == nil {
 		if a.mono != nil {
 			return a.getMonoAnalysis(fetchCtx, userID, months)
 		}
@@ -148,30 +156,37 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 		savingsRate = totalIncome.Sub(totalExpense).Div(totalIncome).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
 
-	// 7. Build sorted category breakdown with percentages. The denominator is
-	// the sum of category totals over the SAME start-to-now window as
-	// spendingByCategory — not the unbounded all-time totalExpense from
-	// GetIncomeExpenseSummary — so percentages reflect the selected period and
-	// sum to ~100%.
+	// 7. Build sorted category breakdown with percentages. Transfers, savings
+	// moves, and loan repayments are reported separately so they don't look
+	// like purchases. The denominator is consumption over the same window, so
+	// percentages sum to ~100% of actual spending.
+	consumption, movementTotals := statement.PartitionSpend(spendingByCategory)
+	normalizedAverages := map[string]decimal.Decimal{}
+	for cat, avg := range categoryAverages {
+		bucket := statement.NormalizeStatementCategory(cat, "", "debit")
+		normalizedAverages[bucket] = normalizedAverages[bucket].Add(avg)
+	}
 	var categories []categoryBreakdown
 	periodSpend := 0.0
-	for _, amount := range spendingByCategory {
+	for _, amount := range consumption {
 		periodSpend += amount
 	}
-	for cat, amount := range spendingByCategory {
+	for cat, amount := range consumption {
 		pct := 0.0
 		if periodSpend > 0 {
 			pct = amount / periodSpend * 100
 		}
 		monthlyAvg := 0.0
-		if avg, ok := categoryAverages[cat]; ok {
+		if avg, ok := normalizedAverages[cat]; ok {
 			monthlyAvg, _ = avg.Float64()
 		}
 		categories = append(categories, categoryBreakdown{
 			Category:   cat,
+			Label:      statement.CategoryLabel(cat),
 			Total:      amount,
 			PctOfSpend: pct,
 			MonthlyAvg: monthlyAvg,
+			Essential:  essentialBucket(cat),
 		})
 	}
 	sort.Slice(categories, func(i, j int) bool {
@@ -199,12 +214,24 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 		if i >= 3 {
 			break
 		}
-		topCats = append(topCats, fmt.Sprintf("%s (%.0f%%)", c.Category, c.PctOfSpend))
+		topCats = append(topCats, fmt.Sprintf("%s (%.0f%%)", c.Label, c.PctOfSpend))
 	}
 	topCatsStr := "no categories found"
 	if len(topCats) > 0 {
 		topCatsStr = strings.Join(topCats, ", ")
 	}
+
+	var movement []categoryBreakdown
+	for cat, amount := range movementTotals {
+		movement = append(movement, categoryBreakdown{
+			Category: cat,
+			Label:    statement.CategoryLabel(cat),
+			Total:    amount,
+		})
+	}
+	sort.Slice(movement, func(i, j int) bool {
+		return movement[i].Total > movement[j].Total
+	})
 
 	return map[string]interface{}{
 		"has_data":           true,
@@ -216,13 +243,24 @@ func (a *BankStatementAnalysisAdapter) GetAnalysis(ctx context.Context, userID u
 		"banks":              banks,
 		"top_categories":     topCatsStr,
 		"categories":         categories,
+		"money_movement":     movement,
 		"recurring_payments": recurring,
 		"growth_plan":        growthPlan,
 		"summary": fmt.Sprintf(
-			"Over the %s, you earned %s and spent %s. Your savings rate is %.1f%%. Top spending: %s.",
+			"Over the %s, you earned %s and spent %s. Your savings rate is %.1f%%. Top spending (purchases and bills, not transfers): %s.",
 			periodStr, totalIncome.StringFixed(0), totalExpense.StringFixed(0), savingsRate, topCatsStr,
 		),
 	}, nil
+}
+
+func essentialBucket(bucket string) bool {
+	switch bucket {
+	case statement.BucketGroceries, statement.BucketUtilities, statement.BucketHealth,
+		statement.BucketEducation, statement.BucketRent, statement.BucketAirtime:
+		return true
+	default:
+		return false
+	}
 }
 
 // generateGrowthPlan creates actionable recommendations based on the user's
@@ -249,7 +287,7 @@ func generateGrowthPlan(
 	if len(categories) > 0 {
 		top := categories[0]
 		if top.PctOfSpend > 30 {
-			plan = append(plan, fmt.Sprintf("%s is %.0f%% of your spending — that's a lot. Trimming it by even 15%% would free up real money for your goals.", top.Category, top.PctOfSpend))
+			plan = append(plan, fmt.Sprintf("%s is %.0f%% of your spending — that's a lot. Trimming it by even 15%% would free up real money for your goals.", top.Label, top.PctOfSpend))
 		}
 	}
 
@@ -299,11 +337,14 @@ func (a *BankStatementAnalysisAdapter) getMonoAnalysis(ctx context.Context, user
 		if totalExpense > 0 {
 			pct = c.Percent * 100
 		}
+		bucket := statement.NormalizeStatementCategory(c.Category, "", "debit")
 		categories = append(categories, categoryBreakdown{
-			Category:   c.Category,
+			Category:   bucket,
+			Label:      statement.CategoryLabel(bucket),
 			Total:      float64(c.Amount) / 100,
 			PctOfSpend: pct,
 			MonthlyAvg: float64(c.Amount) / 100 / float64(months),
+			Essential:  essentialBucket(bucket),
 		})
 	}
 	sort.Slice(categories, func(i, j int) bool {
@@ -315,7 +356,7 @@ func (a *BankStatementAnalysisAdapter) getMonoAnalysis(ctx context.Context, user
 		if i >= 3 {
 			break
 		}
-		topCats = append(topCats, fmt.Sprintf("%s (%.0f%%)", c.Category, c.PctOfSpend))
+		topCats = append(topCats, fmt.Sprintf("%s (%.0f%%)", c.Label, c.PctOfSpend))
 	}
 	topCatsStr := "no categories found"
 	if len(topCats) > 0 {
@@ -326,16 +367,16 @@ func (a *BankStatementAnalysisAdapter) getMonoAnalysis(ctx context.Context, user
 	growthPlan := generateGrowthPlan(savingsRate, categories, nil)
 
 	return map[string]interface{}{
-		"has_data":           true,
-		"source":             "mono",
-		"period":             periodStr,
-		"total_income":       fmt.Sprintf("%.0f", totalIncome),
-		"total_expense":      fmt.Sprintf("%.0f", totalExpense),
-		"savings_rate":       fmt.Sprintf("%.1f%%", savingsRate),
-		"transaction_count":  analysis.TransactionCount,
-		"top_categories":     topCatsStr,
-		"categories":         categories,
-		"growth_plan":        growthPlan,
+		"has_data":          true,
+		"source":            "mono",
+		"period":            periodStr,
+		"total_income":      fmt.Sprintf("%.0f", totalIncome),
+		"total_expense":     fmt.Sprintf("%.0f", totalExpense),
+		"savings_rate":      fmt.Sprintf("%.1f%%", savingsRate),
+		"transaction_count": analysis.TransactionCount,
+		"top_categories":    topCatsStr,
+		"categories":        categories,
+		"growth_plan":       growthPlan,
 		"summary": fmt.Sprintf(
 			"Over the %s from your linked bank account, you earned %.0f and spent %.0f. Your savings rate is %.1f%%. Top spending: %s.",
 			periodStr, totalIncome, totalExpense, savingsRate, topCatsStr,

@@ -141,6 +141,8 @@ const (
 // guestState is the per-sender pre-signup conversation persisted in Redis.
 type guestState struct {
 	Phase            guestPhase     `json:"phase"`
+	Platform         string         `json:"platform,omitempty"`
+	SenderID         string         `json:"sender_id,omitempty"`
 	FirstName        string         `json:"first_name,omitempty"`
 	Country          string         `json:"country,omitempty"`
 	Goal             string         `json:"goal,omitempty"`
@@ -229,6 +231,7 @@ type ChatOnboarder struct {
 	statementHandler StatementAttachmentHandler
 	monoLinker       GuestMonoLinker
 	shareAllowlist   map[string]bool
+	accountLinks     *ChatAccountLinker
 }
 
 func NewChatOnboarder(
@@ -438,6 +441,8 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 	if err := c.store.Get(ctx, key, &st); err != nil || st.Phase == "" {
 		st = guestState{Phase: phaseConverse}
 	}
+	st.Platform = in.Platform.String()
+	st.SenderID = in.SenderID
 
 	if in.Contact != nil {
 		c.mergeContact(&st, in.Contact)
@@ -458,6 +463,12 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 			// the pending statement id and lose the document after signup.
 			if err := c.save(ctx, key, st); err != nil {
 				return nil, err
+			}
+			if st.Phase == phaseConverse || st.Phase == phaseEmail || st.Phase == "" {
+				if st.SignupReason == "" {
+					st.SignupReason = "bank statement"
+				}
+				return c.beginSignup(ctx, key, &st, text, st.StatementSummary)
 			}
 			if text == "" {
 				text = "[they shared a bank statement]\n" + st.StatementSummary
@@ -552,11 +563,11 @@ func (c *ChatOnboarder) handleConversational(ctx context.Context, key string, st
 func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestState, in OnboardInput, text string) (*PlatformReply, error) {
 	if st.TurnCount >= maxGuestTurns {
 		// Enough talking without converting — steer to the one useful action.
-		st.Phase = phasePhone
+		st.Phase = phaseEmail
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
 		}
-		return textReply("I've enjoyed this, but talking only gets us so far. Drop your number (with the country code) and I'll actually get your money working."), nil
+		return textReply("I've enjoyed this, but talking only gets us so far. " + c.emailPrompt()), nil
 	}
 
 	out, err := c.brain.respond(ctx, st, text)
@@ -622,64 +633,10 @@ func (c *ChatOnboarder) brainTurn(ctx context.Context, key string, st *guestStat
 	return c.outcomeReply(out), nil
 }
 
-// handleGuestConnectBank sends the guest a tappable Mono Connect link so they
-// can share their real bank before signing up. The link session is tied to the
-// guest token; completion happens through the guest-scoped Mono endpoint, which
-// flips MonoLinked on the session.
+// handleGuestConnectBank used to send a Mono link. Mono is not available, so
+// the picture comes from a statement PDF the guest sends in the thread.
 func (c *ChatOnboarder) handleGuestConnectBank(ctx context.Context, key string, st *guestState, userText, replyText string) (*PlatformReply, error) {
-	if c.monoLinker == nil {
-		c.logger.Warn("guest connect_bank requested but no mono linker wired")
-		replyText = strings.TrimSpace(replyText)
-		if replyText == "" {
-			replyText = "I can't look at your bank right now, but we can still talk it through. What does your money do for you these days?"
-		}
-		c.recordTurn(st, userText, replyText)
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(replyText), nil
-	}
-
-	if st.GuestToken == "" {
-		st.GuestToken = uuid.NewString()
-	}
-	// Index the token so the guest-scoped Mono complete endpoint can find this
-	// session and flip MonoLinked when the bank link lands.
-	if err := c.store.Set(ctx, guestTokenKey(st.GuestToken), key, guestSessionTTL); err != nil {
-		c.logger.Warn("guest token index save failed", zap.Error(err))
-	}
-	redirectURL := "rail://bank-linked?guest=" + st.GuestToken
-	url, err := c.monoLinker.InitiateGuestLinking(ctx, st.GuestToken, guestLinkName(st), guestLinkEmail(st), redirectURL)
-	if err != nil {
-		c.logger.Warn("guest mono link initiation failed", zap.Error(err))
-		replyText = strings.TrimSpace(replyText)
-		if replyText == "" {
-			replyText = "I couldn't start the bank link just now. We can try again in a moment."
-		}
-		c.recordTurn(st, userText, replyText)
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(replyText), nil
-	}
-	if strings.TrimSpace(url) == "" {
-		replyText = strings.TrimSpace(replyText)
-		if replyText == "" {
-			replyText = "Bank linking isn't available in your country yet, but we can still talk it through."
-		}
-		c.recordTurn(st, userText, replyText)
-		if err := c.save(ctx, key, *st); err != nil {
-			return nil, err
-		}
-		return textReply(replyText), nil
-	}
-
-	st.MonoLinkURL = url
-	// The model wrote the ask; hand the link over inline so it's tappable.
-	link := "[Connect your bank](" + url + ")"
-	if !strings.Contains(replyText, url) {
-		replyText = strings.TrimSpace(replyText) + "\n\n" + link
-	}
+	replyText = "Send me a PDF of a recent bank statement. I'll read it here, no account needed."
 	c.recordTurn(st, userText, replyText)
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
@@ -692,7 +649,7 @@ func (c *ChatOnboarder) handleGuestConnectBank(ctx context.Context, key string, 
 // is grounded in actual numbers rather than a guess.
 func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st *guestState, userText string) (*PlatformReply, error) {
 	if c.monoLinker == nil || !st.MonoLinked || st.GuestToken == "" {
-		replyText := "I don't have your bank linked yet. Want to connect it so I can show you where your money actually goes?"
+		replyText := "Send me a PDF of a recent bank statement and I'll show you where the money went."
 		c.recordTurn(st, userText, replyText)
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err
@@ -719,7 +676,7 @@ func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st 
 	// One more brain turn so the model sees the real numbers in the state block
 	// and delivers the aha. The state block marks the summary as present, and the
 	// prompt tells it not to re-call the tool.
-	out, err := c.brain.respond(ctx, st, "[the linked bank's spending picture is now available — react to the mono_summary and deliver the aha]")
+	out, err := c.brain.respond(ctx, st, "[the linked bank's spending picture is now available — deliver the aha in one or two sentences, then call start_signup so the account and wallet can be set up. Do not ask them to send money.]")
 	if err != nil {
 		c.logger.Error("guest aha brain turn failed", zap.Error(err))
 		replyText := "See? That's where your money actually goes. Want to talk about what to do with it?"
@@ -731,14 +688,17 @@ func (c *ChatOnboarder) handleGuestAnalysis(ctx context.Context, key string, st 
 	}
 	replyText := strings.TrimSpace(out.text)
 	if replyText == "" {
-		replyText = "See? That's where your money actually goes. Want to talk about what to do with it?"
+		replyText = "See? That's where your money actually goes."
 	}
-	c.recordTurn(st, userText, replyText)
-	if err := c.save(ctx, key, *st); err != nil {
-		return nil, err
+	if st.SignupReason == "" {
+		st.SignupReason = "spending picture"
 	}
-	out.text = replyText
-	return c.outcomeReply(out), nil
+	if out.signupReason != "" {
+		st.SignupReason = out.signupReason
+	}
+	// The picture is the reason to open the account. Do this even when the
+	// model only wrote the aha and forgot the tool.
+	return c.beginSignup(ctx, key, st, userText, replyText)
 }
 
 // guestLinkName/guestLinkEmail give Mono a display identity for the link
@@ -803,16 +763,44 @@ func (c *ChatOnboarder) beginSignup(ctx context.Context, key string, st *guestSt
 		return c.startVerification(ctx, key, st)
 	}
 
-	st.Phase = phasePhone
-	c.recordTurn(st, userText, replyText)
-	st.LastReplyHash = hashReply(replyText)
+	st.Phase = phaseEmail
+	ask := c.emailPrompt()
+	if linked := c.accountLinkReply(ctx, key, st); linked != nil && strings.TrimSpace(linked.Text) != "" {
+		ask = linked.Text
+	}
+	body := ask
+	if spoken := strings.TrimSpace(replyText); spoken != "" && !strings.Contains(spoken, ask) {
+		body = spoken + "\n\n" + ask
+	}
+	c.recordTurn(st, userText, body)
+	st.LastReplyHash = hashReply(body)
 	if err := c.save(ctx, key, *st); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(replyText) == "" {
-		replyText = c.phonePrompt()
+	return textReply(body), nil
+}
+
+// SetChatAccountLinker offers Apple and Google as the way to pick an account.
+func (c *ChatOnboarder) SetChatAccountLinker(linker *ChatAccountLinker) {
+	c.accountLinks = linker
+}
+
+// accountLinkReply asks the person to link the account they already use.
+// The email they pick there is the account. A different email creates a new one.
+func (c *ChatOnboarder) accountLinkReply(ctx context.Context, key string, st *guestState) *PlatformReply {
+	if c.accountLinks == nil || !c.accountLinks.Enabled() {
+		return nil
 	}
-	return textReply(replyText), nil
+	offer, err := c.accountLinks.Offer(ctx, entities.Platform(st.Platform), st.SenderID)
+	if err != nil || (offer.AppleURL == "" && offer.GoogleURL == "") {
+		return nil
+	}
+	text := AccountLinkCopy(offer)
+	st.LastReplyHash = hashReply(text)
+	if err := c.save(ctx, key, *st); err != nil {
+		c.logger.Warn("account link reply save failed", zap.Error(err))
+	}
+	return textReply(text)
 }
 
 // startVerification begins identity proof. Email is the anchor: the signup ask
@@ -1004,7 +992,7 @@ func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestS
 				if err := c.save(ctx, key, *st); err != nil {
 					return nil, err
 				}
-				return textReply(fmt.Sprintf("Got it, %s. I'm still reconnecting. If you want to continue setup, send your number with the country code.", name)), nil
+				return textReply(fmt.Sprintf("Got it, %s. I'm still reconnecting. If you want to continue setup, %s", name, c.emailPrompt())), nil
 			}
 		} else {
 			// Greeting or empty input without a name yet — ask for it.
@@ -1024,7 +1012,7 @@ func (c *ChatOnboarder) fallbackTurn(ctx context.Context, key string, st *guestS
 	if c.brain != nil {
 		return textReply(transientApology(st)), nil
 	}
-	return textReply("I can't chat properly right now, but I can still get you set up. Send your number with the country code and I'll take it from there."), nil
+	return textReply("I can't chat properly right now, but I can still get you set up. " + c.emailPrompt()), nil
 }
 
 // countryFromText finds a country mention inside a longer message ("Ada from
@@ -1166,6 +1154,7 @@ func (c *ChatOnboarder) handleEmailOTP(ctx context.Context, key string, st *gues
 		// happen there (handleConsent).
 		st.UserID = existing.ID.String()
 		st.AccountCreated = false
+		c.markEmailVerified(ctx, existing.ID)
 		st.Phase = phaseConsent
 		if err := c.save(ctx, key, *st); err != nil {
 			return nil, err

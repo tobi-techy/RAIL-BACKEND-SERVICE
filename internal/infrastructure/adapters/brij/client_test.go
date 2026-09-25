@@ -133,6 +133,12 @@ func TestX402AmountUnmarshal(t *testing.T) {
 	if a, ok := parse(t, `150050`); !ok || a.Int64() != 150_050 {
 		t.Errorf("150050 -> %d, %v", a.Int64(), ok)
 	}
+	if a, ok := parse(t, `100000.0`); !ok || a.Int64() != 100_000 {
+		t.Errorf("100000.0 -> %d, %v", a.Int64(), ok)
+	}
+	if _, ok := parse(t, `100000.5`); ok {
+		t.Error("100000.5 should not parse as an integer")
+	}
 	if a, ok := parse(t, `-5`); !ok || a.Int64() != -5 {
 		t.Errorf("-5 -> %d, %v", a.Int64(), ok)
 	}

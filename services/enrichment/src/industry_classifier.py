@@ -4,7 +4,8 @@ Ported from d-daemon/transaction-enrichment-ml, extended with essentiality flag
 and plain-English descriptions for Miriam's transaction understanding.
 """
 
-from typing import Dict, Tuple, Optional, Union
+import re
+from typing import Dict, Optional, Tuple, Union
 
 BRAND_INDUSTRY_MAP: Dict[str, Tuple[str, str, bool, str, str]] = {
     # (L1, L2, is_essential, plain_description_template, merchant_context)
@@ -99,6 +100,34 @@ MCC_LOOKUP: Dict[int, Tuple[str, str, bool, str, str]] = {
     8011: ("Health", "Medical", True, "Medical service", "Healthcare provider"),
     8299: ("Education", "Education", True, "Education payment", "Educational institution"),
 }
+
+
+_FINANCIAL_BRANDS = {
+    name for name, entry in BRAND_INDUSTRY_MAP.items() if entry[0] == "Financial"
+}
+
+
+def find_brand_in_text(raw: str, *, prefer_merchant: bool = False) -> Optional[str]:
+    """Find a known brand mentioned anywhere in a narration.
+
+    Longest name wins so "access bank" beats "access". On a POS or purchase
+    line, a supermarket beats the bank that processed the card.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.lower()
+    hits = [
+        name for name in BRAND_INDUSTRY_MAP
+        if re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", text)
+    ]
+    if not hits:
+        return None
+    hits.sort(key=len, reverse=True)
+    if prefer_merchant:
+        merchants = [name for name in hits if name not in _FINANCIAL_BRANDS]
+        if merchants:
+            return merchants[0]
+    return hits[0]
 
 
 def classify_industry(brand: Optional[str], mcc_code: Optional[Union[int, str]]) -> Tuple[Optional[str], Optional[str], bool]:

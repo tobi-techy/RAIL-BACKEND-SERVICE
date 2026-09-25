@@ -33,6 +33,9 @@ var (
 		// engine; there is no Miriam-initiated create tool.)
 		"create_automation":         true,
 		"accept_mandate_suggestion": true,
+		// A statement correction rewrites how every past and future line
+		// for that narration is categorized. Staged so a wrong guess is not saved.
+		"correct_statement_category": true,
 		// BRIJ flight bookings (book_flight is fund-moving, Face ID step-up).
 		"create_flight_intent":  true,
 		"book_flight":           true,

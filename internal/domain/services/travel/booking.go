@@ -389,8 +389,14 @@ func validatePassenger(p *brij.PassengerInput) error {
 	if strings.TrimSpace(p.GivenName) == "" || strings.TrimSpace(p.FamilyName) == "" {
 		return fmt.Errorf("passenger given and family name are required")
 	}
-	if !datePattern.MatchString(strings.TrimSpace(p.BornOn)) {
+	// The shape check alone accepts impossible dates (e.g. 2026-13-45); parse
+	// for real so malformed input fails here instead of 400ing after payment.
+	bornOn := strings.TrimSpace(p.BornOn)
+	if !datePattern.MatchString(bornOn) {
 		return fmt.Errorf("passenger date of birth must be YYYY-MM-DD (e.g. 1990-04-12)")
+	}
+	if _, err := time.Parse("2006-01-02", bornOn); err != nil {
+		return fmt.Errorf("passenger date of birth is not a real calendar date")
 	}
 	if !titlePattern.MatchString(strings.ToLower(strings.TrimSpace(p.Title))) {
 		return fmt.Errorf("passenger title must be one of mr, mrs, ms, miss, dr")
@@ -424,7 +430,16 @@ func validateTravelDocument(p *brij.PassengerInput) error {
 	if !datePattern.MatchString(exp) {
 		return fmt.Errorf("passport expiry must be YYYY-MM-DD (e.g. 2030-04-12)")
 	}
-	if t, err := time.Parse("2006-01-02", exp); err != nil || t.Before(time.Now()) {
+	// Compare calendar dates, not instants: an expiry parsed at midnight is
+	// always "before now" on its last valid day, which must still be accepted.
+	t, err := time.Parse("2006-01-02", exp)
+	if err != nil {
+		return fmt.Errorf("passport expiry is not a real calendar date")
+	}
+	today := time.Now().Truncate(24 * time.Hour)
+	// Truncate is wall-clock based; normalize both sides to YYYY-MM-DD so a
+	// timezone edge can never reject a passport expiring today or later.
+	if t.Format("2006-01-02") < today.Format("2006-01-02") {
 		return fmt.Errorf("this passport has expired or the expiry is invalid")
 	}
 	return nil

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -59,7 +58,7 @@ func (h *platformStatementAttachmentHandler) ScanGuest(ctx context.Context, send
 	if len(attachment.Data) == 0 {
 		return nil, fmt.Errorf("empty statement")
 	}
-	scanCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	scanCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	result, err := h.pipeline.Process(scanCtx, uuid.New(), attachment.Data, attachment.MIMEType, "")
 	if err != nil {
@@ -80,7 +79,7 @@ func (h *platformStatementAttachmentHandler) ScanGuest(ctx context.Context, send
 
 	return &platform.StatementScan{
 		PendingID: pendingKey,
-		Summary:   summarizeGuestStatement(result.ParseResult),
+		Summary:   statement.SummarizeForChat(result.ParseResult),
 	}, nil
 }
 
@@ -91,7 +90,7 @@ func (h *platformStatementAttachmentHandler) ScanLinked(ctx context.Context, use
 	// Synchronous, bounded scan used to ground conversational onboarding in the
 	// statement data immediately. Unlike ScanGuest there is nothing pending to
 	// keep in Redis — the durable job is still enqueued (or already running).
-	scanCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	scanCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	result, err := h.pipeline.Process(scanCtx, uuid.New(), attachment.Data, attachment.MIMEType, "")
 	if err != nil {
@@ -102,7 +101,7 @@ func (h *platformStatementAttachmentHandler) ScanLinked(ctx context.Context, use
 	}
 	return &platform.StatementScan{
 		PendingID: uuid.NewString(),
-		Summary:   summarizeGuestStatement(result.ParseResult),
+		Summary:   statement.SummarizeForChat(result.ParseResult),
 	}, nil
 }
 
@@ -174,43 +173,4 @@ func pendingStatementKey(senderID, pendingID string) string {
 	}
 	sum := sha256.Sum256([]byte(senderID))
 	return fmt.Sprintf("onboarding:statement:%s:%s", hex.EncodeToString(sum[:8]), pendingID)
-}
-
-func summarizeGuestStatement(result *statement.ParseResult) string {
-	var income, spending float64
-	categories := make(map[string]float64)
-	for _, txn := range result.Transactions {
-		if strings.EqualFold(txn.Type, "credit") {
-			income += txn.Amount
-			continue
-		}
-		spending += txn.Amount
-		category := strings.TrimSpace(txn.Category)
-		if category == "" {
-			category = "other"
-		}
-		categories[category] += txn.Amount
-	}
-	type categoryTotal struct {
-		name  string
-		total float64
-	}
-	sorted := make([]categoryTotal, 0, len(categories))
-	for name, total := range categories {
-		sorted = append(sorted, categoryTotal{name: name, total: total})
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].total > sorted[j].total })
-	top := make([]string, 0, 3)
-	for i := 0; i < len(sorted) && i < 3; i++ {
-		top = append(top, fmt.Sprintf("%s %.0f", sorted[i].name, sorted[i].total))
-	}
-	currency := result.Currency
-	if currency == "" {
-		currency = "the statement currency"
-	}
-	summary := fmt.Sprintf("I found %d transactions. Income was about %s %.0f and spending about %s %.0f", len(result.Transactions), currency, income, currency, spending)
-	if len(top) > 0 {
-		summary += ". Biggest spending areas: " + strings.Join(top, ", ")
-	}
-	return summary + "."
 }

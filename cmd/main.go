@@ -442,9 +442,6 @@ func runSeedCatalog(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if !cfg.InvestmentGlider.Enabled {
-		return fmt.Errorf("the investment engine is disabled: set INVESTMENT_GLIDER_ENABLED=true")
-	}
 	if strings.TrimSpace(cfg.InvestmentGlider.APIKey) == "" {
 		return fmt.Errorf("INVESTMENT_GLIDER_API_KEY is not configured")
 	}
@@ -566,9 +563,6 @@ func runClassifyAsset(args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
-	}
-	if !cfg.InvestmentGlider.Enabled {
-		return fmt.Errorf("the investment engine is disabled: set INVESTMENT_GLIDER_ENABLED=true")
 	}
 	db, err := database.NewConnection(cfg.Database, cfg.Environment)
 	if err != nil {

@@ -5,7 +5,9 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/ai/core"
+	"github.com/rail-service/rail_service/internal/domain/services/statement"
 )
 
 // RegisterBankStatementTools registers the bank statement analysis tool.
@@ -46,6 +48,66 @@ func RegisterBankStatementTools(r *Registry) {
 				return &core.ToolResult{Error: err.Error()}, nil
 			}
 			return &core.ToolResult{Data: data}, nil
+		},
+	))
+
+	r.Register(NewTool(
+		"correct_statement_category",
+		`Remember how the user wants a statement narration categorized. Call this when they correct a category ("that Shoprite line is groceries", "Bet9ja is betting, not shopping"). pattern is the merchant or narration text. match_type is "contains" (default) or "exact". bucket is one of: food, groceries, transport, utilities, entertainment, shopping, health, education, rent, transfer_in, transfer_out, salary, airtime, betting, subscription, savings, loan, fees, atm, other. This is staged: it is not saved until they confirm.`,
+		map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"pattern": map[string]interface{}{
+					"type":        "string",
+					"description": "Merchant or narration text to match, e.g. Shoprite or BET9JA.",
+				},
+				"match_type": map[string]interface{}{
+					"type":        "string",
+					"description": "contains or exact. Default contains.",
+				},
+				"bucket": map[string]interface{}{
+					"type":        "string",
+					"description": "Closed category bucket, e.g. groceries or betting.",
+				},
+			},
+			"required":             []string{"pattern", "bucket"},
+			"additionalProperties": false,
+		},
+		core.CategorySpending,
+		func(ctx context.Context, userID uuid.UUID, args map[string]interface{}, deps *core.Dependencies) (*core.ToolResult, error) {
+			if confirm, _ := args["confirm"].(bool); !confirm {
+				return &core.ToolResult{Data: map[string]interface{}{
+					"status":  "needs_confirmation",
+					"message": "This correction is staged. It is saved only after the user confirms.",
+				}}, nil
+			}
+			if deps == nil || deps.StatementCategoryRules == nil {
+				return &core.ToolResult{Error: "statement corrections are not available right now"}, nil
+			}
+			pattern, _ := args["pattern"].(string)
+			bucket, _ := args["bucket"].(string)
+			matchType, _ := args["match_type"].(string)
+			matchType, pattern, bucket, vErr := statement.ValidateCategoryRule(matchType, pattern, bucket)
+			if vErr != nil {
+				return &core.ToolResult{Error: vErr.Error()}, nil
+			}
+			updated, err := deps.StatementCategoryRules.SaveCategoryRule(ctx, &entities.StatementCategoryRule{
+				UserID:    userID,
+				MatchType: matchType,
+				Pattern:   pattern,
+				Bucket:    bucket,
+			}, statement.IsEssentialBucket(bucket))
+			if err != nil {
+				return &core.ToolResult{Error: err.Error()}, nil
+			}
+			return &core.ToolResult{Data: map[string]interface{}{
+				"status":        "saved",
+				"pattern":       pattern,
+				"match_type":    matchType,
+				"bucket":        bucket,
+				"lines_updated": updated,
+				"applies_to":    "this narration on statements already stored and on the next upload",
+			}}, nil
 		},
 	))
 

@@ -283,11 +283,8 @@ func (s *Service) GetLimitsResponse(ctx context.Context, userID uuid.UUID) (*ent
 		Limits: *effective,
 		Source: "rail_policy",
 	}
-	if s.users != nil {
-		if profile, err := s.users.GetInvestmentProfile(ctx, userID); err == nil && profile != nil {
-			resp.KYCTier = profile.KYCTier
-		}
-	}
+	// KYC is not an input to strategy investing. The tier field stays empty
+	// so a caller cannot treat identity level as permission to buy.
 	if s.assets != nil {
 		if count, err := s.assets.CountAllowed(ctx); err == nil {
 			resp.AllowedAssetsCount = count

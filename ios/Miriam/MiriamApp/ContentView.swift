@@ -12,7 +12,7 @@ struct ContentView: View {
                     LabeledContent("Confirm server", value: Bundle.main.object(forInfoDictionaryKey: "MiriamConfirmBaseURL") as? String ?? "—")
                 }
                 Section("Security") {
-                    Text("Approvals are signed in the Secure Enclave. The server never sees your face — only a signature that proves your device authenticated you.")
+                    Text("Approvals are done with your Rail passkey. The server never sees your face — only a signature that proves your device authenticated you.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

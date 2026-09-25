@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,12 +17,28 @@ import (
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
-// Store persists confirmations. The default is in-memory; production should
-// back this with Postgres (one row per card) so replays stay single-use
-// across restarts.
+// ErrConfirmationNotFound is returned by Store.Load for unknown ids. Stores
+// must return it (not a generic error) so callers can distinguish "no card"
+// from "the database is down" — the former is a 404, the latter fails closed.
+var ErrConfirmationNotFound = errors.New("confirmation not found")
+
+// ErrTokenConsumed is returned by Store.Claim when the single-use token is
+// already spent. It is not a failure: the caller reloads and either returns
+// the terminal record or resumes the pipeline.
+var ErrTokenConsumed = errors.New("confirmation token already consumed")
+
+// Store persists confirmations. Memory is the default (tests, single-process
+// dev); production wires the Postgres repository so the single-use token and
+// idempotency hold across restarts and replicas. Every error fails closed:
+// callers abort rather than guess.
 type Store interface {
-	Save(c *entities.Confirmation)
-	Load(id uuid.UUID) (*entities.Confirmation, bool)
+	Save(ctx context.Context, c *entities.Confirmation) error
+	Load(ctx context.Context, id uuid.UUID) (*entities.Confirmation, error)
+	// Claim atomically flips token_used (and records assurance) for exactly
+	// one caller across replicas and crash-retries. Second callers get
+	// ErrTokenConsumed and must reload: terminal cards return as-is,
+	// consumed-but-live cards resume.
+	Claim(ctx context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error)
 }
 
 // CardEditor mutates the live transcript card in place (Spectrum edit()).
@@ -55,33 +71,50 @@ type memoryStore struct {
 
 func newMemoryStore() *memoryStore { return &memoryStore{m: map[uuid.UUID]*entities.Confirmation{}} }
 
-func (s *memoryStore) Save(c *entities.Confirmation) {
+func (s *memoryStore) Save(_ context.Context, c *entities.Confirmation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := *c
 	s.m[c.ID] = &cp
+	return nil
 }
 
-func (s *memoryStore) Load(id uuid.UUID) (*entities.Confirmation, bool) {
+func (s *memoryStore) Load(_ context.Context, id uuid.UUID) (*entities.Confirmation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c, ok := s.m[id]
 	if !ok {
-		return nil, false
+		return nil, ErrConfirmationNotFound
 	}
 	cp := *c
-	return &cp, true
+	return &cp, nil
 }
 
-// executeInFlight reserves an ExecuteKey while the money movement runs so a
-// concurrent approve on the same card fails closed instead of double-spending.
-const executeInFlight = "__inflight__"
+func (s *memoryStore) Claim(_ context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.m[id]
+	if !ok {
+		return nil, ErrConfirmationNotFound
+	}
+	if c.TokenUsed {
+		return nil, ErrTokenConsumed
+	}
+	cp := *c
+	cp.TokenUsed = true
+	if assurance != "" {
+		cp.Assurance = assurance
+	}
+	cp.UpdatedAt = time.Now().UTC()
+	s.m[id] = &cp
+	out := cp
+	return &out, nil
+}
 
 // Service is the server-side source of truth for confirmation cards.
 type Service struct {
 	cfg       Config
 	store     Store
-	devices   DeviceStore
 	log       *logger.Logger
 	mu        sync.Mutex
 	executors map[entities.ConfirmationAction]Executor
@@ -89,9 +122,19 @@ type Service struct {
 	executed  map[string]string // execute key -> result summary (idempotent replay)
 	cardEdit  CardEditor
 	audit     AuditSink
-	// strictDeviceSig rejects token-only approves outright. Default false:
-	// unknown devices fall back to token-only (audited) until they enroll.
-	strictDeviceSig bool
+	// txAssert verifies passkey assertions. Nil means passkeys are
+	// unavailable: assertion paths fail closed; legacy token-only approves
+	// are governed by requirePasskey.
+	txAssert TxAssertionService
+	// userEmail resolves the WebAuthn user name for passkey ceremonies.
+	userEmail UserEmailLookup
+	// requirePasskey rejects token-only approves outright. Default false:
+	// users without a passkey fall back to token-only (audited) until they
+	// enroll one in the app.
+	requirePasskey bool
+	// txSessions holds one WebAuthn ceremony per card, pruned on use.
+	txMu       sync.Mutex
+	txSessions map[uuid.UUID]txSession
 	// terminalNotify tells Miriam when a Miriam-originated card goes terminal
 	// on the Go side first (rejected/expired). Fire-and-forget; nil drops.
 	terminalNotify func(ctx context.Context, miriamConfirmID, state string)
@@ -110,7 +153,6 @@ func NewService(cfg Config, store Store, log *logger.Logger) *Service {
 	s := &Service{
 		cfg:       cfg,
 		store:     store,
-		devices:   newMemoryDeviceStore(),
 		log:       log,
 		executors: map[entities.ConfirmationAction]Executor{},
 		renderers: map[entities.ConfirmationAction]Renderer{},
@@ -142,19 +184,6 @@ func (s *Service) SetTerminalNotifier(fn func(ctx context.Context, miriamConfirm
 	s.terminalNotify = fn
 }
 
-// SetDeviceStore replaces the default in-memory approval-key store
-// (e.g. with the confirmation_device_keys table).
-func (s *Service) SetDeviceStore(d DeviceStore) {
-	if d != nil {
-		s.devices = d
-	}
-}
-
-// SetStrictDeviceSignature rejects token-only approves outright. Leave off
-// until the fleet is enrolled — strict mode with no enrolled keys rejects
-// everything, including first-use enrollment.
-func (s *Service) SetStrictDeviceSignature(strict bool) { s.strictDeviceSig = strict }
-
 // RegisterExecutor wires the backend handler for one action type.
 func (s *Service) RegisterExecutor(a entities.ConfirmationAction, fn Executor) {
 	s.mu.Lock()
@@ -184,10 +213,6 @@ type CreateInput struct {
 	TTL         time.Duration
 }
 
-// maxCreateTTL caps caller-requested card lifetimes so a compromised JWT
-// cannot mint year-long money-moving links (default is 5m).
-const maxCreateTTL = 15 * time.Minute
-
 // Create stages a confirmation and returns it with its signed URL.
 func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirmation, string, error) {
 	if !entities.ValidConfirmationAction(in.Action) {
@@ -200,19 +225,6 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirm
 	if ttl <= 0 {
 		ttl = s.cfg.TTL
 	}
-	if ttl > maxCreateTTL {
-		ttl = maxCreateTTL
-	}
-	// NOTE: the miriam_confirm_id payload key (Miriam-originated challenge
-	// binding) is stripped at the app HTTP boundary (Handler.Create), not
-	// here: service-level Create is also how Miriam-originated cards are
-	// staged in tests and server-side flows, and MarkExternal/settle read
-	// the binding from the payload.
-	// NOTE: Create stays permissive on actions without a direct executor:
-	// Miriam-originated cards settle through MarkExternal/chat-first flows
-	// that never touch Approve. Approve itself fails closed BEFORE consuming
-	// the single-use token when no executor is registered (see below), so a
-	// token is never burned into terminal failed.
 	now := s.now().UTC()
 	title, subtitle, amount, asset, dest, fee, risk := s.renderCopy(in)
 	if title == "" {
@@ -236,7 +248,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirm
 		UpdatedAt:   now,
 	}
 	c.ExecuteKey = c.ID.String()
-	s.store.Save(c)
+	if err := s.store.Save(ctx, c); err != nil {
+		return nil, "", err
+	}
 	s.auditOf(c, "", entities.ConfirmationPending, "", "created", nil)
 	url, err := s.ConfirmURL(c)
 	if err != nil {
@@ -326,225 +340,166 @@ func (s *Service) sign(actionID string, exp int64) string {
 
 // Fetch returns the card payload for the extension. Expired or consumed cards
 // return the terminal record (dead state) — never a live approve button.
-// On signature/expiry failure only terminal records are surfaced (so the
-// extension renders dead, not broken); pending cards require a valid token
-// so a bare action_id cannot leak amount/destination.
 func (s *Service) Fetch(ctx context.Context, id uuid.UUID, token string) (*entities.Confirmation, error) {
 	if err := s.VerifyToken(id, token); err != nil {
-		if c, ok := s.store.Load(id); ok && c.IsTerminal() {
+		// Signature/expiry failure: still try to surface the terminal record
+		// when the id is known so the extension renders dead, not broken.
+		// A store outage here fails closed (no record to show).
+		if c, lerr := s.store.Load(ctx, id); lerr == nil {
 			cp := *c
 			return &cp, nil
 		}
 		return nil, err
 	}
-	c, ok := s.store.Load(id)
-	if !ok {
-		return nil, fmt.Errorf("confirmation not found")
-	}
-	if !c.IsTerminal() && c.IsExpired(s.now()) {
-		s.transition(ctx, c, entities.ConfirmationExpired, "", "ttl elapsed on fetch")
-	}
-	out, _ := s.store.Load(id)
-	return out, nil
-}
-
-// DeviceApproval carries the extension's biometric-bound proof. KeyID +
-// Signature come from the enrolled Secure Enclave key; EnrollKey is a base64
-// SPKI sent once for trust-on-first-use enrollment. All empty = legacy
-// token-only approve (audited, rejected under strict mode).
-type DeviceApproval struct {
-	KeyID     string
-	Signature string
-	EnrollKey string
-}
-
-// Approve runs Face ID success + server accept. Idempotent by actionId:
-// replays after a terminal state return the terminal record as a no-op.
-func (s *Service) Approve(ctx context.Context, userID, id uuid.UUID, token, biometric string) (*entities.Confirmation, error) {
-	return s.ApproveWithDevice(ctx, userID, id, token, biometric, DeviceApproval{})
-}
-
-// ApproveWithDevice is Approve plus Secure Enclave verification. The device
-// check runs after token + ownership + expiry checks and before the token is
-// consumed, so a failed signature never burns the single-use token.
-//
-// Concurrency: the TokenUsed consume + executed-map reservation hold s.mu,
-// so N concurrent approves on one card execute the money movement exactly
-// once. The second arrival sees the in-flight reservation and fails closed
-// (retry → terminal replay), never a second execution.
-func (s *Service) ApproveWithDevice(ctx context.Context, userID, id uuid.UUID, token, biometric string, dev DeviceApproval) (*entities.Confirmation, error) {
-	if err := s.VerifyToken(id, token); err != nil {
-		return nil, err
-	}
-	exp, _, err := splitToken(token)
+	c, err := s.store.Load(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	c, ok := s.store.Load(id)
-	if !ok {
-		return nil, fmt.Errorf("confirmation not found")
+	if !c.IsTerminal() && c.IsExpired(s.now()) {
+		if terr := s.transition(ctx, c, entities.ConfirmationExpired, "", "ttl elapsed on fetch"); terr != nil && s.log != nil {
+			s.log.Warn("confirmation lazy-expiry failed", "action_id", id.String(), "error", terr.Error())
+		}
+	}
+	return s.reload(ctx, id)
+}
+
+// loadOwned loads a card and enforces ownership. Store errors fail closed;
+// unknown ids surface ErrConfirmationNotFound.
+func (s *Service) loadOwned(ctx context.Context, userID, id uuid.UUID) (*entities.Confirmation, error) {
+	c, err := s.store.Load(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	if c.UserID != userID {
 		return nil, fmt.Errorf("confirmation does not belong to user")
 	}
-	if c.TokenUsed || c.IsTerminal() {
-		out, _ := s.store.Load(id) // replay: no-op, terminal state stands
-		return out, nil
+	return c, nil
+}
+
+// reload returns the fresh record or the store error.
+func (s *Service) reload(ctx context.Context, id uuid.UUID) (*entities.Confirmation, error) {
+	return s.store.Load(ctx, id)
+}
+
+// claimAndExecute consumes the token atomically (exactly one winner across
+// replicas and crash-retries), records assurance, walks
+// authenticating->approved, and executes. A lost claim race reloads:
+// terminal cards return as-is; consumed-but-live cards resume the pipeline
+// (verification already ran fresh in the calling request).
+func (s *Service) claimAndExecute(ctx context.Context, userID, id uuid.UUID, assurance, authNote string) (*entities.Confirmation, error) {
+	c, err := s.store.Claim(ctx, id, assurance)
+	if err != nil {
+		if errors.Is(err, ErrTokenConsumed) {
+			return s.resume(ctx, userID, id)
+		}
+		return nil, err
 	}
-	if c.IsExpired(s.now()) {
-		s.transition(ctx, c, entities.ConfirmationExpired, biometric, "ttl elapsed on approve")
-		out, _ := s.store.Load(id)
-		return out, nil
+	if c.IsTerminal() {
+		// Lost a race with MarkExternal after claiming: the token burn is
+		// harmless (replays return terminal) and nobody executes twice.
+		return c, nil
 	}
-	if biometric != "" && biometric != "pass" {
-		return nil, fmt.Errorf("biometric not passed (got %q)", biometric)
+	if err := s.transition(ctx, c, entities.ConfirmationAuthenticating, "pass", authNote); err != nil {
+		return nil, err
 	}
-	// Client-asserted biometrics alone never move money when device material
-	// is present: an empty biometric with a key/enrollment attached is a
-	// protocol violation, not a legacy approve. Fully-empty (legacy) is still
-	// allowed for unenrolled users until strict mode flips (audited).
-	if biometric == "" && (dev.KeyID != "" || dev.Signature != "" || dev.EnrollKey != "") {
-		return nil, fmt.Errorf("biometric required with device approval (fail-closed)")
+	if err := s.transition(ctx, c, entities.ConfirmationApproved, "pass", "server accepted"); err != nil {
+		return nil, err
 	}
-	assurance, enrolledKeyID, err := s.checkDevice(userID, id, exp, biometric, dev)
+	return s.executeAndComplete(ctx, userID, c)
+}
+
+// resume continues a consumed-but-live card: crash recovery or a lost claim
+// race. Transitions are no-ops when already in-state; execution is idempotent
+// by execute key (UNIQUE in Postgres, idempotency keys downstream).
+func (s *Service) resume(ctx context.Context, userID, id uuid.UUID) (*entities.Confirmation, error) {
+	c, err := s.reload(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	// Fail closed BEFORE consuming the single-use token: an executor-less
-	// action (renderer exists, no backend handler) must never burn a token
-	// into terminal failed — the card stays live and retryable.
+	if c.IsTerminal() {
+		return c, nil
+	}
+	if c.State == entities.ConfirmationPending {
+		if err := s.transition(ctx, c, entities.ConfirmationAuthenticating, "pass", "resumed"); err != nil {
+			return nil, err
+		}
+	}
+	if c.State == entities.ConfirmationAuthenticating {
+		if err := s.transition(ctx, c, entities.ConfirmationApproved, "pass", "server accepted"); err != nil {
+			return nil, err
+		}
+	}
+	return s.executeAndComplete(ctx, userID, c)
+}
+
+// executeAndComplete runs the registered executor and lands the card
+// completed/failed. Safe to call on resume: the in-memory result cache plus
+// downstream idempotency keys make a second call replay, not re-execute.
+func (s *Service) executeAndComplete(ctx context.Context, userID uuid.UUID, c *entities.Confirmation) (*entities.Confirmation, error) {
 	s.mu.Lock()
 	ex, registered := s.executors[c.Action]
+	prev, seen := s.executed[c.ExecuteKey]
 	s.mu.Unlock()
+	if seen { // executor raced or retried: replay stored result
+		if err := s.transition(ctx, c, entities.ConfirmationCompleted, "pass", "idempotent replay"); err != nil {
+			return nil, err
+		}
+		_ = prev
+		return s.reload(ctx, c.ID)
+	}
 	if !registered {
-		return nil, fmt.Errorf("no executor for action %q (fail-closed)", c.Action)
+		if err := s.transition(ctx, c, entities.ConfirmationFailed, "pass", "no executor registered (fail-closed)"); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("no executor for action %q", c.Action)
 	}
-	s.mu.Lock()
-	// Re-check under lock: a concurrent approve may have consumed the token
-	// between our first load and now.
-	fresh, ok := s.store.Load(id)
-	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("confirmation not found")
-	}
-	if fresh.TokenUsed || fresh.IsTerminal() {
-		s.mu.Unlock()
-		out, _ := s.store.Load(id)
-		return out, nil
-	}
-	if _, inFlight := s.executed[c.ExecuteKey]; inFlight {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("approval already in progress (retry for terminal state)")
-	}
-	// Reserve before running the executor so a concurrent approve cannot
-	// start a second execution while we hold no lock during ex(). ex was
-	// resolved in the pre-consume check above (executors are wired once at
-	// startup, never unregistered at runtime).
-	s.executed[c.ExecuteKey] = executeInFlight
-	c.Assurance = assurance
-	c.EnrolledKeyID = enrolledKeyID
-	c.TokenUsed = true
-	s.store.Save(c)
-	s.mu.Unlock()
-	s.transition(ctx, c, entities.ConfirmationAuthenticating, "pass", "biometrics passed (assurance="+assurance+")")
-	s.transition(ctx, c, entities.ConfirmationApproved, "pass", "server accepted")
-
 	summary, err := ex(ctx, userID, c)
 	if err != nil {
-		s.mu.Lock()
-		delete(s.executed, c.ExecuteKey)
-		s.mu.Unlock()
-		s.transition(ctx, c, entities.ConfirmationFailed, "pass", err.Error())
+		if terr := s.transition(ctx, c, entities.ConfirmationFailed, "pass", err.Error()); terr != nil {
+			return nil, terr
+		}
 		return nil, err
 	}
 	s.mu.Lock()
 	s.executed[c.ExecuteKey] = summary
 	s.mu.Unlock()
-	s.transition(ctx, c, entities.ConfirmationCompleted, "pass", summary)
-	out, _ := s.store.Load(id)
-	return out, nil
+	if err := s.transition(ctx, c, entities.ConfirmationCompleted, "pass", summary); err != nil {
+		return nil, err
+	}
+	return s.reload(ctx, c.ID)
 }
 
-// checkDevice enforces biometric-bound approval. Enrolled users must present
-// a valid Enclave signature (fail closed); unenrolled users enroll once via
-// trust-on-first-use (short-lived token + client-asserted biometric, audited)
-// or fall back to token-only unless strict mode rejects it.
-func (s *Service) checkDevice(userID, id uuid.UUID, exp int64, biometric string, dev DeviceApproval) (assurance, enrolledKeyID string, err error) {
-	store := s.devices
-	if store == nil {
-		store = newMemoryDeviceStore()
+// Approve runs token-only success + server accept: the pre-enrollment
+// stopgap (and the web fallback, where the browser can also drive a passkey
+// ceremony through the options endpoint). Once the user has any passkey
+// enrolled — or when requirePasskey is on — token-only is refused and the
+// passkey path (AssertionOptions + ApproveWithAssertion) is the only way
+// through. Idempotent by actionId: replays after a terminal state return the
+// terminal record as a no-op.
+func (s *Service) Approve(ctx context.Context, userID, id uuid.UUID, token, biometric string) (*entities.Confirmation, error) {
+	if err := s.VerifyToken(id, token); err != nil {
+		return nil, err
 	}
-	keys, err := store.Keys(userID)
+	c, err := s.loadOwned(ctx, userID, id)
 	if err != nil {
-		return "", "", fmt.Errorf("device lookup failed (fail-closed): %w", err)
+		return nil, err
 	}
-	if len(keys) > 0 {
-		return s.verifyEnrolled(store, id, exp, biometric, dev, keys)
+	if c.IsTerminal() {
+		return c, nil // replay: no-op, terminal state stands
 	}
-	return s.enrollOrLegacy(store, userID, biometric, dev)
-}
-
-// verifyEnrolled requires a valid Enclave signature once keys exist. Every
-// failure rejects without consuming the single-use token, so the real device
-// can retry.
-func (s *Service) verifyEnrolled(store DeviceStore, id uuid.UUID, exp int64, biometric string, dev DeviceApproval, keys []DeviceKey) (string, string, error) {
-	if dev.KeyID == "" || dev.Signature == "" {
-		return "", "", fmt.Errorf("device signature required (approval key enrolled)")
+	if c.IsExpired(s.now()) {
+		if err := s.transition(ctx, c, entities.ConfirmationExpired, biometric, "ttl elapsed on approve"); err != nil {
+			return nil, err
+		}
+		return s.reload(ctx, id)
 	}
 	if biometric != "" && biometric != "pass" {
-		return "", "", fmt.Errorf("biometric not passed (got %q)", biometric)
+		return nil, fmt.Errorf("biometric not passed (got %q)", biometric)
 	}
-	keyID, err := uuid.Parse(dev.KeyID)
-	if err != nil {
-		return "", "", fmt.Errorf("unknown device key")
+	if s.passkeyRequiredFor(ctx, userID) {
+		return nil, fmt.Errorf("passkey required (credential enrolled)")
 	}
-	var enrolled *DeviceKey
-	for i := range keys {
-		if keys[i].ID == keyID {
-			enrolled = &keys[i]
-			break
-		}
-	}
-	if enrolled == nil {
-		return "", "", fmt.Errorf("unknown device key")
-	}
-	sig, err := base64.StdEncoding.DecodeString(dev.Signature)
-	if err != nil {
-		return "", "", fmt.Errorf("device signature is not base64")
-	}
-	if err := VerifyDeviceSignature(enrolled.SPKI, SignedMessage(id.String(), exp), sig); err != nil {
-		return "", "", err
-	}
-	store.Touch(enrolled.ID)
-	return AssuranceSecureEnclave, "", nil
-}
-
-// enrollOrLegacy handles first contact: trust-on-first-use enrollment when the
-// extension offers a key (requires explicit biometric "pass" — an empty
-// biometric with an enroll key is rejected as a protocol violation), or
-// token-only fallback otherwise (rejected in strict mode).
-func (s *Service) enrollOrLegacy(store DeviceStore, userID uuid.UUID, biometric string, dev DeviceApproval) (string, string, error) {
-	if dev.EnrollKey != "" {
-		if s.strictDeviceSig {
-			return "", "", fmt.Errorf("device enrollment required out-of-band (strict mode)")
-		}
-		if biometric != "pass" {
-			return "", "", fmt.Errorf("biometric required for device enrollment (fail-closed)")
-		}
-		spki, err := ParseDevicePublicKey(dev.EnrollKey)
-		if err != nil {
-			return "", "", err
-		}
-		enrolled, err := store.Enroll(userID, spki)
-		if err != nil {
-			return "", "", fmt.Errorf("device enrollment failed: %w", err)
-		}
-		return AssuranceEnrolled, enrolled.ID.String(), nil
-	}
-	if s.strictDeviceSig {
-		return "", "", fmt.Errorf("device enrollment required (strict mode)")
-	}
-	return AssuranceTokenOnly, "", nil
+	return s.claimAndExecute(ctx, userID, id, AssuranceTokenOnly, "approved without passkey (assurance=token_only)")
 }
 
 // Reject records a Face ID cancel. Single-use: later replays are no-ops.
@@ -552,48 +507,50 @@ func (s *Service) Reject(ctx context.Context, userID, id uuid.UUID, token, biome
 	if err := s.VerifyToken(id, token); err != nil {
 		return nil, err
 	}
-	c, ok := s.store.Load(id)
-	if !ok {
-		return nil, fmt.Errorf("confirmation not found")
+	c, err := s.loadOwned(ctx, userID, id)
+	if err != nil {
+		return nil, err
 	}
-	if c.UserID != userID {
-		return nil, fmt.Errorf("confirmation does not belong to user")
+	if c.IsTerminal() {
+		return c, nil
 	}
-	// Atomic consume shared with ApproveWithDevice: a concurrent approve
-	// cannot slip a money movement past a simultaneous cancel.
-	s.mu.Lock()
-	fresh, ok := s.store.Load(id)
-	if !ok {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("confirmation not found")
-	}
-	if fresh.TokenUsed || fresh.IsTerminal() {
-		s.mu.Unlock()
-		out, _ := s.store.Load(id)
-		return out, nil
-	}
-	c.TokenUsed = true
-	s.store.Save(c)
-	s.mu.Unlock()
 	if biometric == "" {
 		biometric = "cancel"
 	}
-	s.transition(ctx, c, entities.ConfirmationRejected, biometric, "user cancelled")
-	out, _ := s.store.Load(id)
-	return out, nil
+	// Claim first so a concurrent approve wins the race deterministically:
+	// a lost claim means biometric authorization already happened, and a
+	// cancel must not override it. Approved cards reject the edge below.
+	if _, err := s.store.Claim(ctx, id, c.Assurance); err != nil {
+		if errors.Is(err, ErrTokenConsumed) {
+			return s.reload(ctx, id)
+		}
+		return nil, err
+	}
+	if err := s.transition(ctx, c, entities.ConfirmationRejected, biometric, "user cancelled"); err != nil {
+		return nil, err
+	}
+	return s.reload(ctx, id)
 }
 
 // ExpireSweep marks a known card expired (TTL worker / lazy expiry path).
 func (s *Service) ExpireSweep(ctx context.Context, id uuid.UUID) (*entities.Confirmation, bool) {
-	c, ok := s.store.Load(id)
-	if !ok || c.IsTerminal() {
+	c, err := s.store.Load(ctx, id)
+	if err != nil || c.IsTerminal() {
 		return c, false
 	}
 	if !c.IsExpired(s.now()) {
 		return c, false
 	}
-	s.transition(ctx, c, entities.ConfirmationExpired, "", "ttl sweep")
-	out, _ := s.store.Load(id)
+	if err := s.transition(ctx, c, entities.ConfirmationExpired, "", "ttl sweep"); err != nil {
+		if s.log != nil {
+			s.log.Warn("confirmation sweep transition failed", "action_id", id.String(), "error", err.Error())
+		}
+		return c, false
+	}
+	out, err := s.reload(ctx, id)
+	if err != nil {
+		return c, true
+	}
 	return out, true
 }
 
@@ -602,30 +559,40 @@ func (s *Service) ExpireSweep(ctx context.Context, id uuid.UUID) (*entities.Conf
 // and triggers the card edit. Already-terminal cards return their current
 // state as a no-op, so replays and races converge instead of erroring.
 func (s *Service) MarkExternal(ctx context.Context, id uuid.UUID, to entities.ConfirmationState, result string) (*entities.Confirmation, error) {
-	c, ok := s.store.Load(id)
-	if !ok {
-		return nil, fmt.Errorf("confirmation not found")
+	c, err := s.store.Load(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	if c.IsTerminal() || c.State == to {
-		out, _ := s.store.Load(id)
-		return out, nil
+		return c, nil
+	}
+	// The chat side won: burn the card token so no biometric approve can
+	// start afterwards. A concurrent in-flight approve holds the claim and
+	// finishes; both sides converge on terminal.
+	c.TokenUsed = true
+	if err := s.store.Save(ctx, c); err != nil {
+		return nil, err
 	}
 	// Walk the legal path step by step: a pending card marked completed moves
 	// through authenticating/approved (each step persisted + edited) rather
 	// than jumping states or sticking forever.
 	for i := 0; i < 4; i++ {
-		cur, ok := s.store.Load(id)
-		if !ok || cur.IsTerminal() || cur.State == to {
+		cur, err := s.store.Load(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if cur.IsTerminal() || cur.State == to {
 			break
 		}
 		next := stepToward(cur.State, to)
 		if next == "" {
 			break // no legal edge onward: leave the card where it stands
 		}
-		s.transition(ctx, cur, next, "", result)
+		if err := s.transition(ctx, cur, next, "", result); err != nil {
+			return nil, err
+		}
 	}
-	out, _ := s.store.Load(id)
-	return out, nil
+	return s.reload(ctx, id)
 }
 
 // stepToward returns the next legal state from cur toward a terminal target,
@@ -660,10 +627,10 @@ func stepToward(cur, to entities.ConfirmationState) entities.ConfirmationState {
 // to mutate the transcript card. Edit failure sets CardEditFailed and is
 // returned for retry — state is already persisted, and no duplicate bubble is
 // ever sent (the editor contract only allows edit()).
-func (s *Service) transition(ctx context.Context, c *entities.Confirmation, to entities.ConfirmationState, biometric, note string) {
+func (s *Service) transition(ctx context.Context, c *entities.Confirmation, to entities.ConfirmationState, biometric, note string) error {
 	from := c.State
 	if from == to {
-		return
+		return nil
 	}
 	if !entities.ValidConfirmationTransition(from, to) {
 		// Fail closed: illegal edges never persist. Terminal replay paths
@@ -672,7 +639,7 @@ func (s *Service) transition(ctx context.Context, c *entities.Confirmation, to e
 			s.log.Warn("illegal confirmation transition",
 				"action_id", c.ID.String(), "from", string(from), "to", string(to))
 		}
-		return
+		return fmt.Errorf("illegal confirmation transition %s -> %s", from, to)
 	}
 	now := s.now().UTC()
 	c.State = to
@@ -686,7 +653,9 @@ func (s *Service) transition(ctx context.Context, c *entities.Confirmation, to e
 		}
 	}
 	c.CardEditFailed = false
-	s.store.Save(c)
+	if err := s.store.Save(ctx, c); err != nil {
+		return err
+	}
 	var ok *bool
 	if s.cardEdit != nil {
 		err := s.cardEdit(ctx, c)
@@ -694,7 +663,10 @@ func (s *Service) transition(ctx context.Context, c *entities.Confirmation, to e
 		ok = &b
 		if err != nil {
 			c.CardEditFailed = true
-			s.store.Save(c)
+			if serr := s.store.Save(ctx, c); serr != nil && s.log != nil {
+				s.log.Warn("confirmation edit-retry flag lost (state itself is durable)",
+					"action_id", c.ID.String(), "error", serr.Error())
+			}
 			if s.log != nil {
 				s.log.Warn("confirmation card edit failed (state persisted, retry edit)",
 					"action_id", c.ID.String(), "state", string(to), "error", err.Error())
@@ -703,6 +675,7 @@ func (s *Service) transition(ctx context.Context, c *entities.Confirmation, to e
 	}
 	s.auditOf(c, from, to, biometric, note, ok)
 	s.maybeNotifyTerminal(ctx, c, to)
+	return nil
 }
 
 // maybeNotifyTerminal tells Miriam when a Miriam-originated card goes

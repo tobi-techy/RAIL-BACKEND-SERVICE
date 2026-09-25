@@ -9,24 +9,24 @@
 /* Begin PBXBuildFile section */
 		FLIPBFAPP001000000000001 /* MiriamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFRAPP00100000000001 /* MiriamApp.swift */; };
 		FLIPBFAPP002000000000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFRAPP00200000000001 /* ContentView.swift */; };
+		FLIPBFAPPEX01000000000001 /* MiriamMessages.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = FLIPFRPROD0200000000001 /* MiriamMessages.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FLIPBFEXT001000000000001 /* MessagesViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00100000000001 /* MessagesViewController.swift */; };
 		FLIPBFEXT002000000000001 /* ConfirmAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00200000000001 /* ConfirmAPI.swift */; };
-		FLIPBFEXT003000000000001 /* DeviceKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00300000000001 /* DeviceKey.swift */; };
+		FLIPBFEXT003000000000001 /* PasskeyAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00300000000001 /* PasskeyAuth.swift */; };
 		FLIPBFEXT004000000000001 /* KeychainRef.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00400000000001 /* KeychainRef.swift */; };
-		FLIPBFAPPEX01000000000001 /* MiriamMessages.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = FLIPFRPROD0200000000001 /* MiriamMessages.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		FLIPBFTST001000000000001 /* ConfirmAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFREXT00200000000001 /* ConfirmAPI.swift */; };
 		FLIPBFTST002000000000001 /* ConfirmAPITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FLIPFRTST00100000000001 /* ConfirmAPITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		FLIPPXAPP001000000000001 /* PBXContainerItemProxy */ = {
+		FLIPDEPTST02000000000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = FLIPPROJ00000000000001 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = FLIPTARGEXT0000000001;
 			remoteInfo = MiriamMessages;
 		};
-		FLIPDEPTST02000000000001 /* PBXContainerItemProxy */ = {
+		FLIPPXAPP001000000000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = FLIPPROJ00000000000001 /* Project object */;
 			proxyType = 1;
@@ -52,20 +52,20 @@
 /* Begin PBXFileReference section */
 		FLIPFRAPP00100000000001 /* MiriamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiriamApp.swift; sourceTree = "<group>"; };
 		FLIPFRAPP00200000000001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		FLIPFRAPPINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		FLIPFRAPPENT000000000001 /* Miriam.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Miriam.entitlements; sourceTree = "<group>"; };
+		FLIPFRAPPINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		FLIPFRCFG001000000000001 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 		FLIPFREXT00100000000001 /* MessagesViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesViewController.swift; sourceTree = "<group>"; };
 		FLIPFREXT00200000000001 /* ConfirmAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmAPI.swift; sourceTree = "<group>"; };
-		FLIPFREXT00300000000001 /* DeviceKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKey.swift; sourceTree = "<group>"; };
+		FLIPFREXT00300000000001 /* PasskeyAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasskeyAuth.swift; sourceTree = "<group>"; };
 		FLIPFREXT00400000000001 /* KeychainRef.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainRef.swift; sourceTree = "<group>"; };
-		FLIPFREXTINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		FLIPFREXTENT000000000001 /* MiriamMessages.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MiriamMessages.entitlements; sourceTree = "<group>"; };
-		FLIPFRTST00100000000001 /* ConfirmAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmAPITests.swift; sourceTree = "<group>"; };
-		FLIPFRTSTINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		FLIPFREXTINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		FLIPFRPROD0100000000001 /* Miriam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Miriam.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FLIPFRPROD0200000000001 /* MiriamMessages.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MiriamMessages.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		FLIPFRPROD0300000000001 /* MiriamMessagesTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MiriamMessagesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		FLIPFRCFG001000000000001 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		FLIPFRTST00100000000001 /* ConfirmAPITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmAPITests.swift; sourceTree = "<group>"; };
+		FLIPFRTSTINFO00000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,28 +93,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		FLIPGRPMAIN0000000000001 = {
-			isa = PBXGroup;
-			children = (
-				FLIPFRCFG001000000000001 /* Config.xcconfig */,
-				FLIPGRPPROD0000000000001 /* Products */,
-				FLIPGRPAPP00000000000001 /* Miriam */,
-				FLIPGRPEXT00000000000001 /* MiriamMessages */,
-				FLIPGRPTST00000000000001 /* MiriamMessagesTests */,
-			);
-			sourceTree = "<group>";
-		};
-		FLIPGRPPROD0000000000001 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				FLIPFRPROD0100000000001 /* Miriam.app */,
-				FLIPFRPROD0200000000001 /* MiriamMessages.appex */,
-				FLIPFRPROD0300000000001 /* MiriamMessagesTests.xctest */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		FLIPGRPAPP00000000000001 /* Miriam */ = {
+		FLIPGRPAPP00000000000001 /* MiriamApp */ = {
 			isa = PBXGroup;
 			children = (
 				FLIPFRAPP00100000000001 /* MiriamApp.swift */,
@@ -130,12 +109,33 @@
 			children = (
 				FLIPFREXT00100000000001 /* MessagesViewController.swift */,
 				FLIPFREXT00200000000001 /* ConfirmAPI.swift */,
-				FLIPFREXT00300000000001 /* DeviceKey.swift */,
+				FLIPFREXT00300000000001 /* PasskeyAuth.swift */,
 				FLIPFREXT00400000000001 /* KeychainRef.swift */,
 				FLIPFREXTINFO00000000001 /* Info.plist */,
 				FLIPFREXTENT000000000001 /* MiriamMessages.entitlements */,
 			);
 			path = MiriamMessages;
+			sourceTree = "<group>";
+		};
+		FLIPGRPMAIN0000000000001 = {
+			isa = PBXGroup;
+			children = (
+				FLIPFRCFG001000000000001 /* Config.xcconfig */,
+				FLIPGRPPROD0000000000001 /* Products */,
+				FLIPGRPAPP00000000000001 /* MiriamApp */,
+				FLIPGRPEXT00000000000001 /* MiriamMessages */,
+				FLIPGRPTST00000000000001 /* MiriamMessagesTests */,
+			);
+			sourceTree = "<group>";
+		};
+		FLIPGRPPROD0000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FLIPFRPROD0100000000001 /* Miriam.app */,
+				FLIPFRPROD0200000000001 /* MiriamMessages.appex */,
+				FLIPFRPROD0300000000001 /* MiriamMessagesTests.xctest */,
+			);
+			name = Products;
 			sourceTree = "<group>";
 		};
 		FLIPGRPTST00000000000001 /* MiriamMessagesTests */ = {
@@ -229,7 +229,6 @@
 				};
 			};
 			buildConfigurationList = FLIPLSTPROJ000000000001 /* Build configuration list for PBXProject "Miriam" */;
-			compatibilityVersion = "Xcode 26.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -237,6 +236,7 @@
 				Base,
 			);
 			mainGroup = FLIPGRPMAIN0000000000001;
+			preferredProjectObjectVersion = 77;
 			productRefGroup = FLIPGRPPROD0000000000001 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -264,7 +264,7 @@
 			files = (
 				FLIPBFEXT001000000000001 /* MessagesViewController.swift in Sources */,
 				FLIPBFEXT002000000000001 /* ConfirmAPI.swift in Sources */,
-				FLIPBFEXT003000000000001 /* DeviceKey.swift in Sources */,
+				FLIPBFEXT003000000000001 /* PasskeyAuth.swift in Sources */,
 				FLIPBFEXT004000000000001 /* KeychainRef.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -294,46 +294,6 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		FLIPCFGPROJDBG0000000001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = FLIPFRCFG001000000000001 /* Config.xcconfig */;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "$(FLIP_TEAM_ID)";
-				GCC_OPTIMIZATION_LEVEL = 0;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
-				ONLY_ACTIVE_ARCH = YES;
-				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-			};
-			name = Debug;
-		};
-		FLIPCFGPROJREL0000000001 /* Release */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = FLIPFRCFG001000000000001 /* Config.xcconfig */;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "$(FLIP_TEAM_ID)";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
-				SDKROOT = iphoneos;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
 		FLIPCFGAPPDBG0000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -342,6 +302,8 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				INFOPLIST_FILE = MiriamApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Miriam;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -350,6 +312,10 @@
 				PRODUCT_BUNDLE_PACKAGE_TYPE = APPL;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -363,6 +329,8 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				INFOPLIST_FILE = MiriamApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Miriam;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.finance";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -371,6 +339,10 @@
 				PRODUCT_BUNDLE_PACKAGE_TYPE = APPL;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -411,6 +383,46 @@
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 1;
 				WRAPPER_EXTENSION = appex;
+			};
+			name = Release;
+		};
+		FLIPCFGPROJDBG0000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = FLIPFRCFG001000000000001 /* Config.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = A239A6TG6R;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		FLIPCFGPROJREL0000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = FLIPFRCFG001000000000001 /* Config.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = A239A6TG6R;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
@@ -459,15 +471,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		FLIPLSTPROJ000000000001 /* Build configuration list for PBXProject "Miriam" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				FLIPCFGPROJDBG0000000001 /* Debug */,
-				FLIPCFGPROJREL0000000001 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		FLIPLSTAPP000000000001 /* Build configuration list for PBXNativeTarget "Miriam" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -482,6 +485,15 @@
 			buildConfigurations = (
 				FLIPCFGEXTDBG0000000001 /* Debug */,
 				FLIPCFGEXTREL0000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FLIPLSTPROJ000000000001 /* Build configuration list for PBXProject "Miriam" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FLIPCFGPROJDBG0000000001 /* Debug */,
+				FLIPCFGPROJREL0000000001 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

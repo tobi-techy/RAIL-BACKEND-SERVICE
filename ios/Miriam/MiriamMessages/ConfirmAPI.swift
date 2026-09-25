@@ -46,14 +46,6 @@ func tokenExpiry(_ token: String) -> Int64? {
     return Int64(sides[0])
 }
 
-// MARK: - Signed message (mirrors Go SignedMessage: actionId.expiryUnix)
-
-// The extension signs exactly the bytes the URL token covers, so a signature
-// can never be replayed onto a different card or past expiry.
-func signedMessage(actionID: String, expiryUnix: Int64) -> Data {
-    Data("\(actionID).\(expiryUnix)".utf8)
-}
-
 // MARK: - Payloads (mirror Go publicView + cardPayload)
 
 // swiftlint:disable:next type_name
@@ -96,16 +88,85 @@ struct APIEnvelope: Decodable, Sendable {
 struct ApproveBody: Encodable, Sendable {
     let t: String
     let biometric: String
-    let deviceKeyID: String?
-    let signature: String?
-    let enrollDeviceKey: String?
+}
+
+// PasskeyAuth.swift — transaction approval via the user's passkey.
+//
+// The login passkey (same RP ID) IS the approval passkey: no separate
+// enrollment, iCloud-synced across the user's devices, and it survives Face
+// ID re-enrollment (unlike device-bound keys). The server verifies with the
+// standard WebAuthn ceremony and userVerification=required, so every approval
+// carries a fresh biometric gesture.
+//
+// Flow: fetch options (challenge bound server-side to the card) → system
+// passkey sheet (one tap + Face ID) → submit assertion → server verdict.
+// No passkey on the account → the options endpoint answers 404 passkey_setup
+// and the UI renders the in-app setup state instead of the approve button.
+
+import AuthenticationServices
+import Foundation
+
+// MARK: - Base64URL (WebAuthn uses unpadded base64url, not standard base64)
+
+enum Base64URL {
+    static func encode(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func decode(_ string: String) -> Data? {
+        var s = string
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let pad = s.count % 4
+        if pad > 0 { s += String(repeating: "=", count: 4 - pad) }
+        return Data(base64Encoded: s)
+    }
+}
+
+// MARK: - Typed submission (Sendable wire contract, no [String: Any])
+
+struct AssertionResponse: Encodable, Sendable {
+    let clientDataJSON: String
+    let authenticatorData: String
+    let signature: String
+}
+
+struct AssertionSubmission: Encodable, Sendable {
+    let id: String
+    let rawId: String
+    let type: String
+    let response: AssertionResponse
+}
+
+// MARK: - Assertion options (subset of PublicKeyCredentialRequestOptions)
+
+struct AllowedCredential: Decodable, Sendable {
+    let id: String
+    let transports: [String]?
+}
+
+struct AssertionOptions: Decodable, Sendable {
+    let challenge: String
+    let rpId: String
+    let allowCredentials: [AllowedCredential]?
+    let userVerification: String?
+    let timeout: Int?
 
     enum CodingKeys: String, CodingKey {
-        case t, biometric
-        case deviceKeyID = "device_key_id"
-        case signature
-        case enrollDeviceKey = "enroll_device_key"
+        case challenge
+        case rpId
+        case allowCredentials
+        case userVerification
+        case timeout
     }
+}
+
+struct OptionsEnvelope: Decodable, Sendable {
+    // Go wraps options as {"publicKey": {...}} per the WebAuthn JSON shape.
+    let publicKey: AssertionOptions
 }
 
 // MARK: - HTTP client (URLSession async/await, no third party)
@@ -145,18 +206,11 @@ struct ConfirmAPI: Sendable {
         return try JSONDecoder().decode(APIEnvelope.self, from: data).confirmation
     }
 
-    func decide(link: ConfirmLink, approved: Bool, biometric: String, device: ApproveBody) async throws -> ConfirmationPayload {
-        let verb = approved ? "approve" : "reject"
+    func decide(link: ConfirmLink, approved: Bool, biometric: String) async throws -> ConfirmationPayload {        let verb = approved ? "approve" : "reject"
         var req = URLRequest(url: link.baseURL.appendingPathComponent("confirm/\(link.actionID)/\(verb)"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let payload = ApproveBody(
-            t: link.token,
-            biometric: biometric,
-            deviceKeyID: device.deviceKeyID,
-            signature: device.signature,
-            enrollDeviceKey: device.enrollDeviceKey
-        )
+        let payload = ApproveBody(t: link.token, biometric: biometric)
         req.httpBody = try JSONEncoder().encode(payload)
         let (data, response) = try await session.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -167,8 +221,58 @@ struct ConfirmAPI: Sendable {
         }
         // A 422 body is {"error": ...} — surface it as a typed refusal.
         if status == 422 {
-            let msg = (try? JSONDecoder().decode(Refusal.self, from: data).error) ?? "refused"
-            throw ConfirmAPIError.refused(msg)
+            let refusal = try? JSONDecoder().decode(Refusal.self, from: data)
+            throw ConfirmAPIError.refused(refusal?.error ?? "refused")
+        }
+        return try JSONDecoder().decode(APIEnvelope.self, from: data).confirmation
+    }
+
+    /// Fetch a WebAuthn ceremony for one card. Never consumes the token:
+    /// the extension may fetch options, background the sheet, and come back.
+    /// Throws `noPasskey` when the account has no passkey (render setup).
+    func fetchOptions(link: ConfirmLink) async throws -> AssertionOptions {
+        var comps = URLComponents(
+            url: link.baseURL.appendingPathComponent("confirm/\(link.actionID)/assertion-options"),
+            resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [URLQueryItem(name: "t", value: link.token)]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "GET"
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        if status == 404,
+           let refusal = try? JSONDecoder().decode(Refusal.self, from: data),
+           refusal.passkeySetup == true
+        {
+            throw ConfirmAPIError.noPasskey
+        }
+        guard status == 200 else {
+            throw ConfirmAPIError.badStatus(status)
+        }
+        return try JSONDecoder().decode(OptionsEnvelope.self, from: data).publicKey
+    }
+
+    /// Submit a passkey assertion for one card. The server verifies the
+    /// ceremony, consumes the single-use token, executes, and returns the
+    /// terminal-or-working state to render.
+    func submitAssertion(link: ConfirmLink, assertion: AssertionSubmission) async throws -> ConfirmationPayload {
+        var req = URLRequest(url: link.baseURL.appendingPathComponent("confirm/\(link.actionID)/approve"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        struct Body: Encodable {
+            let t: String
+            let biometric: String
+            let assertion: AssertionSubmission
+        }
+        req.httpBody = try JSONEncoder().encode(Body(t: link.token, biometric: "pass", assertion: assertion))
+        let (data, response) = try await session.data(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard status == 200 || status == 422 else {
+            throw ConfirmAPIError.badStatus(status)
+        }
+        if status == 422 {
+            let refusal = try? JSONDecoder().decode(Refusal.self, from: data)
+            throw ConfirmAPIError.refused(refusal?.error ?? "refused")
         }
         return try JSONDecoder().decode(APIEnvelope.self, from: data).confirmation
     }
@@ -176,11 +280,18 @@ struct ConfirmAPI: Sendable {
 
 struct Refusal: Decodable, Sendable {
     let error: String
+    let passkeySetup: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case passkeySetup = "passkey_setup"
+    }
 }
 
 enum ConfirmAPIError: Error {
     case badStatus(Int)
     case refused(String)
+    case noPasskey
 }
 
 // MARK: - Dead-state copy (single source for terminal rendering)

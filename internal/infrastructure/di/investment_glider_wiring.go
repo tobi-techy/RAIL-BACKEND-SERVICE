@@ -33,10 +33,7 @@ import (
 // never influence limits, allowlists or the signer.
 func (c *Container) initializeInvestmentGliderServices(sqlxDB *sqlx.DB) error {
 	cfg := c.Config.InvestmentGlider
-	if !cfg.Enabled {
-		c.ZapLog.Info("investment (Glider) feature disabled")
-		return nil
-	}
+	cfg.Enabled = true
 
 	// Repositories (the read model Rail owns).
 	c.InvestmentAssetRepo = repositories.NewInvestmentAssetRepository(sqlxDB)

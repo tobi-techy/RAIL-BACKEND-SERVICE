@@ -186,6 +186,106 @@ func (s *Service) BeginLogin(ctx context.Context, userID uuid.UUID, email string
 	return options, session, nil
 }
 
+// BeginTransactionAssertion starts a passkey assertion for one approval.
+//
+// It mirrors BeginLogin but demands user verification (VerificationRequired):
+// every approval must carry a fresh biometric gesture, never a remembered
+// session. The returned challenge is random per ceremony; the caller binds it
+// to the card by holding the session keyed by action ID and verifying the
+// response against that same session.
+func (s *Service) BeginTransactionAssertion(ctx context.Context, userID uuid.UUID, email string) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
+	credentials, err := s.getCredentials(ctx, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(credentials) == 0 {
+		return nil, nil, fmt.Errorf("no passkey enrolled")
+	}
+
+	user := &User{
+		ID:          userID,
+		Email:       email,
+		Credentials: credentials,
+	}
+
+	options, session, err := s.webauthn.BeginLogin(user,
+		webauthn.WithUserVerification(protocol.VerificationRequired),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to begin transaction assertion: %w", err)
+	}
+
+	return options, session, nil
+}
+
+// FinishTransactionAssertion validates an approval assertion, bumps the sign
+// count, and returns the credential that signed. Same guarantees as
+// FinishLogin (multi-RP fallback, backup-flag compatibility), different
+// caller: a single approval, not a session login.
+func (s *Service) FinishTransactionAssertion(ctx context.Context, userID uuid.UUID, email string, session *webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	credentials, err := s.getCredentials(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	user := &User{
+		ID:          userID,
+		Email:       email,
+		Credentials: credentials,
+	}
+
+	credential, err := s.validateAssertion(userID, user, *session, response)
+	if err != nil {
+		return nil, err
+	}
+
+	s.bumpSignCount(credential.ID, credential.Authenticator.SignCount)
+
+	return credential, nil
+}
+
+// HasCredentials reports whether the user has at least one passkey enrolled.
+// The extension uses it to choose between the passkey sheet and the
+// "set up a passkey in the app" state.
+func (s *Service) HasCredentials(ctx context.Context, userID uuid.UUID) (bool, error) {
+	credentials, err := s.getCredentials(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	return len(credentials) > 0, nil
+}
+
+// validateAssertion runs multi-RP validation plus backup-flag compatibility.
+// Shared by login and transaction approvals so the two paths cannot drift.
+func (s *Service) validateAssertion(userID uuid.UUID, user *User, session webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	credential, err := s.validateLoginAcrossRPIDs(userID, user, session, response)
+	if err != nil && isBackupFlagValidationError(err) {
+		compatCredentials, adjusted := applyBackupFlagCompatibility(user.Credentials, response)
+		if adjusted {
+			s.logger.Warn("Retrying WebAuthn validation with backup-flag compatibility",
+				zap.String("user_id", userID.String()))
+			compatUser := &User{
+				ID:          user.ID,
+				Email:       user.Email,
+				DisplayName: user.DisplayName,
+				Credentials: compatCredentials,
+			}
+			credential, err = s.validateLoginAcrossRPIDs(userID, compatUser, session, response)
+		}
+	}
+	return credential, err
+}
+
+func (s *Service) bumpSignCount(credentialID []byte, signCount uint32) {
+	_, err := s.db.ExecContext(context.Background(),
+		"UPDATE webauthn_credentials SET sign_count = $1, last_used_at = NOW() WHERE credential_id = $2",
+		signCount, credentialID)
+	if err != nil {
+		s.logger.Warn("Failed to update credential sign count", zap.Error(err))
+	}
+}
+
 // FinishLogin completes WebAuthn login
 func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email string, session *webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) error {
 	credentials, err := s.getCredentials(ctx, userID)
@@ -199,31 +299,13 @@ func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email strin
 		Credentials: credentials,
 	}
 
-	credential, err := s.validateLoginAcrossRPIDs(userID, user, *session, response)
-	if err != nil && isBackupFlagValidationError(err) {
-		compatCredentials, adjusted := applyBackupFlagCompatibility(credentials, response)
-		if adjusted {
-			s.logger.Warn("Retrying WebAuthn login validation with backup-flag compatibility",
-				zap.String("user_id", userID.String()))
-			compatUser := &User{
-				ID:          userID,
-				Email:       email,
-				Credentials: compatCredentials,
-			}
-			credential, err = s.validateLoginAcrossRPIDs(userID, compatUser, *session, response)
-		}
-	}
+	credential, err := s.validateAssertion(userID, user, *session, response)
 	if err != nil {
 		return err
 	}
 
 	// Update sign count and last used
-	_, err = s.db.ExecContext(ctx,
-		"UPDATE webauthn_credentials SET sign_count = $1, last_used_at = NOW() WHERE credential_id = $2",
-		credential.Authenticator.SignCount, credential.ID)
-	if err != nil {
-		s.logger.Warn("Failed to update credential sign count", zap.Error(err))
-	}
+	s.bumpSignCount(credential.ID, credential.Authenticator.SignCount)
 
 	return nil
 }

@@ -45,10 +45,35 @@ final class ConfirmAPITests: XCTestCase {
         XCTAssertNil(tokenExpiry(""))
     }
 
-    func testSignedMessageMirrorsGo() {
-        // Go: fmt.Sprintf("%s.%d", actionID, expiryUnix)
-        let data = signedMessage(actionID: "act-1", expiryUnix: 1700000000)
-        XCTAssertEqual(String(data: data, encoding: .utf8), "act-1.1700000000")
+    func testBase64URLRoundTrip() {
+        let data = Data([0, 1, 2, 250, 255, 16, 32])
+        let encoded = Base64URL.encode(data)
+        XCTAssertFalse(encoded.contains("+"))
+        XCTAssertFalse(encoded.contains("/"))
+        XCTAssertFalse(encoded.contains("="))
+        XCTAssertEqual(Base64URL.decode(encoded), data)
+        XCTAssertNil(Base64URL.decode("!!!"))
+    }
+
+    func testOptionsDecode() throws {
+        let json = """
+        {"publicKey":{"challenge":"dGVzdA","rpId":"userail.money",
+        "allowCredentials":[{"id":"Y3JlZA","transports":["internal"]}],
+        "userVerification":"required","timeout":60000}}
+        """.data(using: .utf8)!
+        let opts = try JSONDecoder().decode(OptionsEnvelope.self, from: json).publicKey
+        XCTAssertEqual(opts.rpId, "userail.money")
+        XCTAssertEqual(opts.userVerification, "required")
+        XCTAssertEqual(opts.allowCredentials?.first?.id, "Y3JlZA")
+        XCTAssertEqual(Base64URL.decode(opts.challenge), Data("test".utf8))
+    }
+
+    func testNoPasskeyRefusal() throws {
+        let json = """
+        {"error":"no passkey enrolled","passkey_setup":true}
+        """.data(using: .utf8)!
+        let refusal = try JSONDecoder().decode(Refusal.self, from: json)
+        XCTAssertEqual(refusal.passkeySetup, true)
     }
 
     func testPayloadDecodeLive() throws {
@@ -90,13 +115,16 @@ final class ConfirmAPITests: XCTestCase {
         XCTAssertEqual(deadCopy(for: payload("weird")), "This request is no longer live.")
     }
 
-    func testApproveBodyKeys() throws {
-        let body = ApproveBody(t: "1.sig", biometric: "pass", deviceKeyID: "k",
-                               signature: "s", enrollDeviceKey: nil)
-        let data = try JSONEncoder().encode(body)
+    func testSubmissionEncodesWireShape() throws {
+        let sub = AssertionSubmission(
+            id: "a", rawId: "a", type: "public-key",
+            response: AssertionResponse(clientDataJSON: "c", authenticatorData: "d", signature: "s")
+        )
+        let data = try JSONEncoder().encode(sub)
         let dict = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        XCTAssertEqual(dict["device_key_id"] as? String, "k")
-        XCTAssertEqual(dict["signature"] as? String, "s")
-        XCTAssertNil(dict["enroll_device_key"])
+        XCTAssertEqual(dict["type"] as? String, "public-key")
+        let resp = dict["response"] as! [String: Any]
+        XCTAssertEqual(resp["signature"] as? String, "s")
+        XCTAssertEqual(resp["authenticatorData"] as? String, "d")
     }
 }

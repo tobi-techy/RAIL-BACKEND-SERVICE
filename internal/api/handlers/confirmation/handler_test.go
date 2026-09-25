@@ -3,12 +3,15 @@ package confirmation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	svc "github.com/rail-service/rail_service/internal/domain/services/confirmation"
@@ -137,5 +140,149 @@ func TestMarkTerminalSync(t *testing.T) {
 	w5 := markCall(h, "not-a-uuid", `{"state":"completed"}`)
 	if w5.Code != http.StatusBadRequest {
 		t.Fatalf("mark bad id: got %d want 400", w5.Code)
+	}
+}
+
+// fakeTxHandler implements svc.TxAssertionService for handler tests.
+type fakeTxHandler struct {
+	hasCreds  bool
+	beginErr  error
+	finishErr error
+}
+
+func (f *fakeTxHandler) BeginTransactionAssertion(ctx context.Context, userID uuid.UUID, email string) (*protocol.CredentialAssertion, *webauthn.SessionData, error) {
+	if f.beginErr != nil {
+		return nil, nil, f.beginErr
+	}
+	return &protocol.CredentialAssertion{
+		Response: protocol.PublicKeyCredentialRequestOptions{
+			Challenge:        protocol.URLEncodedBase64("handler-challenge"),
+			RelyingPartyID:   "example.com",
+			UserVerification: protocol.VerificationRequired,
+		},
+	}, &webauthn.SessionData{Challenge: "handler-challenge"}, nil
+}
+
+func (f *fakeTxHandler) FinishTransactionAssertion(ctx context.Context, userID uuid.UUID, email string, session *webauthn.SessionData, response *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	if f.finishErr != nil {
+		return nil, f.finishErr
+	}
+	return &webauthn.Credential{}, nil
+}
+
+func (f *fakeTxHandler) HasCredentials(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return f.hasCreds, nil
+}
+
+func passkeyHandler() (*Handler, *svc.Service, uuid.UUID, string, string) {
+	h, s := testHandler()
+	tx := &fakeTxHandler{hasCreds: true}
+	s.SetTxAssertion(tx)
+	s.SetUserEmailLookup(func(ctx context.Context, userID uuid.UUID) (string, error) {
+		return "user@example.com", nil
+	})
+	ctx := context.Background()
+	uid := uuid.New()
+	rec, url, err := s.Create(ctx, svc.CreateInput{
+		UserID: uid, Action: "transfer.send",
+		Payload: map[string]any{"to": "Funsho", "amount": "20000"},
+	})
+	if err != nil {
+		panic(err)
+	}
+	tok := url[strings.Index(url, "?t=")+3:]
+	return h, s, uid, rec.ID.String(), tok
+}
+
+func TestAssertionOptionsEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, _, _, id, tok := passkeyHandler()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/confirm/"+id+"/assertion-options?t="+tok, nil)
+	h.AssertionOptions(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("options: got %d body %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	opts, ok := body["options"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing options: %v", body)
+	}
+	pub, ok := opts["publicKey"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing publicKey: %v", opts)
+	}
+	if pub["rpId"] != "example.com" {
+		t.Fatalf("rpId = %v", pub["rpId"])
+	}
+	if pub["userVerification"] != "required" {
+		t.Fatalf("userVerification = %v", pub["userVerification"])
+	}
+}
+
+func TestAssertionOptionsNoPasskey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, s, _, id, _ := passkeyHandler()
+	s.SetTxAssertion(&fakeTxHandler{beginErr: errors.New("no passkey enrolled")})
+	// Re-mint a token via fetch path: use a fresh card through the same service.
+	ctx := context.Background()
+	uid := uuid.New()
+	rec, url, _ := s.Create(ctx, svc.CreateInput{UserID: uid, Action: "transfer.send", Payload: map[string]any{"to": "x", "amount": "1"}})
+	tok := url[strings.Index(url, "?t=")+3:]
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: rec.ID.String()}}
+	_ = id
+	c.Request = httptest.NewRequest(http.MethodGet, "/confirm/"+rec.ID.String()+"/assertion-options?t="+tok, nil)
+	h.AssertionOptions(c)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 passkey_setup, got %d body %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["passkey_setup"] != true {
+		t.Fatalf("missing passkey_setup flag: %v", body)
+	}
+}
+
+func TestApproveWithAssertionEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, _, _, id, tok := passkeyHandler()
+
+	// Fetch advertises the passkey state for the extension UI choice.
+	wf := httptest.NewRecorder()
+	cf, _ := gin.CreateTestContext(wf)
+	cf.Params = gin.Params{{Key: "id", Value: id}}
+	cf.Request = httptest.NewRequest(http.MethodGet, "/confirm/"+id+"?t="+tok, nil)
+	h.Fetch(cf)
+	var fbody map[string]any
+	if err := json.Unmarshal(wf.Body.Bytes(), &fbody); err != nil {
+		t.Fatal(err)
+	}
+	if fbody["passkey_registered"] != true {
+		t.Fatalf("fetch must advertise passkey_registered: %v", fbody)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/confirm/"+id+"/approve",
+		strings.NewReader(`{"t":"`+tok+`","biometric":"pass","assertion":{"id":"x","type":"public-key"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Approve(c)
+	// The stub assertion body won't parse as real WebAuthn: expect 422, which
+	// still proves routing reached ApproveWithAssertion (not legacy Approve —
+	// legacy would have completed and returned 200 with the stub executor).
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("approve with assertion: got %d body %s (want 422 parse refusal)", w.Code, w.Body.String())
 	}
 }

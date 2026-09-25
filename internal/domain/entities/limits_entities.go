@@ -339,10 +339,9 @@ type TierCapabilities struct {
 // investing (CanInvest, Alpaca) keeps its identity requirement because the
 // brokerage account is opened in the user's own name.
 func CapabilitiesForTier(tierLevel int) TierCapabilities {
-	caps := TierCapabilities{Tier: tierLevel}
+	caps := TierCapabilities{Tier: tierLevel, CanInvestTokenized: true}
 	if tierLevel >= KYCTierLevelNonKYC {
 		caps.CanDepositCrypto = true
-		caps.CanInvestTokenized = true
 	}
 	if tierLevel >= KYCTierLevelBasic {
 		caps.CanReceiveNGN = true

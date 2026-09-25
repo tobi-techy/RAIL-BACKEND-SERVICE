@@ -46,7 +46,9 @@ type x402Amount int64
 // Int64 returns the atomic amount.
 func (a x402Amount) Int64() int64 { return int64(a) }
 
-// UnmarshalJSON accepts both a JSON string ("100000") and a JSON number (100000).
+// UnmarshalJSON accepts a JSON string ("100000"), a JSON number (100000), or
+// a whole float (100000.0) — BRIJ sends strings, but a server-side format
+// change must never break the whole payment handshake again.
 func (a *x402Amount) UnmarshalJSON(b []byte) error {
 	if len(b) == 0 || bytes.Equal(b, []byte("null")) {
 		return nil
@@ -64,10 +66,18 @@ func (a *x402Amount) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	var v int64
-	if err := json.Unmarshal(b, &v); err != nil {
+	if err := json.Unmarshal(b, &v); err == nil {
+		*a = x402Amount(v)
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(b, &f); err != nil {
 		return fmt.Errorf("x402 amount is not an integer: %w", err)
 	}
-	*a = x402Amount(v)
+	if f != float64(int64(f)) {
+		return fmt.Errorf("x402 amount %v is not an integer", f)
+	}
+	*a = x402Amount(int64(f))
 	return nil
 }
 

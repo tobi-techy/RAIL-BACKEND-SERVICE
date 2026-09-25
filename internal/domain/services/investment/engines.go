@@ -294,6 +294,7 @@ const (
 	PolicyActionCreateStrategy PolicyAction = "create_strategy"
 	PolicyActionUpdateStrategy PolicyAction = "update_strategy"
 	PolicyActionEnroll         PolicyAction = "enroll"
+	PolicyActionContribute     PolicyAction = "contribute"
 	PolicyActionTrade          PolicyAction = "trade"
 	PolicyActionRebalance      PolicyAction = "rebalance"
 	PolicyActionPause          PolicyAction = "pause"
@@ -349,10 +350,6 @@ func (p *Policy) Evaluate(ctx context.Context, in PolicyInput) (*entities.Invest
 				decision.Reasons = append(decision.Reasons,
 					fmt.Sprintf("investing is not available in %s", strings.ToUpper(profile.Country)))
 				return decision, nil
-			}
-			if tierRank := kycTierRank(profile.KYCTier, profile.KYCStatus); tierRank < 3 {
-				decision.Reasons = append(decision.Reasons,
-					fmt.Sprintf("identity tier %d: strategy investing runs without identity verification on this rail", tierRank))
 			}
 		}
 	}
@@ -762,22 +759,3 @@ func uuidString(id *uuid.UUID) string {
 	return id.String()
 }
 
-// kycTierRank maps a stored tier to the numeric level used by the rest of the
-// platform (0 unverified .. 3 advanced).
-func kycTierRank(tier, status string) int {
-	switch strings.ToLower(tier) {
-	case "advanced", "3":
-		return 3
-	case "basic", "2":
-		return 2
-	case "non_kyc", "1":
-		return 1
-	case "":
-		if strings.EqualFold(status, "approved") {
-			return 3
-		}
-		return 0
-	default:
-		return 0
-	}
-}

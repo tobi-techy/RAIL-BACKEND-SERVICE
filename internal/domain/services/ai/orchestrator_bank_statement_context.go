@@ -3,10 +3,12 @@ package ai
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/services/statement"
 	"github.com/shopspring/decimal"
 )
 
@@ -68,12 +70,12 @@ func (p *BankStatementContextProvider) BuildContext(ctx context.Context, userID 
 		return ""
 	}
 
-	var parts []string
+	consumption, movement := statement.PartitionSpend(summary)
+	parts := formatCategoryTotals(consumption)
 	var totalSpend float64
 	var topCat string
 	var topCatAmount float64
-	for cat, amount := range summary {
-		parts = append(parts, fmt.Sprintf("%s: %.0f", cat, amount))
+	for cat, amount := range consumption {
 		totalSpend += amount
 		if amount > topCatAmount {
 			topCat = cat
@@ -82,12 +84,15 @@ func (p *BankStatementContextProvider) BuildContext(ctx context.Context, userID 
 	}
 
 	result := fmt.Sprintf(
-		"[External bank data — %d transactions from %s. Spending by category (last 6 months): %s. Total external spend: %.0f.",
+		"[External bank data — %d transactions from %s. Spending by category (last 6 months, purchases and bills only): %s. Total external spend: %.0f.",
 		totalTxns,
 		strings.Join(banks, ", "),
 		strings.Join(parts, " | "),
 		totalSpend,
 	)
+	if moved := formatCategoryTotals(movement); len(moved) > 0 {
+		result += fmt.Sprintf(" Money moved, not spent (transfers, savings, loans): %s.", strings.Join(moved, " | "))
+	}
 
 	// Top spending category with monthly average
 	if topCat != "" {
@@ -115,6 +120,25 @@ func (p *BankStatementContextProvider) BuildContext(ctx context.Context, userID 
 		result += fmt.Sprintf(" Current daily pace: %.0f vs historical avg: %.0f/day.", currentDailyPace, dailyAvg)
 	}
 
-	result += " Use this data when the user asks about spending patterns, budgets, or financial habits outside Rail.]"
+	result += " Use this data when the user asks about spending patterns, budgets, or financial habits outside Rail. Transfers are not spending.]"
 	return result
+}
+
+func formatCategoryTotals(totals map[string]float64) []string {
+	type pair struct {
+		label  string
+		amount float64
+	}
+	ordered := make([]pair, 0, len(totals))
+	for bucket, amount := range totals {
+		ordered = append(ordered, pair{label: statement.CategoryLabel(bucket), amount: amount})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].amount > ordered[j].amount
+	})
+	parts := make([]string, 0, len(ordered))
+	for _, item := range ordered {
+		parts = append(parts, fmt.Sprintf("%s: %.0f", item.label, item.amount))
+	}
+	return parts
 }
