@@ -20,6 +20,8 @@ func TestNormalizeStatementCategory(t *testing.T) {
 		{"salary from narration", "other", "SALARY PAYMENT ACME", "credit", BucketSalary},
 		{"bare transfer credit", "transfer", "John Doe", "credit", BucketTransferIn},
 		{"bare transfer debit", "transfer", "John Doe", "debit", BucketTransferOut},
+		{"nip credit is transfer in, not out", "", "NIP CREDIT GTB/OBADEJO/0123456789/TRANSFER", "credit", BucketTransferIn},
+		{"nip debit is transfer out", "", "NIP GTB/JOHN/0123/TRANSFER", "debit", BucketTransferOut},
 		{"utility name", "", "IKEDC PAYMENT 01234", "debit", BucketUtilities},
 		{"unknown stays other", "misc", "SOME RANDOM TEXT", "debit", BucketOther},
 		{"empty credit counts as income bucket", "", "John Doe", "credit", BucketOther},
