@@ -152,6 +152,11 @@ type decisionRequest struct {
 	// (options from GET assertion-options). Present on passkey approves;
 	// absent on legacy token-only approves (rejected once enrolled/strict).
 	Assertion json.RawMessage `json:"assertion"`
+	// Legacy device-key fields (pre-passkey extension). Accepted only to
+	// detect old clients and return an explicit upgrade signal — device
+	// signatures are no longer verified.
+	DeviceKeyID string `json:"device_key_id"`
+	Signature   string `json:"signature"`
 }
 
 // AssertionOptions mints a WebAuthn ceremony for one card (token-gated, no
@@ -198,6 +203,15 @@ func (h *Handler) Approve(c *gin.Context) {
 	var req decisionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Old extensions still send device_key_id/signature with no assertion.
+	// Fail with an explicit upgrade signal, not a cryptic "passkey required".
+	if len(req.Assertion) == 0 && (req.DeviceKeyID != "" || req.Signature != "") {
+		c.JSON(http.StatusGone, gin.H{
+			"error":            "device-key approvals are retired; update the extension and approve with a passkey",
+			"upgrade_required": true,
+		})
 		return
 	}
 	// Peek the owner from the record: the token is the credential.

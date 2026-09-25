@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -32,6 +33,10 @@ type Service struct {
 	supportedRPIDs     []string
 	fallbackValidators map[string]*webauthn.WebAuthn
 }
+
+// ErrNoCredentials is returned when a user has no passkey enrolled.
+// Callers must match with errors.Is, never by string.
+var ErrNoCredentials = errors.New("no passkey enrolled")
 
 func (s *Service) PrimaryRPID() string {
 	return s.primaryRPID
@@ -200,7 +205,7 @@ func (s *Service) BeginTransactionAssertion(ctx context.Context, userID uuid.UUI
 	}
 
 	if len(credentials) == 0 {
-		return nil, nil, fmt.Errorf("no passkey enrolled")
+		return nil, nil, ErrNoCredentials
 	}
 
 	user := &User{
@@ -240,7 +245,7 @@ func (s *Service) FinishTransactionAssertion(ctx context.Context, userID uuid.UU
 		return nil, err
 	}
 
-	s.bumpSignCount(credential.ID, credential.Authenticator.SignCount)
+	s.bumpSignCount(ctx, credential.ID, credential.Authenticator.SignCount)
 
 	return credential, nil
 }
@@ -277,8 +282,8 @@ func (s *Service) validateAssertion(userID uuid.UUID, user *User, session webaut
 	return credential, err
 }
 
-func (s *Service) bumpSignCount(credentialID []byte, signCount uint32) {
-	_, err := s.db.ExecContext(context.Background(),
+func (s *Service) bumpSignCount(ctx context.Context, credentialID []byte, signCount uint32) {
+	_, err := s.db.ExecContext(ctx,
 		"UPDATE webauthn_credentials SET sign_count = $1, last_used_at = NOW() WHERE credential_id = $2",
 		signCount, credentialID)
 	if err != nil {
@@ -305,7 +310,7 @@ func (s *Service) FinishLogin(ctx context.Context, userID uuid.UUID, email strin
 	}
 
 	// Update sign count and last used
-	s.bumpSignCount(credential.ID, credential.Authenticator.SignCount)
+	s.bumpSignCount(ctx, credential.ID, credential.Authenticator.SignCount)
 
 	return nil
 }

@@ -440,8 +440,9 @@ type PaymentConfig struct {
 // the Agent API. Policy-relevant values live here so compliance rules never live
 // inside an LLM prompt.
 type InvestmentGliderConfig struct {
-	// Enabled turns the whole feature on. When false every endpoint reports
-	// NOT_SUPPORTED rather than failing obscurely.
+	// Enabled is always true — investing is part of the product and cannot
+	// be turned off via config or env. Kept for backward compatibility so
+	// old config files still unmarshal; Load() forces it true.
 	Enabled bool `mapstructure:"enabled"`
 
 	// APIKey is the Glider tenant API key (x-api-key). Production-only.
@@ -1086,6 +1087,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	// Back-compat: old config files used confirmation.require_device_signature.
+	// Honor it as strict-passkey mode so upgrades never silently weaken auth.
+	if !config.Confirmation.RequirePasskey && viper.GetBool("confirmation.require_device_signature") {
+		config.Confirmation.RequirePasskey = true
+	}
+
 	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
 		config.Email.Provider = "unosend"
 	}
@@ -1593,6 +1600,13 @@ func overrideFromEnv() error {
 	if v := os.Getenv("CONFIRMATION_REQUIRE_PASSKEY"); v == "true" || v == "1" {
 		viper.Set("confirmation.require_passkey", true)
 	}
+	// Deprecated alias: CONFIRMATION_REQUIRE_DEVICE_SIGNATURE was renamed to
+	// CONFIRMATION_REQUIRE_PASSKEY when device keys moved to WebAuthn
+	// passkeys. Still honored so fleets that set the old var do not silently
+	// lose strict mode.
+	if v := os.Getenv("CONFIRMATION_REQUIRE_DEVICE_SIGNATURE"); v == "true" || v == "1" {
+		viper.Set("confirmation.require_passkey", true)
+	}
 	if v := os.Getenv("PYTHON_AGENT_ENABLED"); v == "true" || v == "1" {
 		viper.Set("python_agent.enabled", true)
 	} else if v == "false" || v == "0" {
@@ -2005,6 +2019,10 @@ func overrideFromEnv() error {
 	viper.BindEnv("workers.leader_election", "WORKERS_LEADER_ELECTION")
 	// Investment (Glider) secrets and toggles. The API key and owner key seed
 	// must come from the environment / secret manager, never from config.yaml.
+	// NOTE: INVESTMENT_GLIDER_ENABLED was removed — investing is always on and
+	// InvestmentGlider.Enabled is forced true at load time. If the old var is
+	// set to false/disabled we fail loudly instead of silently ignoring it,
+	// so operators notice the contract change.
 	for _, binding := range [][2]string{
 		{"investment_glider.api_key", "INVESTMENT_GLIDER_API_KEY"},
 		{"investment_glider.base_url", "INVESTMENT_GLIDER_BASE_URL"},
@@ -2208,6 +2226,12 @@ func overrideFromEnv() error {
 	if v := os.Getenv("UMBRA_SIDECAR_AUTH_TOKEN"); v != "" {
 		viper.Set("umbra.auth_token", v)
 	}
+	// Fail loud if operators still set the removed kill-switch to disable.
+	// Investing is always on; silently ignoring `=false` would hide a
+	// contract change from deploys that expect to turn it off.
+	if v := os.Getenv("INVESTMENT_GLIDER_ENABLED"); v == "false" || v == "0" {
+		return fmt.Errorf("INVESTMENT_GLIDER_ENABLED=false is no longer supported: investing is always on; remove the var and set INVESTMENT_GLIDER_API_KEY")
+	}
 	return nil
 }
 
@@ -2382,6 +2406,9 @@ func validateBlendConfig(config *Config) error {
 // money by accident: the provider is always the real Glider API, so a
 // non-dev deployment must carry an API key.
 func validateInvestmentGliderConfig(config *Config) error {
+	if v := strings.TrimSpace(os.Getenv("INVESTMENT_GLIDER_ENABLED")); strings.EqualFold(v, "false") || v == "0" {
+		return fmt.Errorf("INVESTMENT_GLIDER_ENABLED=false was removed: investing is always on; unset the variable")
+	}
 	inv := config.InvestmentGlider
 	if !isDevEnvironment(config.Environment) {
 		if strings.TrimSpace(inv.APIKey) == "" {

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -269,10 +270,10 @@ func UnderstandLine(modelCategory, description, txnType string) LineUnderstandin
 }
 
 // IsEssentialBucket marks necessities. Transfers and fees are not essential
-// purchases even when they are real.
+// purchases even when they are real. Salary is income, not a necessity buy.
 func IsEssentialBucket(bucket string) bool {
 	switch bucket {
-	case BucketGroceries, BucketUtilities, BucketHealth, BucketEducation, BucketRent, BucketAirtime, BucketSalary:
+	case BucketGroceries, BucketUtilities, BucketHealth, BucketEducation, BucketRent, BucketAirtime:
 		return true
 	default:
 		return false
@@ -310,7 +311,8 @@ func ExtractCounterparty(description string) string {
 		}
 	}
 	if m := posPurchaseLine.FindStringSubmatch(text); len(m) == 2 {
-		return titleShort(m[1])
+		cleaned := trailingRef.ReplaceAllString(strings.TrimSpace(m[1]), "")
+		return titleShort(cleaned)
 	}
 	cleaned := leadingRail.ReplaceAllString(text, "")
 	cleaned = trailingRef.ReplaceAllString(cleaned, "")
@@ -358,7 +360,10 @@ func SummarizeForChat(result *ParseResult) string {
 	for _, txn := range result.Transactions {
 		understood := UnderstandLine(txn.Category, txn.Description, txn.Type)
 		if strings.EqualFold(txn.Type, "credit") {
-			if understood.Bucket != BucketTransferIn && understood.Bucket != BucketSavings && understood.Bucket != BucketLoan {
+			switch understood.Bucket {
+			case BucketTransferIn, BucketTransferOut, BucketSavings, BucketLoan:
+				// Money movement, not income. Same set as FoldCashflow.
+			default:
 				income += txn.Amount
 			}
 			continue
@@ -400,8 +405,8 @@ func recurrenceKey(counterparty, description string) string {
 	}
 	s = recurrenceNoise.ReplaceAllString(strings.ToLower(s), " ")
 	fields := strings.Fields(s)
-	if len(fields) > 3 {
-		fields = fields[:3]
+	if len(fields) > 4 {
+		fields = fields[:4]
 	}
 	return strings.Join(fields, " ")
 }
@@ -442,8 +447,9 @@ func titleShort(text string) string {
 		fields = fields[:6]
 	}
 	out := strings.Trim(strings.Join(fields, " "), " -/")
-	if len(out) > 80 {
-		out = out[:80]
+	if utf8.RuneCountInString(out) > 80 {
+		runes := []rune(out)
+		out = string(runes[:80])
 	}
 	lower := strings.ToLower(out)
 	if lower == "" {
@@ -470,11 +476,16 @@ func onlyDigits(s string) bool {
 
 // AssignRecurrence marks repeated debit counterparties.
 // Three or more lines with amounts within 5 percent of the median are a
-// subscription. The same count with a varying amount is a bill.
+// subscription; the same count with varying amounts is a bill — but only when
+// the lines span time (≥25 days or ≥2 calendar months). Three similar
+// purchases in one week are repeat spending, not a subscription.
+// Empty and "unknown" counterparties never group: they would collapse every
+// unparseable line into one fake subscription.
 func AssignRecurrence(txns []*entities.BankStatementTransaction) {
 	type group struct {
 		idx     []int
 		amounts []float64
+		dates   []time.Time
 	}
 	groups := map[string]*group{}
 	for i, txn := range txns {
@@ -485,7 +496,7 @@ func AssignRecurrence(txns []*entities.BankStatementTransaction) {
 			continue
 		}
 		key := recurrenceKey(txn.Counterparty, txn.Description)
-		if key == "" {
+		if key == "" || key == "unknown" {
 			txn.Recurrence = entities.StatementRecurrenceOneOff
 			continue
 		}
@@ -497,18 +508,51 @@ func AssignRecurrence(txns []*entities.BankStatementTransaction) {
 		amt, _ := txn.Amount.Float64()
 		g.idx = append(g.idx, i)
 		g.amounts = append(g.amounts, amt)
+		if !txn.TransactionDate.IsZero() {
+			g.dates = append(g.dates, txn.TransactionDate)
+		}
 	}
 	for _, g := range groups {
 		kind := entities.StatementRecurrenceOneOff
-		if len(g.idx) >= 3 && amountsAreStable(g.amounts) {
-			kind = entities.StatementRecurrenceSubscription
-		} else if len(g.idx) >= 3 {
-			kind = entities.StatementRecurrenceBill
+		if len(g.idx) >= 3 && recurrenceSpansTime(g.dates) {
+			if amountsAreStable(g.amounts) {
+				kind = entities.StatementRecurrenceSubscription
+			} else {
+				kind = entities.StatementRecurrenceBill
+			}
 		}
 		for _, i := range g.idx {
 			txns[i].Recurrence = kind
 		}
 	}
+}
+
+// recurrenceSpansTime requires a real cadence: ≥25 days between first and
+// last, or lines in ≥2 calendar months. Zero-dated lines (no date parsed)
+// cannot prove cadence — but when NO dates exist at all (single legacy batch)
+// the old count-only behavior applies so backfills still classify.
+func recurrenceSpansTime(dates []time.Time) bool {
+	if len(dates) == 0 {
+		return true
+	}
+	if len(dates) < 3 {
+		return false
+	}
+	min, max := dates[0], dates[0]
+	months := map[string]struct{}{}
+	for _, d := range dates {
+		if d.Before(min) {
+			min = d
+		}
+		if d.After(max) {
+			max = d
+		}
+		months[d.Format("2006-01")] = struct{}{}
+	}
+	if len(months) >= 2 {
+		return true
+	}
+	return max.Sub(min) >= 25*24*time.Hour
 }
 
 func amountsAreStable(amounts []float64) bool {
@@ -524,6 +568,9 @@ func amountsAreStable(amounts []float64) bool {
 		}
 	}
 	median := sorted[len(sorted)/2]
+	if len(sorted)%2 == 0 {
+		median = (sorted[len(sorted)/2-1] + sorted[len(sorted)/2]) / 2
+	}
 	if median <= 0 {
 		return false
 	}
@@ -605,7 +652,10 @@ func inferBucket(description string) (bucket string, overrides bool) {
 
 func directionFallback(txnType string) string {
 	if strings.EqualFold(txnType, "credit") {
-		return BucketTransferIn
+		// Unknown credits are income until proven otherwise. Returning
+		// transfer_in here would silently zero refunds, interest, and gifts
+		// because FoldCashflow/Summarize exclude transfers from income.
+		return BucketOther
 	}
 	return BucketOther
 }

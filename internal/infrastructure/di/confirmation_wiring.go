@@ -62,6 +62,14 @@ func (c *Container) initializeConfirmationServices(sqlxDB *sqlx.DB) {
 		c.ZapLog.Warn("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET not set (fail-closed)")
 		return
 	}
+	if len(cfg.TokenSecret) < 32 && !isDevEnv(c.Config.Environment) {
+		c.ZapLog.Error("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET must be >= 32 chars outside dev (fail-closed)")
+		return
+	}
+	if cfg.RailServiceKey != "" && len(cfg.RailServiceKey) < 32 && !isDevEnv(c.Config.Environment) {
+		c.ZapLog.Error("confirmation cards disabled: RAIL_SERVICE_KEY must be >= 32 chars outside dev (fail-closed)")
+		return
+	}
 	base := strings.TrimSpace(cfg.BaseURL)
 	if base == "" {
 		base = "/confirm"
@@ -213,4 +221,17 @@ func formatCountdown(d time.Duration) string {
 		total = 0
 	}
 	return fmt.Sprintf("%d:%02d", total/60, total%60)
+}
+
+// isDevEnv reports dev/test environments where weak secrets are tolerated
+// with a warning. Production-like envs fail closed above. An unset or
+// unrecognized env fails closed: an empty ENVIRONMENT must never weaken
+// money-link token requirements.
+func isDevEnv(env string) bool {
+	switch env {
+	case "development", "dev", "test", "testing", "local":
+		return true
+	default:
+		return false
+	}
 }

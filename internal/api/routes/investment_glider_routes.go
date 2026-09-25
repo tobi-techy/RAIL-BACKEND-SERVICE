@@ -30,8 +30,12 @@ func RegisterInvestmentGliderRoutes(
 
 	investments := router.Group("/investments")
 	investments.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
-	// Strategy investing is not KYC gated. The middleware only requires an
-	// active account so a missing user is a clear 403.
+	// Strategy investing is not KYC gated beyond an active account (see
+	// RequireTokenizedInvestingCapability: Glider holds/executes on its own
+	// regulated infra; fiat ramps, cards, brokerage, P2P still require KYC).
+	// The middleware only requires a resolvable, active account so a missing
+	// user is a clear 403. All mutations below (including POST /contributions)
+	// are staged behind confirmation tokens in the service layer.
 	investments.Use(middleware.RequireTokenizedInvestingCapability(userReader, log.Zap()))
 	{
 		// Capability and limits: answer "can I invest?" without acting.

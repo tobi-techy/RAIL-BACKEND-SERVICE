@@ -124,15 +124,18 @@ _RULES = [
         "loan", "Financial", "Loan", True,
         "Loan repayment", "Debt payment", 0.85, True,
     ),
-    _rule(
-        r"\b(nip|trf\s+to|transfer\s+to|sent\s+to|funds?\s+transfer)\b",
-        "transfer_out", "Financial", "Bank Transfer", False,
-        "Transfer out", "Bank transfer to someone else", 0.8, True,
-    ),
+    # NOTE: transfer_in MUST precede transfer_out — first match wins, and
+    # "NIP CREDIT ..." contains the bare "nip" token. Mirrors the Go
+    # narrationRules order in internal/domain/services/statement/categorize.go.
     _rule(
         r"\b(nip\s+credit|transfer\s+from|received\s+from|inward\s+transfer)\b",
         "transfer_in", "Income", "Transfer In", False,
         "Transfer in", "Money received", 0.8, True,
+    ),
+    _rule(
+        r"\b(nip|trf\s+to|transfer\s+to|sent\s+to|funds?\s+transfer)\b",
+        "transfer_out", "Financial", "Bank Transfer", False,
+        "Transfer out", "Bank transfer to someone else", 0.8, True,
     ),
 ]
 

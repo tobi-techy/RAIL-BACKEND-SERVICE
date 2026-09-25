@@ -23,3 +23,25 @@ func TestAccountLinkCopyNamesBothChoices(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLinkStateRoundTrip(t *testing.T) {
+	p, n := parseLinkState(linkState("apple", "abc123"))
+	if string(p) != "apple" || n != "abc123" {
+		t.Fatalf("round trip = %q %q", p, n)
+	}
+	// Legacy bare nonce: provider empty, nonce intact.
+	p, n = parseLinkState("abc123")
+	if p != "" || n != "abc123" {
+		t.Fatalf("legacy = %q %q", p, n)
+	}
+}
+
+func TestCallbackURLProviderSuffix(t *testing.T) {
+	l := &ChatAccountLinker{publicBase: "https://api.example.com"}
+	if got := l.CallbackURL("apple"); got != "https://api.example.com/api/v1/chat-link/callback/apple" {
+		t.Fatalf("apple callback = %q", got)
+	}
+	if got := l.CallbackURL(); got != "https://api.example.com/api/v1/chat-link/callback" {
+		t.Fatalf("base callback = %q", got)
+	}
+}

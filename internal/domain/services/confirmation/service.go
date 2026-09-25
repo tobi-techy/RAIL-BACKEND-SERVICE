@@ -39,6 +39,14 @@ type Store interface {
 	// ErrTokenConsumed and must reload: terminal cards return as-is,
 	// consumed-but-live cards resume.
 	Claim(ctx context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error)
+	// MergePayloadKeys merges keys into the payload without touching any
+	// other column. Payload-only writes MUST go through here: a full-row
+	// Save of a stale copy would overwrite token_used/state and resurrect
+	// an already-burned single-use token.
+	MergePayloadKeys(ctx context.Context, id uuid.UUID, set map[string]any) error
+	// DeletePayloadKeys removes keys from the payload without touching any
+	// other column (same resurrection hazard as above).
+	DeletePayloadKeys(ctx context.Context, id uuid.UUID, keys ...string) error
 }
 
 // CardEditor mutates the live transcript card in place (Spectrum edit()).
@@ -88,6 +96,52 @@ func (s *memoryStore) Load(_ context.Context, id uuid.UUID) (*entities.Confirmat
 	}
 	cp := *c
 	return &cp, nil
+}
+
+func (s *memoryStore) MergePayloadKeys(_ context.Context, id uuid.UUID, set map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.m[id]
+	if !ok {
+		return ErrConfirmationNotFound
+	}
+	merged := make(map[string]any, len(c.Payload)+len(set))
+	for k, v := range c.Payload {
+		merged[k] = v
+	}
+	for k, v := range set {
+		merged[k] = v
+	}
+	cp := *c
+	cp.Payload = merged
+	s.m[id] = &cp
+	return nil
+}
+
+func (s *memoryStore) DeletePayloadKeys(_ context.Context, id uuid.UUID, keys ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.m[id]
+	if !ok {
+		return ErrConfirmationNotFound
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		drop[k] = struct{}{}
+	}
+	merged := make(map[string]any, len(c.Payload))
+	for k, v := range c.Payload {
+		if _, ok := drop[k]; !ok {
+			merged[k] = v
+		}
+	}
+	cp := *c
+	cp.Payload = merged
+	s.m[id] = &cp
+	return nil
 }
 
 func (s *memoryStore) Claim(_ context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error) {
@@ -213,6 +267,10 @@ type CreateInput struct {
 	TTL         time.Duration
 }
 
+// maxCreateTTL caps money-link lifetime even when callers pass a TTL.
+// A compromised token must expire in minutes, never months.
+const maxCreateTTL = 15 * time.Minute
+
 // Create stages a confirmation and returns it with its signed URL.
 func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirmation, string, error) {
 	if !entities.ValidConfirmationAction(in.Action) {
@@ -224,6 +282,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirm
 	ttl := in.TTL
 	if ttl <= 0 {
 		ttl = s.cfg.TTL
+	}
+	if ttl <= 0 {
+		ttl = maxCreateTTL
+	}
+	if ttl > maxCreateTTL {
+		ttl = maxCreateTTL
 	}
 	now := s.now().UTC()
 	title, subtitle, amount, asset, dest, fee, risk := s.renderCopy(in)
@@ -340,12 +404,15 @@ func (s *Service) sign(actionID string, exp int64) string {
 
 // Fetch returns the card payload for the extension. Expired or consumed cards
 // return the terminal record (dead state) — never a live approve button.
+// On signature/expiry failure only terminal records are surfaced; pending
+// cards require a valid token so UUID guessing cannot leak amounts.
 func (s *Service) Fetch(ctx context.Context, id uuid.UUID, token string) (*entities.Confirmation, error) {
 	if err := s.VerifyToken(id, token); err != nil {
-		// Signature/expiry failure: still try to surface the terminal record
+		// Signature/expiry failure: only surface the terminal record
 		// when the id is known so the extension renders dead, not broken.
+		// Pending cards stay hidden (fail closed, no info disclosure).
 		// A store outage here fails closed (no record to show).
-		if c, lerr := s.store.Load(ctx, id); lerr == nil {
+		if c, lerr := s.store.Load(ctx, id); lerr == nil && c.IsTerminal() {
 			cp := *c
 			return &cp, nil
 		}
@@ -409,27 +476,43 @@ func (s *Service) claimAndExecute(ctx context.Context, userID, id uuid.UUID, ass
 }
 
 // resume continues a consumed-but-live card: crash recovery or a lost claim
-// race. Transitions are no-ops when already in-state; execution is idempotent
-// by execute key (UNIQUE in Postgres, idempotency keys downstream).
+// race. The Claim winner owns execution; losers poll briefly for the winner's
+// terminal state and return it (no double execution). Only if the card is
+// still live after the wait (winner crashed) does the resumer execute.
+// Executors must still be idempotent — this narrows the race window, the
+// idempotency keys close it.
 func (s *Service) resume(ctx context.Context, userID, id uuid.UUID) (*entities.Confirmation, error) {
-	c, err := s.reload(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if c.IsTerminal() {
-		return c, nil
-	}
-	if c.State == entities.ConfirmationPending {
-		if err := s.transition(ctx, c, entities.ConfirmationAuthenticating, "pass", "resumed"); err != nil {
+	for i := 0; i < 30; i++ {
+		c, err := s.reload(ctx, id)
+		if err != nil {
 			return nil, err
 		}
-	}
-	if c.State == entities.ConfirmationAuthenticating {
-		if err := s.transition(ctx, c, entities.ConfirmationApproved, "pass", "server accepted"); err != nil {
-			return nil, err
+		if c.IsTerminal() {
+			return c, nil
 		}
+		// Winner is actively executing (already approved, token burned):
+		// give it a moment to land terminal before taking over.
+		if c.State == entities.ConfirmationApproved && i < 25 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		}
+		if c.State == entities.ConfirmationPending {
+			if err := s.transition(ctx, c, entities.ConfirmationAuthenticating, "pass", "resumed"); err != nil {
+				return nil, err
+			}
+		}
+		if c.State == entities.ConfirmationAuthenticating {
+			if err := s.transition(ctx, c, entities.ConfirmationApproved, "pass", "server accepted"); err != nil {
+				return nil, err
+			}
+		}
+		return s.executeAndComplete(ctx, userID, c)
 	}
-	return s.executeAndComplete(ctx, userID, c)
+	return s.reload(ctx, id)
 }
 
 // executeAndComplete runs the registered executor and lands the card
@@ -566,12 +649,13 @@ func (s *Service) MarkExternal(ctx context.Context, id uuid.UUID, to entities.Co
 	if c.IsTerminal() || c.State == to {
 		return c, nil
 	}
-	// The chat side won: burn the card token so no biometric approve can
-	// start afterwards. A concurrent in-flight approve holds the claim and
-	// finishes; both sides converge on terminal.
-	c.TokenUsed = true
-	if err := s.store.Save(ctx, c); err != nil {
-		return nil, err
+	// The chat side won: burn the card token atomically so no biometric
+	// approve can start afterwards. Claim (not Load+Save) is the primitive:
+	// a concurrent in-flight approve holds the claim and finishes; both sides
+	// converge on terminal. A lost claim means approve already burned the
+	// token — just proceed to walk states forward on a fresh read.
+	if _, cerr := s.store.Claim(ctx, id, c.Assurance); cerr != nil && !errors.Is(cerr, ErrTokenConsumed) && !errors.Is(cerr, ErrConfirmationNotFound) {
+		return nil, cerr
 	}
 	// Walk the legal path step by step: a pending card marked completed moves
 	// through authenticating/approved (each step persisted + edited) rather

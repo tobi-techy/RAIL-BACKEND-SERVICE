@@ -2,6 +2,7 @@ package funding
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,6 +40,13 @@ func DefaultFundingConfig() *FundingConfig {
 	}
 }
 
+// ErrWebhookNotConfigured is returned when webhook signature validation is
+// invoked without a secret configured. It is a sentinel so callers can
+// distinguish "server misconfigured" from "sender forged/invalid signature"
+// with errors.Is. Set FundingConfig.WebhookSecret in every environment
+// (including local dev) that receives deposit webhooks.
+var ErrWebhookNotConfigured = errors.New("webhook signature validation is not configured: set FundingConfig.WebhookSecret")
+
 // DepositSecurityStore interface for deposit limit checks
 type DepositSecurityStore interface {
 	GetTodayDepositTotal(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
@@ -53,10 +61,22 @@ type ValidationService struct {
 	logger               *logger.Logger
 }
 
-// NewValidationService creates a new validation service
+// NewValidationService creates a new validation service.
+// A nil config is replaced with DefaultFundingConfig so callers cannot panic
+// on config.WebhookSecret. When no webhook secret is configured the service
+// is built without a validator and every ValidateWebhookSignature call fails
+// closed with ErrWebhookNotConfigured. If a logger is provided, the missing
+// secret is logged loudly at startup so dev/staging misconfig is obvious.
 func NewValidationService(redisClient cache.RedisClient, config *FundingConfig, logger *logger.Logger) *ValidationService {
+	if config == nil {
+		config = DefaultFundingConfig()
+	}
 	var webhookValidator *webhook.WebhookValidator
-	if config.WebhookSecret != "" {
+	if config.WebhookSecret == "" {
+		if logger != nil {
+			logger.Warnw("FundingConfig.WebhookSecret is empty: all deposit webhook validations will fail closed with ErrWebhookNotConfigured")
+		}
+	} else {
 		webhookValidator = webhook.NewWebhookValidator(webhook.WebhookSecurityConfig{
 			Secret:           config.WebhookSecret,
 			MaxTimestampAge:  120, // 2 minutes - reduced from 5 min for better security against replay attacks
@@ -78,11 +98,19 @@ func (v *ValidationService) SetDepositSecurityStore(store DepositSecurityStore) 
 	v.depositSecurityStore = store
 }
 
-// ValidateWebhookSignature validates webhook signature
+// ValidateWebhookSignature validates webhook signature.
+// Fail-closed: if no webhook secret is configured, every call is rejected
+// with ErrWebhookNotConfigured. Failing open here would let anyone forge
+// deposit webhooks and credit funds.
+//
+// Note: timestamp replay protection is enforced by the underlying
+// WebhookValidator only when RequireTimestamp is enabled. The funding
+// validator currently relies on HMAC signature only (RequireTimestamp=false),
+// so the timestamp argument is accepted but not enforced. Enable
+// RequireTimestamp if providers start sending timestamps.
 func (v *ValidationService) ValidateWebhookSignature(payload []byte, signature string, timestamp int64) error {
 	if v.webhookValidator == nil {
-		// No webhook secret configured - skip validation in development
-		return nil
+		return ErrWebhookNotConfigured
 	}
 	return v.webhookValidator.ValidateRequest(payload, signature, timestamp, "")
 }

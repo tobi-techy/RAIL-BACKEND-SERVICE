@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -124,6 +125,63 @@ func (r *ConfirmationRepository) Save(ctx context.Context, c *entities.Confirmat
 		c.ResultSummary, c.Assurance, c.TokenUsed, c.CardEditFailed)
 	if err != nil {
 		return fmt.Errorf("save confirmation: %w", err)
+	}
+	return nil
+}
+
+// MergePayloadKeys merges keys into the payload JSONB in a single statement
+// that never touches token_used/state: concurrent Claim winners cannot be
+// resurrected by a stale full-row Save.
+func (r *ConfirmationRepository) MergePayloadKeys(ctx context.Context, id uuid.UUID, set map[string]any) error {
+	if len(set) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(set)
+	if err != nil {
+		return fmt.Errorf("encode confirmation payload patch: %w", err)
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE confirmations
+		SET payload = COALESCE(payload, '{}'::jsonb) || $2::jsonb,
+		    updated_at = now()
+		WHERE id = $1`, id, string(raw))
+	if err != nil {
+		return fmt.Errorf("merge confirmation payload: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("merge confirmation payload rows: %w", err)
+	}
+	if n == 0 {
+		return confirmationSvc.ErrConfirmationNotFound
+	}
+	return nil
+}
+
+// DeletePayloadKeys removes keys from the payload JSONB without touching any
+// other column (same resurrection hazard as MergePayloadKeys).
+func (r *ConfirmationRepository) DeletePayloadKeys(ctx context.Context, id uuid.UUID, keys ...string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	query := `UPDATE confirmations SET payload = COALESCE(payload, '{}'::jsonb)`
+	args := make([]any, 0, len(keys)+1)
+	args = append(args, id)
+	for _, k := range keys {
+		args = append(args, k)
+		query += ` - $` + strconv.Itoa(len(args))
+	}
+	query += `, updated_at = now() WHERE id = $1`
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("delete confirmation payload keys: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete confirmation payload keys rows: %w", err)
+	}
+	if n == 0 {
+		return confirmationSvc.ErrConfirmationNotFound
 	}
 	return nil
 }

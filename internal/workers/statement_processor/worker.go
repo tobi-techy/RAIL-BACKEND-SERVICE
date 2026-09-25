@@ -40,19 +40,12 @@ func NewWorker(repo *repositories.BankStatementRepository, memory MemoryWriter, 
 	return &Worker{repo: repo, memory: memory, notifier: notifier, parser: parser, logger: logger}
 }
 
-// drainUnderstanding rewrites lines that were stored before counterparty and
-// confidence existed. Four batches cover a couple of thousand old rows per
-// upload without holding the job open on a full-table rewrite.
+// drainUnderstanding runs one small backfill batch per upload. A dedicated
+// background job owns the full backfill; the upload path must not block
+// behind thousands of writes.
 func (w *Worker) drainUnderstanding(ctx context.Context) {
-	for i := 0; i < 4; i++ {
-		n, err := w.repo.BackfillUnderstanding(ctx, 500)
-		if err != nil {
-			w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
-			return
-		}
-		if n == 0 {
-			return
-		}
+	if _, err := w.repo.BackfillUnderstanding(ctx, 200); err != nil {
+		w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
 	}
 }
 
@@ -268,6 +261,10 @@ func (w *Worker) process(ctx context.Context, uploadID, userID uuid.UUID, data [
 		w.repo.UpdateStatus(saveCtx, uploadID, entities.StatementStatusFailed, &errMsg)
 		metrics.RecordStatementProcessed("failed")
 		return err
+	}
+	// Cross-upload cadence: recompute across full history after every upload.
+	if err := w.repo.RecomputeUserRecurrence(saveCtx, userID); err != nil {
+		w.logger.Warn("statement recurrence recompute skipped", zap.Error(err))
 	}
 
 	// Build and store structured summary, then mark upload as completed
@@ -531,15 +528,10 @@ type txnSummary struct {
 
 func computeTxnSummary(txns []*entities.BankStatementTransaction) txnSummary {
 	var s txnSummary
-	s.catSpend = make(map[string]decimal.Decimal)
-	for _, t := range txns {
-		if t.Type == entities.StatementTxnTypeCredit {
-			s.totalCredits = s.totalCredits.Add(t.Amount)
-		} else {
-			s.totalDebits = s.totalDebits.Add(t.Amount)
-			s.catSpend[t.Category] = s.catSpend[t.Category].Add(t.Amount)
-		}
-	}
+	income, spend := statement.FoldCashflow(workerCashflowLines(txns))
+	s.totalCredits = income
+	s.totalDebits = spend
+	s.catSpend = workerConsumptionByCategory(txns)
 	if len(txns) > 0 {
 		s.currency = txns[0].Currency
 	}
@@ -551,17 +543,10 @@ func (w *Worker) generateFacts(ctx context.Context, userID uuid.UUID, txns []*en
 		return
 	}
 
-	// Calculate spending by category
-	categorySpend := make(map[string]decimal.Decimal)
-	var totalIncome, totalSpend decimal.Decimal
-	for _, t := range txns {
-		if t.Type == entities.StatementTxnTypeDebit {
-			categorySpend[t.Category] = categorySpend[t.Category].Add(t.Amount)
-			totalSpend = totalSpend.Add(t.Amount)
-		} else {
-			totalIncome = totalIncome.Add(t.Amount)
-		}
-	}
+	// Same math as the analysis path: movement + low-confidence lines are
+	// excluded so facts agree with get_bank_statement_analysis.
+	totalIncome, totalSpend := statement.FoldCashflow(workerCashflowLines(txns))
+	categorySpend := workerConsumptionByCategory(txns)
 
 	// Determine period
 	months := 1
@@ -653,4 +638,47 @@ func (w *Worker) generateFacts(ctx context.Context, userID uuid.UUID, txns []*en
 		}
 		w.memory.SaveFact(ctx, fact, nil)
 	}
+}
+
+// workerCashflowLines mirrors worker_v2 cashflowLines: FoldCashflow input
+// minus low-confidence lines so v1 facts match the analysis API.
+func workerCashflowLines(txns []*entities.BankStatementTransaction) []statement.CashflowLine {
+	lines := make([]statement.CashflowLine, 0, len(txns))
+	for _, t := range txns {
+		if t == nil {
+			continue
+		}
+		conf := t.CategoryConfidence
+		if conf == 0 {
+			conf = 0.700
+		}
+		if conf < statement.AdviceConfidenceFloor {
+			continue
+		}
+		lines = append(lines, statement.CashflowLine{Type: t.Type, Category: t.Category, Amount: t.Amount})
+	}
+	return lines
+}
+
+// workerConsumptionByCategory totals normalized consumption buckets only.
+func workerConsumptionByCategory(txns []*entities.BankStatementTransaction) map[string]decimal.Decimal {
+	out := map[string]decimal.Decimal{}
+	for _, t := range txns {
+		if t == nil || t.Type != entities.StatementTxnTypeDebit {
+			continue
+		}
+		conf := t.CategoryConfidence
+		if conf == 0 {
+			conf = 0.700
+		}
+		if conf < statement.AdviceConfidenceFloor {
+			continue
+		}
+		bucket := statement.NormalizeStatementCategory(t.Category, "", t.Type)
+		if !statement.IsConsumptionSpend(bucket) {
+			continue
+		}
+		out[bucket] = out[bucket].Add(t.Amount)
+	}
+	return out
 }

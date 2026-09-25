@@ -150,3 +150,11 @@ class TestPipeline:
         result = pipeline.enrich("WEB BET9JA/012345")
         assert result.spend_bucket == "betting"
         assert result.category_l2 == "Betting"
+
+    def test_nip_credit_is_transfer_in_not_spend(self):
+        # Regression: transfer_out rule used to precede transfer_in, so
+        # "NIP CREDIT ..." matched transfer_out first (income became spend).
+        from src.spend_rules import classify_narration
+        match = classify_narration("NIP CREDIT GTB/OBADEJO/0123456789/TRANSFER")
+        assert match is not None
+        assert match.bucket == "transfer_in"
