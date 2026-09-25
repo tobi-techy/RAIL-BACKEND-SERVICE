@@ -197,16 +197,19 @@ func (s *Service) FindUserByProvider(ctx context.Context, provider entities.Soci
 	return userID, nil
 }
 
-// SocialUserInfo represents user info from OAuth provider
+// SocialUserInfo represents user info from OAuth provider.
+// EmailVerified reports whether the provider confirmed ownership of the
+// address. Unverified addresses must never auto-link or create accounts.
 type SocialUserInfo struct {
-	Provider     entities.SocialProvider
-	ProviderID   string
-	Email        string
-	Name         string
-	AvatarURL    string
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    *time.Time
+	Provider      entities.SocialProvider
+	ProviderID    string
+	Email         string
+	EmailVerified bool
+	Name          string
+	AvatarURL     string
+	AccessToken   string
+	RefreshToken  string
+	ExpiresAt     *time.Time
 }
 
 // Google OAuth
@@ -246,15 +249,20 @@ func (s *Service) authenticateGoogle(ctx context.Context, req *entities.SocialLo
 		expiresAt = &t
 	}
 
+	if !userInfo.VerifiedEmail {
+		return nil, fmt.Errorf("Google email not verified")
+	}
+
 	return &SocialUserInfo{
-		Provider:     entities.SocialProviderGoogle,
-		ProviderID:   userInfo.ID,
-		Email:        userInfo.Email,
-		Name:         userInfo.Name,
-		AvatarURL:    userInfo.Picture,
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ExpiresAt:    expiresAt,
+		Provider:      entities.SocialProviderGoogle,
+		ProviderID:    userInfo.ID,
+		Email:         userInfo.Email,
+		EmailVerified: true,
+		Name:          userInfo.Name,
+		AvatarURL:     userInfo.Picture,
+		AccessToken:   tokenResp.AccessToken,
+		RefreshToken:  tokenResp.RefreshToken,
+		ExpiresAt:     expiresAt,
 	}, nil
 }
 
@@ -410,11 +418,12 @@ func (s *Service) authenticateGoogleIDToken(ctx context.Context, idToken string)
 	picture, _ := claims["picture"].(string)
 
 	return &SocialUserInfo{
-		Provider:   entities.SocialProviderGoogle,
-		ProviderID: sub,
-		Email:      email,
-		Name:       name,
-		AvatarURL:  picture,
+		Provider:      entities.SocialProviderGoogle,
+		ProviderID:    sub,
+		Email:         email,
+		EmailVerified: true,
+		Name:          name,
+		AvatarURL:     picture,
 	}, nil
 }
 
@@ -426,10 +435,11 @@ type googleTokenResponse struct {
 }
 
 type googleUserInfo struct {
-	ID      string `json:"id"`
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	Picture string `json:"picture"`
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	VerifiedEmail bool   `json:"verified_email"`
+	Name          string `json:"name"`
+	Picture       string `json:"picture"`
 }
 
 func (s *Service) exchangeGoogleCode(ctx context.Context, code, redirectURI string) (*googleTokenResponse, error) {
@@ -512,6 +522,19 @@ func (s *Service) authenticateApple(ctx context.Context, req *entities.SocialLog
 
 	email, _ := claims["email"].(string)
 
+	// Apple may omit email_verified or send it as a string. An unverified
+	// address must never auto-link an account.
+	emailVerified := false
+	switch v := claims["email_verified"].(type) {
+	case bool:
+		emailVerified = v
+	case string:
+		emailVerified = v == "true"
+	}
+	if email != "" && !emailVerified {
+		return nil, fmt.Errorf("Apple email not verified")
+	}
+
 	// Apple only sends name on first sign-in, extract from request if provided
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -525,10 +548,11 @@ func (s *Service) authenticateApple(ctx context.Context, req *entities.SocialLog
 		zap.String("email", email))
 
 	return &SocialUserInfo{
-		Provider:   entities.SocialProviderApple,
-		ProviderID: sub,
-		Email:      email,
-		Name:       name,
+		Provider:      entities.SocialProviderApple,
+		ProviderID:    sub,
+		Email:         email,
+		EmailVerified: true,
+		Name:          name,
 	}, nil
 }
 

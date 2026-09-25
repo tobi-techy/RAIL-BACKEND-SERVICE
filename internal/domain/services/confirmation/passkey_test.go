@@ -13,6 +13,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	webauthnSvc "github.com/rail-service/rail_service/internal/domain/services/webauthn"
 )
 
 type fakeTxAssert struct {
@@ -267,4 +268,19 @@ func stubAssertion(t *testing.T) []byte {
 		enc([]byte(clientData)), enc(authData), enc([]byte("sig")),
 	)
 	return []byte(body)
+}
+
+func TestAssertionOptionsMapsSentinelNoPasskey(t *testing.T) {
+	s := passkeyService(&fakeTxAssert{beginErr: fmt.Errorf("wrapped: %w", webauthnSvc.ErrNoCredentials)})
+	ctx := context.Background()
+	uid := uuid.New()
+	c, url, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := url[mustIndex(t, url):]
+	_, err = s.AssertionOptions(ctx, uid, c.ID, tok)
+	if !errors.Is(err, ErrNoPasskey) {
+		t.Fatalf("wrapped sentinel must map to ErrNoPasskey, got %v", err)
+	}
 }

@@ -133,15 +133,11 @@ func (w *WorkerV2) HandlerV2() jobqueue.JobHandler {
 }
 
 func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data []byte, contentType, bankName string) (retErr error) {
-	for i := 0; i < 4; i++ {
-		n, err := w.repo.BackfillUnderstanding(ctx, 500)
-		if err != nil {
-			w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
-			break
-		}
-		if n == 0 {
-			break
-		}
+	// One small backfill batch per upload: keeps legacy rows converging
+	// without blocking the current upload behind thousands of writes.
+	// A dedicated background job owns the full backfill.
+	if _, err := w.repo.BackfillUnderstanding(ctx, 200); err != nil {
+		w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -213,6 +209,11 @@ func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data
 	if err := w.repo.CreateTransactions(saveCtx, txns); err != nil {
 		return w.fail(ctx, uploadID, "Failed to store transactions")
 	}
+	// Cross-upload cadence: a monthly subscription appears once per file, so
+	// recompute across the user's full history after every upload.
+	if err := w.repo.RecomputeUserRecurrence(saveCtx, userID); err != nil {
+		w.logger.Warn("statement recurrence recompute skipped", zap.Error(err))
+	}
 
 	pageCount := result.PageCount
 	summaryJSON := buildSummaryJSON(txns, bankName, periodStart, periodEnd, string(result.Strategy), result.ParserUsed)
@@ -278,16 +279,11 @@ func (w *WorkerV2) generateFacts(ctx context.Context, userID uuid.UUID, txns []*
 		return
 	}
 
-	var totalIncome, totalSpend decimal.Decimal
-	catSpend := make(map[string]decimal.Decimal)
-	for _, t := range txns {
-		if t.Type == entities.StatementTxnTypeDebit {
-			catSpend[t.Category] = catSpend[t.Category].Add(t.Amount)
-			totalSpend = totalSpend.Add(t.Amount)
-		} else {
-			totalIncome = totalIncome.Add(t.Amount)
-		}
-	}
+	// Same math as the analysis path: movement + low-confidence lines are
+	// excluded so facts agree with get_bank_statement_analysis.
+	income, spend := statement.FoldCashflow(cashflowLines(txns))
+	totalIncome, totalSpend := income, spend
+	catSpend := consumptionByCategory(txns)
 
 	months := computeMonths(txns)
 	factConfidence := decimal.NewFromFloat(0.5 + (confidence * 0.45))
@@ -339,14 +335,8 @@ func (w *WorkerV2) sendNotification(ctx context.Context, userID uuid.UUID, txns 
 	if w.notifier == nil || len(txns) == 0 {
 		return
 	}
-	var totalCredits, totalDebits decimal.Decimal
-	for _, t := range txns {
-		if t.Type == entities.StatementTxnTypeCredit {
-			totalCredits = totalCredits.Add(t.Amount)
-		} else {
-			totalDebits = totalDebits.Add(t.Amount)
-		}
-	}
+	income, spend := statement.FoldCashflow(cashflowLines(txns))
+	totalCredits, totalDebits := income, spend
 	currency := txns[0].Currency
 	periodStr := ""
 	if periodStart != nil && periodEnd != nil {
@@ -380,20 +370,57 @@ func computeMonths(txns []*entities.BankStatementTransaction) int {
 	return months
 }
 
+// cashflowLines converts stored lines to FoldCashflow input, dropping lines
+// below the advice confidence floor so worker totals match the analysis API.
+func cashflowLines(txns []*entities.BankStatementTransaction) []statement.CashflowLine {
+	lines := make([]statement.CashflowLine, 0, len(txns))
+	for _, t := range txns {
+		if t == nil {
+			continue
+		}
+		conf := t.CategoryConfidence
+		if conf == 0 {
+			conf = 0.700 // legacy rows written before confidence existed
+		}
+		if conf < statement.AdviceConfidenceFloor {
+			continue
+		}
+		lines = append(lines, statement.CashflowLine{Type: t.Type, Category: t.Category, Amount: t.Amount})
+	}
+	return lines
+}
+
+// consumptionByCategory totals debit lines by normalized bucket, excluding
+// money movement and low-confidence lines.
+func consumptionByCategory(txns []*entities.BankStatementTransaction) map[string]decimal.Decimal {
+	out := map[string]decimal.Decimal{}
+	for _, t := range txns {
+		if t == nil || t.Type != entities.StatementTxnTypeDebit {
+			continue
+		}
+		conf := t.CategoryConfidence
+		if conf == 0 {
+			conf = 0.700
+		}
+		if conf < statement.AdviceConfidenceFloor {
+			continue
+		}
+		bucket := statement.NormalizeStatementCategory(t.Category, "", t.Type)
+		if !statement.IsConsumptionSpend(bucket) {
+			continue
+		}
+		out[bucket] = out[bucket].Add(t.Amount)
+	}
+	return out
+}
+
 func buildSummaryJSON(txns []*entities.BankStatementTransaction, bankName string, periodStart, periodEnd *time.Time, strategy, parserUsed string) string {
 	if len(txns) == 0 {
 		return "{}"
 	}
-	var totalCredits, totalDebits decimal.Decimal
-	catSpend := make(map[string]decimal.Decimal)
-	for _, t := range txns {
-		if t.Type == entities.StatementTxnTypeCredit {
-			totalCredits = totalCredits.Add(t.Amount)
-		} else {
-			totalDebits = totalDebits.Add(t.Amount)
-			catSpend[t.Category] = catSpend[t.Category].Add(t.Amount)
-		}
-	}
+	income, spend := statement.FoldCashflow(cashflowLines(txns))
+	totalCredits, totalDebits := income, spend
+	catSpend := consumptionByCategory(txns)
 
 	months := computeMonths(txns)
 

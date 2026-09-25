@@ -286,3 +286,26 @@ func TestApproveWithAssertionEndpoint(t *testing.T) {
 		t.Fatalf("approve with assertion: got %d body %s (want 422 parse refusal)", w.Code, w.Body.String())
 	}
 }
+
+func TestApproveLegacyDeviceKeyReturnsUpgradeRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h, _, _, id, tok := passkeyHandler()
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/confirm/"+id+"/approve",
+		strings.NewReader(`{"t":"`+tok+`","device_key_id":"old-key","signature":"deadbeef"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Approve(c)
+	if w.Code != http.StatusGone {
+		t.Fatalf("legacy device-key approve: got %d want 410 body %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["upgrade_required"] != true {
+		t.Fatalf("missing upgrade_required flag: %v", body)
+	}
+}

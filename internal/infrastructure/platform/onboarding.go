@@ -468,6 +468,13 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 				if st.SignupReason == "" {
 					st.SignupReason = "bank statement"
 				}
+				// Route the scan through the brain so the person gets the
+				// one-category aha (not a raw summary dump) before the
+				// signup ask. Falls back to the deterministic path when the
+				// model is unavailable.
+				if reply, ok := c.statementAha(ctx, key, &st, text); ok {
+					return reply, nil
+				}
 				return c.beginSignup(ctx, key, &st, text, st.StatementSummary)
 			}
 			if text == "" {
@@ -753,6 +760,40 @@ func summarizeGuestAnalysis(a *entities.MonoSpendingAnalysis) string {
 		}
 	}
 	return b.String()
+}
+
+// statementAha runs one brain turn over the verified scan so the guest hears
+// the aha (one spending category in plain words) before the signup ask.
+// It returns ok=false when the model is unavailable — the caller then falls
+// back to the deterministic beginSignup path. The aha text is capped so the
+// appended link URLs never push the message past channel limits.
+func (c *ChatOnboarder) statementAha(ctx context.Context, key string, st *guestState, userText string) (*PlatformReply, bool) {
+	if c.brain == nil {
+		return nil, false
+	}
+	out, err := c.brain.respond(ctx, st, "[a verified bank-statement scan is now available in the state block — react to it in one or two sentences (the single most interesting spending category), then call start_signup so the account and wallet can be set up. Do not paste the raw summary.]")
+	if err != nil {
+		c.logger.Warn("statement aha brain turn failed; falling back", zap.Error(err))
+		return nil, false
+	}
+	for _, n := range out.notes {
+		c.applyNote(st, n)
+	}
+	aha := truncate(strings.TrimSpace(out.text), 500)
+	if aha == "" {
+		return nil, false
+	}
+	if st.SignupReason == "" {
+		st.SignupReason = "bank statement"
+	}
+	if out.signupReason != "" {
+		st.SignupReason = out.signupReason
+	}
+	reply, err := c.beginSignup(ctx, key, st, userText, aha)
+	if err != nil {
+		return nil, false
+	}
+	return reply, true
 }
 
 // beginSignup transitions the conversation into identity verification. OTP and

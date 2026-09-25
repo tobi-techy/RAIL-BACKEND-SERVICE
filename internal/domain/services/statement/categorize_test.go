@@ -2,6 +2,7 @@ package statement
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -21,7 +22,7 @@ func TestNormalizeStatementCategory(t *testing.T) {
 		{"bare transfer debit", "transfer", "John Doe", "debit", BucketTransferOut},
 		{"utility name", "", "IKEDC PAYMENT 01234", "debit", BucketUtilities},
 		{"unknown stays other", "misc", "SOME RANDOM TEXT", "debit", BucketOther},
-		{"empty credit is transfer in", "", "John Doe", "credit", BucketTransferIn},
+		{"empty credit counts as income bucket", "", "John Doe", "credit", BucketOther},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,5 +139,80 @@ func TestToEntitiesNormalizesCategory(t *testing.T) {
 	txns, _, _ := parser.ToEntities(parsed, uuid.New(), uuid.New())
 	if assert.Len(t, txns, 1) {
 		assert.Equal(t, BucketBetting, txns[0].Category)
+	}
+}
+
+func TestUnknownCreditCountsAsIncome(t *testing.T) {
+	// Regression: directionFallback used to return transfer_in for unknown
+	// credits, which FoldCashflow excludes from income — refunds, interest
+	// and gifts silently counted as zero income.
+	assert.Equal(t, BucketOther, NormalizeStatementCategory("", "John Doe", "credit"))
+	income, _ := FoldCashflow([]CashflowLine{
+		{Type: "credit", Category: "other", Amount: decimal.NewFromInt(50000)},
+	})
+	assert.True(t, income.Equal(decimal.NewFromInt(50000)))
+	summary := SummarizeForChat(&ParseResult{
+		Currency: "NGN",
+		Transactions: []ParsedTxn{
+			{Description: "John Doe", Amount: 50000, Type: "credit"},
+		},
+	})
+	assert.Contains(t, summary, "Income was about NGN 50000")
+}
+
+func TestSummarizeExcludesTransferOutCredits(t *testing.T) {
+	// Same exclusion set as FoldCashflow: transfer_out credits are movement.
+	summary := SummarizeForChat(&ParseResult{
+		Currency: "NGN",
+		Transactions: []ParsedTxn{
+			{Description: "SALARY PAYMENT", Amount: 400000, Type: "credit"},
+			{Description: "NIP TRANSFER TO JOHN", Amount: 80000, Type: "credit"},
+		},
+	})
+	assert.Contains(t, summary, "Income was about NGN 400000")
+	assert.NotContains(t, summary, "480000")
+}
+
+func TestExtractCounterpartyStripsPOSReference(t *testing.T) {
+	assert.Equal(t, "Shoprite Lekki", ExtractCounterparty("POS PURCHASE SHOPRITE LEKKI 012345"))
+}
+
+func TestSalaryIsNotEssential(t *testing.T) {
+	assert.False(t, IsEssentialBucket(BucketSalary))
+	assert.True(t, IsEssentialBucket(BucketGroceries))
+}
+
+func TestRecurrenceNeedsTimeSpread(t *testing.T) {
+	// Three similar debits in one week are repeat spending, not a subscription.
+	week := []*entities.BankStatementTransaction{
+		{Description: "SHOPRITE LEKKI", Counterparty: "Shoprite Lekki", Type: "debit", Amount: decimal.NewFromInt(20000), TransactionDate: time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)},
+		{Description: "SHOPRITE LEKKI", Counterparty: "Shoprite Lekki", Type: "debit", Amount: decimal.NewFromInt(20500), TransactionDate: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)},
+		{Description: "SHOPRITE LEKKI", Counterparty: "Shoprite Lekki", Type: "debit", Amount: decimal.NewFromInt(19800), TransactionDate: time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)},
+	}
+	AssignRecurrence(week)
+	for _, txn := range week {
+		assert.Equal(t, entities.StatementRecurrenceOneOff, txn.Recurrence)
+	}
+	// Same shape across three months is a subscription.
+	months := []*entities.BankStatementTransaction{
+		{Description: "NETFLIX", Counterparty: "Netflix", Type: "debit", Amount: decimal.NewFromInt(4500), TransactionDate: time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)},
+		{Description: "NETFLIX", Counterparty: "Netflix", Type: "debit", Amount: decimal.NewFromInt(4500), TransactionDate: time.Date(2026, 7, 5, 0, 0, 0, 0, time.UTC)},
+		{Description: "NETFLIX", Counterparty: "Netflix", Type: "debit", Amount: decimal.NewFromInt(4600), TransactionDate: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)},
+	}
+	AssignRecurrence(months)
+	for _, txn := range months {
+		assert.Equal(t, entities.StatementRecurrenceSubscription, txn.Recurrence)
+	}
+}
+
+func TestRecurrenceIgnoresUnknownCounterparty(t *testing.T) {
+	txns := []*entities.BankStatementTransaction{
+		{Description: "AAA 1", Counterparty: "Unknown", Type: "debit", Amount: decimal.NewFromInt(1000), TransactionDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)},
+		{Description: "BBB 2", Counterparty: "Unknown", Type: "debit", Amount: decimal.NewFromInt(1000), TransactionDate: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)},
+		{Description: "CCC 3", Counterparty: "Unknown", Type: "debit", Amount: decimal.NewFromInt(1000), TransactionDate: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	AssignRecurrence(txns)
+	for _, txn := range txns {
+		assert.Equal(t, entities.StatementRecurrenceOneOff, txn.Recurrence)
 	}
 }

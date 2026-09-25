@@ -302,7 +302,7 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number, t
   // the backend has to answer the user instead.
   const payload = JSON.stringify(
     body && typeof body === "object" && !Array.isArray(body)
-      ? { ...(body as Record<string, unknown>), attempt, max_attempts: BACKEND_MAX_ATTEMPTS }
+      ? { ...(body as Record<string, unknown>), attempt, max_attempts: maxAttemptsFor(body) }
       : body,
   );
   // Fresh timestamp+nonce per attempt: each attempt is an independent signed
@@ -333,7 +333,7 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number, t
 
 function backendTimeoutMs(body: unknown): number {
   // A statement PDF is read before the reply is sent. Text stays on the short
-  // timeout. 130s covers extraction plus one model pass plus Miriam's answer.
+  // timeout. 150s covers extraction plus one model pass plus Miriam's answer.
   if (body && typeof body === "object" && !Array.isArray(body)) {
     const doc = body as { is_document?: boolean };
     if (doc.is_document) return 150_000;
@@ -341,8 +341,21 @@ function backendTimeoutMs(body: unknown): number {
   return 15_000;
 }
 
+// Document scans are idempotent-unsafe to blindly retry: each attempt mints a
+// fresh ScanGuest + Offer nonce set. Timeouts (status undefined) get ONE
+// retry; fast failures keep the normal budget. Worst case is ~300s of holding
+// the turn, not ~450s+.
+function maxAttemptsFor(body: unknown): number {
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const doc = body as { is_document?: boolean };
+    if (doc.is_document) return Math.min(BACKEND_MAX_ATTEMPTS, 2);
+  }
+  return BACKEND_MAX_ATTEMPTS;
+}
+
 async function postToBackend(path: string, body: unknown): Promise<void> {
   const timeoutMs = backendTimeoutMs(body);
+  const maxAttempts = maxAttemptsFor(body);
   for (let attempt = 1; ; attempt++) {
     try {
       await postToBackendOnce(path, body, attempt, timeoutMs);
@@ -350,7 +363,7 @@ async function postToBackend(path: string, body: unknown): Promise<void> {
     } catch (err) {
       const status = err instanceof BackendPostError ? err.status : undefined;
       const retryable =
-        attempt < BACKEND_MAX_ATTEMPTS &&
+        attempt < maxAttempts &&
         (status === undefined || BACKEND_RETRYABLE_STATUS.has(status));
       if (!retryable) throw err;
       log.warn(

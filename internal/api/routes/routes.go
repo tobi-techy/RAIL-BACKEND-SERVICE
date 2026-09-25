@@ -903,6 +903,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					v1.GET("/chat-link/start/:provider", container.PlatformHandler.StartChatLink)
 					v1.GET("/chat-link/callback", container.PlatformHandler.FinishChatLink)
 					v1.POST("/chat-link/callback", container.PlatformHandler.FinishChatLink)
+					v1.GET("/chat-link/callback/:provider", container.PlatformHandler.FinishChatLink)
+					v1.POST("/chat-link/callback/:provider", container.PlatformHandler.FinishChatLink)
 				}
 				if bridgeHMACSecret != "" && proc != nil {
 					bridgeGroup := v1.Group("/platform")

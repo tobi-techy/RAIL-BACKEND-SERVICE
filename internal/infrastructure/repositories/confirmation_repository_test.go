@@ -28,7 +28,7 @@ func testConfirmationDB(t *testing.T) *sqlx.DB {
 		t.Skipf("no Postgres available: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	schema, err := os.ReadFile("../../../migrations/318_confirmations.up.sql")
+	schema, err := os.ReadFile("../../../migrations/319_confirmations.up.sql")
 	if err != nil {
 		// Fallback: minimal table when run outside the repo layout.
 		schema = []byte(`CREATE TABLE IF NOT EXISTS confirmations (

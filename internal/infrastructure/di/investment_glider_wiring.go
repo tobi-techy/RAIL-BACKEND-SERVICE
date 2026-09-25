@@ -35,6 +35,14 @@ func (c *Container) initializeInvestmentGliderServices(sqlxDB *sqlx.DB) error {
 	cfg := c.Config.InvestmentGlider
 	cfg.Enabled = true
 
+	// Dev/CI without a key: log loudly and leave the engine unwired instead
+	// of bricking the whole API. Non-dev without a key is rejected by config
+	// validation before this runs. Handlers nil-check the service.
+	if strings.TrimSpace(cfg.APIKey) == "" && isDevEnv(c.Config.Environment) {
+		c.ZapLog.Warn("investment (Glider) disabled: no API key in dev environment; wiring a disabled service")
+		return nil
+	}
+
 	// Repositories (the read model Rail owns).
 	c.InvestmentAssetRepo = repositories.NewInvestmentAssetRepository(sqlxDB)
 	c.InvestmentStrategyRepo = repositories.NewInvestmentStrategyRepository(sqlxDB)

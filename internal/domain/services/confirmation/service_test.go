@@ -228,6 +228,14 @@ func (e errStore) Load(ctx context.Context, id uuid.UUID) (*entities.Confirmatio
 	return nil, e.err
 }
 
+func (e errStore) MergePayloadKeys(ctx context.Context, id uuid.UUID, set map[string]any) error {
+	return e.err
+}
+
+func (e errStore) DeletePayloadKeys(ctx context.Context, id uuid.UUID, keys ...string) error {
+	return e.err
+}
+
 func (e errStore) Claim(ctx context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error) {
 	return nil, e.err
 }
@@ -244,5 +252,98 @@ func TestStoreOutageFailsClosed(t *testing.T) {
 	}
 	if _, err := s.Approve(ctx, uid, uuid.New(), "1.sig", "pass"); err == nil {
 		t.Fatal("approve during outage must fail")
+	}
+}
+
+func TestFetchBadTokenHidesPendingCard(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	c, _, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Guessing the UUID with a forged token must not leak the live card.
+	if _, err := s.Fetch(ctx, c.ID, "9999999999.deadbeef"); err == nil {
+		t.Fatal("fetch with bad token on a pending card must fail")
+	}
+	// Terminal cards render dead, not broken.
+	c.State = entities.ConfirmationCompleted
+	if err := s.store.Save(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Fetch(ctx, c.ID, "9999999999.deadbeef")
+	if err != nil || !got.IsTerminal() {
+		t.Fatalf("terminal fetch with bad token must return the dead record, got %v %v", got, err)
+	}
+}
+
+func TestCreateTTLClamped(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	c, _, err := s.Create(ctx, CreateInput{
+		UserID: uuid.New(), Action: entities.ConfirmationActionTransferSend, TTL: time.Hour * 24 * 365,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ExpiresAt.Sub(c.CreatedAt) > maxCreateTTL+time.Second {
+		t.Fatalf("TTL not clamped: %v", c.ExpiresAt.Sub(c.CreatedAt))
+	}
+}
+
+func TestMarkExternalDoesNotResurrectCompleted(t *testing.T) {
+	s := testService()
+	s.RegisterExecutor(entities.ConfirmationActionTransferSend, func(ctx context.Context, u uuid.UUID, c *entities.Confirmation) (string, error) {
+		return "sent", nil
+	})
+	ctx := context.Background()
+	uid := uuid.New()
+	c, url, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := url[strings.Index(url, "?t=")+3:]
+	if _, err := s.Approve(ctx, uid, c.ID, tok, "pass"); err != nil {
+		t.Fatal(err)
+	}
+	// A late external mark must not flip completed back to pending.
+	out, err := s.MarkExternal(ctx, c.ID, entities.ConfirmationRejected, "late cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.State != entities.ConfirmationCompleted {
+		t.Fatalf("completed card resurrected to %s", out.State)
+	}
+}
+
+func TestPayloadWritesDoNotResurrectBurnedToken(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	c, _, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Burn the single-use token the way an approval does.
+	if _, err := s.store.Claim(ctx, c.ID, "passkey"); err != nil {
+		t.Fatal(err)
+	}
+	// Late ceremony writes (the old Load+Save pattern) must not un-burn it.
+	if err := s.store.MergePayloadKeys(ctx, c.ID, map[string]any{"_tx_session": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.DeletePayloadKeys(ctx, c.ID, "_tx_session", "_tx_session_exp"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.store.Load(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TokenUsed {
+		t.Fatal("payload-only writes resurrected a burned single-use token")
+	}
+	if _, err := s.store.Claim(ctx, c.ID, ""); !errors.Is(err, ErrTokenConsumed) {
+		t.Fatalf("second claim must lose after payload writes, got %v", err)
 	}
 }

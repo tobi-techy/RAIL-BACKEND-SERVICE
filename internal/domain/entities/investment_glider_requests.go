@@ -135,6 +135,10 @@ const (
 	InvestmentActionAwaitingConfirmation InvestmentActionStatus = "AWAITING_CONFIRMATION"
 	InvestmentActionCompleted            InvestmentActionStatus = "COMPLETED"
 	InvestmentActionRejected             InvestmentActionStatus = "REJECTED"
+	// InvestmentActionFailed means the money leg was attempted and did not
+	// move. It is always returned with a non-nil error and a Funding body
+	// carrying FailureReason — never as a silent COMPLETED.
+	InvestmentActionFailed InvestmentActionStatus = "FAILED"
 )
 
 // InvestmentCreateStrategyResponse is returned by create/update strategy.

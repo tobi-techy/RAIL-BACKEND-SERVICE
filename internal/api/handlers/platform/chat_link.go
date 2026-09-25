@@ -54,19 +54,42 @@ func (h *PlatformHandler) FinishChatLink(c *gin.Context) {
 	}
 	code := firstForm(c, "code")
 	idToken := firstForm(c, "id_token")
-	nonce := firstForm(c, "state")
-	provider := entities.SocialProviderGoogle
-	if idToken != "" && code == "" {
-		provider = entities.SocialProviderApple
+	state := firstForm(c, "state")
+	// Provider-specific callbacks (/callback/apple, /callback/google) carry
+	// the provider in the path; the OAuth state carries provider|nonce for
+	// new links. An explicit provider field wins over both. Legacy bare
+	// callbacks fall back to the session binding inside Complete.
+	provider := entities.SocialProvider(strings.ToLower(strings.TrimSpace(firstForm(c, "provider"))))
+	if provider == "" {
+		if p := strings.ToLower(strings.Trim(c.Param("provider"), "/")); p == "apple" || p == "google" {
+			provider = entities.SocialProvider(p)
+		}
 	}
-	if idToken != "" && strings.Contains(c.Request.URL.Path, "apple") {
-		provider = entities.SocialProviderApple
+	if provider == "" {
+		if i := strings.Index(state, "|"); i > 0 {
+			if p := entities.SocialProvider(strings.ToLower(state[:i])); p == entities.SocialProviderApple || p == entities.SocialProviderGoogle {
+				provider = p
+			}
+		}
 	}
-	// Apple form_post includes id_token. Google redirects with code.
-	if idToken != "" && c.Request.Method == http.MethodPost {
-		provider = entities.SocialProviderApple
+	if provider == "" {
+		path := strings.ToLower(c.Request.URL.Path)
+		if strings.Contains(path, "apple") {
+			provider = entities.SocialProviderApple
+		} else if strings.Contains(path, "google") {
+			provider = entities.SocialProviderGoogle
+		}
 	}
-	created, err := linker.Complete(c.Request.Context(), provider, code, idToken, nonce)
+	if provider == "" {
+		// Last resort for legacy bare callbacks: payload shape. Apple
+		// form_post includes id_token; Google redirects with code only.
+		if idToken != "" {
+			provider = entities.SocialProviderApple
+		} else {
+			provider = entities.SocialProviderGoogle
+		}
+	}
+	created, err := linker.Complete(c.Request.Context(), provider, code, idToken, state)
 	if err != nil {
 		h.logger.Warn("chat link callback failed", zap.Error(err))
 		c.Data(http.StatusBadRequest, "text/html; charset=utf-8", []byte(chatLinkPage(
