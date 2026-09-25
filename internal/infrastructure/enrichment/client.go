@@ -11,18 +11,18 @@ import (
 
 // EnrichRequest is the payload sent to the sidecar.
 type EnrichRequest struct {
-	RawDescription     string    `json:"raw_description"`
-	Currency           string    `json:"currency,omitempty"`           // ISO 4217 code (USD, EUR, NGN)
-	MCCCode            *int      `json:"mcc_code,omitempty"`
-	Amount             *float64  `json:"amount,omitempty"`
-	HistoricalAmounts  []float64 `json:"historical_amounts,omitempty"`
-	HistoricalDates    []string  `json:"historical_dates,omitempty"`
+	RawDescription    string    `json:"raw_description"`
+	Currency          string    `json:"currency,omitempty"` // ISO 4217 code (USD, EUR, NGN)
+	MCCCode           *int      `json:"mcc_code,omitempty"`
+	Amount            *float64  `json:"amount,omitempty"`
+	HistoricalAmounts []float64 `json:"historical_amounts,omitempty"`
+	HistoricalDates   []string  `json:"historical_dates,omitempty"`
 }
 
 // BehaviorTag represents a detected behavioral pattern.
 type BehaviorTag struct {
-	Tag        string             `json:"tag"`
-	Confidence float64            `json:"confidence"`
+	Tag        string                 `json:"tag"`
+	Confidence float64                `json:"confidence"`
 	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -36,19 +36,20 @@ type TransactionFact struct {
 
 // EnrichResponse is what the sidecar returns.
 type EnrichResponse struct {
-	Counterparty        string           `json:"counterparty"`
-	CategoryL1          *string          `json:"category_l1"`
-	CategoryL2          *string          `json:"category_l2"`
-	IsEssential         bool             `json:"is_essential"`
-	Confidence          float64          `json:"confidence"`
-	ClassificationLayer string           `json:"classification_layer"`
-	PlainDescription    string           `json:"plain_description"`
-	MerchantContext     string           `json:"merchant_context"`
-	BehaviorTags        []BehaviorTag    `json:"behavior_tags"`
+	Counterparty        string            `json:"counterparty"`
+	CategoryL1          *string           `json:"category_l1"`
+	CategoryL2          *string           `json:"category_l2"`
+	SpendBucket         string            `json:"spend_bucket,omitempty"`
+	IsEssential         bool              `json:"is_essential"`
+	Confidence          float64           `json:"confidence"`
+	ClassificationLayer string            `json:"classification_layer"`
+	PlainDescription    string            `json:"plain_description"`
+	MerchantContext     string            `json:"merchant_context"`
+	BehaviorTags        []BehaviorTag     `json:"behavior_tags"`
 	Facts               []TransactionFact `json:"facts"`
-	Embedding           []float64        `json:"embedding"`
-	Bank                *string          `json:"bank"`
-	TxType              *string          `json:"tx_type"`
+	Embedding           []float64         `json:"embedding"`
+	Bank                *string           `json:"bank"`
+	TxType              *string           `json:"tx_type"`
 }
 
 // BatchRequest wraps multiple transactions.

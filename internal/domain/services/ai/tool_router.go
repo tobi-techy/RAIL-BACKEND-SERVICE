@@ -252,6 +252,7 @@ var toolCategoryMap = map[ToolCategory]map[string]bool{
 		ToolWebSearch:                true,
 		ToolGetBabySteps:             true,
 		ToolGetBankStatementAnalysis: true,
+		ToolCorrectStatementCategory: true,
 	},
 	CategoryHistory: {
 		ToolGetRecentTransactions: true,

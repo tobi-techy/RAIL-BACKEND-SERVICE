@@ -75,7 +75,7 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 | `CONFIRMATION_TOKEN_SECRET` | **SECRET** ≥32 chars. Without it no cards are staged (fail-closed). |
 | `CONFIRMATION_BASE_URL` | `https://api.userail.money/confirm` (Cloudflare already routes this to the backend; edge worker never caches `/confirm/*` — not in `CACHE_CONFIG`). |
 | `RAIL_SERVICE_KEY` | **SECRET** ≥32 chars. Must MATCH Miriam's `RAIL_SERVICE_KEY` (settle executor, `/mark`, terminal callback). |
-| `CONFIRMATION_REQUIRE_DEVICE_SIGNATURE` | Leave unset/`false` until phones enroll; then `true`. |
+| `CONFIRMATION_REQUIRE_PASSKEY` | Leave unset/`false` until passkey adoption covers the fleet; then `true`. |
 | `IMESSAGE_APP_NAME` | `Miriam` (bridge env, card display name). |
 | `IMESSAGE_EXTENSION_BUNDLE_ID` | `com.railmoney.rail.messages` (bridge env — flips cards to the native extension path). |
 | `APPLE_TEAM_ID` | `A239A6TG6R` (bridge env). |

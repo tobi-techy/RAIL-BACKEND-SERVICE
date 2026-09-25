@@ -51,48 +51,116 @@ func TestGuestMono_ConnectBankSendsTappableLink(t *testing.T) {
 	ob.SetGuestMonoLinker(linker)
 
 	reply := step(t, ob, "+15552101", "yes, look at my spending")
-	if !strings.Contains(reply, "https://mono.example/connect/abc") {
-		t.Fatalf("expected the Mono link in the reply, got: %q", reply)
+	if !strings.Contains(strings.ToLower(reply), "pdf") {
+		t.Fatalf("expected a statement ask, got: %q", reply)
+	}
+	if strings.Contains(reply, "mono.example") {
+		t.Fatalf("bank linking is not live, got: %q", reply)
 	}
 
 	var st guestState
 	if err := store.Get(context.Background(), onboardingKey(entities.PlatformIMessage, "+15552101"), &st); err != nil {
 		t.Fatalf("session not persisted: %v", err)
 	}
-	if st.MonoLinkURL != "https://mono.example/connect/abc" {
-		t.Fatalf("expected MonoLinkURL persisted, got %q", st.MonoLinkURL)
+	if st.MonoLinkURL != "" || st.MonoLinked {
+		t.Fatal("bank linking must not start")
 	}
-	if st.GuestToken == "" {
-		t.Fatal("expected a guest token to be generated")
+}
+
+type guestStatementScan struct{}
+
+func (guestStatementScan) ScanGuest(context.Context, string, StatementAttachment) (*StatementScan, error) {
+	return &StatementScan{
+		PendingID: "pending-1",
+		Summary:   "I found 12 transactions. Income was about NGN 200000 and spending about NGN 47000. Biggest spending areas: eating out 47000.",
+	}, nil
+}
+func (guestStatementScan) ScanLinked(context.Context, uuid.UUID, StatementAttachment) (*StatementScan, error) {
+	return nil, nil
+}
+func (guestStatementScan) EnqueueLinked(context.Context, uuid.UUID, StatementAttachment) (*PlatformReply, error) {
+	return nil, nil
+}
+func (guestStatementScan) CompletePending(context.Context, uuid.UUID, string) error { return nil }
+
+func TestGuestStatement_ScanAsksToOpenTheAccount(t *testing.T) {
+	ob, store, _, _, _, _ := newTestOnboarder()
+	ob.SetStatementAttachmentHandler(guestStatementScan{})
+	sender := "+15552112"
+	reply, err := ob.Handle(context.Background(), OnboardInput{
+		Platform: entities.PlatformIMessage,
+		SenderID: sender,
+		Statement: &StatementAttachment{
+			Name: "statement.pdf", MIMEType: "application/pdf", Data: []byte("%PDF"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if st.MonoLinked {
-		t.Fatal("guest should not be marked linked before completing the flow")
+	if reply == nil || !strings.Contains(reply.Text, "47000") || !strings.Contains(strings.ToLower(reply.Text), "email") {
+		t.Fatalf("expected the statement picture and the account ask, got %#v", reply)
+	}
+	var saved guestState
+	if err := store.Get(context.Background(), onboardingKey(entities.PlatformIMessage, sender), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Phase != phaseEmail || saved.PendingStatementID != "pending-1" {
+		t.Fatalf("phase %q pending %q", saved.Phase, saved.PendingStatementID)
+	}
+}
+
+// TestGuestMono_AhaAsksToOpenTheAccount pins the order: the spending picture
+// is delivered, and the account ask goes out in that same reply. Miriam does
+// not wait for a deposit or a transfer.
+func TestGuestMono_AhaAsksToOpenTheAccount(t *testing.T) {
+	fc := &fakeCompleter{responses: []fakeCompletion{
+		{text: "Pulling your spending.", toolCalls: []GuestToolCall{{Name: "get_bank_statement_analysis"}}},
+		{text: "You spent NGN 47k on eating out. That's about three days of income."},
+	}}
+	ob, store, _, _, _, _ := newBrainOnboarder(fc)
+	ob.SetGuestMonoLinker(&fakeMonoLinker{analysis: &entities.MonoSpendingAnalysis{
+		TransactionCount: 12,
+		TotalDebits:      47000,
+		ByCategory:       []entities.MonoCategoryBreakdown{{Category: "Eating out", Amount: 47000, Count: 8}},
+	}})
+	sender := "+15552111"
+	token := "guest-token"
+	st := guestState{Phase: phaseConverse, MonoLinked: true, GuestToken: token}
+	if err := store.Set(context.Background(), onboardingKey(entities.PlatformIMessage, sender), st, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	reply := step(t, ob, sender, "ok show me")
+	if !strings.Contains(reply, "47k") {
+		t.Fatalf("expected the aha in the reply, got: %q", reply)
+	}
+	if !strings.Contains(strings.ToLower(reply), "email") {
+		t.Fatalf("expected the account ask in the same reply, got: %q", reply)
+	}
+	var saved guestState
+	if err := store.Get(context.Background(), onboardingKey(entities.PlatformIMessage, sender), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Phase != phaseEmail {
+		t.Fatalf("expected awaiting_email after the aha, got %q", saved.Phase)
 	}
 }
 
 // TestGuestMono_MarkLinkedFlipsFlag pins that completing the bank link flips the
 // session so the guest brain can deliver the aha on the next turn.
 func TestGuestMono_MarkLinkedFlipsFlag(t *testing.T) {
-	fc := &fakeCompleter{default_: fakeCompletion{
-		text:      "Want me to look at your real spending?",
-		toolCalls: []GuestToolCall{{Name: "connect_bank"}},
-	}}
-	ob, store, _, _, _, _ := newBrainOnboarder(fc)
-	ob.SetGuestMonoLinker(&fakeMonoLinker{initiateURL: "https://mono.example/connect/abc"})
-
-	step(t, ob, "+15552102", "yes")
-
-	var st guestState
+	ob, store, _, _, _, _ := newTestOnboarder()
 	key := onboardingKey(entities.PlatformIMessage, "+15552102")
-	if err := store.Get(context.Background(), key, &st); err != nil {
-		t.Fatalf("session not persisted: %v", err)
+	if err := store.Set(context.Background(), key, guestState{Phase: phaseConverse, GuestToken: "guest-token"}, 0); err != nil {
+		t.Fatal(err)
 	}
-	if st.GuestToken == "" {
-		t.Fatal("expected a guest token")
+	if err := store.Set(context.Background(), guestTokenKey("guest-token"), key, 0); err != nil {
+		t.Fatal(err)
 	}
-	if err := ob.MarkGuestMonoLinked(context.Background(), st.GuestToken); err != nil {
+	if err := ob.MarkGuestMonoLinked(context.Background(), "guest-token"); err != nil {
 		t.Fatalf("MarkGuestMonoLinked: %v", err)
 	}
+	var st guestState
 	if err := store.Get(context.Background(), key, &st); err != nil {
 		t.Fatalf("session reload: %v", err)
 	}
@@ -107,13 +175,11 @@ func TestGuestMono_MarkLinkedFlipsFlag(t *testing.T) {
 // grounded in actual numbers.
 func TestGuestMono_AnalysisDeliversAha(t *testing.T) {
 	fc := &fakeCompleter{responses: []fakeCompletion{
-		{text: "(link)", toolCalls: []GuestToolCall{{Name: "connect_bank"}}},
-		{text: "(analysis)", toolCalls: []GuestToolCall{{Name: "get_bank_statement_analysis"}}},
+		{text: "Pulling it.", toolCalls: []GuestToolCall{{Name: "get_bank_statement_analysis"}}},
 		{text: "See that? You spent 47k on eating out. Worth it? Maybe. But now you know."},
 	}}
 	ob, store, _, _, _, _ := newBrainOnboarder(fc)
 	ob.SetGuestMonoLinker(&fakeMonoLinker{
-		initiateURL: "https://mono.example/connect/abc",
 		analysis: &entities.MonoSpendingAnalysis{
 			TotalCredits:     150000,
 			TotalDebits:      120000,
@@ -123,17 +189,8 @@ func TestGuestMono_AnalysisDeliversAha(t *testing.T) {
 	})
 
 	key := onboardingKey(entities.PlatformIMessage, "+15552103")
-	step(t, ob, "+15552103", "yes, look at my spending")
-
-	var st guestState
-	if err := store.Get(context.Background(), key, &st); err != nil {
-		t.Fatalf("session: %v", err)
-	}
-	if st.GuestToken == "" {
-		t.Fatal("expected guest token")
-	}
-	if err := ob.MarkGuestMonoLinked(context.Background(), st.GuestToken); err != nil {
-		t.Fatalf("mark linked: %v", err)
+	if err := store.Set(context.Background(), key, guestState{Phase: phaseConverse, MonoLinked: true, GuestToken: "guest-token"}, 0); err != nil {
+		t.Fatal(err)
 	}
 
 	reply := step(t, ob, "+15552103", "ok what do you see")
@@ -141,6 +198,7 @@ func TestGuestMono_AnalysisDeliversAha(t *testing.T) {
 		t.Fatalf("expected the aha reply grounded in the analysis, got: %q", reply)
 	}
 
+	var st guestState
 	if err := store.Get(context.Background(), key, &st); err != nil {
 		t.Fatalf("session reload: %v", err)
 	}
@@ -154,28 +212,24 @@ func TestGuestMono_AnalysisDeliversAha(t *testing.T) {
 // relationship.
 func TestGuestMono_AttachOnSignup(t *testing.T) {
 	fc := &fakeCompleter{responses: []fakeCompletion{
-		{text: "(link)", toolCalls: []GuestToolCall{{Name: "connect_bank"}}},
-		{text: "drop your number and I'll get your split running", toolCalls: []GuestToolCall{{Name: "start_signup", Arguments: map[string]interface{}{"reason": "first deposit"}}}},
+		{text: "I'll set the account up.", toolCalls: []GuestToolCall{{Name: "start_signup", Arguments: map[string]interface{}{"reason": "spending picture"}}}},
 	}}
 	ob, store, _, _, prov, linker := newBrainOnboarder(fc)
-	mono := &fakeMonoLinker{initiateURL: "https://mono.example/connect/abc"}
+	mono := &fakeMonoLinker{}
 	ob.SetGuestMonoLinker(mono)
 
 	key := onboardingKey(entities.PlatformIMessage, "+15552104")
-	step(t, ob, "+15552104", "yes, look at my spending")
-
+	if err := store.Set(context.Background(), key, guestState{Phase: phaseConverse, MonoLinked: true, GuestToken: "guest-token"}, 0); err != nil {
+		t.Fatal(err)
+	}
 	var st guestState
 	if err := store.Get(context.Background(), key, &st); err != nil {
-		t.Fatalf("session: %v", err)
-	}
-	if err := ob.MarkGuestMonoLinked(context.Background(), st.GuestToken); err != nil {
-		t.Fatalf("mark linked: %v", err)
+		t.Fatal(err)
 	}
 
-	// start_signup moves to the phone ask.
+	// The aha is already in hand. Signup opens the account.
 	step(t, ob, "+15552104", "I want to make my first deposit")
-	// Phone in its own message → OTP, then code, then consent.
-	step(t, ob, "+15552104", "+15551234567")
+	step(t, ob, "+15552104", "ada@example.com")
 	step(t, ob, "+15552104", "123456")
 	step(t, ob, "+15552104", "I agree")
 

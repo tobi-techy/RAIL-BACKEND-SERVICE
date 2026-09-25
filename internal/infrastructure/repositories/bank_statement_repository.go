@@ -3,11 +3,13 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/statement"
 	"github.com/shopspring/decimal"
 )
 
@@ -145,8 +147,8 @@ func (r *BankStatementRepository) CreateTransactions(ctx context.Context, txns [
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO bank_statement_transactions (id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		INSERT INTO bank_statement_transactions (id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT ON CONSTRAINT uq_bank_stmt_txns_dedup DO NOTHING`)
 	if err != nil {
 		return err
@@ -159,7 +161,10 @@ func (r *BankStatementRepository) CreateTransactions(ctx context.Context, txns [
 			t.ID = uuid.New()
 		}
 		t.CreatedAt = now
-		_, err = stmt.ExecContext(ctx, t.ID, t.UploadID, t.UserID, t.TransactionDate, t.Description, t.Amount, t.Currency, t.Type, t.Category, t.BalanceAfter, t.RawLine, t.CreatedAt)
+		if t.Recurrence == "" {
+			t.Recurrence = entities.StatementRecurrenceOneOff
+		}
+		_, err = stmt.ExecContext(ctx, t.ID, t.UploadID, t.UserID, t.TransactionDate, t.Description, t.Amount, t.Currency, t.Type, t.Category, t.Counterparty, t.IsEssential, t.CategoryConfidence, t.Recurrence, t.BalanceAfter, t.RawLine, t.CreatedAt)
 		if err != nil {
 			return fmt.Errorf("insert transaction: %w", err)
 		}
@@ -170,7 +175,7 @@ func (r *BankStatementRepository) CreateTransactions(ctx context.Context, txns [
 func (r *BankStatementRepository) GetTransactionsByUploadID(ctx context.Context, uploadID uuid.UUID) ([]*entities.BankStatementTransaction, error) {
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
-		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at
 		FROM bank_statement_transactions WHERE upload_id = $1 ORDER BY transaction_date DESC`, uploadID)
 	return txns, err
 }
@@ -184,7 +189,7 @@ func (r *BankStatementRepository) GetTransactionsByUploadIDPaginated(ctx context
 	}
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
-		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at
 		FROM bank_statement_transactions WHERE upload_id = $1 ORDER BY transaction_date DESC LIMIT $2 OFFSET $3`,
 		uploadID, limit, offset)
 	return txns, err
@@ -196,7 +201,7 @@ func (r *BankStatementRepository) GetTransactionsByUser(ctx context.Context, use
 	}
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
-		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at
 		FROM bank_statement_transactions WHERE user_id = $1 AND transaction_date >= $2 AND transaction_date < $3
 		ORDER BY transaction_date DESC LIMIT $4`, userID, start, end, limit)
 	return txns, err
@@ -211,6 +216,7 @@ func (r *BankStatementRepository) GetSpendingSummaryByCategory(ctx context.Conte
 	err := r.db.SelectContext(ctx, &rows, `
 		SELECT category, SUM(amount) as total FROM bank_statement_transactions
 		WHERE user_id = $1 AND type = 'debit' AND transaction_date >= $2 AND transaction_date < $3
+		  AND category_confidence >= 0.5
 		GROUP BY category ORDER BY total DESC`, userID, start, end)
 	if err != nil {
 		return nil, err
@@ -285,9 +291,17 @@ func (r *BankStatementRepository) GetTopRecurringRecipients(ctx context.Context,
 	}
 	var rows []row
 	err := r.db.SelectContext(ctx, &rows, `
-		SELECT description, COUNT(*) as cnt FROM bank_statement_transactions
-		WHERE user_id = $1 AND type = 'debit'
-		GROUP BY description HAVING COUNT(*) >= 3
+		SELECT label AS description, COUNT(*) as cnt FROM (
+			SELECT CASE
+				WHEN recurrence IN ('bill', 'subscription') AND counterparty <> '' THEN counterparty
+				WHEN recurrence = 'one_off' AND counterparty = '' AND category_confidence >= 0.7 THEN description
+				ELSE NULL
+			END AS label
+			FROM bank_statement_transactions
+			WHERE user_id = $1 AND type = 'debit'
+		) labeled
+		WHERE label IS NOT NULL
+		GROUP BY label HAVING COUNT(*) >= 3
 		ORDER BY cnt DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, nil, err
@@ -391,7 +405,7 @@ func (r *BankStatementRepository) FindMatchingTransaction(ctx context.Context, u
 
 	var txn entities.BankStatementTransaction
 	err := r.db.GetContext(ctx, &txn, `
-		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, balance_after, raw_line, created_at
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at
 		FROM bank_statement_transactions
 		WHERE user_id = $1 AND amount >= $2 AND amount <= $3 AND transaction_date >= $4 AND transaction_date <= $5
 		ORDER BY ABS(EXTRACT(EPOCH FROM (transaction_date - $6::timestamp))) ASC
@@ -403,35 +417,200 @@ func (r *BankStatementRepository) FindMatchingTransaction(ctx context.Context, u
 	return &txn, nil
 }
 
-// GetIncomeExpenseSummary returns total credits (income), total debits (expenses),
-// and the period covered by the user's uploaded bank statement transactions.
-// Totals are decimal.Decimal end-to-end so kobo-scale sums never lose precision;
-// NULL SUMs (no rows) come back as decimal.Zero.
+// GetIncomeExpenseSummary returns earned income and consumption spend, plus the
+// period covered by every stored statement line. Transfers, savings moves, and
+// loan payments are omitted from both totals. Lines below the advice confidence
+// floor are omitted from the money totals and still count toward the period.
 func (r *BankStatementRepository) GetIncomeExpenseSummary(ctx context.Context, userID uuid.UUID) (totalIncome, totalExpense decimal.Decimal, periodStart, periodEnd *time.Time, err error) {
 	type summary struct {
-		TotalIncome  decimal.NullDecimal `db:"total_income"`
-		TotalExpense decimal.NullDecimal `db:"total_expense"`
-		MinDate      *time.Time          `db:"min_date"`
-		MaxDate      *time.Time          `db:"max_date"`
+		MinDate *time.Time `db:"min_date"`
+		MaxDate *time.Time `db:"max_date"`
 	}
 	var s summary
 	err = r.db.GetContext(ctx, &s, `
-		SELECT
-			SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END) AS total_income,
-			SUM(CASE WHEN type = 'debit' THEN amount ELSE 0 END) AS total_expense,
-			MIN(transaction_date) AS min_date,
-			MAX(transaction_date) AS max_date
+		SELECT MIN(transaction_date) AS min_date, MAX(transaction_date) AS max_date
 		FROM bank_statement_transactions WHERE user_id = $1`, userID)
 	if err != nil {
 		return decimal.Zero, decimal.Zero, nil, nil, err
 	}
-	if s.TotalIncome.Valid {
-		totalIncome = s.TotalIncome.Decimal
-	}
-	if s.TotalExpense.Valid {
-		totalExpense = s.TotalExpense.Decimal
-	}
 	periodStart = s.MinDate
 	periodEnd = s.MaxDate
+
+	type row struct {
+		Type     string          `db:"type"`
+		Category string          `db:"category"`
+		Total    decimal.Decimal `db:"total"`
+	}
+	var rows []row
+	err = r.db.SelectContext(ctx, &rows, `
+		SELECT type, category, SUM(amount) AS total
+		FROM bank_statement_transactions
+		WHERE user_id = $1 AND category_confidence >= 0.5
+		GROUP BY type, category`, userID)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, nil, nil, err
+	}
+	lines := make([]statement.CashflowLine, len(rows))
+	for i, row := range rows {
+		lines[i] = statement.CashflowLine{Type: row.Type, Category: row.Category, Amount: row.Total}
+	}
+	totalIncome, totalExpense = statement.FoldCashflow(lines)
 	return totalIncome, totalExpense, periodStart, periodEnd, nil
+}
+
+// ListCategoryRules returns the user's statement corrections, longest pattern first.
+func (r *BankStatementRepository) ListCategoryRules(ctx context.Context, userID uuid.UUID) ([]entities.StatementCategoryRule, error) {
+	var rules []entities.StatementCategoryRule
+	err := r.db.SelectContext(ctx, &rules, `
+		SELECT id, user_id, match_type, pattern, bucket, created_at
+		FROM statement_category_rules
+		WHERE user_id = $1
+		ORDER BY length(pattern) DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return rules, nil
+}
+
+// SaveCategoryRule upserts a correction and rewrites matching stored lines.
+// updated is how many existing statement lines changed.
+func (r *BankStatementRepository) SaveCategoryRule(ctx context.Context, rule *entities.StatementCategoryRule, essential bool) (int, error) {
+	if rule.ID == uuid.Nil {
+		rule.ID = uuid.New()
+	}
+	matchType, pattern, bucket, vErr := statement.ValidateCategoryRule(rule.MatchType, rule.Pattern, rule.Bucket)
+	if vErr != nil {
+		return 0, vErr
+	}
+	rule.MatchType = matchType
+	rule.Pattern = pattern
+	rule.Bucket = bucket
+	rule.CreatedAt = time.Now().UTC()
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO statement_category_rules (id, user_id, match_type, pattern, bucket, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (user_id, match_type, pattern)
+		DO UPDATE SET bucket = EXCLUDED.bucket, created_at = EXCLUDED.created_at`,
+		rule.ID, rule.UserID, rule.MatchType, rule.Pattern, rule.Bucket, rule.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+
+	var result interface {
+		RowsAffected() (int64, error)
+	}
+	if rule.MatchType == entities.StatementRuleExact {
+		result, err = tx.ExecContext(ctx, `
+			UPDATE bank_statement_transactions
+			SET category = $1, is_essential = $2, category_confidence = 0.990
+			WHERE user_id = $3
+			  AND (lower(description) = lower($4) OR lower(counterparty) = lower($4))`,
+			rule.Bucket, essential, rule.UserID, rule.Pattern)
+	} else {
+		escaped := escapeLike(rule.Pattern)
+		result, err = tx.ExecContext(ctx, `
+			UPDATE bank_statement_transactions
+			SET category = $1, is_essential = $2, category_confidence = 0.990
+			WHERE user_id = $3
+			  AND (description ILIKE $4 ESCAPE '\' OR counterparty ILIKE $4 ESCAPE '\')`,
+			rule.Bucket, essential, rule.UserID, "%"+escaped+"%")
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+// BackfillUnderstanding fills counterparty, category, essential, and confidence
+// for lines stored before structured understanding existed. User corrections
+// (confidence >= 0.99) are left alone. Recurrence is recomputed for each
+// touched user. limit caps the batch; callers loop until it returns 0.
+func (r *BankStatementRepository) BackfillUnderstanding(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	type row struct {
+		ID          uuid.UUID `db:"id"`
+		UserID      uuid.UUID `db:"user_id"`
+		Description string    `db:"description"`
+		Category    string    `db:"category"`
+		Type        string    `db:"type"`
+	}
+	var rows []row
+	err := r.db.SelectContext(ctx, &rows, `
+		SELECT id, user_id, description, category, type
+		FROM bank_statement_transactions
+		WHERE counterparty = '' AND category_confidence < 0.99
+		ORDER BY created_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	users := make(map[uuid.UUID]struct{})
+	for _, row := range rows {
+		understood := statement.UnderstandLine(row.Category, row.Description, row.Type)
+		if understood.Counterparty == "" {
+			understood.Counterparty = "Unknown"
+		}
+		_, err = r.db.ExecContext(ctx, `
+			UPDATE bank_statement_transactions
+			SET category = $1, counterparty = $2, is_essential = $3, category_confidence = $4
+			WHERE id = $5 AND counterparty = '' AND category_confidence < 0.99`,
+			understood.Bucket, understood.Counterparty, understood.Essential, understood.Confidence, row.ID)
+		if err != nil {
+			return 0, err
+		}
+		users[row.UserID] = struct{}{}
+	}
+	for userID := range users {
+		if err := r.recomputeRecurrence(ctx, userID); err != nil {
+			return len(rows), err
+		}
+	}
+	return len(rows), nil
+}
+
+func (r *BankStatementRepository) recomputeRecurrence(ctx context.Context, userID uuid.UUID) error {
+	var txns []*entities.BankStatementTransaction
+	err := r.db.SelectContext(ctx, &txns, `
+		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at
+		FROM bank_statement_transactions
+		WHERE user_id = $1 AND type = 'debit'
+		ORDER BY transaction_date ASC
+		LIMIT 2000`, userID)
+	if err != nil {
+		return err
+	}
+	statement.AssignRecurrence(txns)
+	for _, txn := range txns {
+		if txn.Recurrence == "" {
+			txn.Recurrence = entities.StatementRecurrenceOneOff
+		}
+		if _, err := r.db.ExecContext(ctx, `
+			UPDATE bank_statement_transactions SET recurrence = $1 WHERE id = $2`,
+			txn.Recurrence, txn.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }

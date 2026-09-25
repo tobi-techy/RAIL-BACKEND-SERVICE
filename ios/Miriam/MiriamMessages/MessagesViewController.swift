@@ -2,13 +2,13 @@
 //
 // Tapping the live card (customizedMiniApp, live: true) opens THIS extension,
 // not Safari, not a webview. Flow: parse url → fetch payload (dead renders
-// dead) → compact UI → Face ID via the Secure Enclave key → approve POST →
+// dead) → compact UI → system passkey sheet (Face ID) → submit assertion →
 // render the SERVER verdict. The extension never shows "filled" unless the
-// API says completed.
+// API says completed. The login passkey (same RP ID) is the approval passkey:
+// no separate enrollment, iCloud-synced, survives Face ID re-enrollment.
 //
-// What this file never does: custom PIN sheets (biometrics-only in v1),
-// Safari for Face ID, executing on card open, or a labeled web button with
-// no LocalAuthentication.
+// What this file never does: custom PIN sheets, Safari for Face ID, executing
+// on card open, or a labeled web button with no passkey ceremony.
 
 import Messages
 import UIKit
@@ -18,7 +18,8 @@ final class MessagesViewController: MSMessagesAppViewController {
 
     private enum Screen {
         case loading
-        case pending(ConfirmationPayload, Bool) // payload, simulatorSoftwareKey
+        case pending(ConfirmationPayload)
+        case setup(String) // no passkey: in-app setup state, approve hidden
         case status(String) // working line, buttons disabled
         case done(String)
         case dead(String)
@@ -26,10 +27,8 @@ final class MessagesViewController: MSMessagesAppViewController {
 
     private var link: ConfirmLink?
     private var payload: ConfirmationPayload?
-    private var retriedReenroll = false
 
     private let api = ConfirmAPI()
-    private let gate = BiometricGate()
 
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()
@@ -48,7 +47,6 @@ final class MessagesViewController: MSMessagesAppViewController {
 
     override func willBecomeActive(with conversation: MSConversation) {
         super.willBecomeActive(with: conversation)
-        retriedReenroll = false
         guard let url = conversation.selectedMessage?.url else {
             render(.dead("No action link."))
             return
@@ -117,7 +115,7 @@ final class MessagesViewController: MSMessagesAppViewController {
             riskLabel.text = nil
             approveButton.isEnabled = false
             cancelButton.isEnabled = false
-        case let .pending(p, softwareKey):
+        case let .pending(p):
             payload = p
             titleLabel.text = p.title
             var lines: [String] = []
@@ -127,10 +125,14 @@ final class MessagesViewController: MSMessagesAppViewController {
             if let f = p.fee, !f.isEmpty { lines.append("Fee: \(f)") }
             detailLabel.text = lines.joined(separator: "\n")
             riskLabel.text = p.riskLine
-            if softwareKey {
-                statusLabel.text = "Simulator build — software key, never for real money."
-            }
             approveButton.isEnabled = true
+            cancelButton.isEnabled = true
+        case let .setup(line):
+            titleLabel.text = "Passkey needed"
+            detailLabel.text = nil
+            riskLabel.text = nil
+            statusLabel.text = line
+            approveButton.isEnabled = false
             cancelButton.isEnabled = true
         case let .status(line):
             statusLabel.text = line
@@ -159,14 +161,14 @@ final class MessagesViewController: MSMessagesAppViewController {
             if p.dead || !p.live || p.isTerminal {
                 render(.dead(deadCopy(for: p)))
             } else {
-                render(.pending(p, !DeviceKey.isSecureEnclaveAvailable))
+                render(.pending(p))
             }
         } catch {
             render(.dead("Couldn't load this request. Check connection and retry."))
         }
     }
 
-    // MARK: - Approve (the real Face ID call)
+    // MARK: - Approve (passkey ceremony + Face ID)
 
     @objc private func didTapApprove() {
         guard link != nil else { return }
@@ -180,8 +182,7 @@ final class MessagesViewController: MSMessagesAppViewController {
         Task {
             do {
                 let p = try await api.decide(
-                    link: link, approved: false, biometric: "cancel",
-                    device: ApproveBody(t: "", biometric: "", deviceKeyID: nil, signature: nil, enrollDeviceKey: nil)
+                    link: link, approved: false, biometric: "cancel"
                 )
                 render(.dead(deadCopy(for: p)))
             } catch {
@@ -193,77 +194,44 @@ final class MessagesViewController: MSMessagesAppViewController {
     private func approveOnce() async {
         guard let link else { return }
         do {
-            let device = try await biometricProof(for: link)
-            let p = try await api.decide(
-                link: link, approved: true, biometric: "pass", device: device
-            )
-            if let enrolled = p.enrolledKeyID, !enrolled.isEmpty {
-                KeychainRef.set(enrolled, forKey: Self.enrolledKeyIDDefaultsKey)
+            // 1. Ceremony bound server-side to this card (never consumes it).
+            let options: AssertionOptions
+            do {
+                options = try await api.fetchOptions(link: link)
+            } catch ConfirmAPIError.noPasskey {
+                render(.setup("This approval needs your Rail passkey — the same one you log in with. Set it up in the Rail app, then come back."))
+                return
             }
+            // 2. System passkey sheet: one tap + Face ID, userVerification=required.
+            guard let anchor = view.window else {
+                render(.dead("No window to present the passkey sheet."))
+                approveButton.isEnabled = true
+                return
+            }
+            let assertion = try await PasskeyAuth.authorize(options: options, anchor: anchor)
+            // 3. Submit: server verifies, consumes the token, executes.
+            render(.status("Approved — working on it…"))
+            let p = try await api.submitAssertion(link: link, assertion: assertion)
             switch p.state {
             case "completed":
                 render(.done(p.result ?? "Done."))
             case "failed":
-                render(.dead("Couldn't complete: \(p.result ?? "error")"))
+                render(.dead("Couldn’t complete: \(p.result ?? "error")"))
             case "rejected", "expired":
                 render(.dead(deadCopy(for: p)))
             default:
                 // Server accepted but still working: poll once via fetch.
-                render(.status("Approved — working on it…"))
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 await load()
             }
+        } catch PasskeyError.cancelled {
+            render(.status("Ready — tap Approve with Face ID when ready."))
+            approveButton.isEnabled = true
         } catch ConfirmAPIError.refused(let msg) {
-            // Unknown device key (biometry changed) → delete, clear, re-enroll ONCE.
-            if !retriedReenroll, msg.lowercased().contains("unknown device key") {
-                retriedReenroll = true
-                DeviceKey.deleteKey()
-                KeychainRef.remove(forKey: Self.enrolledKeyIDDefaultsKey)
-                render(.status("Face changed — confirming again…"))
-                await approveOnce()
-            } else {
-                render(.dead(msg))
-            }
+            render(.dead(msg))
         } catch {
             render(.dead("Something went wrong. Nothing moved unless the card says Done."))
             approveButton.isEnabled = true
         }
     }
-
-    // The single Face ID prompt per approval lives inside DeviceKey.sign
-    // (Enclave access control). The explicit prompt below runs ONLY on first
-    // enrollment, where no key exists to sign with yet.
-    private func biometricProof(for link: ConfirmLink) async throws -> ApproveBody {
-        guard gate.canEvaluateBiometrics() || !DeviceKey.isSecureEnclaveAvailable else {
-            throw ConfirmAPIError.refused("Face ID isn't available on this device.")
-        }
-        let knownKeyID = KeychainRef.string(forKey: Self.enrolledKeyIDDefaultsKey)
-        if let knownKeyID, (try? DeviceKey.existing()) != nil {
-            let message = signedMessage(actionID: link.actionID, expiryUnix: link.expiryUnix)
-            let sig = try DeviceKey.sign(message: message)
-            return ApproveBody(
-                // "pass": Face ID just ran — via Enclave access control inside
-                // sign(). The server rejects an empty biometric whenever
-                // device material is attached (fail-closed).
-                t: "", biometric: "pass",
-                deviceKeyID: knownKeyID,
-                signature: sig.base64EncodedString(),
-                enrollDeviceKey: nil
-            )
-        }
-        // First approval from this device: explicit Face ID, then enroll.
-        // The biometric verdict here is client-asserted; the server binds the
-        // key to the single-use token and audits the enrollment.
-        let title = payload?.title ?? "Approve this action"
-        let ok = try await gate.authenticate(reason: title)
-        guard ok else { throw ConfirmAPIError.refused("Face ID was cancelled.") }
-        let spki = try DeviceKey.publicKeySPKI()
-        return ApproveBody(
-            t: "", biometric: "pass",
-            deviceKeyID: nil, signature: nil,
-            enrollDeviceKey: spki.base64EncodedString()
-        )
-    }
-
-    private static let enrolledKeyIDDefaultsKey = "miriam.enrolledDeviceKeyID"
 }

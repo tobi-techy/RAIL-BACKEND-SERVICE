@@ -88,7 +88,7 @@ func (c MiriamSettleConfig) base() string {
 
 // settleRequest is what Go POSTs to Miriam POST /api/v1/chat/settle.
 // Assurance tells Miriam how strongly the approve is bound to the device
-// owner: token_only | enrolled | secure_enclave. Miriam records it on the
+// owner: token_only | passkey. Miriam records it on the
 // receipt audit; policy may treat token_only as a weaker factor.
 type settleRequest struct {
 	ConfirmID    string `json:"confirm_id"`

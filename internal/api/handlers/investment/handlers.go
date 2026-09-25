@@ -422,6 +422,28 @@ func (h *Handlers) EnrollPrepare(c *gin.Context) {
 	h.respondAction(c, response.Status, response)
 }
 
+// Contribute adds USDC to a portfolio the user is already enrolled in.
+// POST /investments/contributions
+func (h *Handlers) Contribute(c *gin.Context) {
+	userID, ok := h.user(c)
+	if !ok {
+		return
+	}
+	req := &investmentsvc.UserContributeRequest{}
+	if err := c.ShouldBindJSON(req); err != nil {
+		common.RespondBadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	req.ConfirmationToken = h.confirmationToken(c, req.ConfirmationToken)
+
+	response, err := h.service.Contribute(c.Request.Context(), userID, req, h.actor(c))
+	if err != nil {
+		h.respond(c, err, response)
+		return
+	}
+	h.respondAction(c, response.Status, response)
+}
+
 // EnrollComplete submits the wallet-signed transaction (stage 2, idempotent
 // on flowId), persists the enrollment, starts automation, and funds when an
 // amount was bound. This is confirmation 2 of 2: it needs its own token bound

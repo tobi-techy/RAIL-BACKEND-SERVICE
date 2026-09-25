@@ -122,3 +122,31 @@ class TestPipeline:
         assert result.tx_type == "airtime"
         assert result.bank is None  # MTN isn't a bank
         assert result.confidence > 0.5
+        assert result.category_l1 == "Housing"
+        assert result.spend_bucket == "airtime"
+
+    def test_pos_shoprite_is_groceries_not_the_bank(self):
+        pipeline = EnrichmentPipeline(model=None)
+        result = pipeline.enrich("POS PURCHASE SHOPRITE LEKKI GTBank")
+        assert result.spend_bucket == "groceries"
+        assert result.category_l1 == "Food & Drink"
+        assert "gtbank" not in result.counterparty.lower()
+
+    def test_nip_transfer_names_the_person(self):
+        pipeline = EnrichmentPipeline(model=None)
+        result = pipeline.enrich("NIP GTB/OBADEJO/0123456789/TRANSFER")
+        assert result.spend_bucket == "transfer_out"
+        assert result.counterparty.lower() == "obadejo"
+
+    def test_unknown_narration_is_explicitly_uncategorized(self):
+        pipeline = EnrichmentPipeline(model=None)
+        result = pipeline.enrich("SOME RANDOM TEXT 12345")
+        assert result.category_l1 == "Uncategorized"
+        assert result.spend_bucket == "other"
+        assert result.confidence <= 0.25
+
+    def test_betting_not_left_blank(self):
+        pipeline = EnrichmentPipeline(model=None)
+        result = pipeline.enrich("WEB BET9JA/012345")
+        assert result.spend_bucket == "betting"
+        assert result.category_l2 == "Betting"

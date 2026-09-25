@@ -294,7 +294,7 @@ class BackendPostError extends Error {
   }
 }
 
-async function postToBackendOnce(path: string, body: unknown, attempt: number): Promise<void> {
+async function postToBackendOnce(path: string, body: unknown, attempt: number, timeoutMs: number): Promise<void> {
   const url = `${config.RAIL_BACKEND_URL}${path}`;
   // The attempt counter travels inside the signed body, not a header, so the
   // backend can trust it. It tells the backend whether a redelivery is still
@@ -318,7 +318,7 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number): 
         ...hmacHeaders,
       },
       body: payload,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new BackendPostError(path);
@@ -331,10 +331,21 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number): 
   }
 }
 
+function backendTimeoutMs(body: unknown): number {
+  // A statement PDF is read before the reply is sent. Text stays on the short
+  // timeout. 130s covers extraction plus one model pass plus Miriam's answer.
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const doc = body as { is_document?: boolean };
+    if (doc.is_document) return 150_000;
+  }
+  return 15_000;
+}
+
 async function postToBackend(path: string, body: unknown): Promise<void> {
+  const timeoutMs = backendTimeoutMs(body);
   for (let attempt = 1; ; attempt++) {
     try {
-      await postToBackendOnce(path, body, attempt);
+      await postToBackendOnce(path, body, attempt, timeoutMs);
       return;
     } catch (err) {
       const status = err instanceof BackendPostError ? err.status : undefined;

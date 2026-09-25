@@ -3,6 +3,7 @@ package di
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -403,7 +404,7 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 			FundingPrivateKey:   c.Config.Brij.FundingPrivateKey,
 			HTTPTimeout:         time.Duration(c.Config.Brij.HTTPTimeout) * time.Second,
 			MaxRetries:          c.Config.Brij.MaxRetries,
-			MaxPaymentBaseUnits: int64(c.Config.Brij.MaxEscrowUSD * 1_000_000),
+			MaxPaymentBaseUnits: int64(math.Round(c.Config.Brij.MaxEscrowUSD * 1_000_000)),
 		}, c.ZapLog)
 		if err != nil {
 			c.ZapLog.Fatal("failed to initialize BRIJ client", zap.Error(err))

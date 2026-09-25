@@ -130,6 +130,65 @@ func TestSearchFlightsIsBounded(t *testing.T) {
 	}
 }
 
+// TestSearchFlightsRejectsBadInput verifies malformed routes/dates fail before
+// the x402-paid call (a 400 after payment still settles the micropayment).
+func TestSearchFlightsRejectsBadInput(t *testing.T) {
+	priv, err := solana.NewRandomPrivateKey()
+	if err != nil {
+		t.Fatalf("keypair: %v", err)
+	}
+	client, err := brij.NewClient(brij.Config{BaseURL: "http://127.0.0.1:1", FundingPrivateKey: priv.String()}, zap.NewNop())
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	svc := NewService(nil, client, Config{}, zap.NewNop())
+	cases := []struct {
+		name               string
+		origin, dest, date string
+	}{
+		{"short origin", "LO", "ABV", "2026-12-01"},
+		{"numeric dest", "LOS", "AB1", "2026-12-01"},
+		{"empty origin", "", "ABV", "2026-12-01"},
+		{"malformed date", "LOS", "ABV", "12/01/2026"},
+		{"empty date", "LOS", "ABV", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.SearchFlights(context.Background(), tc.origin, tc.dest, tc.date, 1); err == nil {
+				t.Fatal("expected a validation error before any HTTP call")
+			}
+		})
+	}
+}
+
+// TestValidatePassengerRejectsImpossibleDate verifies shape-valid but
+// nonexistent dates (2026-13-45) fail before any money moves.
+func TestValidatePassengerRejectsImpossibleDate(t *testing.T) {
+	p := brij.PassengerInput{
+		GivenName: "Ada", FamilyName: "Lovelace", BornOn: "2026-13-45",
+		Title: "ms", Gender: "f", Email: "a@example.com", PhoneNumber: "+447400123456",
+	}
+	if err := validatePassenger(&p); err == nil {
+		t.Fatal("impossible birth date accepted")
+	}
+	p.BornOn = "1990-04-12"
+	if err := validatePassenger(&p); err != nil {
+		t.Fatalf("valid passenger rejected: %v", err)
+	}
+}
+
+// TestValidateTravelDocumentExpiryToday verifies a passport expiring today is
+// still accepted (midnight-parsed expiry is always "before now" as an instant).
+func TestValidateTravelDocumentExpiryToday(t *testing.T) {
+	p := brij.PassengerInput{
+		Nationality: "GB", PassportNumber: "123456789",
+		PassportExpiry: time.Now().Format("2006-01-02"),
+	}
+	if err := validateTravelDocument(&p); err != nil {
+		t.Fatalf("passport expiring today rejected: %v", err)
+	}
+}
+
 // TestSearchFlightsDefaultsAdults verifies adults defaults to 1 when omitted.
 func TestSearchFlightsDefaultsAdults(t *testing.T) {
 	var sent map[string]interface{}

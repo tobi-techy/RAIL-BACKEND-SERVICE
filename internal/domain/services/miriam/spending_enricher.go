@@ -62,26 +62,52 @@ func (e *SpendingEnricher) EnrichTransactions(ctx context.Context, txns []entiti
 			if r.IsEssential {
 				enriched[i].IsEssential = &r.IsEssential
 			}
+			if r.SpendBucket != "" && isGenericCategory(t.Category) {
+				enriched[i].Category = r.SpendBucket
+			}
 		}
 	}
 
 	return enriched
 }
 
-// buildRawDescription constructs a synthetic raw description from a SpendingTransaction
-// that the ML sidecar can classify. Format: "CATEGORY SOURCE AMOUNT"
+// buildRawDescription is the narration the enrichment sidecar classifies.
+// The merchant (Source) leads. Putting the category first ("groceries Shoprite")
+// made brand lookup miss the shop. Amounts are omitted because they are not
+// part of the merchant name and the trailing-number cleaner strips them anyway.
 func buildRawDescription(t entities.SpendingTransaction) string {
-	var parts []string
-	if t.Category != "" {
-		parts = append(parts, t.Category)
+	source := strings.TrimSpace(t.Source)
+	category := strings.TrimSpace(t.Category)
+	if source != "" && !isGenericSource(source) {
+		return source
 	}
-	if t.Source != "" {
-		parts = append(parts, t.Source)
+	if category != "" && !isGenericCategory(category) && source != "" {
+		return category + " " + source
 	}
-	if !t.Amount.IsZero() {
-		parts = append(parts, t.Amount.StringFixed(2))
+	if source != "" {
+		return source
 	}
-	return strings.Join(parts, " ")
+	return category
+}
+
+func isGenericSource(source string) bool {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", "card", "card spend", "withdrawal", "withdrawals", "p2p", "p2p transfer",
+		"transfer", "spend", "rail", "unknown", "debit", "outflow":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGenericCategory(category string) bool {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "", "other", "uncategorized", "unknown", "card", "card spend", "withdrawal",
+		"withdrawals", "p2p", "spend", "debit", "general":
+		return true
+	default:
+		return false
+	}
 }
 
 // MergeEnrichedIntoSpending merges enrichment data from miriam_enriched_transactions
