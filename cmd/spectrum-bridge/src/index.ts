@@ -22,6 +22,7 @@ import {
   routeInboundContent,
   type InboundPayload,
 } from "./inbound";
+import { aliasProviderPlatformKeys } from "./platform-alias";
 
 const config = loadConfig();
 const log = getLogger();
@@ -752,6 +753,23 @@ async function start() {
 
   spectrumAgent = agent;
   webhookAgent = agent;
+
+  // The SDK map is keyed by the provider's display name ("iMessage"). Live
+  // webhook envelopes use "imessage". Without this alias the SDK returns 200
+  // and never calls handleInbound, so the text gets no reply.
+  const platformMap = (
+    agent as { __internal?: { platforms?: Map<string, unknown> } }
+  ).__internal?.platforms;
+  if (platformMap) {
+    const aliases = aliasProviderPlatformKeys(platformMap);
+    if (aliases.length > 0) {
+      log.info({ aliases }, "aliased webhook platform keys");
+    }
+  } else {
+    log.warn(
+      "spectrum agent exposed no platform map; lowercase webhook platforms will be dropped",
+    );
+  }
 
   // Bind cold-handle rehydration now that the platform instance exists.
   // im.space.get is a purely local construction on the remote provider —
