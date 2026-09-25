@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -15,9 +15,9 @@ import (
 type InstantFundingStatus string
 
 const (
-	InstantFundingStatusActive   InstantFundingStatus = "active"
-	InstantFundingStatusSettled  InstantFundingStatus = "settled"
-	InstantFundingStatusRepaid   InstantFundingStatus = "repaid"
+	InstantFundingStatusActive  InstantFundingStatus = "active"
+	InstantFundingStatusSettled InstantFundingStatus = "settled"
+	InstantFundingStatusRepaid  InstantFundingStatus = "repaid"
 )
 
 // InstantFundingLimits defines limits based on account age

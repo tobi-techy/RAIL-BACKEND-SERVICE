@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/logger"
+	"github.com/shopspring/decimal"
 )
 
 // TransactionHistoryService provides unified transaction history across all types
@@ -32,21 +32,21 @@ type LedgerRepository interface {
 
 // UnifiedTransaction represents a transaction in the unified history
 type UnifiedTransaction struct {
-	ID              uuid.UUID       `json:"id"`
-	UserID          uuid.UUID       `json:"user_id"`
-	Type            string          `json:"type"` // deposit, withdrawal, investment, conversion, transfer
-	Status          string          `json:"status"`
-	Amount          decimal.Decimal `json:"amount"`
-	Currency        string          `json:"currency"`
-	Description     string          `json:"description,omitempty"`
-	ReferenceID     *uuid.UUID      `json:"reference_id,omitempty"`
-	ReferenceType   string          `json:"reference_type,omitempty"`
-	Chain           string          `json:"chain,omitempty"`
-	TxHash          string          `json:"tx_hash,omitempty"`
-	Address         string          `json:"address,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
-	Metadata        map[string]any  `json:"metadata,omitempty"`
+	ID            uuid.UUID       `json:"id"`
+	UserID        uuid.UUID       `json:"user_id"`
+	Type          string          `json:"type"` // deposit, withdrawal, investment, conversion, transfer
+	Status        string          `json:"status"`
+	Amount        decimal.Decimal `json:"amount"`
+	Currency      string          `json:"currency"`
+	Description   string          `json:"description,omitempty"`
+	ReferenceID   *uuid.UUID      `json:"reference_id,omitempty"`
+	ReferenceType string          `json:"reference_type,omitempty"`
+	Chain         string          `json:"chain,omitempty"`
+	TxHash        string          `json:"tx_hash,omitempty"`
+	Address       string          `json:"address,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
+	Metadata      map[string]any  `json:"metadata,omitempty"`
 }
 
 // TransactionHistoryResponse contains paginated transaction history
@@ -251,7 +251,7 @@ func (s *TransactionHistoryService) withdrawalToUnified(w *entities.Withdrawal) 
 
 func (s *TransactionHistoryService) ledgerTxToUnified(tx *entities.LedgerTransaction) *UnifiedTransaction {
 	txType := s.mapLedgerType(tx.TransactionType)
-	
+
 	var completedAt *time.Time
 	if tx.Status == entities.TransactionStatusCompleted {
 		t := tx.CreatedAt
