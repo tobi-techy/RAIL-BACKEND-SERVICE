@@ -535,7 +535,7 @@ func (s *Service) CompleteUserEnrollment(
 			s.log.Error("user enrollment funding leg failed",
 				"enrollment_id", enrollment.ID.String(), "error", err)
 			return &entities.InvestmentEnrollResponse{
-				Status:     entities.InvestmentActionCompleted,
+				Status:     entities.InvestmentActionFailed,
 				Enrollment: enrollment,
 				Policy:     decision,
 				Funding: &entities.InvestmentFundingTransfer{
@@ -545,7 +545,7 @@ func (s *Service) CompleteUserEnrollment(
 					Status:        "FAILED",
 					FailureReason: err.Error(),
 				},
-			}, nil
+			}, fmt.Errorf("enrollment funding failed: %w", err)
 		}
 		_ = s.SyncEnrollment(ctx, enrollment.ID)
 	}
@@ -648,16 +648,21 @@ func (s *Service) Contribute(
 		}, nil
 	}
 
+	// Idempotency: a caller-supplied key makes retries safe. The default is
+	// unique per request (never derived from enrollment+amount) so two
+	// legitimate top-ups of the same amount can never dedupe each other.
+	// Callers that need safe retries must send idempotency_key.
 	key := strings.TrimSpace(req.IdempotencyKey)
 	if key == "" {
-		key = fmt.Sprintf("invest-contribute-%s-%s", enrollment.ID.String(), req.AmountUSD.String())
+		key = "invest-contribute-" + uuid.NewString()
 	}
 	transfer, err := s.Fund(ctx, userID, enrollment.ID, req.AmountUSD, source, key, actor)
 	if err != nil {
-		// The portfolio exists. Report the funding failure on the body so the
-		// caller can explain it instead of treating the whole request as lost.
+		// The portfolio exists but the money did not move. FAILED + non-nil
+		// error so handlers answer 5xx with the reason on the body — never
+		// a silent COMPLETED the client mistakes for funded.
 		return &UserContributeResponse{
-			Status:     entities.InvestmentActionCompleted,
+			Status:     entities.InvestmentActionFailed,
 			Enrollment: enrollment,
 			Policy:     decision,
 			Funding: &entities.InvestmentFundingTransfer{
@@ -667,7 +672,7 @@ func (s *Service) Contribute(
 				Status:        "FAILED",
 				FailureReason: err.Error(),
 			},
-		}, nil
+		}, fmt.Errorf("contribution funding failed: %w", err)
 	}
 	_ = s.SyncEnrollment(ctx, enrollment.ID)
 	return &UserContributeResponse{

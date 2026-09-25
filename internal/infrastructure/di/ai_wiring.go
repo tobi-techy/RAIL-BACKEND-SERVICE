@@ -685,7 +685,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 			agentDeps.WithdrawalHistory = &coreWithdrawalHistoryAdapter{withdrawalRepo: c.WithdrawalRepo}
 
 			// Bank statement context + analysis
-			if c.BankStatementRepo != nil {
+			if c.BankStatementRepo != nil && c.BankStatementRepo.Available() {
 				inner := aiservice.NewBankStatementContextProvider(c.BankStatementRepo)
 				agentDeps.BankStatementCtx = &coreBankStatementContextAdapter{inner: inner}
 				analysisAdapter := aiservice.NewBankStatementAnalysisAdapter(c.BankStatementRepo)

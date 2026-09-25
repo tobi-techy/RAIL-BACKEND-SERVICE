@@ -186,13 +186,15 @@ func (s *Service) Enroll(
 		funding, err = s.fundEnrollment(ctx, userID, enrollment, amount, normaliseFundingSource(req.Source), req.IdempotencyKey, actor)
 		if err != nil {
 			// The portfolio exists and is auditable; the funding leg failed and
-			// is reported honestly rather than swallowed.
+			// is reported honestly rather than swallowed. FAILED + non-nil
+			// error so handlers answer 5xx with the reason on the body —
+			// never a silent COMPLETED the client mistakes for funded.
 			s.log.Error("enrollment funded later: funding leg failed",
 				"enrollment_id", enrollment.ID.String(),
 				"user_id", userID.String(),
 				"error", err)
 			return &entities.InvestmentEnrollResponse{
-				Status:     entities.InvestmentActionCompleted,
+				Status:     entities.InvestmentActionFailed,
 				Enrollment: enrollment,
 				Preview:    preview,
 				Policy:     decision,
@@ -203,7 +205,7 @@ func (s *Service) Enroll(
 					Status:        "FAILED",
 					FailureReason: err.Error(),
 				},
-			}, nil
+			}, fmt.Errorf("enrollment funding failed: %w", err)
 		}
 		// Refresh positions so the first answer after enrollment is grounded.
 		_ = s.SyncEnrollment(ctx, enrollment.ID)

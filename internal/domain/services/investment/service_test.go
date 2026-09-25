@@ -1104,7 +1104,9 @@ func TestEnrollReportsFundingFailureHonestly(t *testing.T) {
 
 	h.funding.failTransfer = errors.New("circle transfer rejected")
 	response, err := h.service.Enroll(context.Background(), h.userID, enroll, entities.InvestmentActorMiriam)
-	require.NoError(t, err, "a portfolio that exists is reported, not hidden")
+	require.Error(t, err, "a failed funding leg must surface an error, never silent COMPLETED")
+	require.NotNil(t, response)
+	assert.Equal(t, entities.InvestmentActionFailed, response.Status)
 	require.NotNil(t, response.Funding)
 	assert.Equal(t, "FAILED", response.Funding.Status)
 	assert.Contains(t, response.Funding.FailureReason, "circle transfer rejected")
@@ -1261,4 +1263,55 @@ func hasEvent(events []*entities.InvestmentAuditEvent, eventType string) bool {
 		}
 	}
 	return false
+}
+
+func TestContributeSameAmountTwiceFundsTwice(t *testing.T) {
+	h := newHarness(t)
+	strategy := h.confirmCreate(t, h.createRequest("USDC"))
+	enroll := &entities.InvestmentEnrollRequest{StrategyID: strategy.Strategy.ID.String(), AmountUSD: decimal.NewFromInt(100)}
+	staged, err := h.service.Enroll(context.Background(), h.userID, enroll, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	enroll.ConfirmationToken = staged.Confirmation.Token
+	_, err = h.service.Enroll(context.Background(), h.userID, enroll, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	base := h.funding.transfers
+
+	contribute := func() *UserContributeResponse {
+		req := &UserContributeRequest{StrategyID: strategy.Strategy.ID.String(), AmountUSD: decimal.NewFromInt(50)}
+		staged, err := h.service.Contribute(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+		require.NoError(t, err)
+		require.Equal(t, entities.InvestmentActionAwaitingConfirmation, staged.Status)
+		req.ConfirmationToken = staged.Confirmation.Token
+		done, err := h.service.Contribute(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+		require.NoError(t, err)
+		require.Equal(t, entities.InvestmentActionCompleted, done.Status)
+		return done
+	}
+	contribute()
+	contribute()
+	assert.Equal(t, base+2, h.funding.transfers, "two same-amount top-ups without keys must both move money")
+}
+
+func TestContributeReportsFundingFailureHonestly(t *testing.T) {
+	h := newHarness(t)
+	strategy := h.confirmCreate(t, h.createRequest("USDC"))
+	enroll := &entities.InvestmentEnrollRequest{StrategyID: strategy.Strategy.ID.String(), AmountUSD: decimal.NewFromInt(100)}
+	staged, err := h.service.Enroll(context.Background(), h.userID, enroll, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	enroll.ConfirmationToken = staged.Confirmation.Token
+	_, err = h.service.Enroll(context.Background(), h.userID, enroll, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+
+	h.funding.failTransfer = errors.New("circle transfer rejected")
+	req := &UserContributeRequest{StrategyID: strategy.Strategy.ID.String(), AmountUSD: decimal.NewFromInt(50)}
+	stagedC, err := h.service.Contribute(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	req.ConfirmationToken = stagedC.Confirmation.Token
+	resp, err := h.service.Contribute(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+	require.Error(t, err, "failed funding must surface an error, never silent COMPLETED")
+	require.NotNil(t, resp)
+	assert.Equal(t, entities.InvestmentActionFailed, resp.Status)
+	require.NotNil(t, resp.Funding)
+	assert.Equal(t, "FAILED", resp.Funding.Status)
+	assert.Contains(t, resp.Funding.FailureReason, "circle transfer rejected")
 }

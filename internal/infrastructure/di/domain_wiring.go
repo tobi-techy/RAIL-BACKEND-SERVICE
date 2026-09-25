@@ -2422,8 +2422,14 @@ func (c *Container) initializeDomainServices() error {
 
 	// Investing is always on. A missing Glider key or a rejected key stops
 	// startup so the API cannot advertise a money path that will not move funds.
+	// Dev without a key stays bootable (the engine is left unwired); every
+	// other environment fails closed.
 	if err := c.initializeInvestmentGliderServices(sqlxDB); err != nil {
-		return fmt.Errorf("investment (Glider) startup: %w", err)
+		if isDevEnv(c.Config.Environment) {
+			c.ZapLog.Warn("investment (Glider) initialization failed in dev; continuing unwired", zap.Error(err))
+		} else {
+			return fmt.Errorf("investment (Glider) startup: %w", err)
+		}
 	}
 
 	// Initialize the retirement vault. It must come after the investment engine

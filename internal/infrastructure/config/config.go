@@ -1087,6 +1087,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
 	}
 
+	// Back-compat: old config files used confirmation.require_device_signature.
+	// Honor it as strict-passkey mode so upgrades never silently weaken auth.
+	if !config.Confirmation.RequirePasskey && viper.GetBool("confirmation.require_device_signature") {
+		config.Confirmation.RequirePasskey = true
+	}
+
 	if strings.TrimSpace(config.Email.Provider) == "" && isDevEnvironment(config.Environment) {
 		config.Email.Provider = "unosend"
 	}
@@ -2400,6 +2406,9 @@ func validateBlendConfig(config *Config) error {
 // money by accident: the provider is always the real Glider API, so a
 // non-dev deployment must carry an API key.
 func validateInvestmentGliderConfig(config *Config) error {
+	if v := strings.TrimSpace(os.Getenv("INVESTMENT_GLIDER_ENABLED")); strings.EqualFold(v, "false") || v == "0" {
+		return fmt.Errorf("INVESTMENT_GLIDER_ENABLED=false was removed: investing is always on; unset the variable")
+	}
 	inv := config.InvestmentGlider
 	if !isDevEnvironment(config.Environment) {
 		if strings.TrimSpace(inv.APIKey) == "" {

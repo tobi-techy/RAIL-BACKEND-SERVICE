@@ -609,6 +609,10 @@ func (h *Handlers) respondAction(c *gin.Context, status entities.InvestmentActio
 		c.JSON(http.StatusAccepted, payload)
 	case entities.InvestmentActionRejected:
 		c.JSON(http.StatusUnprocessableEntity, payload)
+	case entities.InvestmentActionFailed:
+		// 502: the money leg was attempted and did not move. The body
+		// carries FailureReason so the agent can explain, not invent.
+		c.JSON(http.StatusBadGateway, payload)
 	default:
 		common.RespondSuccess(c, payload)
 	}

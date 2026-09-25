@@ -21,6 +21,14 @@ func NewBankStatementRepository(db *sqlx.DB) *BankStatementRepository {
 	return &BankStatementRepository{db: db}
 }
 
+// Available reports whether the repo has a live DB. The DI layer wires the
+// repo unconditionally (typed-nil when sqlxDB is nil); callers must check
+// Available before use so correct_statement_category degrades to
+// "unavailable" instead of panicking on a nil *sqlx.DB.
+func (r *BankStatementRepository) Available() bool {
+	return r != nil && r.db != nil
+}
+
 func (r *BankStatementRepository) Create(ctx context.Context, upload *entities.BankStatementUpload) error {
 	if upload.ID == uuid.Nil {
 		upload.ID = uuid.New()
@@ -216,7 +224,7 @@ func (r *BankStatementRepository) GetSpendingSummaryByCategory(ctx context.Conte
 	err := r.db.SelectContext(ctx, &rows, `
 		SELECT category, SUM(amount) as total FROM bank_statement_transactions
 		WHERE user_id = $1 AND type = 'debit' AND transaction_date >= $2 AND transaction_date < $3
-		  AND category_confidence >= 0.5
+		  AND COALESCE(category_confidence, 0.700) >= 0.5
 		GROUP BY category ORDER BY total DESC`, userID, start, end)
 	if err != nil {
 		return nil, err
@@ -293,8 +301,8 @@ func (r *BankStatementRepository) GetTopRecurringRecipients(ctx context.Context,
 	err := r.db.SelectContext(ctx, &rows, `
 		SELECT label AS description, COUNT(*) as cnt FROM (
 			SELECT CASE
-				WHEN recurrence IN ('bill', 'subscription') AND counterparty <> '' THEN counterparty
-				WHEN recurrence = 'one_off' AND counterparty = '' AND category_confidence >= 0.7 THEN description
+				WHEN recurrence IN ('bill', 'subscription') AND counterparty <> '' AND counterparty <> 'Unknown' THEN counterparty
+				WHEN recurrence = 'one_off' AND counterparty = '' AND COALESCE(category_confidence, 0.700) >= 0.7 THEN description
 				ELSE NULL
 			END AS label
 			FROM bank_statement_transactions
@@ -445,7 +453,7 @@ func (r *BankStatementRepository) GetIncomeExpenseSummary(ctx context.Context, u
 	err = r.db.SelectContext(ctx, &rows, `
 		SELECT type, category, SUM(amount) AS total
 		FROM bank_statement_transactions
-		WHERE user_id = $1 AND category_confidence >= 0.5
+		WHERE user_id = $1 AND COALESCE(category_confidence, 0.700) >= 0.5
 		GROUP BY type, category`, userID)
 	if err != nil {
 		return decimal.Zero, decimal.Zero, nil, nil, err
@@ -475,6 +483,9 @@ func (r *BankStatementRepository) ListCategoryRules(ctx context.Context, userID 
 // SaveCategoryRule upserts a correction and rewrites matching stored lines.
 // updated is how many existing statement lines changed.
 func (r *BankStatementRepository) SaveCategoryRule(ctx context.Context, rule *entities.StatementCategoryRule, essential bool) (int, error) {
+	if !r.Available() {
+		return 0, fmt.Errorf("statement category rules unavailable (no database)")
+	}
 	if rule.ID == uuid.Nil {
 		rule.ID = uuid.New()
 	}
@@ -528,6 +539,38 @@ func (r *BankStatementRepository) SaveCategoryRule(ctx context.Context, rule *en
 	if err != nil {
 		return 0, err
 	}
+	// Longest-pattern-wins: a broad contains-rule just overwrote rows that a
+	// narrower rule owned. Re-apply every longer rule so narrow beats broad
+	// in SQL exactly like ApplyCategoryRules does in memory.
+	var longer []entities.StatementCategoryRule
+	if err := tx.SelectContext(ctx, &longer, `
+		SELECT id, user_id, match_type, pattern, bucket, created_at
+		FROM statement_category_rules
+		WHERE user_id = $1 AND length(pattern) > length($2)`,
+		rule.UserID, rule.Pattern); err == nil {
+		for _, lr := range longer {
+			lbucket := statement.NormalizeStatementCategory(lr.Bucket, "", "debit")
+			if lbucket == "" {
+				continue
+			}
+			if lr.MatchType == entities.StatementRuleExact {
+				_, _ = tx.ExecContext(ctx, `
+					UPDATE bank_statement_transactions
+					SET category = $1, category_confidence = 0.990
+					WHERE user_id = $2
+					  AND (lower(description) = lower($3) OR lower(counterparty) = lower($3))`,
+					lbucket, rule.UserID, lr.Pattern)
+			} else {
+				lesc := escapeLike(lr.Pattern)
+				_, _ = tx.ExecContext(ctx, `
+					UPDATE bank_statement_transactions
+					SET category = $1, category_confidence = 0.990
+					WHERE user_id = $2
+					  AND (description ILIKE $3 ESCAPE '\' OR counterparty ILIKE $3 ESCAPE '\')`,
+					lbucket, rule.UserID, "%"+lesc+"%")
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -553,7 +596,7 @@ func (r *BankStatementRepository) BackfillUnderstanding(ctx context.Context, lim
 	err := r.db.SelectContext(ctx, &rows, `
 		SELECT id, user_id, description, category, type
 		FROM bank_statement_transactions
-		WHERE counterparty = '' AND category_confidence < 0.99
+		WHERE (counterparty = '' OR counterparty = 'Unknown') AND COALESCE(category_confidence, 0) < 0.99
 		ORDER BY created_at ASC
 		LIMIT $1`, limit)
 	if err != nil {
@@ -562,13 +605,13 @@ func (r *BankStatementRepository) BackfillUnderstanding(ctx context.Context, lim
 	users := make(map[uuid.UUID]struct{})
 	for _, row := range rows {
 		understood := statement.UnderstandLine(row.Category, row.Description, row.Type)
-		if understood.Counterparty == "" {
-			understood.Counterparty = "Unknown"
-		}
+		// Never persist "Unknown": an empty counterparty falls back to the
+		// description for recurrence and keeps the one_off+'' branch alive.
+		// Existing 'Unknown' rows are cleaned to '' here.
 		_, err = r.db.ExecContext(ctx, `
 			UPDATE bank_statement_transactions
 			SET category = $1, counterparty = $2, is_essential = $3, category_confidence = $4
-			WHERE id = $5 AND counterparty = '' AND category_confidence < 0.99`,
+			WHERE id = $5 AND COALESCE(category_confidence, 0) < 0.99`,
 			understood.Bucket, understood.Counterparty, understood.Essential, understood.Confidence, row.ID)
 		if err != nil {
 			return 0, err
@@ -583,29 +626,60 @@ func (r *BankStatementRepository) BackfillUnderstanding(ctx context.Context, lim
 	return len(rows), nil
 }
 
+// RecomputeUserRecurrence refreshes bill/subscription flags across ALL of a
+// user's debit lines. Call after each upload so monthly cadence spanning
+// multiple uploads is detected — AssignRecurrence on the parse batch alone
+// only sees one statement and would leave every subscription as one_off.
+func (r *BankStatementRepository) RecomputeUserRecurrence(ctx context.Context, userID uuid.UUID) error {
+	return r.recomputeRecurrence(ctx, userID)
+}
+
 func (r *BankStatementRepository) recomputeRecurrence(ctx context.Context, userID uuid.UUID) error {
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
 		SELECT id, upload_id, user_id, transaction_date, description, amount, currency, type, category, counterparty, is_essential, category_confidence, recurrence, balance_after, raw_line, created_at
 		FROM bank_statement_transactions
 		WHERE user_id = $1 AND type = 'debit'
-		ORDER BY transaction_date ASC
-		LIMIT 2000`, userID)
+		ORDER BY transaction_date ASC`, userID)
 	if err != nil {
 		return err
 	}
 	statement.AssignRecurrence(txns)
-	for _, txn := range txns {
-		if txn.Recurrence == "" {
-			txn.Recurrence = entities.StatementRecurrenceOneOff
-		}
-		if _, err := r.db.ExecContext(ctx, `
-			UPDATE bank_statement_transactions SET recurrence = $1 WHERE id = $2`,
-			txn.Recurrence, txn.ID); err != nil {
-			return err
-		}
+	if len(txns) == 0 {
+		return nil
 	}
-	return nil
+	// Single batched update in one transaction: no per-row round trips,
+	// no half-updated recurrence on failure.
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	args := make([]any, 0, len(txns)*2+1)
+	var sb strings.Builder
+	sb.WriteString("UPDATE bank_statement_transactions SET recurrence = CASE id ")
+	for _, txn := range txns {
+		rec := txn.Recurrence
+		if rec == "" {
+			rec = entities.StatementRecurrenceOneOff
+		}
+		args = append(args, txn.ID, rec)
+		sb.WriteString(fmt.Sprintf("WHEN $%d THEN $%d ", len(args)-1, len(args)))
+	}
+	// WHERE id IN (...) with collected ids
+	idArgs := make([]any, 0, len(txns))
+	placeholders := make([]string, 0, len(txns))
+	base := len(args) + 1
+	for i, txn := range txns {
+		idArgs = append(idArgs, txn.ID)
+		placeholders = append(placeholders, fmt.Sprintf("$%d", base+i))
+	}
+	sb.WriteString("ELSE recurrence END WHERE id IN (" + strings.Join(placeholders, ",") + ")")
+	args = append(args, idArgs...)
+	if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func escapeLike(s string) string {

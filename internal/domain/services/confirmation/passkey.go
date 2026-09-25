@@ -3,6 +3,7 @@ package confirmation
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	webauthnSvc "github.com/rail-service/rail_service/internal/domain/services/webauthn"
 )
 
 // Assurance levels for an approval. The server never sees biometrics —
@@ -122,7 +124,7 @@ func (s *Service) AssertionOptions(ctx context.Context, userID, id uuid.UUID, to
 	}
 	options, session, err := s.txAssert.BeginTransactionAssertion(ctx, userID, email)
 	if err != nil {
-		if err.Error() == "no passkey enrolled" {
+		if errors.Is(err, webauthnSvc.ErrNoCredentials) || err.Error() == "no passkey enrolled" {
 			return nil, ErrNoPasskey
 		}
 		return nil, err
@@ -137,8 +139,80 @@ func (s *Service) AssertionOptions(ctx context.Context, userID, id uuid.UUID, to
 	}
 	s.txSessions[id] = txSession{session: *session, expires: expiry}
 	s.txMu.Unlock()
+	// Cross-replica fallback: persist the ceremony in the card row (shared
+	// Postgres) so an approve landing on another replica can still verify.
+	// Best-effort: in-memory is the fast path, DB is the fallback.
+	s.persistTxSession(ctx, id, session, expiry)
 	s.pruneTxSessions(s.now())
 	return options, nil
+}
+
+// persistTxSession stores the ceremony in the confirmation payload so any
+// replica can verify the approve. Reserved keys (_tx_*) are never rendered.
+func (s *Service) persistTxSession(ctx context.Context, id uuid.UUID, session *webauthn.SessionData, expiry time.Time) {
+	c, err := s.store.Load(ctx, id)
+	if err != nil {
+		return
+	}
+	raw, err := json.Marshal(session)
+	if err != nil {
+		return
+	}
+	if c.Payload == nil {
+		c.Payload = map[string]any{}
+	}
+	c.Payload["_tx_session"] = string(raw)
+	c.Payload["_tx_session_exp"] = expiry.UTC().Format(time.RFC3339)
+	_ = s.store.Save(ctx, c)
+}
+
+// loadTxSession returns the ceremony from memory, falling back to the
+// DB-persisted copy for cross-replica approves.
+func (s *Service) loadTxSession(ctx context.Context, id uuid.UUID) (webauthn.SessionData, bool) {
+	s.txMu.Lock()
+	sess, found := s.txSessions[id]
+	s.txMu.Unlock()
+	if found {
+		if s.now().Before(sess.expires) {
+			return sess.session, true
+		}
+		s.txMu.Lock()
+		delete(s.txSessions, id)
+		s.txMu.Unlock()
+		return webauthn.SessionData{}, false
+	}
+	c, err := s.store.Load(ctx, id)
+	if err != nil || c.Payload == nil {
+		return webauthn.SessionData{}, false
+	}
+	raw, _ := c.Payload["_tx_session"].(string)
+	expStr, _ := c.Payload["_tx_session_exp"].(string)
+	if raw == "" || expStr == "" {
+		return webauthn.SessionData{}, false
+	}
+	exp, err := time.Parse(time.RFC3339, expStr)
+	if err != nil || !s.now().Before(exp) {
+		return webauthn.SessionData{}, false
+	}
+	var out webauthn.SessionData
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return webauthn.SessionData{}, false
+	}
+	return out, true
+}
+
+// clearTxSession removes the ceremony from both memory and the persisted copy.
+func (s *Service) clearTxSession(ctx context.Context, id uuid.UUID) {
+	s.txMu.Lock()
+	delete(s.txSessions, id)
+	s.txMu.Unlock()
+	if c, err := s.store.Load(ctx, id); err == nil && c.Payload != nil {
+		if _, ok := c.Payload["_tx_session"]; ok {
+			delete(c.Payload, "_tx_session")
+			delete(c.Payload, "_tx_session_exp")
+			_ = s.store.Save(ctx, c)
+		}
+	}
 }
 
 // ApproveWithAssertion verifies a passkey assertion and, on success, runs
@@ -166,13 +240,8 @@ func (s *Service) ApproveWithAssertion(ctx context.Context, userID, id uuid.UUID
 	if s.txAssert == nil {
 		return nil, fmt.Errorf("passkey unavailable (fail-closed)")
 	}
-	s.txMu.Lock()
-	sess, found := s.txSessions[id]
-	s.txMu.Unlock()
-	if !found || !s.now().Before(sess.expires) {
-		s.txMu.Lock()
-		delete(s.txSessions, id)
-		s.txMu.Unlock()
+	sess, found := s.loadTxSession(ctx, id)
+	if !found {
 		return nil, fmt.Errorf("assertion ceremony expired — fetch fresh options")
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(assertion))
@@ -183,12 +252,10 @@ func (s *Service) ApproveWithAssertion(ctx context.Context, userID, id uuid.UUID
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.txAssert.FinishTransactionAssertion(ctx, userID, email, &sess.session, parsed); err != nil {
+	if _, err := s.txAssert.FinishTransactionAssertion(ctx, userID, email, &sess, parsed); err != nil {
 		return nil, fmt.Errorf("passkey verification failed: %w", err)
 	}
-	s.txMu.Lock()
-	delete(s.txSessions, id)
-	s.txMu.Unlock()
+	s.clearTxSession(ctx, id)
 	return s.claimAndExecute(ctx, userID, id, AssurancePasskey, "passkey verified (assurance=passkey)")
 }
 
