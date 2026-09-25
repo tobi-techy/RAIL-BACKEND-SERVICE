@@ -2,6 +2,7 @@ package funding
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,13 @@ func DefaultFundingConfig() *FundingConfig {
 		RateLimitWindow:       24 * time.Hour,
 	}
 }
+
+// ErrWebhookNotConfigured is returned when webhook signature validation is
+// invoked without a secret configured. It is a sentinel so callers can
+// distinguish "server misconfigured" from "sender forged/invalid signature"
+// with errors.Is. Set FundingConfig.WebhookSecret in every environment
+// (including local dev) that receives deposit webhooks.
+var ErrWebhookNotConfigured = errors.New("webhook signature validation is not configured: set FundingConfig.WebhookSecret")
 
 // DepositSecurityStore interface for deposit limit checks
 type DepositSecurityStore interface {
@@ -78,11 +86,13 @@ func (v *ValidationService) SetDepositSecurityStore(store DepositSecurityStore) 
 	v.depositSecurityStore = store
 }
 
-// ValidateWebhookSignature validates webhook signature
+// ValidateWebhookSignature validates webhook signature.
+// Fail-closed: if no webhook secret is configured, every call is rejected
+// with ErrWebhookNotConfigured. Failing open here would let anyone forge
+// deposit webhooks and credit funds.
 func (v *ValidationService) ValidateWebhookSignature(payload []byte, signature string, timestamp int64) error {
 	if v.webhookValidator == nil {
-		// No webhook secret configured - skip validation in development
-		return nil
+		return ErrWebhookNotConfigured
 	}
 	return v.webhookValidator.ValidateRequest(payload, signature, timestamp, "")
 }
