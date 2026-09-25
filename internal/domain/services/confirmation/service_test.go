@@ -228,6 +228,14 @@ func (e errStore) Load(ctx context.Context, id uuid.UUID) (*entities.Confirmatio
 	return nil, e.err
 }
 
+func (e errStore) MergePayloadKeys(ctx context.Context, id uuid.UUID, set map[string]any) error {
+	return e.err
+}
+
+func (e errStore) DeletePayloadKeys(ctx context.Context, id uuid.UUID, keys ...string) error {
+	return e.err
+}
+
 func (e errStore) Claim(ctx context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error) {
 	return nil, e.err
 }
@@ -306,5 +314,36 @@ func TestMarkExternalDoesNotResurrectCompleted(t *testing.T) {
 	}
 	if out.State != entities.ConfirmationCompleted {
 		t.Fatalf("completed card resurrected to %s", out.State)
+	}
+}
+
+func TestPayloadWritesDoNotResurrectBurnedToken(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	c, _, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Burn the single-use token the way an approval does.
+	if _, err := s.store.Claim(ctx, c.ID, "passkey"); err != nil {
+		t.Fatal(err)
+	}
+	// Late ceremony writes (the old Load+Save pattern) must not un-burn it.
+	if err := s.store.MergePayloadKeys(ctx, c.ID, map[string]any{"_tx_session": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.DeletePayloadKeys(ctx, c.ID, "_tx_session", "_tx_session_exp"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.store.Load(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TokenUsed {
+		t.Fatal("payload-only writes resurrected a burned single-use token")
+	}
+	if _, err := s.store.Claim(ctx, c.ID, ""); !errors.Is(err, ErrTokenConsumed) {
+		t.Fatalf("second claim must lose after payload writes, got %v", err)
 	}
 }

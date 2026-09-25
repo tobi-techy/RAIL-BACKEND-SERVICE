@@ -634,6 +634,12 @@ func (r *BankStatementRepository) RecomputeUserRecurrence(ctx context.Context, u
 	return r.recomputeRecurrence(ctx, userID)
 }
 
+// recurrenceUpdateBatchSize caps one CASE update at 2000 ids (6000 bind
+// params), far below the Postgres 65535-parameter limit. The select above
+// stays full-history — cadence detection needs every debit line — but the
+// writes are chunked so power users never fail the upload path.
+const recurrenceUpdateBatchSize = 2000
+
 func (r *BankStatementRepository) recomputeRecurrence(ctx context.Context, userID uuid.UUID) error {
 	var txns []*entities.BankStatementTransaction
 	err := r.db.SelectContext(ctx, &txns, `
@@ -644,40 +650,59 @@ func (r *BankStatementRepository) recomputeRecurrence(ctx context.Context, userI
 	if err != nil {
 		return err
 	}
-	statement.AssignRecurrence(txns)
 	if len(txns) == 0 {
 		return nil
 	}
-	// Single batched update in one transaction: no per-row round trips,
-	// no half-updated recurrence on failure.
-	tx, err := r.db.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
+	// Snapshot pre-recompute values: steady-state uploads change a handful
+	// of rows, so only changed rows are rewritten.
+	original := make(map[uuid.UUID]string, len(txns))
+	for _, txn := range txns {
+		original[txn.ID] = txn.Recurrence
 	}
-	defer tx.Rollback()
-	args := make([]any, 0, len(txns)*2+1)
-	var sb strings.Builder
-	sb.WriteString("UPDATE bank_statement_transactions SET recurrence = CASE id ")
+	statement.AssignRecurrence(txns)
+	changed := txns[:0]
 	for _, txn := range txns {
 		rec := txn.Recurrence
 		if rec == "" {
 			rec = entities.StatementRecurrenceOneOff
+			txn.Recurrence = rec
 		}
-		args = append(args, txn.ID, rec)
-		sb.WriteString(fmt.Sprintf("WHEN $%d THEN $%d ", len(args)-1, len(args)))
+		if rec != original[txn.ID] {
+			changed = append(changed, txn)
+		}
 	}
-	// WHERE id IN (...) with collected ids
-	idArgs := make([]any, 0, len(txns))
-	placeholders := make([]string, 0, len(txns))
-	base := len(args) + 1
-	for i, txn := range txns {
-		idArgs = append(idArgs, txn.ID)
-		placeholders = append(placeholders, fmt.Sprintf("$%d", base+i))
+	if len(changed) == 0 {
+		return nil
 	}
-	sb.WriteString("ELSE recurrence END WHERE id IN (" + strings.Join(placeholders, ",") + ")")
-	args = append(args, idArgs...)
-	if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+	// Batched CASE updates in one transaction: no per-row round trips,
+	// no half-updated recurrence on failure, no parameter-limit cliff.
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
 		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // Commit runs below; rollback only matters on failure paths.
+	for start := 0; start < len(changed); start += recurrenceUpdateBatchSize {
+		end := start + recurrenceUpdateBatchSize
+		if end > len(changed) {
+			end = len(changed)
+		}
+		batch := changed[start:end]
+		args := make([]any, 0, len(batch)*3)
+		var sb strings.Builder
+		sb.WriteString("UPDATE bank_statement_transactions SET recurrence = CASE id ")
+		for _, txn := range batch {
+			args = append(args, txn.ID, txn.Recurrence)
+			sb.WriteString(fmt.Sprintf("WHEN $%d THEN $%d ", len(args)-1, len(args)))
+		}
+		placeholders := make([]string, 0, len(batch))
+		for _, txn := range batch {
+			args = append(args, txn.ID)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		sb.WriteString("ELSE recurrence END WHERE id IN (" + strings.Join(placeholders, ",") + ")")
+		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

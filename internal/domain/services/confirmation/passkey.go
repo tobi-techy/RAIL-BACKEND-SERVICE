@@ -149,21 +149,19 @@ func (s *Service) AssertionOptions(ctx context.Context, userID, id uuid.UUID, to
 
 // persistTxSession stores the ceremony in the confirmation payload so any
 // replica can verify the approve. Reserved keys (_tx_*) are never rendered.
+// The write is payload-only (MergePayloadKeys): a full-row Save of a stale
+// copy could overwrite token_used and resurrect a burned single-use token.
 func (s *Service) persistTxSession(ctx context.Context, id uuid.UUID, session *webauthn.SessionData, expiry time.Time) {
-	c, err := s.store.Load(ctx, id)
-	if err != nil {
-		return
-	}
 	raw, err := json.Marshal(session)
 	if err != nil {
 		return
 	}
-	if c.Payload == nil {
-		c.Payload = map[string]any{}
-	}
-	c.Payload["_tx_session"] = string(raw)
-	c.Payload["_tx_session_exp"] = expiry.UTC().Format(time.RFC3339)
-	_ = s.store.Save(ctx, c)
+	// Best-effort: in-memory is the fast path, DB is the cross-replica
+	// fallback. A failed write fails closed later ("ceremony expired").
+	_ = s.store.MergePayloadKeys(ctx, id, map[string]any{ //nolint:errcheck
+		"_tx_session":     string(raw),
+		"_tx_session_exp": expiry.UTC().Format(time.RFC3339),
+	})
 }
 
 // loadTxSession returns the ceremony from memory, falling back to the
@@ -202,17 +200,14 @@ func (s *Service) loadTxSession(ctx context.Context, id uuid.UUID) (webauthn.Ses
 }
 
 // clearTxSession removes the ceremony from both memory and the persisted copy.
+// The DB write is payload-only (DeletePayloadKeys): a full-row Save of a
+// stale copy could overwrite token_used and resurrect a burned token.
 func (s *Service) clearTxSession(ctx context.Context, id uuid.UUID) {
 	s.txMu.Lock()
 	delete(s.txSessions, id)
 	s.txMu.Unlock()
-	if c, err := s.store.Load(ctx, id); err == nil && c.Payload != nil {
-		if _, ok := c.Payload["_tx_session"]; ok {
-			delete(c.Payload, "_tx_session")
-			delete(c.Payload, "_tx_session_exp")
-			_ = s.store.Save(ctx, c)
-		}
-	}
+	// Best-effort: a failed clear leaves keys that expire on load.
+	_ = s.store.DeletePayloadKeys(ctx, id, "_tx_session", "_tx_session_exp") //nolint:errcheck
 }
 
 // ApproveWithAssertion verifies a passkey assertion and, on success, runs

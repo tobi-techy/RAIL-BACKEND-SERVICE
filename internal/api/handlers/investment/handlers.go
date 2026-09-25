@@ -622,6 +622,14 @@ func (h *Handlers) respondAction(c *gin.Context, status entities.InvestmentActio
 // whenever it carries the reason (policy verdict, validation report) so the
 // agent can explain the outcome instead of inventing one.
 func (h *Handlers) respond(c *gin.Context, err error, payload any) {
+	// A FAILED body means the money leg ran and did not move — answer 502
+	// even though err is non-nil. respondAction only runs on the nil-error
+	// path, so without this check the 502 mapping is unreachable and funding
+	// failures surface as generic 500s the agent cannot key retries on.
+	if failedActionStatus(payload) {
+		c.JSON(http.StatusBadGateway, payload)
+		return
+	}
 	switch {
 	case errors.Is(err, investmentsvc.ErrDisabled):
 		h.respondError(c, http.StatusServiceUnavailable, "INVESTMENT_DISABLED", "Investing is not enabled yet", payload)
@@ -648,6 +656,28 @@ func (h *Handlers) respond(c *gin.Context, err error, payload any) {
 			h.log.Error("investment request failed", "error", err)
 		}
 		h.respondError(c, http.StatusInternalServerError, "INVESTMENT_ERROR", "Unable to complete the investment request", payload)
+	}
+}
+
+// failedActionStatus reports whether payload is a mutation response whose
+// Status is FAILED. Every mutation response carries the same Status field,
+// so the switch enumerates them explicitly instead of reflecting.
+func failedActionStatus(payload any) bool {
+	switch p := payload.(type) {
+	case *entities.InvestmentEnrollResponse:
+		return p != nil && p.Status == entities.InvestmentActionFailed
+	case *entities.InvestmentCreateStrategyResponse:
+		return p != nil && p.Status == entities.InvestmentActionFailed
+	case *entities.InvestmentOrderResponse:
+		return p != nil && p.Status == entities.InvestmentActionFailed
+	case *entities.InvestmentWithdrawalResponse:
+		return p != nil && p.Status == entities.InvestmentActionFailed
+	case *investmentsvc.UserEnrollPrepareResponse:
+		return p != nil && p.Status == entities.InvestmentActionFailed
+	case *investmentsvc.UserContributeResponse:
+		return p != nil && p.Status == entities.InvestmentActionFailed
+	default:
+		return false
 	}
 }
 

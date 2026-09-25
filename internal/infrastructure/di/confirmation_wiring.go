@@ -224,10 +224,12 @@ func formatCountdown(d time.Duration) string {
 }
 
 // isDevEnv reports dev/test environments where weak secrets are tolerated
-// with a warning. Production-like envs fail closed above.
+// with a warning. Production-like envs fail closed above. An unset or
+// unrecognized env fails closed: an empty ENVIRONMENT must never weaken
+// money-link token requirements.
 func isDevEnv(env string) bool {
 	switch env {
-	case "", "development", "dev", "test", "testing", "local":
+	case "development", "dev", "test", "testing", "local":
 		return true
 	default:
 		return false

@@ -39,6 +39,14 @@ type Store interface {
 	// ErrTokenConsumed and must reload: terminal cards return as-is,
 	// consumed-but-live cards resume.
 	Claim(ctx context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error)
+	// MergePayloadKeys merges keys into the payload without touching any
+	// other column. Payload-only writes MUST go through here: a full-row
+	// Save of a stale copy would overwrite token_used/state and resurrect
+	// an already-burned single-use token.
+	MergePayloadKeys(ctx context.Context, id uuid.UUID, set map[string]any) error
+	// DeletePayloadKeys removes keys from the payload without touching any
+	// other column (same resurrection hazard as above).
+	DeletePayloadKeys(ctx context.Context, id uuid.UUID, keys ...string) error
 }
 
 // CardEditor mutates the live transcript card in place (Spectrum edit()).
@@ -88,6 +96,52 @@ func (s *memoryStore) Load(_ context.Context, id uuid.UUID) (*entities.Confirmat
 	}
 	cp := *c
 	return &cp, nil
+}
+
+func (s *memoryStore) MergePayloadKeys(_ context.Context, id uuid.UUID, set map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.m[id]
+	if !ok {
+		return ErrConfirmationNotFound
+	}
+	merged := make(map[string]any, len(c.Payload)+len(set))
+	for k, v := range c.Payload {
+		merged[k] = v
+	}
+	for k, v := range set {
+		merged[k] = v
+	}
+	cp := *c
+	cp.Payload = merged
+	s.m[id] = &cp
+	return nil
+}
+
+func (s *memoryStore) DeletePayloadKeys(_ context.Context, id uuid.UUID, keys ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.m[id]
+	if !ok {
+		return ErrConfirmationNotFound
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	drop := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		drop[k] = struct{}{}
+	}
+	merged := make(map[string]any, len(c.Payload))
+	for k, v := range c.Payload {
+		if _, ok := drop[k]; !ok {
+			merged[k] = v
+		}
+	}
+	cp := *c
+	cp.Payload = merged
+	s.m[id] = &cp
+	return nil
 }
 
 func (s *memoryStore) Claim(_ context.Context, id uuid.UUID, assurance string) (*entities.Confirmation, error) {
