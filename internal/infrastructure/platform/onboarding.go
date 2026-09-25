@@ -488,6 +488,12 @@ func (c *ChatOnboarder) Handle(ctx context.Context, in OnboardInput) (*PlatformR
 		// Give the model (or the fallback) something to react to.
 		text = "[they shared their contact card]"
 	}
+	if strings.TrimSpace(text) == "" && in.Statement == nil {
+		// A sticker or app bubble has nothing to read. The guest brain rejects
+		// that as "no user text", and a redelivery of the same empty payload
+		// never succeeds — answer once instead of retrying the turn.
+		return textReply("I can't open that kind of message. Text me what you need."), nil
+	}
 
 	var reply *PlatformReply
 	switch st.Phase {

@@ -334,8 +334,11 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	// Stickers and other custom bubbles arrive with no words. Answer once and
 	// ack. Sending them to the guest brain errors with "no user text", which
 	// the bridge treats as retryable and the user sees as a stuck chat.
+	// A failed courtesy send must not fail this request: the bridge retries
+	// 500s, and retrying an unreadable bubble cannot make the reply land.
 	if msg.IsUnsupported {
-		return p.sendToSender(ctx, msg, "I can't open that kind of message. Text me what you need.")
+		p.noticeSender(ctx, msg, "I can't open that kind of message. Text me what you need.")
+		return nil
 	}
 
 	// Transcribe a voice note into text before anything else sees it. If we can't,
@@ -981,6 +984,16 @@ func (p *Processor) sendPlainTo(ctx context.Context, identity *entities.Platform
 
 func (p *Processor) sendErrorMessage(ctx context.Context, msg InboundMessage, text string) error {
 	return p.sendToSender(ctx, msg, text)
+}
+
+// noticeSender delivers a one-shot courtesy reply and logs a failed send.
+// Callers that must ack the inbound request use this instead of sendToSender:
+// a 500 makes the bridge redeliver, and redelivery of an unreadable bubble
+// only repeats the failure.
+func (p *Processor) noticeSender(ctx context.Context, msg InboundMessage, text string) {
+	if err := p.sendToSender(ctx, msg, text); err != nil {
+		log.Printf("unsupported-message notice failed for %s: %v", msg.UserID, err)
+	}
 }
 
 // sendToSender delivers a plain text message to a sender by platform id, used
