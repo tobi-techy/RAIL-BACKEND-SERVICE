@@ -108,7 +108,7 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | grep -oP '\d+\.\d+(?=%)')
+          COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | grep -oP '\d+\.\d+(?=%)')
           echo "Coverage: ${COVERAGE}%"
           RESULT=$(echo "$COVERAGE >= $COVERAGE_MIN" | bc -l)
           if [ "$RESULT" -eq 1 ]; then
