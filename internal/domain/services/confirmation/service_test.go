@@ -3,6 +3,7 @@ package confirmation
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -116,12 +117,56 @@ func TestTokenSingleUseAndReject(t *testing.T) {
 	if out.State != entities.ConfirmationRejected {
 		t.Fatalf("expected rejected, got %s", out.State)
 	}
-	// Bad token rejected.
+	// Forged token fails closed with no record: a bare action_id must not
+	// leak amount/destination.
 	if _, err := s.Fetch(ctx, c.ID, "bad.token"); err == nil {
-		got, ferr := s.Fetch(ctx, c.ID, "bad.token")
-		if ferr != nil || got == nil {
-			t.Fatal("expected dead-state record on bad token")
-		}
+		t.Fatal("expected error for forged token, got nil")
+	}
+}
+
+func TestFetchExpiredSignedSurfacesTerminal(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	uid := uuid.New()
+	c, url, err := s.Create(ctx, CreateInput{UserID: uid, Action: entities.ConfirmationActionTransferSend, Payload: map[string]any{"amount": "₦1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := url[strings.Index(url, "?t=")+3:]
+	// Force expiry then fetch with the real (correctly-signed) token.
+	stored, err := s.store.Load(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.ExpiresAt = time.Now().Add(-time.Minute)
+	if err := s.store.Save(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	_ = tok
+	expiredTok := expiredTokenFor(s, c)
+	got, err := s.Fetch(ctx, c.ID, expiredTok)
+	if err != nil {
+		t.Fatalf("expired signed link should surface terminal record, got: %v", err)
+	}
+	if got == nil || got.State != entities.ConfirmationExpired {
+		t.Fatalf("expected expired terminal record, got %+v", got)
+	}
+}
+
+func expiredTokenFor(s *Service, c *entities.Confirmation) string {
+	exp := time.Now().Add(-time.Minute).Unix()
+	return strings.Join([]string{strconv.FormatInt(exp, 10), s.sign(c.ID.String(), exp)}, ".")
+}
+
+func TestCreateTTLCapped(t *testing.T) {
+	s := testService()
+	ctx := context.Background()
+	c, _, err := s.Create(ctx, CreateInput{UserID: uuid.New(), Action: entities.ConfirmationActionTransferSend, Payload: map[string]any{"amount": "₦1"}, TTL: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ExpiresAt.Sub(c.CreatedAt) > maxCreateTTL+time.Second {
+		t.Fatalf("TTL not capped: %v", c.ExpiresAt.Sub(c.CreatedAt))
 	}
 }
 

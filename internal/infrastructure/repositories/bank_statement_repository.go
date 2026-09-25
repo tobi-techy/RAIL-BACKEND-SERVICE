@@ -562,9 +562,9 @@ func (r *BankStatementRepository) BackfillUnderstanding(ctx context.Context, lim
 	users := make(map[uuid.UUID]struct{})
 	for _, row := range rows {
 		understood := statement.UnderstandLine(row.Category, row.Description, row.Type)
-		if understood.Counterparty == "" {
-			understood.Counterparty = "Unknown"
-		}
+		// Leave counterparty empty when nothing is extractable: writing
+		// "Unknown" groups unrelated lines into a fake top recipient.
+		// The read path treats "" as unknown without polluting aggregates.
 		_, err = r.db.ExecContext(ctx, `
 			UPDATE bank_statement_transactions
 			SET category = $1, counterparty = $2, is_essential = $3, category_confidence = $4

@@ -654,10 +654,11 @@ func (s *Service) Contribute(
 	}
 	transfer, err := s.Fund(ctx, userID, enrollment.ID, req.AmountUSD, source, key, actor)
 	if err != nil {
-		// The portfolio exists. Report the funding failure on the body so the
-		// caller can explain it instead of treating the whole request as lost.
+		// Fail loud, not "COMPLETED with FAILED inside": the money did not
+		// move, so the status must not read as success. The body still
+		// carries the funding detail so the caller can explain it.
 		return &UserContributeResponse{
-			Status:     entities.InvestmentActionCompleted,
+			Status:     entities.InvestmentActionRejected,
 			Enrollment: enrollment,
 			Policy:     decision,
 			Funding: &entities.InvestmentFundingTransfer{
@@ -667,7 +668,7 @@ func (s *Service) Contribute(
 				Status:        "FAILED",
 				FailureReason: err.Error(),
 			},
-		}, nil
+		}, fmt.Errorf("contribute funding failed: %w", err)
 	}
 	_ = s.SyncEnrollment(ctx, enrollment.ID)
 	return &UserContributeResponse{

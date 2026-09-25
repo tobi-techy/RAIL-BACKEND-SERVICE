@@ -62,6 +62,14 @@ func (c *Container) initializeConfirmationServices(sqlxDB *sqlx.DB) {
 		c.ZapLog.Warn("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET not set (fail-closed)")
 		return
 	}
+	if len(cfg.TokenSecret) < 32 {
+		c.ZapLog.Error("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET must be >=32 chars (fail-closed)")
+		return
+	}
+	if cfg.RailServiceKey != "" && len(cfg.RailServiceKey) < 32 {
+		c.ZapLog.Error("confirmation cards disabled: RAIL_SERVICE_KEY must be >=32 chars when set (fail-closed)")
+		return
+	}
 	base := strings.TrimSpace(cfg.BaseURL)
 	if base == "" {
 		base = "/confirm"

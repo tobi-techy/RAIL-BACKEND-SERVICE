@@ -40,19 +40,18 @@ func NewWorker(repo *repositories.BankStatementRepository, memory MemoryWriter, 
 	return &Worker{repo: repo, memory: memory, notifier: notifier, parser: parser, logger: logger}
 }
 
-// drainUnderstanding rewrites lines that were stored before counterparty and
-// confidence existed. Four batches cover a couple of thousand old rows per
-// upload without holding the job open on a full-table rewrite.
+// drainUnderstanding rewrites lines stored before counterparty/confidence
+// existed. One batch (500 rows) per upload so a new file never blocks behind
+// a full-table rewrite; the backlog drains over subsequent uploads and a
+// one-off backfill job covers the rest.
 func (w *Worker) drainUnderstanding(ctx context.Context) {
-	for i := 0; i < 4; i++ {
-		n, err := w.repo.BackfillUnderstanding(ctx, 500)
-		if err != nil {
-			w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
-			return
-		}
-		if n == 0 {
-			return
-		}
+	n, err := w.repo.BackfillUnderstanding(ctx, 500)
+	if err != nil {
+		w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
+		return
+	}
+	if n == 500 {
+		w.logger.Info("statement understanding backlog remains (drained one batch)")
 	}
 }
 

@@ -93,6 +93,10 @@ var narrationRules = []narrationRule{
 	{regexp.MustCompile(`(?i)\b(tuition|school\s+fee|university|waec|jamb|neco)\b`), BucketEducation, true},
 	{regexp.MustCompile(`(?i)\b(piggyvest|cowrywise|stash|savings\s+deposit)\b`), BucketSavings, true},
 	{regexp.MustCompile(`(?i)\b(loan\s+repay|loan\s+deduction|loan\s+repayment)\b`), BucketLoan, true},
+	// NOTE: transfer_in must stay before transfer_out (first match wins).
+	// "NIP CREDIT ..." contains "nip" — if transfer_out ran first every
+	// incoming transfer would be labelled outgoing. Keep aligned with
+	// services/enrichment/src/spend_rules.py.
 	{regexp.MustCompile(`(?i)\b(nip\s+credit|transfer\s+from|received\s+from|inward\s+transfer)\b`), BucketTransferIn, true},
 	{regexp.MustCompile(`(?i)\b(nip|trf\s+to|transfer\s+to|sent\s+to|funds?\s+transfer)\b`), BucketTransferOut, true},
 }

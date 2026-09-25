@@ -133,15 +133,12 @@ func (w *WorkerV2) HandlerV2() jobqueue.JobHandler {
 }
 
 func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data []byte, contentType, bankName string) (retErr error) {
-	for i := 0; i < 4; i++ {
-		n, err := w.repo.BackfillUnderstanding(ctx, 500)
-		if err != nil {
-			w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
-			break
-		}
-		if n == 0 {
-			break
-		}
+	// One backfill batch per upload so new files never block behind a
+	// full-table rewrite; the backlog drains over uploads + a one-off job.
+	if n, err := w.repo.BackfillUnderstanding(ctx, 500); err != nil {
+		w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
+	} else if n == 500 {
+		w.logger.Info("statement understanding backlog remains (drained one batch)")
 	}
 	defer func() {
 		if r := recover(); r != nil {
