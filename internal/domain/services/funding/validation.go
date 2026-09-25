@@ -61,10 +61,22 @@ type ValidationService struct {
 	logger               *logger.Logger
 }
 
-// NewValidationService creates a new validation service
+// NewValidationService creates a new validation service.
+// A nil config is replaced with DefaultFundingConfig so callers cannot panic
+// on config.WebhookSecret. When no webhook secret is configured the service
+// is built without a validator and every ValidateWebhookSignature call fails
+// closed with ErrWebhookNotConfigured. If a logger is provided, the missing
+// secret is logged loudly at startup so dev/staging misconfig is obvious.
 func NewValidationService(redisClient cache.RedisClient, config *FundingConfig, logger *logger.Logger) *ValidationService {
+	if config == nil {
+		config = DefaultFundingConfig()
+	}
 	var webhookValidator *webhook.WebhookValidator
-	if config.WebhookSecret != "" {
+	if config.WebhookSecret == "" {
+		if logger != nil {
+			logger.Warnw("FundingConfig.WebhookSecret is empty: all deposit webhook validations will fail closed with ErrWebhookNotConfigured")
+		}
+	} else {
 		webhookValidator = webhook.NewWebhookValidator(webhook.WebhookSecurityConfig{
 			Secret:           config.WebhookSecret,
 			MaxTimestampAge:  120, // 2 minutes - reduced from 5 min for better security against replay attacks

@@ -55,3 +55,14 @@ func TestValidateWebhookSignatureRejectsMissingSignature(t *testing.T) {
 		t.Fatal("expected error for missing signature, got nil")
 	}
 }
+
+func TestNewValidationServiceNilConfigFailsClosed(t *testing.T) {
+	svc := NewValidationService(nil, nil, nil)
+	if svc == nil {
+		t.Fatal("expected non-nil service for nil config")
+	}
+	err := svc.ValidateWebhookSignature([]byte(`{"x":1}`), "anything", time.Now().Unix())
+	if !errors.Is(err, ErrWebhookNotConfigured) {
+		t.Fatalf("nil config must fail closed with ErrWebhookNotConfigured, got: %v", err)
+	}
+}

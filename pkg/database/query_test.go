@@ -106,6 +106,34 @@ func TestBuildWhereClauseMixedValidAndInvalidFailsClosed(t *testing.T) {
 	}
 }
 
+func TestBuildWhereClauseErrorDoesNotReflectInput(t *testing.T) {
+	evil := "id = 1 OR 1=1 --"
+	_, _, err := BuildWhereClause(map[string]interface{}{evil: "x"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if strings.Contains(err.Error(), evil) {
+		t.Fatalf("error must not echo attacker input, got: %v", err)
+	}
+}
+
+func TestBuildWhereClauseValuesNeverInterpolated(t *testing.T) {
+	payload := "x' OR '1'='1'; DROP TABLE users; --"
+	where, args, err := BuildWhereClause(map[string]interface{}{"status": payload})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(where, payload) {
+		t.Fatalf("value must never appear in clause, got %q", where)
+	}
+	if len(args) != 1 || args[0] != payload {
+		t.Fatalf("value must be passed as arg, got %v", args)
+	}
+	if want := " WHERE status = $1"; where != want {
+		t.Fatalf("got %q, want %q", where, want)
+	}
+}
+
 func TestBuildWhereClauseDeterministic(t *testing.T) {
 	conds := map[string]interface{}{"b": 1, "a": 2, "c": 3}
 	first, _, err := BuildWhereClause(conds)
@@ -144,5 +172,33 @@ func TestBuildOrderByClauseStrict(t *testing.T) {
 	// Legacy wrapper stays fail-silent for compat.
 	if got := BuildOrderByClause("evil", []string{"id"}); got != "" {
 		t.Fatalf("legacy wrapper should return empty for invalid, got %q", got)
+	}
+}
+
+func TestBuildOrderByClauseStrictRejectsTrailingTokens(t *testing.T) {
+	for _, input := range []string{"id DESC extra", "id ASC foo bar", "id  DESC  now"} {
+		if clause, err := BuildOrderByClauseStrict(input, []string{"id"}); err == nil || clause != "" {
+			t.Fatalf("input %q: expected error for trailing tokens, got %q, %v", input, clause, err)
+		}
+	}
+	// Extra whitespace between the two valid tokens is fine.
+	if clause, err := BuildOrderByClauseStrict("id   DESC", []string{"id"}); err != nil || clause != " ORDER BY id DESC" {
+		t.Fatalf("multi-space should be accepted, got %q, %v", clause, err)
+	}
+}
+
+func TestBuildOrderByClauseStrictRejectsBadDirection(t *testing.T) {
+	if clause, err := BuildOrderByClauseStrict("id SIDEWAYS", []string{"id"}); err == nil || clause != "" {
+		t.Fatalf("expected error for bad direction, got %q, %v", clause, err)
+	}
+	if clause, err := BuildOrderByClauseStrict("id desc", []string{"id"}); err != nil || clause != " ORDER BY id DESC" {
+		t.Fatalf("lowercase desc should be accepted, got %q, %v", clause, err)
+	}
+	if clause, err := BuildOrderByClauseStrict("id", []string{"id"}); err != nil || clause != " ORDER BY id ASC" {
+		t.Fatalf("bare column should default to ASC, got %q, %v", clause, err)
+	}
+	// Nil allowlist means every column is rejected, loudly.
+	if clause, err := BuildOrderByClauseStrict("id", nil); err == nil || clause != "" {
+		t.Fatalf("nil allowlist should reject, got %q, %v", clause, err)
 	}
 }
