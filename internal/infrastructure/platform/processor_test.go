@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -332,6 +333,23 @@ func TestProcess_UnsupportedCustomRepliesOnceWithoutTheBrain(t *testing.T) {
 	}
 	if len(*sent) != 1 || !strings.Contains((*sent)[0].Text, "Text me what you need") {
 		t.Fatalf("expected one plain notice, got %#v", *sent)
+	}
+}
+
+func TestProcess_UnsupportedNoticeSendFailureStillAcks(t *testing.T) {
+	repo := newFakeRepo()
+	orch := &fakeOrchestrator{}
+	p, _, _ := newTestProcessor(repo, orch)
+	p.sendFunc = func(context.Context, *OutboundMessage) error {
+		return fmt.Errorf("bridge outbound: status 500")
+	}
+
+	raw := []byte(`{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","text":"","is_unsupported":true,"unsupported_mime":"custom"}`)
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("a failed courtesy reply must not fail inbound processing: %v", err)
+	}
+	if orch.lastMessage != "" {
+		t.Fatalf("brain was called with %q", orch.lastMessage)
 	}
 }
 
