@@ -145,6 +145,12 @@ class TestPipeline:
         assert result.spend_bucket == "other"
         assert result.confidence <= 0.25
 
+    def test_nip_credit_is_transfer_in_not_out(self):
+        from src.spend_rules import classify_narration
+        m = classify_narration("NIP CREDIT FROM ADAEZE OBI")
+        assert m is not None
+        assert m.bucket == "transfer_in", f"got {m.bucket}"
+
     def test_betting_not_left_blank(self):
         pipeline = EnrichmentPipeline(model=None)
         result = pipeline.enrich("WEB BET9JA/012345")

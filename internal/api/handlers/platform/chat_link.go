@@ -55,16 +55,21 @@ func (h *PlatformHandler) FinishChatLink(c *gin.Context) {
 	code := firstForm(c, "code")
 	idToken := firstForm(c, "id_token")
 	nonce := firstForm(c, "state")
-	provider := entities.SocialProviderGoogle
-	if idToken != "" && code == "" {
-		provider = entities.SocialProviderApple
-	}
-	if idToken != "" && strings.Contains(c.Request.URL.Path, "apple") {
-		provider = entities.SocialProviderApple
-	}
-	// Apple form_post includes id_token. Google redirects with code.
-	if idToken != "" && c.Request.Method == http.MethodPost {
-		provider = entities.SocialProviderApple
+	// Explicit provider wins (start link carries it through state/callback).
+	// Fall back to the Apple-vs-Google heuristic only when absent.
+	provider := entities.SocialProvider(strings.ToLower(firstForm(c, "provider")))
+	if provider != entities.SocialProviderApple && provider != entities.SocialProviderGoogle {
+		provider = entities.SocialProviderGoogle
+		if idToken != "" && code == "" {
+			provider = entities.SocialProviderApple
+		}
+		if idToken != "" && strings.Contains(c.Request.URL.Path, "apple") {
+			provider = entities.SocialProviderApple
+		}
+		// Apple form_post includes id_token. Google redirects with code.
+		if idToken != "" && c.Request.Method == http.MethodPost {
+			provider = entities.SocialProviderApple
+		}
 	}
 	created, err := linker.Complete(c.Request.Context(), provider, code, idToken, nonce)
 	if err != nil {

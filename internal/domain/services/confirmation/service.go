@@ -213,6 +213,10 @@ type CreateInput struct {
 	TTL         time.Duration
 }
 
+// maxCreateTTL caps caller-requested card lifetimes so a compromised JWT
+// cannot mint year-long money-moving links (default is 5m).
+const maxCreateTTL = 15 * time.Minute
+
 // Create stages a confirmation and returns it with its signed URL.
 func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirmation, string, error) {
 	if !entities.ValidConfirmationAction(in.Action) {
@@ -224,6 +228,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*entities.Confirm
 	ttl := in.TTL
 	if ttl <= 0 {
 		ttl = s.cfg.TTL
+	}
+	if ttl > maxCreateTTL {
+		ttl = maxCreateTTL
 	}
 	now := s.now().UTC()
 	title, subtitle, amount, asset, dest, fee, risk := s.renderCopy(in)
@@ -338,14 +345,37 @@ func (s *Service) sign(actionID string, exp int64) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// signedCorrectly reports whether the token carries the right HMAC for this
+// card, ignoring expiry. Used by Fetch to tell "forged link" (leak nothing)
+// from "real link gone stale" (safe to show the dead card).
+func (s *Service) signedCorrectly(id uuid.UUID, token string) bool {
+	exp, sig, err := splitToken(token)
+	if err != nil {
+		return false
+	}
+	want := s.sign(id.String(), exp)
+	return hmac.Equal([]byte(want), []byte(sig))
+}
+
 // Fetch returns the card payload for the extension. Expired or consumed cards
 // return the terminal record (dead state) — never a live approve button.
+// Forged tokens (bad signature) fail closed with no record: a bare action_id
+// must not leak amount/destination. Only a correctly-signed but expired link
+// surfaces its terminal record so the extension renders dead, not broken.
 func (s *Service) Fetch(ctx context.Context, id uuid.UUID, token string) (*entities.Confirmation, error) {
 	if err := s.VerifyToken(id, token); err != nil {
-		// Signature/expiry failure: still try to surface the terminal record
-		// when the id is known so the extension renders dead, not broken.
-		// A store outage here fails closed (no record to show).
+		if !s.signedCorrectly(id, token) {
+			return nil, err
+		}
+		// Signature valid but stale (expired): lazily expire a live card,
+		// then surface the terminal record. A store outage fails closed.
 		if c, lerr := s.store.Load(ctx, id); lerr == nil {
+			if !c.IsTerminal() && c.IsExpired(s.now()) {
+				if terr := s.transition(ctx, c, entities.ConfirmationExpired, "", "ttl elapsed on fetch (stale link)"); terr != nil && s.log != nil {
+					s.log.Warn("confirmation lazy-expiry failed", "action_id", id.String(), "error", terr.Error())
+				}
+				return s.reload(ctx, id)
+			}
 			cp := *c
 			return &cp, nil
 		}

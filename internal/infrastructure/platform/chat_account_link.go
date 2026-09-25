@@ -124,12 +124,14 @@ func (l *ChatAccountLinker) ProviderAuthURL(ctx context.Context, provider entiti
 
 // Complete verifies the provider result, links the matching account, or
 // creates one for a new email, then binds the iMessage sender.
+// The nonce is single-use but only burned on success: a failed provider
+// round-trip keeps the session (15m TTL) so the user can retry without
+// restarting from the thread.
 func (l *ChatAccountLinker) Complete(ctx context.Context, provider entities.SocialProvider, code, idToken, nonce string) (created bool, err error) {
 	var session chatLinkSession
 	if err := l.redis.Get(ctx, chatLinkKey(nonce), &session); err != nil || session.SenderID == "" {
 		return false, fmt.Errorf("that link expired")
 	}
-	_ = l.redis.Del(ctx, chatLinkKey(nonce))
 
 	info, err := l.social.Authenticate(ctx, &entities.SocialLoginRequest{
 		Provider:    provider,
@@ -154,6 +156,7 @@ func (l *ChatAccountLinker) Complete(ctx context.Context, provider entities.Soci
 	if _, err := l.linking.LinkVerified(ctx, userID, plat, session.SenderID); err != nil {
 		return created, err
 	}
+	_ = l.redis.Del(ctx, chatLinkKey(nonce))
 	return created, nil
 }
 

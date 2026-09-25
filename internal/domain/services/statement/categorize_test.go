@@ -22,6 +22,8 @@ func TestNormalizeStatementCategory(t *testing.T) {
 		{"utility name", "", "IKEDC PAYMENT 01234", "debit", BucketUtilities},
 		{"unknown stays other", "misc", "SOME RANDOM TEXT", "debit", BucketOther},
 		{"empty credit is transfer in", "", "John Doe", "credit", BucketTransferIn},
+		{"nip credit is transfer in, not out", "", "NIP CREDIT FROM ADAEZE OBI", "credit", BucketTransferIn},
+		{"nip transfer out stays out", "", "NIP GTB/JOHN/0123/TRANSFER", "debit", BucketTransferOut},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

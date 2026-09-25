@@ -2420,10 +2420,12 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
 	}
 
-	// Investing is always on. A missing Glider key or a rejected key stops
-	// startup so the API cannot advertise a money path that will not move funds.
+	// Investing is always on when configured. A missing/rejected Glider key
+	// must not take down logins, health checks, or the rest of the API:
+	// degrade to disabled investing (endpoints report NOT_SUPPORTED) and
+	// surface the cause loudly in logs so operators fix the key.
 	if err := c.initializeInvestmentGliderServices(sqlxDB); err != nil {
-		return fmt.Errorf("investment (Glider) startup: %w", err)
+		c.ZapLog.Error("investment (Glider) disabled: startup failed — set INVESTMENT_GLIDER_API_KEY", zap.Error(err))
 	}
 
 	// Initialize the retirement vault. It must come after the investment engine

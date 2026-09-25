@@ -468,3 +468,50 @@ func TestListRailStrategiesSurfacesSeededSleeve(t *testing.T) {
 	ready := h.confirmUserPrepare(t, prep)
 	require.NotEmpty(t, ready.FlowID)
 }
+
+func TestContributeFundingFailureIsNotCompleted(t *testing.T) {
+	h := newHarness(t)
+	strategy := h.confirmCreate(t, h.createRequest("USDC", "SOL"))
+
+	prep := &UserEnrollPrepareRequest{
+		StrategyID:     strategy.Strategy.ID.String(),
+		OwnerAccountID: testOwnerAccount,
+		AmountUSD:      decimal.NewFromInt(100),
+	}
+	ready := h.confirmUserPrepare(t, prep)
+	comp := &UserEnrollCompleteRequest{
+		StrategyID:              strategy.Strategy.ID.String(),
+		OwnerAccountID:          testOwnerAccount,
+		FlowID:                  ready.FlowID,
+		AccountIndex:            ready.AccountIndex,
+		AgentAccountID:          ready.AgentAccount,
+		ChainIDs:                ready.ChainIDs,
+		SignedSolanaTransaction: "signed:" + ready.SignPayload,
+		AmountUSD:               decimal.NewFromInt(100),
+	}
+	stagedComplete, err := h.service.CompleteUserEnrollment(context.Background(), h.userID, comp, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	comp.ConfirmationToken = stagedComplete.Confirmation.Token
+	_, err = h.service.CompleteUserEnrollment(context.Background(), h.userID, comp, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+
+	// Funding fails: status must not read COMPLETED.
+	h.funding.failTransfer = assert.AnError
+	req := &UserContributeRequest{
+		StrategyID: strategy.Strategy.ID.String(),
+		AmountUSD:  decimal.NewFromInt(50),
+	}
+	staged, err := h.service.Contribute(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+	require.NoError(t, err)
+	require.Equal(t, entities.InvestmentActionAwaitingConfirmation, staged.Status)
+	require.NotNil(t, staged.Confirmation)
+
+	req.ConfirmationToken = staged.Confirmation.Token
+	done, err := h.service.Contribute(context.Background(), h.userID, req, entities.InvestmentActorMiriam)
+	require.Error(t, err, "a failed top-up must return an error, not nil")
+	require.NotNil(t, done)
+	assert.Equal(t, entities.InvestmentActionRejected, done.Status)
+	assert.NotEqual(t, entities.InvestmentActionCompleted, done.Status)
+	require.NotNil(t, done.Funding)
+	assert.Equal(t, "FAILED", done.Funding.Status)
+}
