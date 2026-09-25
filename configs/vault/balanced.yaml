@@ -1,26 +1,36 @@
-# Balanced Global Wealth — the balanced retirement tier.
-#
-# OPERATOR: replace every *REPLACE* with the real provider asset id for that
-# row. Discover ids with:
-#   make seed-catalog CONFIRM=1
-# which prints a copy-pasteable table of real ids. Do NOT guess.
-#
-# Rules enforced at bootstrap (fail closed):
-#   - each leg must exist in investment_assets (by provider id)
-#   - each leg's class must be one of: treasury, rwa, yield, equity
-#   - weights are strings that sum to 100; no single leg may exceed 40
+# Balanced Global Wealth — Solana (hackathon).
+# Mag7 xStocks + SPYx/QQQx + USDC ballast. Expanded with MSFTx/GOOGLx/AMZNx.
+# Rules: classes treasury|rwa|yield|equity; weights sum 100; no leg > 40.
+# Glider validate: PASS (expanded 2026-09-25).
 tier: balanced_wealth
 name: Balanced Global Wealth
 risk: medium
 horizon: long
 legs:
-  - caip19: "*REPLACE*"
-    weight: "40"
-  - caip19: "*REPLACE*"
-    weight: "25"
-  - caip19: "*REPLACE*"
-    weight: "15"
-  - caip19: "*REPLACE*"
+  # SPYx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W"
+    weight: "20"
+  # QQQx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ"
+    weight: "12"
+  # NVDAx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh"
     weight: "10"
-  - caip19: "*REPLACE*"
+  # MSFTx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XspzcW1PRtgf6Wj92HCiZdjzKCyFekVD8P5Ueh3dRMX"
     weight: "10"
+  # GOOGLx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN"
+    weight: "8"
+  # AAPLx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp"
+    weight: "8"
+  # AMZNx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:Xs3eBt7uRfJX8QUs4suhyU8p2M6DoUDrJyWBa8LLZsg"
+    weight: "7"
+  # TSLAx → classify CLASS=equity
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB"
+    weight: "5"
+  # USDC → classify CLASS=yield
+  - caip19: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    weight: "20"
