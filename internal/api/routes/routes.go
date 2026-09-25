@@ -155,6 +155,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		confirm := router.Group("/confirm")
 		{
 			confirm.GET("/:id", middleware.RateLimit(30), container.ConfirmationHandlers.Fetch)
+			confirm.GET("/:id/assertion-options", middleware.RateLimit(10), container.ConfirmationHandlers.AssertionOptions)
 			confirm.POST("/:id/approve", middleware.RateLimit(10), container.ConfirmationHandlers.Approve)
 			confirm.POST("/:id/reject", middleware.RateLimit(10), container.ConfirmationHandlers.Reject)
 		}
@@ -898,6 +899,11 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// The Spectrum bridge POSTs inbound messages and action postbacks here.
 				bridgeHMACSecret := container.Config.Platform.BridgeHMACSecret
 				proc := container.GetPlatformProcessor()
+				if container.PlatformHandler.ChatAccountLinker() != nil {
+					v1.GET("/chat-link/start/:provider", container.PlatformHandler.StartChatLink)
+					v1.GET("/chat-link/callback", container.PlatformHandler.FinishChatLink)
+					v1.POST("/chat-link/callback", container.PlatformHandler.FinishChatLink)
+				}
 				if bridgeHMACSecret != "" && proc != nil {
 					bridgeGroup := v1.Group("/platform")
 					bridgeGroup.Use(middleware.BridgeHMAC(bridgeHMACSecret, container.ZapLog))

@@ -113,16 +113,16 @@ var guestTools = []GuestToolDef{
 	},
 	{
 		Name: "start_signup",
-		Description: "Begin account setup ONLY because the person wants to move real money (their first deposit, a " +
-			"withdrawal, sending money, paying a bill). Do NOT call this for chatting, linking their bank, " +
-			"getting their spending picture, or saving a goal — those need no account. Your reply text must " +
-			"naturally ask for their phone number unless the state block says you already have it.",
+		Description: "Open the Rail account and wallet after you have shown them one true thing about their money. " +
+			"Call it in the same reply as that aha. Do not wait for a deposit, transfer, or bill. Do not call it " +
+			"before the picture. Linking their bank needs no account. Your reply is the aha, then the account ask. " +
+			"Never ask for a phone number.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"reason": map[string]interface{}{
 					"type":        "string",
-					"description": "What money move they want that needs an account, in a few words.",
+					"description": "The thing you just showed them about their money, in a few words.",
 				},
 			},
 			"required": []string{"reason"},
@@ -130,10 +130,8 @@ var guestTools = []GuestToolDef{
 	},
 	{
 		Name: "connect_bank",
-		Description: "Send them a tappable link to connect their real bank (Mono) so you can see where their money " +
-			"actually goes. Call it the moment they agree to let you look, or when the picture would make the " +
-			"next step obvious. This needs NO account. Your reply text must hand them the link and set up the " +
-			"aha: one category, one comparison to income, one question.",
+		Description: "Do not call. Bank linking is not available. If they agree to show their spending, " +
+			"ask them to send a PDF of a recent bank statement. No account is needed for that.",
 		Parameters: map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},

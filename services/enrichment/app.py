@@ -54,6 +54,7 @@ class EnrichResponse(BaseModel):
     counterparty: str
     category_l1: Optional[str]
     category_l2: Optional[str]
+    spend_bucket: str = "other"
     is_essential: bool
     confidence: float
     classification_layer: str
@@ -79,6 +80,7 @@ def _result_to_response(r: EnrichmentResult) -> EnrichResponse:
         counterparty=r.counterparty,
         category_l1=r.category_l1,
         category_l2=r.category_l2,
+        spend_bucket=r.spend_bucket or "other",
         is_essential=r.is_essential,
         confidence=r.confidence,
         classification_layer=r.classification_layer,

@@ -2,6 +2,8 @@ package confirmation
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -136,19 +138,55 @@ func (h *Handler) Fetch(c *gin.Context) {
 		return
 	}
 	url := reissueURL(rec)
-	c.JSON(http.StatusOK, gin.H{"confirmation": publicView(rec), "card": cardPayload(rec, url)})
+	c.JSON(http.StatusOK, gin.H{
+		"confirmation":       publicView(rec),
+		"card":               cardPayload(rec, url),
+		"passkey_registered": h.svc.PasskeyRegistered(c.Request.Context(), rec.UserID),
+	})
 }
 
 type decisionRequest struct {
-	Token           string `json:"t" binding:"required"`
-	Biometric       string `json:"biometric"`        // pass|fail|cancel
-	DeviceAssertion string `json:"device_assertion"` // opaque, logged only
-	// Secure Enclave proof (real extension only). KeyID + Signature over
-	// actionId.expiry; EnrollKey is a base64 SPKI for trust-on-first-use
-	// enrollment on the first approval from a new device.
-	DeviceKeyID string `json:"device_key_id"`
-	Signature   string `json:"signature"`
-	EnrollKey   string `json:"enroll_device_key"`
+	Token     string `json:"t" binding:"required"`
+	Biometric string `json:"biometric"` // pass|fail|cancel
+	// Assertion is the WebAuthn assertion JSON from the passkey ceremony
+	// (options from GET assertion-options). Present on passkey approves;
+	// absent on legacy token-only approves (rejected once enrolled/strict).
+	Assertion json.RawMessage `json:"assertion"`
+}
+
+// AssertionOptions mints a WebAuthn ceremony for one card (token-gated, no
+// session, never consumes the token). The extension signs the challenge with
+// the user's passkey and submits it to approve. 404 passkey_setup means the
+// user has no passkey: render the in-app setup state. 409 means the card
+// already ended: render dead.
+func (h *Handler) AssertionOptions(c *gin.Context) {
+	id, ok := uuidOf(c, "id")
+	if !ok {
+		return
+	}
+	token := c.Query("t")
+	rec, ferr := h.svc.Fetch(c.Request.Context(), id, token)
+	if ferr != nil || rec == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "confirmation not found or link invalid"})
+		return
+	}
+	options, err := h.svc.AssertionOptions(c.Request.Context(), rec.UserID, id, token)
+	if err != nil {
+		if errors.Is(err, svc.ErrNoPasskey) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no passkey enrolled", "passkey_setup": true})
+			return
+		}
+		if errors.Is(err, svc.ErrCardTerminal) {
+			latest, lerr := h.svc.Fetch(c.Request.Context(), id, token)
+			if lerr == nil && latest != nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "card already terminal", "confirmation": publicView(latest)})
+				return
+			}
+		}
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"options": options})
 }
 
 // Approve runs Face ID success + server accept (token-gated, single-use).
@@ -168,11 +206,12 @@ func (h *Handler) Approve(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "confirmation not found or link invalid"})
 		return
 	}
-	out, err := h.svc.ApproveWithDevice(c.Request.Context(), rec.UserID, id, req.Token, req.Biometric, svc.DeviceApproval{
-		KeyID:     req.DeviceKeyID,
-		Signature: req.Signature,
-		EnrollKey: req.EnrollKey,
-	})
+	var out *entities.Confirmation
+	if len(req.Assertion) > 0 {
+		out, err = h.svc.ApproveWithAssertion(c.Request.Context(), rec.UserID, id, req.Token, req.Assertion)
+	} else {
+		out, err = h.svc.Approve(c.Request.Context(), rec.UserID, id, req.Token, req.Biometric)
+	}
 	if err != nil {
 		// Terminal replay is a no-op success; real errors surface failed state.
 		if latest, lerr := h.svc.Fetch(c.Request.Context(), id, req.Token); lerr == nil && latest != nil && latest.IsTerminal() {
@@ -257,7 +296,6 @@ func publicView(c *entities.Confirmation) gin.H {
 		"expires_at": c.ExpiresAt.UTC().Format(time.RFC3339),
 		"result":     c.ResultSummary, "dead": dead,
 		"live": !dead, "assurance": c.Assurance,
-		"enrolled_key_id": c.EnrolledKeyID,
 	}
 }
 

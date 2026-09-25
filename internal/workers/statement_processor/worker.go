@@ -40,6 +40,22 @@ func NewWorker(repo *repositories.BankStatementRepository, memory MemoryWriter, 
 	return &Worker{repo: repo, memory: memory, notifier: notifier, parser: parser, logger: logger}
 }
 
+// drainUnderstanding rewrites lines that were stored before counterparty and
+// confidence existed. Four batches cover a couple of thousand old rows per
+// upload without holding the job open on a full-table rewrite.
+func (w *Worker) drainUnderstanding(ctx context.Context) {
+	for i := 0; i < 4; i++ {
+		n, err := w.repo.BackfillUnderstanding(ctx, 500)
+		if err != nil {
+			w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
+			return
+		}
+		if n == 0 {
+			return
+		}
+	}
+}
+
 // Handler returns a jobqueue.JobHandler for the "process_statement" job type.
 func (w *Worker) Handler() jobqueue.JobHandler {
 	return func(ctx context.Context, job *jobqueue.Job) error {
@@ -75,6 +91,7 @@ func (w *Worker) Handler() jobqueue.JobHandler {
 }
 
 func (w *Worker) process(ctx context.Context, uploadID, userID uuid.UUID, data []byte, bankName string) (retErr error) {
+	w.drainUnderstanding(ctx)
 	// Recover from panics (e.g. pdfcpu on malformed PDFs)
 	defer func() {
 		if r := recover(); r != nil {
@@ -241,6 +258,11 @@ func (w *Worker) process(ctx context.Context, uploadID, userID uuid.UUID, data [
 	// Store transactions (use ctx as parent so shutdown still propagates)
 	saveCtx, saveCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer saveCancel()
+	if rules, ruleErr := w.repo.ListCategoryRules(saveCtx, userID); ruleErr != nil {
+		w.logger.Warn("statement category rules unavailable", zap.Error(ruleErr))
+	} else {
+		statement.ApplyCategoryRules(txns, rules)
+	}
 	if err := w.repo.CreateTransactions(saveCtx, txns); err != nil {
 		errMsg := "Failed to store transactions"
 		w.repo.UpdateStatus(saveCtx, uploadID, entities.StatementStatusFailed, &errMsg)

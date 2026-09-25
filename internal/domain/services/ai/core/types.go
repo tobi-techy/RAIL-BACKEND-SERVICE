@@ -467,6 +467,8 @@ type Dependencies struct {
 	// BankStatementAnalysis provides detailed bank statement analysis data
 	// for the get_bank_statement_analysis tool.
 	BankStatementAnalysis BankStatementAnalysisProvider
+	// StatementCategoryRules stores a user's correction for statement lines.
+	StatementCategoryRules StatementCategoryCorrector
 	// FundingInstructions reads the user's deposit rails (virtual accounts,
 	// crypto addresses) for the get_funding_instructions tool.
 	FundingInstructions FundingInstructionsProvider
@@ -1000,6 +1002,12 @@ type BankStatementContextProvider interface {
 // for the get_bank_statement_analysis tool.
 type BankStatementAnalysisProvider interface {
 	GetAnalysis(ctx context.Context, userID uuid.UUID, months int) (map[string]interface{}, error)
+}
+
+// StatementCategoryCorrector persists a narration correction and rewrites
+// statement lines that already match it. updated is the number of lines changed.
+type StatementCategoryCorrector interface {
+	SaveCategoryRule(ctx context.Context, rule *entities.StatementCategoryRule, essential bool) (updated int, err error)
 }
 
 // BankLinker starts an external-bank Connect session and returns the widget URL

@@ -23,11 +23,24 @@ class ParsedBankDescription:
 
 # Nigerian bank description patterns
 POS_PATTERNS = [
-    # "POS 012345 STAN001234 LAGOS NG"
+    # "POS PURCHASE SHOPRITE LEKKI" / "POS/WEB PURCHASE - SHOPRITE LEKKI"
+    re.compile(r'pos(?:\s*/\s*web)?\s+purchase\s*[-:]?\s*(.+)', re.IGNORECASE),
+    # "POS 012345 SHOPRITE IKEJA" — skip STAN terminal ids, those are not merchants
+    re.compile(r'pos\s+(\d+)\s+(?!stan\d)([A-Za-z][A-Za-z0-9&.\' -]{2,})', re.IGNORECASE),
+    # "POS 012345 STAN001234 LAGOS NG" — terminal only, merchant unknown
     re.compile(r'pos\s+(\d+)\s+(stan\w*)\s+(\w+(?:\s+\w+)?)\s+(\w{2})', re.IGNORECASE),
-    # "POS PURCHASE MERCHANT NAME LAGOS"
-    re.compile(r'pos\s+purchase\s+(.+?)(?:\s+([A-Z]{2,}))?$', re.IGNORECASE),
 ]
+
+
+def _pos_merchant(groups: tuple) -> str:
+    """Pick the merchant group. A STAN* terminal id is not a merchant."""
+    if not groups:
+        return ""
+    candidate = groups[1] if len(groups) > 1 else groups[0]
+    candidate = (candidate or "").strip()
+    if re.match(r'(?i)stan\d', candidate):
+        return ""
+    return candidate
 
 NIP_PATTERNS = [
     # "NIP GTB/OBADEJO/0123456789/TRANSFER"
@@ -103,11 +116,11 @@ def parse_bank_description(raw: str) -> ParsedBankDescription:
         m = pat.search(raw)
         if m:
             groups = m.groups()
-            merchant = groups[1] if len(groups) > 1 else groups[0] if groups else raw
+            merchant = _pos_merchant(groups)
             location = groups[2] if len(groups) > 2 else None
             return ParsedBankDescription(
-                bank=None, tx_type="pos", reference=groups[0] if groups else None,
-                location=location, cleaned_merchant=merchant.strip().title(),
+                bank=None, tx_type="pos", reference=groups[0] if groups and groups[0] and groups[0].isdigit() else None,
+                location=location, cleaned_merchant=merchant.title() if merchant else "",
                 confidence=0.85,
             )
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"go.uber.org/zap"
 
 	confirmationHandlers "github.com/rail-service/rail_service/internal/api/handlers/confirmation"
@@ -14,6 +15,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	confirmationSvc "github.com/rail-service/rail_service/internal/domain/services/confirmation"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
+	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/rail-service/rail_service/pkg/auth"
 )
 
@@ -49,24 +51,15 @@ const errConfirmationNoAutomation = confirmationSvcError("automation service not
 // Must run after initializeDomainServices (P2P, automation, investment) and
 // after initializePlatformMessaging (bridge dispatcher for card delivery and
 // in-place edits).
-func (c *Container) initializeConfirmationServices() {
+// sqlxDB wires the Postgres confirmation store: card truth (single-use
+// tokens, idempotency) survives restarts and holds across replicas. A nil DB
+// keeps the in-memory store (tests, single-process dev).
+func (c *Container) initializeConfirmationServices(sqlxDB *sqlx.DB) {
 	cfg := c.Config.Confirmation
-	if !cfg.Enabled {
-		c.ZapLog.Info("confirmation cards disabled by config (CONFIRMATION_ENABLED=false)")
-		return
-	}
 	if cfg.TokenSecret == "" {
 		// Fail closed: without a signing secret no cards are staged and the
 		// endpoints report misconfiguration instead of minting unsigned URLs.
 		c.ZapLog.Warn("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET not set (fail-closed)")
-		return
-	}
-	if len(cfg.TokenSecret) < 32 {
-		c.ZapLog.Error("confirmation cards disabled: CONFIRMATION_TOKEN_SECRET must be >=32 chars (fail-closed)")
-		return
-	}
-	if cfg.RailServiceKey != "" && len(cfg.RailServiceKey) < 32 {
-		c.ZapLog.Error("confirmation cards disabled: RAIL_SERVICE_KEY must be >=32 chars when set (fail-closed)")
 		return
 	}
 	base := strings.TrimSpace(cfg.BaseURL)
@@ -77,17 +70,15 @@ func (c *Container) initializeConfirmationServices() {
 	if ttl <= 0 {
 		ttl = entities.DefaultConfirmationTTL
 	}
+	var store confirmationSvc.Store
+	if sqlxDB != nil {
+		store = repositories.NewConfirmationRepository(sqlxDB, c.ZapLog)
+	}
 	svc := confirmationSvc.NewService(confirmationSvc.Config{
 		TokenSecret: cfg.TokenSecret,
 		ConfirmBase: base,
 		TTL:         ttl,
-	}, nil, c.Logger)
-	// Postgres-backed device keys so restarts/replicas don't silently drop
-	// enrollment and fall back to token-only approves. Nil DB (tests) keeps
-	// the in-memory store.
-	if c.DB != nil {
-		svc.SetDeviceStore(confirmationSvc.NewPostgresDeviceStore(c.DB))
-	}
+	}, store, c.Logger)
 
 	// Same card, different payloads: each action keeps its own backend handler.
 	// Cards minted by Miriam for one of its challenges carry
@@ -149,10 +140,21 @@ func (c *Container) initializeConfirmationServices() {
 		c.ZapLog.Warn("confirmation terminal callback to miriam disabled: set RAIL_SERVICE_KEY and the python agent base URL")
 	}
 
-	// Device-bound approvals: Secure Enclave keys enrolled trust-on-first-use,
-	// signatures required once enrolled. Strict mode (reject token-only
-	// outright) stays off until the fleet is enrolled.
-	svc.SetStrictDeviceSignature(cfg.RequireDeviceSignature)
+	// Passkey-bound approvals: the login passkey (same RP ID) signs each
+	// approval with user verification. Strict mode (reject token-only
+	// outright) stays off until passkey adoption covers the fleet.
+	svc.SetTxAssertion(c.WebAuthnService)
+	svc.SetUserEmailLookup(func(ctx context.Context, userID uuid.UUID) (string, error) {
+		u, err := c.UserRepo.GetByID(ctx, userID)
+		if err != nil {
+			return "", err
+		}
+		if u == nil {
+			return "", fmt.Errorf("user not found")
+		}
+		return u.Email, nil
+	})
+	svc.SetRequirePasskey(cfg.RequirePasskey)
 	if d := c.MiriamBridgeDispatcher; d != nil {
 		svc.SetCardEditor(func(ctx context.Context, conf *entities.Confirmation) error {
 			threadID, _ := conf.Payload["thread_id"].(string)

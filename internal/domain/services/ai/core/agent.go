@@ -974,6 +974,7 @@ var alwaysOnTools = map[string]bool{
 	"get_baby_steps": true,
 	// Bank statement analysis
 	"get_bank_statement_analysis": true,
+	"correct_statement_category":  true,
 }
 
 // selectTools returns the subset of tools relevant to the user's intents.

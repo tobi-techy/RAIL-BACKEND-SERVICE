@@ -26,19 +26,43 @@ type UserEnrollPrepareRequest struct {
 // UserEnrollPrepareResponse returns the sign payload plus card fields.
 // Nothing is created on-chain until Complete is called with the signed tx.
 type UserEnrollPrepareResponse struct {
-	Status       entities.InvestmentActionStatus       `json:"status"`
-	FlowID       string                                `json:"flow_id,omitempty"`
-	AccountIndex string                                `json:"account_index,omitempty"`
-	AgentAccount string                                `json:"agent_account_id,omitempty"`
-	OwnerAccount string                                `json:"owner_account_id,omitempty"`
-	StrategyID   string                                `json:"strategy_id,omitempty"`
-	ChainIDs     []int                                 `json:"chain_ids,omitempty"`
-	SignPayload  string                                `json:"sign_payload,omitempty"` // base64 solanaTransaction
-	Message      string                                `json:"message,omitempty"`      // informational text, if any
-	DepositHint  string                                `json:"deposit_account_id,omitempty"`
-	Preview      *entities.InvestmentAllocationPreview `json:"preview,omitempty"`
-	Policy       *entities.InvestmentPolicyDecision    `json:"policy,omitempty"`
-	Confirmation *entities.InvestmentPendingAction     `json:"confirmation,omitempty"`
+	Status       entities.InvestmentActionStatus `json:"status"`
+	FlowID       string                          `json:"flow_id,omitempty"`
+	AccountIndex string                          `json:"account_index,omitempty"`
+	AgentAccount string                          `json:"agent_account_id,omitempty"`
+	OwnerAccount string                          `json:"owner_account_id,omitempty"`
+	StrategyID   string                          `json:"strategy_id,omitempty"`
+	ChainIDs     []int                           `json:"chain_ids,omitempty"`
+	SignPayload  string                          `json:"sign_payload,omitempty"` // base64 solanaTransaction
+	Message      string                          `json:"message,omitempty"`      // informational text, if any
+	DepositHint  string                          `json:"deposit_account_id,omitempty"`
+	// AlreadyEnrolled is set when this user already has an active portfolio
+	// for the strategy. There is nothing new to sign; the caller funds it.
+	AlreadyEnrolled bool                                  `json:"already_enrolled,omitempty"`
+	EnrollmentID    string                                `json:"enrollment_id,omitempty"`
+	Preview         *entities.InvestmentAllocationPreview `json:"preview,omitempty"`
+	Policy          *entities.InvestmentPolicyDecision    `json:"policy,omitempty"`
+	Confirmation    *entities.InvestmentPendingAction     `json:"confirmation,omitempty"`
+}
+
+// UserContributeRequest funds an existing portfolio. It is the top-up after
+// the first user-signed enrollment: USDC moves from the Rail balance to the
+// portfolio deposit account. No new wallet signature is required.
+type UserContributeRequest struct {
+	StrategyID        string          `json:"strategy_id"`
+	AmountUSD         decimal.Decimal `json:"amount_usd"`
+	Source            string          `json:"source,omitempty"`
+	IdempotencyKey    string          `json:"idempotency_key,omitempty"`
+	ConfirmationToken string          `json:"confirmation_token,omitempty"`
+}
+
+// UserContributeResponse is the staged or settled funding result.
+type UserContributeResponse struct {
+	Status       entities.InvestmentActionStatus     `json:"status"`
+	Enrollment   *entities.InvestmentEnrollment      `json:"enrollment,omitempty"`
+	Funding      *entities.InvestmentFundingTransfer `json:"funding,omitempty"`
+	Policy       *entities.InvestmentPolicyDecision  `json:"policy,omitempty"`
+	Confirmation *entities.InvestmentPendingAction   `json:"confirmation,omitempty"`
 }
 
 // UserEnrollCompleteRequest submits the wallet-signed transaction.
@@ -102,8 +126,10 @@ func (s *Service) PrepareUserEnrollment(
 		return nil, fmt.Errorf("check enrollment: %w", err)
 	} else if existing != nil && existing.Status == entities.InvestmentEnrollmentActive {
 		return &UserEnrollPrepareResponse{
-			Status:     entities.InvestmentActionCompleted,
-			StrategyID: req.StrategyID,
+			Status:          entities.InvestmentActionCompleted,
+			StrategyID:      req.StrategyID,
+			AlreadyEnrolled: true,
+			EnrollmentID:    existing.ID.String(),
 		}, nil
 	}
 
@@ -535,6 +561,120 @@ func (s *Service) CompleteUserEnrollment(
 		Enrollment: enrollment,
 		Policy:     decision,
 		Funding:    funding,
+	}, nil
+}
+
+// Contribute moves more USDC into a portfolio the user is already enrolled in.
+// The first enrollment is user-signed; later contributions reuse that deposit
+// account and only need a confirmation of the amount.
+func (s *Service) Contribute(
+	ctx context.Context,
+	userID uuid.UUID,
+	req *UserContributeRequest,
+	actor entities.InvestmentActor,
+) (*UserContributeResponse, error) {
+	if !s.cfg.Enabled {
+		return nil, ErrDisabled
+	}
+	if req == nil || strings.TrimSpace(req.StrategyID) == "" {
+		return nil, fmt.Errorf("%w: strategy_id is required", ErrValidationFailed)
+	}
+	if !req.AmountUSD.GreaterThan(decimal.Zero) {
+		return nil, fmt.Errorf("%w: amount_usd must be greater than zero", ErrValidationFailed)
+	}
+	strategyID, err := uuid.Parse(req.StrategyID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid strategy id", ErrValidationFailed)
+	}
+	strategy, err := s.strategies.GetByID(ctx, strategyID)
+	if err != nil {
+		return nil, fmt.Errorf("get strategy: %w", err)
+	}
+	if strategy == nil || !s.canAccess(strategy, userID) {
+		return nil, ErrNotFound
+	}
+	enrollment, err := s.enrollments.GetByUserAndStrategy(ctx, userID, strategy.ID)
+	if err != nil {
+		return nil, fmt.Errorf("check enrollment: %w", err)
+	}
+	if enrollment == nil || enrollment.Status != entities.InvestmentEnrollmentActive {
+		return nil, fmt.Errorf("%w: enroll in this strategy before adding money", ErrNotFound)
+	}
+
+	limits, err := s.EffectiveLimits(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	decision, err := s.policy.Evaluate(ctx, PolicyInput{
+		UserID:    userID,
+		Action:    PolicyActionContribute,
+		AmountUSD: req.AmountUSD,
+		Risk:      strategy.Risk,
+		Limits:    *limits,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if decision.Verdict == entities.InvestmentVerdictNotSupported ||
+		decision.Verdict == entities.InvestmentVerdictRequiresComplianceReview ||
+		decision.Verdict == entities.InvestmentVerdictRequiresAuthentication {
+		return &UserContributeResponse{Status: entities.InvestmentActionRejected, Policy: decision, Enrollment: enrollment},
+			fmt.Errorf("%w: %s", ErrPolicyBlocked, strings.Join(decision.Reasons, "; "))
+	}
+
+	source := normaliseFundingSource(req.Source)
+	type contributeBinding struct {
+		StrategyID string `json:"strategy_id"`
+		AmountUSD  string `json:"amount_usd"`
+		Source     string `json:"source"`
+		Enrollment string `json:"enrollment_id"`
+	}
+	binding := contributeBinding{
+		StrategyID: req.StrategyID,
+		AmountUSD:  req.AmountUSD.String(),
+		Source:     source,
+		Enrollment: enrollment.ID.String(),
+	}
+	outcome, err := s.confirmMutation(ctx, userID, "fund_enrollment", binding, decision, nil, req.ConfirmationToken)
+	if err != nil {
+		return nil, err
+	}
+	if !outcome.Proceed {
+		return &UserContributeResponse{
+			Status:       entities.InvestmentActionAwaitingConfirmation,
+			Enrollment:   enrollment,
+			Policy:       decision,
+			Confirmation: outcome.Pending,
+		}, nil
+	}
+
+	key := strings.TrimSpace(req.IdempotencyKey)
+	if key == "" {
+		key = fmt.Sprintf("invest-contribute-%s-%s", enrollment.ID.String(), req.AmountUSD.String())
+	}
+	transfer, err := s.Fund(ctx, userID, enrollment.ID, req.AmountUSD, source, key, actor)
+	if err != nil {
+		// The portfolio exists. Report the funding failure on the body so the
+		// caller can explain it instead of treating the whole request as lost.
+		return &UserContributeResponse{
+			Status:     entities.InvestmentActionCompleted,
+			Enrollment: enrollment,
+			Policy:     decision,
+			Funding: &entities.InvestmentFundingTransfer{
+				EnrollmentID:  enrollment.ID,
+				Direction:     "deposit",
+				AmountUSD:     req.AmountUSD,
+				Status:        "FAILED",
+				FailureReason: err.Error(),
+			},
+		}, nil
+	}
+	_ = s.SyncEnrollment(ctx, enrollment.ID)
+	return &UserContributeResponse{
+		Status:     entities.InvestmentActionCompleted,
+		Enrollment: enrollment,
+		Funding:    transfer,
+		Policy:     decision,
 	}, nil
 }
 

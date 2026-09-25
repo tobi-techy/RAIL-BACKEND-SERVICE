@@ -262,7 +262,11 @@ func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID
 	pyConv := fmt.Sprintf("platform:%s:%s", plat.String(), threadID)
 
 	doc := ai.PythonChatDocument{Name: "bank_statement.pdf", MIME: "application/pdf", Summary: scan.Summary}
-	resp, err := a.python.ChatWithDocument(ctx, uid, email, role, pyConv, "I sent my bank statement.", doc)
+	message := "I sent my bank statement."
+	if summary := strings.TrimSpace(scan.Summary); summary != "" {
+		message += "\n\n[statement scan]\n" + summary
+	}
+	resp, err := a.python.ChatWithDocument(ctx, uid, email, role, pyConv, message, doc)
 	if err != nil {
 		a.logger.Warn("python document chat failed",
 			zap.String("user_id", uid.String()),
@@ -270,10 +274,11 @@ func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID
 			zap.Error(err))
 		return nil, false, err
 	}
-	if resp.Onboarding == nil {
+	reply := mapPythonChatReply(resp)
+	if reply == nil || (strings.TrimSpace(reply.Text) == "" && reply.Poll == nil && len(reply.ExtraTexts) == 0) {
 		return nil, false, nil
 	}
-	return mapPythonChatReply(resp), true, nil
+	return reply, true, nil
 }
 
 // handlePlatformMessagePython is the delegated path for messaging when the

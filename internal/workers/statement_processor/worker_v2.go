@@ -25,15 +25,15 @@ type ConversationWriter interface {
 
 // WorkerV2 uses the improved multi-strategy pipeline with S3 storage and LLM failover.
 type WorkerV2 struct {
-	repo         *repositories.BankStatementRepository
-	pipeline     *statement.Pipeline
-	fileStore    statement.FileStore
-	memory       MemoryWriter
-	supermemory  SupermemoryWriter
-	notifier     Notifier
+	repo          *repositories.BankStatementRepository
+	pipeline      *statement.Pipeline
+	fileStore     statement.FileStore
+	memory        MemoryWriter
+	supermemory   SupermemoryWriter
+	notifier      Notifier
 	conversations ConversationWriter
-	reporter     statement.ProgressReporter
-	logger       *zap.Logger
+	reporter      statement.ProgressReporter
+	logger        *zap.Logger
 }
 
 // SupermemoryWriter ingests structured conversations into Supermemory for long-term recall.
@@ -133,6 +133,16 @@ func (w *WorkerV2) HandlerV2() jobqueue.JobHandler {
 }
 
 func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data []byte, contentType, bankName string) (retErr error) {
+	for i := 0; i < 4; i++ {
+		n, err := w.repo.BackfillUnderstanding(ctx, 500)
+		if err != nil {
+			w.logger.Warn("statement understanding backfill skipped", zap.Error(err))
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			errMsg := fmt.Sprintf("internal error: %v", r)
@@ -195,6 +205,11 @@ func (w *WorkerV2) process(ctx context.Context, uploadID, userID uuid.UUID, data
 
 	saveCtx, saveCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer saveCancel()
+	if rules, ruleErr := w.repo.ListCategoryRules(saveCtx, userID); ruleErr != nil {
+		w.logger.Warn("statement category rules unavailable", zap.Error(ruleErr))
+	} else {
+		statement.ApplyCategoryRules(txns, rules)
+	}
 	if err := w.repo.CreateTransactions(saveCtx, txns); err != nil {
 		return w.fail(ctx, uploadID, "Failed to store transactions")
 	}
@@ -283,7 +298,7 @@ func (w *WorkerV2) generateFacts(ctx context.Context, userID uuid.UUID, txns []*
 		monthly := totalSpend.Div(decimal.NewFromInt(int64(months)))
 		w.memory.SaveFact(ctx, &entities.MiriamUserFact{
 			UserID: userID, Category: entities.FactCategoryExternalSpending,
-			Fact: fmt.Sprintf("From %s statement: average monthly spending is %s %s across %d months", bankName, currency, monthly.StringFixed(0), months),
+			Fact:   fmt.Sprintf("From %s statement: average monthly spending is %s %s across %d months", bankName, currency, monthly.StringFixed(0), months),
 			Source: entities.FactSourceBankStatement, Confidence: factConfidence, FirstObservedAt: now, LastConfirmedAt: now,
 		}, nil)
 	}
@@ -291,7 +306,7 @@ func (w *WorkerV2) generateFacts(ctx context.Context, userID uuid.UUID, txns []*
 		monthly := totalIncome.Div(decimal.NewFromInt(int64(months)))
 		w.memory.SaveFact(ctx, &entities.MiriamUserFact{
 			UserID: userID, Category: entities.FactCategoryExternalIncome,
-			Fact: fmt.Sprintf("From %s statement: average monthly income is %s %s", bankName, currency, monthly.StringFixed(0)),
+			Fact:   fmt.Sprintf("From %s statement: average monthly income is %s %s", bankName, currency, monthly.StringFixed(0)),
 			Source: entities.FactSourceBankStatement, Confidence: factConfidence, FirstObservedAt: now, LastConfirmedAt: now,
 		}, nil)
 	}
@@ -314,7 +329,7 @@ func (w *WorkerV2) generateFacts(ctx context.Context, userID uuid.UUID, txns []*
 		monthly := e.total.Div(decimal.NewFromInt(int64(months)))
 		w.memory.SaveFact(ctx, &entities.MiriamUserFact{
 			UserID: userID, Category: entities.FactCategoryExternalSpending,
-			Fact: fmt.Sprintf("From %s: spends ~%s %s/month on %s", bankName, currency, monthly.StringFixed(0), e.cat),
+			Fact:   fmt.Sprintf("From %s: spends ~%s %s/month on %s", bankName, currency, monthly.StringFixed(0), e.cat),
 			Source: entities.FactSourceBankStatement, Confidence: factConfidence, FirstObservedAt: now, LastConfirmedAt: now,
 		}, nil)
 	}
@@ -396,15 +411,15 @@ func buildSummaryJSON(txns []*entities.BankStatementTransaction, bankName string
 	}
 
 	summary := map[string]interface{}{
-		"bank_name":          bankName,
-		"total_transactions": len(txns),
-		"total_income":       totalCredits.StringFixed(2),
-		"total_spending":     totalDebits.StringFixed(2),
-		"currency":           txns[0].Currency,
-		"months_covered":     months,
-		"top_categories":     sorted,
+		"bank_name":           bankName,
+		"total_transactions":  len(txns),
+		"total_income":        totalCredits.StringFixed(2),
+		"total_spending":      totalDebits.StringFixed(2),
+		"currency":            txns[0].Currency,
+		"months_covered":      months,
+		"top_categories":      sorted,
 		"extraction_strategy": strategy,
-		"parser_used":        parserUsed,
+		"parser_used":         parserUsed,
 	}
 	if periodStart != nil {
 		summary["period_start"] = periodStart.Format("2006-01-02")
@@ -722,10 +737,10 @@ func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, tx
 
 	// 2. Build monthly summaries
 	type monthData struct {
-		income  decimal.Decimal
-		spend   decimal.Decimal
-		catMap  map[string]decimal.Decimal
-		count   int
+		income decimal.Decimal
+		spend  decimal.Decimal
+		catMap map[string]decimal.Decimal
+		count  int
 	}
 	byMonth := make(map[string]*monthData)
 	for _, t := range txns {
@@ -785,10 +800,10 @@ func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, tx
 
 	// 4. Top recipients (debit transactions grouped by description)
 	type recipientData struct {
-		total       decimal.Decimal
-		count       int
-		firstMonth  time.Time
-		lastMonth   time.Time
+		total      decimal.Decimal
+		count      int
+		firstMonth time.Time
+		lastMonth  time.Time
 	}
 	recipients := make(map[string]*recipientData)
 	for _, t := range txns {
@@ -905,10 +920,10 @@ func (w *WorkerV2) ingestToSupermemory(ctx context.Context, userID uuid.UUID, tx
 
 	// 7. Income sources (credit transactions grouped by description)
 	type incomeSourceData struct {
-		total      decimal.Decimal
-		count      int
-		days       []int
-		months     []string
+		total  decimal.Decimal
+		count  int
+		days   []int
+		months []string
 	}
 	incomeSources := make(map[string]*incomeSourceData)
 	for _, t := range txns {

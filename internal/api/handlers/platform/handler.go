@@ -19,6 +19,7 @@ type PlatformHandler struct {
 	// bridge's iMessage handle). Empty if not configured.
 	bridgeAddress string
 	logger        *zap.Logger
+	chatLinks     *platform.ChatAccountLinker
 }
 
 func NewPlatformHandlerWithLogger(ls *platform.LinkingService, bridgeAddress string, logger *zap.Logger) *PlatformHandler {

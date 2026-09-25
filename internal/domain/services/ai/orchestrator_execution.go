@@ -79,6 +79,8 @@ func executionActionDescription(name string, args map[string]interface{}) string
 		return fmt.Sprintf("Split receipt with %s", arg("participants"))
 	case "create_automation":
 		return fmt.Sprintf("Create automation: %s", arg("name"))
+	case "correct_statement_category":
+		return fmt.Sprintf("Remember %q as %s on your statements", arg("pattern"), arg("bucket"))
 	case ToolSetupBillAutopay:
 		if payee := arg("payee"); payee != "" {
 			label := arg("payee_name")

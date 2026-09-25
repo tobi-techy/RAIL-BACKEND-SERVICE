@@ -1339,6 +1339,21 @@ func (c *Container) wireChatOnboarding() {
 		c.ZapLog,
 	)
 	c.platformProcessor.SetOnboarder(onboarder)
+	if origin := platform.PublicAPIOrigin(c.Config.Confirmation.BaseURL); origin != "" &&
+		c.SocialAuthService != nil && c.PlatformHandler != nil &&
+		(c.Config.SocialAuth.Google.ClientID != "" || c.Config.SocialAuth.Apple.ClientID != "") {
+		linker := platform.NewChatAccountLinker(
+			c.RedisClient,
+			c.SocialAuthService,
+			c.UserRepo,
+			c.platformLinking,
+			c.OnboardingService,
+			origin,
+			c.ZapLog,
+		)
+		onboarder.SetChatAccountLinker(linker)
+		c.PlatformHandler.SetChatAccountLinker(linker)
+	}
 	// Fire the first-login Baby Steps seeder from both paths: iMessage
 	// handshake (processor.tryCompleteHandshake) and chat-first onboarding
 	// completion (onboarder.handleConsent). The seeder is idempotent —
@@ -2405,11 +2420,10 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
 	}
 
-	// Initialize the Glider-backed investment infrastructure (Agent API).
-	// A failure here disables investing rather than the whole API: the feature is
-	// additive and every endpoint reports NOT_SUPPORTED when the service is nil.
+	// Investing is always on. A missing Glider key or a rejected key stops
+	// startup so the API cannot advertise a money path that will not move funds.
 	if err := c.initializeInvestmentGliderServices(sqlxDB); err != nil {
-		c.ZapLog.Warn("Investment (Glider) services initialization failed, investing disabled", zap.Error(err))
+		return fmt.Errorf("investment (Glider) startup: %w", err)
 	}
 
 	// Initialize the retirement vault. It must come after the investment engine

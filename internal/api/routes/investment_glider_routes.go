@@ -30,9 +30,12 @@ func RegisterInvestmentGliderRoutes(
 
 	investments := router.Group("/investments")
 	investments.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
-	// Tokenized investing needs advanced (tier 3) verification. The policy
-	// engine independently enforces the same rule; this gate turns it into a
-	// clear 403 instead of a service error.
+	// Strategy investing is not KYC gated beyond an active account (see
+	// RequireTokenizedInvestingCapability: Glider holds/executes on its own
+	// regulated infra; fiat ramps, cards, brokerage, P2P still require KYC).
+	// The middleware only requires a resolvable, active account so a missing
+	// user is a clear 403. All mutations below (including POST /contributions)
+	// are staged behind confirmation tokens in the service layer.
 	investments.Use(middleware.RequireTokenizedInvestingCapability(userReader, log.Zap()))
 	{
 		// Capability and limits: answer "can I invest?" without acting.
@@ -84,6 +87,7 @@ func RegisterInvestmentGliderRoutes(
 		investments.POST("/enroll", h.Enroll)
 		investments.POST("/enroll/prepare", h.EnrollPrepare)
 		investments.POST("/enroll/complete", h.EnrollComplete)
+		investments.POST("/contributions", h.Contribute)
 		investments.POST("/orders", h.PlaceOrder)
 		investments.POST("/allocations", h.SetAllocation)
 

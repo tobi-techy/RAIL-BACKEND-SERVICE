@@ -104,8 +104,7 @@ cd /Users/tobi/Development/MIRIAM
 ### Configuration
 
 `InvestmentGliderConfig` (in `config.go`) with env bindings:
-- `INVESTMENT_GLIDER_ENABLED`
-- `INVESTMENT_GLIDER_PROVIDER_API_KEY` (required in non-dev)
+- `INVESTMENT_GLIDER_API_KEY` (required outside development; investing is always on)
 - `INVESTMENT_GLIDER_OWNER_SIGNER_MODE` (`derived` | `circle`)
 - `INVESTMENT_GLIDER_DERIVED_MASTER_SEED` (32+ chars, dev only)
 - `INVESTMENT_GLIDER_CONFIRMATION_TTL` (default 15m)

@@ -16,6 +16,13 @@ const (
 	StatementTxnTypeCredit = "credit"
 	StatementTxnTypeDebit  = "debit"
 
+	StatementRecurrenceOneOff       = "one_off"
+	StatementRecurrenceBill         = "bill"
+	StatementRecurrenceSubscription = "subscription"
+
+	StatementRuleExact    = "exact"
+	StatementRuleContains = "contains"
+
 	FactCategoryExternalSpending = "external_spending"
 	FactCategoryExternalIncome   = "external_income"
 	FactSourceBankStatement      = "bank_statement"
@@ -40,16 +47,31 @@ type BankStatementUpload struct {
 }
 
 type BankStatementTransaction struct {
-	ID              uuid.UUID       `json:"id" db:"id"`
-	UploadID        uuid.UUID       `json:"upload_id" db:"upload_id"`
-	UserID          uuid.UUID       `json:"user_id" db:"user_id"`
-	TransactionDate time.Time       `json:"transaction_date" db:"transaction_date"`
-	Description     string          `json:"description" db:"description"`
-	Amount          decimal.Decimal `json:"amount" db:"amount"`
-	Currency        string          `json:"currency" db:"currency"`
-	Type            string          `json:"type" db:"type"`
-	Category        string          `json:"category" db:"category"`
-	BalanceAfter    *decimal.Decimal `json:"balance_after,omitempty" db:"balance_after"`
-	RawLine         *string         `json:"raw_line,omitempty" db:"raw_line"`
-	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
+	ID                 uuid.UUID        `json:"id" db:"id"`
+	UploadID           uuid.UUID        `json:"upload_id" db:"upload_id"`
+	UserID             uuid.UUID        `json:"user_id" db:"user_id"`
+	TransactionDate    time.Time        `json:"transaction_date" db:"transaction_date"`
+	Description        string           `json:"description" db:"description"`
+	Amount             decimal.Decimal  `json:"amount" db:"amount"`
+	Currency           string           `json:"currency" db:"currency"`
+	Type               string           `json:"type" db:"type"`
+	Category           string           `json:"category" db:"category"`
+	Counterparty       string           `json:"counterparty" db:"counterparty"`
+	IsEssential        bool             `json:"is_essential" db:"is_essential"`
+	CategoryConfidence float64          `json:"category_confidence" db:"category_confidence"`
+	Recurrence         string           `json:"recurrence" db:"recurrence"`
+	BalanceAfter       *decimal.Decimal `json:"balance_after,omitempty" db:"balance_after"`
+	RawLine            *string          `json:"raw_line,omitempty" db:"raw_line"`
+	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
+}
+
+// StatementCategoryRule is a user correction. It overrides the categorizer
+// for future statement lines and for lines already stored for that user.
+type StatementCategoryRule struct {
+	ID        uuid.UUID `json:"id" db:"id"`
+	UserID    uuid.UUID `json:"user_id" db:"user_id"`
+	MatchType string    `json:"match_type" db:"match_type"`
+	Pattern   string    `json:"pattern" db:"pattern"`
+	Bucket    string    `json:"bucket" db:"bucket"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }

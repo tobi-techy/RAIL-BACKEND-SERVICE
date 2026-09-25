@@ -71,7 +71,7 @@ const parserSystemPrompt = `Bank statement parser. Extract ALL transactions. Res
 Format: {"bank_name":"X","currency":"NGN","period_start":"2025-01-01","period_end":"2025-06-30","transactions":[{"date":"2025-01-15","description":"POS Shoprite","amount":15000,"type":"debit","category":"groceries"}]}
 Rules:
 - date: YYYY-MM-DD. amount: positive number. type: credit|debit
-- category: food|groceries|transport|utilities|entertainment|shopping|health|education|rent|transfer_in|transfer_out|salary|airtime|betting|subscription|savings|loan|other
+- category: omit it. A separate step categorizes the narration. Do not guess a category.
 - Extract EVERY transaction. Skip headers/footers/summaries.
 - Multi-line descriptions: merge (new txn starts with date)
 - Output compact JSON: no whitespace, no balance_after field
@@ -79,11 +79,11 @@ Rules:
 
 // ParseResult holds the LLM's structured output.
 type ParseResult struct {
-	BankName     string        `json:"bank_name"`
-	Currency     string        `json:"currency"`
-	PeriodStart  string        `json:"period_start"`
-	PeriodEnd    string        `json:"period_end"`
-	Transactions []ParsedTxn   `json:"transactions"`
+	BankName     string      `json:"bank_name"`
+	Currency     string      `json:"currency"`
+	PeriodStart  string      `json:"period_start"`
+	PeriodEnd    string      `json:"period_end"`
+	Transactions []ParsedTxn `json:"transactions"`
 }
 
 type ParsedTxn struct {
@@ -383,20 +383,21 @@ func (p *TransactionParser) ToEntities(parsed *ParseResult, uploadID, userID uui
 			txnType = entities.StatementTxnTypeDebit
 		}
 
-		category := tx.Category
-		if category == "" {
-			category = "other"
-		}
+		understood := UnderstandLine(tx.Category, tx.Description, txnType)
 
 		txn := &entities.BankStatementTransaction{
-			UploadID:        uploadID,
-			UserID:          userID,
-			TransactionDate: txDate,
-			Description:     tx.Description,
-			Amount:          amount,
-			Currency:        currency,
-			Type:            txnType,
-			Category:        category,
+			UploadID:           uploadID,
+			UserID:             userID,
+			TransactionDate:    txDate,
+			Description:        tx.Description,
+			Amount:             amount,
+			Currency:           currency,
+			Type:               txnType,
+			Category:           understood.Bucket,
+			Counterparty:       understood.Counterparty,
+			IsEssential:        understood.Essential,
+			CategoryConfidence: understood.Confidence,
+			Recurrence:         entities.StatementRecurrenceOneOff,
 		}
 		if tx.BalanceAfter != nil {
 			bal := decimal.NewFromFloat(*tx.BalanceAfter)
@@ -406,5 +407,6 @@ func (p *TransactionParser) ToEntities(parsed *ParseResult, uploadID, userID uui
 		txns = append(txns, txn)
 	}
 
+	AssignRecurrence(txns)
 	return txns, periodStart, periodEnd
 }

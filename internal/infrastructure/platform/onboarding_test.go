@@ -377,8 +377,8 @@ func TestOnboarding_ContactRejectFallsBackToTyping(t *testing.T) {
 		Country:   "NG",
 	})
 	reply := step(t, ob, sender, "that's not me")
-	if !strings.Contains(strings.ToLower(reply), "number") {
-		t.Fatalf("expected phone fallback after rejecting card, got: %q", reply)
+	if !strings.Contains(strings.ToLower(reply), "email") {
+		t.Fatalf("expected email fallback after rejecting card, got: %q", reply)
 	}
 }
 
@@ -391,13 +391,13 @@ func TestOnboarding_HappyPath(t *testing.T) {
 		t.Fatalf("provider-unavailable reply should prompt for name, got: %q", intro)
 	}
 
-	askPhone := step(t, ob, sender, "Ada")
-	if !strings.Contains(askPhone, "Ada") || !strings.Contains(strings.ToLower(askPhone), "number") {
-		t.Fatalf("expected name ack + phone prompt, got: %q", askPhone)
+	askEmail := step(t, ob, sender, "Ada")
+	if !strings.Contains(askEmail, "Ada") || !strings.Contains(strings.ToLower(askEmail), "email") {
+		t.Fatalf("expected name ack + email prompt, got: %q", askEmail)
 	}
-	askOTP := step(t, ob, sender, "+2348012345678")
-	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2348012345678" {
-		t.Fatalf("expected OTP sent to normalized phone, got: %v", ver.sentTo)
+	askOTP := step(t, ob, sender, "ada@example.com")
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "ada@example.com" {
+		t.Fatalf("expected OTP sent to the address, got: %v", ver.sentTo)
 	}
 	if !strings.Contains(askOTP, "code") {
 		t.Fatalf("expected code prompt, got: %q", askOTP)
@@ -408,23 +408,19 @@ func TestOnboarding_HappyPath(t *testing.T) {
 		t.Fatalf("expected consent prompt, got: %q", consent)
 	}
 
-	// Provisioning happens at phone verification; the terms poll only gates the
-	// messaging link and records consent.
-	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
-		t.Fatalf("expected provisioning with Ada/NG/+2348012345678 at phone verification, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
+	// Provisioning happens when the email code checks out; the terms poll only
+	// gates the messaging link.
+	if prov.calls != 1 || prov.lastName != "Ada" || prov.lastPhone != "" {
+		t.Fatalf("expected provisioning with Ada and no invented phone, got calls=%d name=%q phone=%q", prov.calls, prov.lastName, prov.lastPhone)
 	}
 	// The account exists before consent: no second provisioning call yet.
 	if prov.calls != 1 {
 		t.Fatalf("expected exactly one provisioning call before consent, got %d", prov.calls)
 	}
 
-	askEmail := step(t, ob, sender, "YES")
-	if !strings.Contains(strings.ToLower(askEmail), "email") {
-		t.Fatalf("expected email-attach prompt, got: %q", askEmail)
-	}
-	done := step(t, ob, sender, "skip")
-	if prov.calls != 2 || prov.lastName != "Ada" || prov.lastCC != "NG" || prov.lastPhone != "+2348012345678" {
-		t.Fatalf("expected consent provisioning retry with Ada/NG/+2348012345678, got calls=%d name=%q cc=%q phone=%q", prov.calls, prov.lastName, prov.lastCC, prov.lastPhone)
+	done := step(t, ob, sender, "YES")
+	if prov.calls != 2 || prov.lastName != "Ada" || prov.lastPhone != "" {
+		t.Fatalf("expected consent provisioning retry with Ada and no phone, got calls=%d name=%q phone=%q", prov.calls, prov.lastName, prov.lastPhone)
 	}
 	if linker.calls != 1 || linker.lastSend != sender {
 		t.Fatalf("expected auto-link to sender, got calls=%d send=%q", linker.calls, linker.lastSend)

@@ -695,6 +695,7 @@ func (c *Container) initializeAIServices(sqlxDB *sqlx.DB, positionRepo *reposito
 					}
 					agentDeps.BankStatementAnalysis = &coreBankStatementAnalysisAdapter{inner: analysisAdapter}
 				}
+				agentDeps.StatementCategoryRules = c.BankStatementRepo
 			}
 
 			// Memory store (tone profiles) — repository implements GetToneProfile

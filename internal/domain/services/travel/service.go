@@ -94,6 +94,17 @@ func (s *Service) SearchFlights(ctx context.Context, origin, destination, depart
 	if s.client == nil {
 		return nil, fmt.Errorf("flight booking is not configured")
 	}
+	// Validate before the x402-paid call: a malformed request still settles
+	// the micropayment before BRIJ 400s, so bad input must never reach the wire.
+	origin = strings.ToUpper(strings.TrimSpace(origin))
+	destination = strings.ToUpper(strings.TrimSpace(destination))
+	departDate = strings.TrimSpace(departDate)
+	if !isIATA(origin) || !isIATA(destination) {
+		return nil, fmt.Errorf("origin and destination must be 3-letter IATA airport codes (e.g. LOS, ABV)")
+	}
+	if _, err := time.Parse("2006-01-02", departDate); err != nil {
+		return nil, fmt.Errorf("depart date must be YYYY-MM-DD (e.g. 2026-12-01)")
+	}
 	if adults <= 0 {
 		adults = 1
 	}
@@ -107,9 +118,9 @@ func (s *Service) SearchFlights(ctx context.Context, origin, destination, depart
 	limit := 20
 	cheapest := true
 	result, err := s.client.Search(ctx, brij.SearchRequest{
-		OriginIATA:           strings.ToUpper(strings.TrimSpace(origin)),
-		DestinationIATA:      strings.ToUpper(strings.TrimSpace(destination)),
-		DepartDate:           strings.TrimSpace(departDate),
+		OriginIATA:           origin,
+		DestinationIATA:      destination,
+		DepartDate:           departDate,
 		Adults:               adults,
 		Limit:                &limit,
 		CheapestPerItinerary: &cheapest,
@@ -471,6 +482,19 @@ func (s *Service) loadOrderByID(ctx context.Context, id uuid.UUID) (*orderRow, e
 		return nil, fmt.Errorf("failed to load travel order: %w", err)
 	}
 	return &o, nil
+}
+
+// isIATA reports whether s is a 3-letter IATA airport code.
+func isIATA(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for _, r := range s {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 // intentEscrowDecimal converts an intent's atomic escrow amount to USDC.

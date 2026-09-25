@@ -140,14 +140,14 @@ func TestGuestBrain_StartSignupWithoutPhoneAsksNaturally(t *testing.T) {
 	if err := store.Get(context.Background(), onboardingKey(entities.PlatformIMessage, sender), &st); err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	if st.Phase != phasePhone {
-		t.Fatalf("expected phase awaiting_phone, got %q", st.Phase)
+	if st.Phase != phaseEmail {
+		t.Fatalf("expected phase awaiting_email, got %q", st.Phase)
 	}
 
-	// The number arrives next turn — deterministic, no model involved.
-	otp := step(t, ob, sender, "it's +2349164904178")
-	if len(ver.sentTo) != 1 || ver.sentTo[0] != "+2349164904178" {
-		t.Fatalf("expected OTP to the parsed number, got: %v", ver.sentTo)
+	// The address arrives next turn — deterministic, no model involved.
+	otp := step(t, ob, sender, "ada@example.com")
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "ada@example.com" {
+		t.Fatalf("expected OTP to the address, got: %v", ver.sentTo)
 	}
 	if !strings.Contains(strings.ToLower(otp), "code") {
 		t.Fatalf("expected code prompt, got: %q", otp)
@@ -271,7 +271,7 @@ func TestGuestBrain_TurnCapSteersToSignup(t *testing.T) {
 	if len(fc.calls) != callsBefore {
 		t.Fatal("turn-capped conversation must not hit the model")
 	}
-	if !strings.Contains(strings.ToLower(reply), "number") {
+	if !strings.Contains(strings.ToLower(reply), "email") {
 		t.Fatalf("expected the signup steer, got: %q", reply)
 	}
 }
@@ -288,11 +288,10 @@ func TestGuestBrain_ProviderDownFallsBack(t *testing.T) {
 	}
 	// Provide name.
 	reply = step(t, ob, sender, "Ada")
-	if !strings.Contains(strings.ToLower(reply), "number") {
-		t.Fatalf("expected phone prompt after name, got: %q", reply)
+	if !strings.Contains(strings.ToLower(reply), "email") {
+		t.Fatalf("expected email prompt after name, got: %q", reply)
 	}
-	// Provide phone.
-	step(t, ob, sender, "+2348012345678")
+	step(t, ob, sender, "ada@example.com")
 	// Provide OTP.
 	consent := step(t, ob, sender, "123456")
 	if !strings.Contains(consent, "I agree") {
@@ -587,7 +586,7 @@ func TestGuestBrain_MoneyDialCapturedAndHandedOff(t *testing.T) {
 	}
 
 	step(t, ob, "+15552120", "I want to make my first deposit")
-	step(t, ob, "+15552120", "+15551234567")
+	step(t, ob, "+15552120", "ada@example.com")
 	step(t, ob, "+15552120", "123456")
 	step(t, ob, "+15552120", "I agree")
 

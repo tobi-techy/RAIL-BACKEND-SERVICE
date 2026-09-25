@@ -768,7 +768,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Live confirmation cards (Face ID money actions). Runs after domain
 	// services (P2P, automation, investment executors) and platform messaging
 	// (bridge dispatcher for card delivery + in-place edits).
-	container.initializeConfirmationServices()
+	container.initializeConfirmationServices(sqlxDB)
 
 	// Chat-first onboarding for unlinked senders — must run after
 	// initializePlatformMessaging (processor/linking) and after
