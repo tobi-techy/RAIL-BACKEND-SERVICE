@@ -79,8 +79,15 @@ var errGuestNoReply = errors.New("guest model returned no reply text")
 // than apologising for. Every completion failure qualifies — the guest
 // conversation has no side effects to unwind, so a retry is always safe.
 func isTransientGuestErr(err error) bool {
-	return err != nil && !errors.Is(err, errNoGuestCompleter)
+	if err == nil || errors.Is(err, errNoGuestCompleter) || errors.Is(err, ErrGuestNoUserText) {
+		return false
+	}
+	return true
 }
+
+// ErrGuestNoUserText means the turn had nothing for the model to read. Retrying
+// the same empty payload never succeeds.
+var ErrGuestNoUserText = errors.New("guest completion received no user text")
 
 // errNoGuestCompleter means the guest brain has no provider wired at all. That
 // is a configuration state, not a blip, so retrying it is pointless.

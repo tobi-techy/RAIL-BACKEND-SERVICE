@@ -318,6 +318,23 @@ func TestProcessAction_CancelVote(t *testing.T) {
 	}
 }
 
+func TestProcess_UnsupportedCustomRepliesOnceWithoutTheBrain(t *testing.T) {
+	repo := newFakeRepo()
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	raw := []byte(`{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_unsupported":true,"unsupported_mime":"custom"}`)
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.lastMessage != "" {
+		t.Fatalf("brain was called with %q", orch.lastMessage)
+	}
+	if len(*sent) != 1 || !strings.Contains((*sent)[0].Text, "Text me what you need") {
+		t.Fatalf("expected one plain notice, got %#v", *sent)
+	}
+}
+
 func TestProcess_VoiceNoteTranscribesAndRepliesWithVoice(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
