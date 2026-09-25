@@ -39,9 +39,14 @@ var columnNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][
 // passed as query arguments and never interpolated.
 //
 // Fail-loud: if ANY key is rejected, the whole clause fails with an error and
-// returns "", nil, err. Callers must not fall back to an unfiltered query —
-// treating "no valid keys" as "no filter" would expose the entire table.
+// returns "", nil, err. Callers must check err and abort the query — do NOT
+// fall back to an unfiltered query. Treating "no valid keys" as "no filter"
+// would expose the entire table.
 // An explicitly empty conditions map returns "", nil, nil.
+//
+// The error is intentionally generic (no offending key echoed) so it is safe
+// to propagate without reflecting attacker input. Log the keys server-side if
+// you need them for debugging.
 func BuildWhereClause(conditions map[string]interface{}) (string, []interface{}, error) {
 	if len(conditions) == 0 {
 		return "", nil, nil
@@ -54,14 +59,10 @@ func BuildWhereClause(conditions map[string]interface{}) (string, []interface{},
 	}
 	sort.Strings(keys)
 
-	var invalid []string
 	for _, key := range keys {
 		if !columnNamePattern.MatchString(key) {
-			invalid = append(invalid, key)
+			return "", nil, fmt.Errorf("invalid column name in WHERE clause")
 		}
-	}
-	if len(invalid) > 0 {
-		return "", nil, fmt.Errorf("invalid column name(s) in WHERE clause: %s", strings.Join(invalid, ", "))
 	}
 
 	var clauses []string
@@ -90,14 +91,21 @@ func BuildOrderByClause(orderBy string, allowedColumns []string) string {
 }
 
 // BuildOrderByClauseStrict is the fail-loud variant: empty input returns
-// ("", nil); a non-allowlisted column returns ("", error) so callers can
-// never mistake a rejected sort for "no ordering".
+// ("", nil); a non-allowlisted column, a malformed clause (more than
+// "column [direction]"), or an invalid direction returns ("", error) so
+// callers can never mistake a rejected sort for "no ordering".
 func BuildOrderByClauseStrict(orderBy string, allowedColumns []string) (string, error) {
 	if orderBy == "" {
 		return "", nil
 	}
 
-	parts := strings.Split(orderBy, " ")
+	parts := strings.Fields(orderBy)
+	if len(parts) == 0 {
+		return "", nil
+	}
+	if len(parts) > 2 {
+		return "", fmt.Errorf("invalid order by clause: %q", orderBy)
+	}
 	column := parts[0]
 
 	allowed := false
@@ -113,8 +121,15 @@ func BuildOrderByClauseStrict(orderBy string, allowedColumns []string) (string, 
 	}
 
 	direction := "ASC"
-	if len(parts) > 1 && strings.ToUpper(parts[1]) == "DESC" {
-		direction = "DESC"
+	if len(parts) == 2 {
+		switch strings.ToUpper(parts[1]) {
+		case "ASC":
+			direction = "ASC"
+		case "DESC":
+			direction = "DESC"
+		default:
+			return "", fmt.Errorf("invalid order by direction: %q", parts[1])
+		}
 	}
 
 	return fmt.Sprintf(" ORDER BY %s %s", column, direction), nil
