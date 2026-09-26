@@ -16,16 +16,24 @@ import { DeliverabilityTracker } from "./deliverability";
 import { FailureAudit } from "./failure-audit";
 import { extractSpaceMeta } from "./space-meta";
 import { PersistentOutboundQueue, type QueuedMessage } from "./outbound-queue";
+import { InboundSpool } from "./inbound-spool";
 import {
   InboundDebouncer,
   isOutboundEcho,
   routeInboundContent,
   type InboundPayload,
 } from "./inbound";
+import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
 
 const config = loadConfig();
 const log = getLogger();
+
+// Inbound turn supersession (docs/miriam-inbound-supersession.md): gate 2 of 2.
+// The backend stamps each reply with the turn it answers; we drop any reply
+// whose turn the user has already moved past. Gated on MIRIAM_TURN_SUPERSESSION
+// (off by default) and paired with the backend's PLATFORM_TURN_SUPERSESSION.
+const turns = new TurnSupersession(config.MIRIAM_TURN_SUPERSESSION);
 
 // Spectrum SDK lifecycle handles (bound in start(), torn down in shutdown()).
 // Module-scoped so signal handlers can drain them — the SDK's own stop()
@@ -157,6 +165,9 @@ const seenNonces = new Map<string, number>(); // nonce -> expiration timestamp
 // so the backend only processes each message once.
 const MSG_DEDUP_TTL_MS = 60_000;
 const MAX_DEDUP_IDS = 5_000;
+// Upper bound on per-thread turn state. Fail-open, so eviction only disables
+// supersession until the next message re-establishes the thread's turn.
+const MAX_TRACKED_TURNS = 10_000;
 const processedMessageIds = new Map<string, number>(); // msgId -> expiration
 
 // Periodically evict expired nonces and dedup ids.
@@ -168,6 +179,9 @@ const sweeper = setInterval(() => {
   for (const [msgId, expiresAt] of processedMessageIds) {
     if (expiresAt < now) processedMessageIds.delete(msgId);
   }
+  // Turn-supersession state is fail-open, so bounding it is safe: clearing only
+  // stops suppressing stale replies until the next message re-establishes a turn.
+  if (turns.trackedThreads > MAX_TRACKED_TURNS) turns.clear();
 }, 60_000);
 
 /**
@@ -355,6 +369,18 @@ function maxAttemptsFor(body: unknown): number {
 }
 
 async function postToBackend(path: string, body: unknown): Promise<void> {
+  // Turn supersession: mint one turn id per content-bearing inbound batch, so
+  // the backend can echo it and gate 2 below can drop a reply the user has
+  // already moved past. Lifecycle signals (read receipts, unsends) carry no
+  // content and are left untagged.
+  if (
+    path === "/api/v1/platform/inbound" &&
+    body &&
+    typeof body === "object" &&
+    !Array.isArray(body)
+  ) {
+    turns.tagInbound(body as InboundPayload);
+  }
   const timeoutMs = backendTimeoutMs(body);
   const maxAttempts = maxAttemptsFor(body);
   for (let attempt = 1; ; attempt++) {
@@ -398,7 +424,24 @@ const debouncer = new InboundDebouncer({
   onError: (threadID, err) => {
     log.error({ err, thread_id: threadID }, "debounced inbound flush failed");
   },
+  onCarried: (threadID, err) => {
+    log.warn(
+      { err, thread_id: threadID },
+      "inbound flush exhausted retries — carried forward to the thread's next message",
+    );
+  },
 });
+
+// Durable spool for the debounce buffer: a hard crash mid-quiet-window must not
+// lose the user's words. Restore any buffered batches now — they flush as soon
+// as their original deadline passes — and keep the spool current while we run.
+const inboundSpool = new InboundSpool();
+const spooledInbound = await inboundSpool.load();
+if (spooledInbound.length > 0) {
+  const restored = debouncer.restore(spooledInbound);
+  log.info({ buffers: restored }, "re-armed buffered inbound from spool");
+}
+inboundSpool.startAutoSave(() => debouncer.snapshot());
 
 // Per-thread typing keepers. The SDK's space.responding(fn) covers typing for
 // a single in-process send, but our "thinking" window spans HTTP hops
@@ -449,6 +492,16 @@ function stopTypingKeeper(threadID: string): void {
 type SendOutcome = "ok" | "cold" | "capped" | "failed";
 
 async function sendToSpace(msg: OutboundMessage): Promise<SendOutcome> {
+  // Gate 2 of turn supersession: the user has already sent something newer, so
+  // this reply is stale. Report "ok" (not "capped"/"failed") so nothing queues
+  // a retry that would deliver it late.
+  if (turns.isStale(msg.thread_id, msg.turn_id)) {
+    log.info(
+      { thread_id: msg.thread_id, turn_id: msg.turn_id },
+      "dropping reply for superseded inbound turn",
+    );
+    return "ok";
+  }
   // Backend-scheduled delivery: the Go ProactiveGuard owns quiet-hours, but
   // any send may carry send_after as an escape hatch. Honored here by
   // (re)queueing with notBefore instead of sending early.
@@ -589,6 +642,7 @@ app.post("/send", (req, res) => {
 
 app.get(["/", "/health"], (_req, res) => {
   const stats = outboundQueue.getStats();
+  const inboundBuffered = debouncer.snapshot();
   res.json({
     status: shuttingDown ? "draining" : "ok",
     transport_mode: config.SPECTRUM_TRANSPORT_MODE,
@@ -601,6 +655,15 @@ app.get(["/", "/health"], (_req, res) => {
     queued_oldest_ms: stats.oldestMessage ? Date.now() - stats.oldestMessage : undefined,
     pacer: { available: pacer.available(), pending: pacer.pending },
     deliverability: deliverability.stats(),
+    inbound_spool: {
+      buffers: inboundBuffered.length,
+      entries: inboundBuffered.reduce((n, b) => n + b.entries.length, 0),
+      carried: inboundBuffered.reduce((n, b) => n + (b.carried?.length ?? 0), 0),
+    },
+    turn_supersession: {
+      enabled: turns.isEnabled,
+      tracked_threads: turns.trackedThreads,
+    },
     recent_failures: failures.count(),
     uptime_sec: Math.floor(process.uptime()),
   });
@@ -839,12 +902,16 @@ async function shutdown(signal: string): Promise<void> {
   spaceStore.stopAutoSave();
   cardStore.stopAutoSave();
   outboundQueue.stopAutoSave();
+  inboundSpool.stopAutoSave();
 
   try {
     await debouncer.flushAll();
   } catch (err) {
     log.warn({ err }, "debouncer flushAll during shutdown failed");
   }
+  // Persist whatever the flush could not deliver (carried batches) before the
+  // in-memory buffer is disposed, so the next boot re-arms it.
+  await inboundSpool.flush(debouncer.snapshot());
   debouncer.dispose();
 
   if (spectrumAgent) {

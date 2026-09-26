@@ -231,6 +231,13 @@ func (c *Container) initializePlatformMessaging() {
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
 			proc.SetLogger(c.ZapLog)
+			// Inbound turn supersession: when a follow-up lands while a reply is
+			// still generating, suppress the older reply instead of shipping a
+			// stale answer. Off by default; see docs/miriam-inbound-supersession.md.
+			if c.Config.Platform.TurnSupersession && c.RedisClient != nil {
+				proc.SetTurnTracker(platform.NewTurnTracker(c.RedisClient, c.ZapLog))
+				c.ZapLog.Info("inbound turn supersession enabled")
+			}
 			// Enables the STOP/START handling in Process. The same store backs the
 			// outbound suppression above, so the two halves cannot drift apart.
 			proc.SetOptOutStore(optOutRepo)

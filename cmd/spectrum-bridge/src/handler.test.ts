@@ -244,3 +244,69 @@ describe("MessageHandler poll content type", () => {
     expect(textBubbles.some((b) => b.includes("Reply YES to confirm"))).toBe(true);
   });
 });
+
+describe("MessageHandler idempotent retries (recovery-and-state)", () => {
+  function base(overrides: Partial<OutboundMessage>): OutboundMessage {
+    return { platform: "imessage", user_id: "u1", thread_id: "t1", text: "", ...overrides };
+  }
+
+  /** Fake Space that records plain text sends and can fail on the Nth call. */
+  function fakeSpace() {
+    const state = { calls: 0, failOnCall: -1, bubbles: [] as string[] };
+    const space = {
+      send: async (m: unknown) => {
+        state.calls++;
+        if (state.calls === state.failOnCall) throw new Error("provider blip");
+        if (typeof m === "string") state.bubbles.push(m);
+      },
+    };
+    return { space, state };
+  }
+
+  it("resumes a partially-sent multi-bubble reply without duplicating bubbles", async () => {
+    const handler = new MessageHandler();
+    const msg = base({
+      content_type: "text",
+      text: "first para\n\nsecond para",
+      client_guid: "job-resume",
+    });
+
+    // Attempt 1: typing, bubble0, typing, bubble1 -> fail on the 4th call.
+    const a = fakeSpace();
+    a.state.failOnCall = 4;
+    await expect(handler.handleOutbound(a.space as never, msg)).rejects.toThrow("provider blip");
+    expect(a.state.bubbles).toEqual(["first para"]);
+
+    // Attempt 2: bubble0 is already acked -> only bubble1 goes out.
+    const b = fakeSpace();
+    await handler.handleOutbound(b.space as never, msg);
+    expect(b.state.bubbles).toEqual(["second para"]);
+  });
+
+  it("drops a redelivery of a completed reply", async () => {
+    const handler = new MessageHandler();
+    const msg = base({ content_type: "text", text: "hello", client_guid: "job-done" });
+
+    const a = fakeSpace();
+    await handler.handleOutbound(a.space as never, msg);
+    expect(a.state.bubbles).toEqual(["hello"]);
+
+    const b = fakeSpace();
+    await handler.handleOutbound(b.space as never, msg);
+    expect(b.state.calls).toBe(0);
+  });
+
+  it("retries a reply that never reached the provider", async () => {
+    const handler = new MessageHandler();
+    const msg = base({ content_type: "text", text: "recover me", client_guid: "job-fail" });
+
+    const a = fakeSpace();
+    a.state.failOnCall = 1; // the first typing send fails
+    await expect(handler.handleOutbound(a.space as never, msg)).rejects.toThrow("provider blip");
+    expect(a.state.bubbles).toEqual([]);
+
+    const b = fakeSpace();
+    await handler.handleOutbound(b.space as never, msg);
+    expect(b.state.bubbles).toEqual(["recover me"]);
+  });
+});

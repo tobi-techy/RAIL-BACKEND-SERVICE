@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"go.uber.org/zap"
 )
 
 // fakeRepo is an in-memory PlatformIdentityRepository for tests.
@@ -123,14 +124,40 @@ type fakeOrchestrator struct {
 	// pendingAction drives HasPendingPlatformAction, which decides whether a bare
 	// "stop" is a staged-action cancel rather than a messaging opt-out.
 	pendingAction bool
+	// onMessage runs at the start of HandlePlatformMessage so a test can simulate
+	// a follow-up arriving mid-generation (e.g. marking a newer turn current).
+	onMessage func()
 }
 
 func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform) (*PlatformReply, error) {
 	o.lastMessage = message
+	if o.onMessage != nil {
+		o.onMessage()
+	}
 	if o.reply != nil {
 		return o.reply, nil
 	}
 	return &PlatformReply{Text: "your balance is $10"}, nil
+}
+
+// fakeTurnTracker is an in-memory TurnTracker for supersession tests.
+type fakeTurnTracker struct {
+	current map[string]string
+}
+
+func newFakeTurnTracker() *fakeTurnTracker {
+	return &fakeTurnTracker{current: map[string]string{}}
+}
+
+func (t *fakeTurnTracker) MarkTurn(_ context.Context, key, turnID string) {
+	t.current[key] = turnID
+}
+
+func (t *fakeTurnTracker) IsCurrent(_ context.Context, key, turnID string) bool {
+	if t.current[key] == "" {
+		return true // fail-open, mirrors the Redis tracker
+	}
+	return t.current[key] == turnID
 }
 
 // fakeVoice is a stub VoiceTranscoder.
@@ -350,6 +377,211 @@ func TestProcess_UnsupportedNoticeSendFailureStillAcks(t *testing.T) {
 	}
 	if orch.lastMessage != "" {
 		t.Fatalf("brain was called with %q", orch.lastMessage)
+	}
+}
+
+// TestProcess_LifecycleSignalsAreAckedWithoutReply pins the fix for the
+// repeated "I can't open that kind of message" reply: the bridge forwards
+// read receipts, group events, and retractions to the inbound endpoint, but
+// they carry no user words. Treating them as a turn made onboarding answer an
+// empty payload with the canned line — and because the user then read that
+// reply, the provider minted another receipt, looping forever.
+func TestProcess_LifecycleSignalsAreAckedWithoutReply(t *testing.T) {
+	cases := []struct {
+		name     string
+		raw      string
+		linkUser bool
+	}{
+		{
+			name:     "read receipt from linked user",
+			linkUser: true,
+			raw:      `{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_read_receipt":true,"read_target_id":"spc-msg-1"}`,
+		},
+		{
+			name: "read receipt from unlinked sender",
+			raw:  `{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_read_receipt":true,"read_target_id":"spc-msg-1"}`,
+		},
+		{
+			name: "group lifecycle event",
+			raw:  `{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_group_event":true,"group_event":"addMember","group_members":["+15550000001"]}`,
+		},
+		{
+			name: "message retraction",
+			raw:  `{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_unsend":true,"unsend_of":"spc-msg-2"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			if tc.linkUser {
+				linkedIdentity(repo, "+15551234")
+			}
+			orch := &fakeOrchestrator{}
+			p, sent, _ := newTestProcessor(repo, orch)
+			ob, _, _, _, _, _ := newTestOnboarder()
+			p.SetOnboarder(ob)
+
+			if err := p.Process(context.Background(), []byte(tc.raw)); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if orch.lastMessage != "" {
+				t.Fatalf("brain was called with %q", orch.lastMessage)
+			}
+			if len(*sent) != 0 {
+				t.Fatalf("lifecycle signal must not be answered, got %#v", *sent)
+			}
+		})
+	}
+}
+
+// TestProcess_ContentlessMessageIsAckedWithoutReply covers any payload with no
+// user content (a bare tapback from a linked user, or an empty turn). Without
+// the guard it reached a model call / onboarding fallback.
+func TestProcess_ContentlessMessageIsAckedWithoutReply(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	raw := []byte(`{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_reaction":true,"reaction_emoji":"👍"}`)
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.lastMessage != "" {
+		t.Fatalf("brain was called with %q", orch.lastMessage)
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("contentless message must not be answered, got %#v", *sent)
+	}
+}
+
+// TestProcess_OversizedAttachmentGetsSizeNotice ensures a bridge-dropped large
+// attachment gets a useful reply rather than the generic unreadable-content line.
+func TestProcess_OversizedAttachmentGetsSizeNotice(t *testing.T) {
+	repo := newFakeRepo()
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+
+	raw := []byte(`{"platform":"imessage","user_id":"+15551234","thread_id":"any;-;+15551234","space_id":"any;-;+15551234","text":"","is_oversized":true,"oversized_kind":"image"}`)
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.lastMessage != "" {
+		t.Fatalf("brain was called with %q", orch.lastMessage)
+	}
+	if len(*sent) != 1 || !strings.Contains((*sent)[0].Text, "too big") {
+		t.Fatalf("expected one size notice, got %#v", *sent)
+	}
+}
+
+// sentWithText returns the first sent bubble whose text matches, or nil.
+func sentWithText(sent []*OutboundMessage, text string) *OutboundMessage {
+	for _, m := range sent {
+		if m.Text == text {
+			return m
+		}
+	}
+	return nil
+}
+
+// TestProcess_SupersededTurnDoesNotDeliver pins gate 1: a reply generated for a
+// turn the user has already moved past is not delivered.
+func TestProcess_SupersededTurnDoesNotDeliver(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	turns := newFakeTurnTracker()
+	orch := &fakeOrchestrator{reply: &PlatformReply{Text: "food was $120"}}
+	// A follow-up lands during generation: by delivery time the conversation's
+	// current turn is already the newer one.
+	orch.onMessage = func() {
+		turns.current[turnConversationKey(entities.PlatformIMessage, "space-1")] = "turn-2"
+	}
+	p, sent, _ := newTestProcessor(repo, orch)
+	p.SetTurnTracker(turns)
+
+	raw, _ := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		SpaceID:  "space-1",
+		MsgID:    "m1",
+		Text:     "how much did I spend on food",
+		TurnID:   "turn-1",
+	})
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if orch.lastMessage == "" {
+		t.Fatal("brain was not consulted")
+	}
+	if got := sentWithText(*sent, "food was $120"); got != nil {
+		t.Fatalf("superseded reply must not be delivered, got %#v", got)
+	}
+}
+
+// TestProcess_CurrentTurnDeliversAndStampsTurnID pins the happy path: the
+// current turn's reply goes out and carries its turn id for the bridge gate.
+func TestProcess_CurrentTurnDeliversAndStampsTurnID(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	turns := newFakeTurnTracker()
+	orch := &fakeOrchestrator{reply: &PlatformReply{Text: "food was $120"}}
+	p, sent, _ := newTestProcessor(repo, orch)
+	p.SetTurnTracker(turns)
+
+	raw, _ := json.Marshal(InboundMessage{
+		Platform: entities.PlatformIMessage,
+		UserID:   "+15551234",
+		ThreadID: "space-1",
+		SpaceID:  "space-1",
+		MsgID:    "m1",
+		Text:     "how much did I spend on food",
+		TurnID:   "turn-1",
+	})
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	got := sentWithText(*sent, "food was $120")
+	if got == nil {
+		t.Fatalf("current-turn reply must be delivered, got %#v", *sent)
+	}
+	if got.TurnID != "turn-1" {
+		t.Fatalf("reply must carry its turn id, got %q", got.TurnID)
+	}
+}
+
+// TestProcessAction_NeverSuperseded pins the safety rule: a confirmed action's
+// acknowledgement is delivered even when a newer conversational turn exists.
+func TestProcessAction_NeverSuperseded(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	turns := newFakeTurnTracker()
+	turns.current[turnConversationKey(entities.PlatformIMessage, "space-1")] = "turn-9"
+	orch := &fakeOrchestrator{}
+	p, sent, _ := newTestProcessor(repo, orch)
+	p.SetTurnTracker(turns)
+
+	pb := ActionPostback{Action: "confirm", UserID: "+15551234", SpaceID: "space-1", Platform: "imessage"}
+	raw, _ := json.Marshal(pb)
+	if err := p.ProcessAction(context.Background(), raw); err != nil {
+		t.Fatalf("ProcessAction: %v", err)
+	}
+	if orch.confirmCalls != 1 {
+		t.Fatalf("confirm must still execute, got %d", orch.confirmCalls)
+	}
+	if len(*sent) == 0 {
+		t.Fatal("confirm acknowledgement must be delivered despite a newer turn")
+	}
+}
+
+// TestTurnTracker_NilRedisFailsOpen pins the fail-open contract: with no Redis,
+// every turn is current and marking is a safe no-op.
+func TestTurnTracker_NilRedisFailsOpen(t *testing.T) {
+	tr := NewTurnTracker(nil, zap.NewNop())
+	tr.MarkTurn(context.Background(), "miriam:turn:imessage:space-1", "turn-1") // must not panic
+	if !tr.IsCurrent(context.Background(), "miriam:turn:imessage:space-1", "turn-1") {
+		t.Fatal("tracker without Redis must treat every turn as current (fail-open)")
 	}
 }
 

@@ -96,6 +96,13 @@ type OutboundMessage struct {
 	// outbound queue when the Space handle is cold. Critical messages (anomaly
 	// alerts, money-move receipts) survive longer than routine nudges.
 	Category string `json:"category,omitempty"`
+
+	// TurnID is the inbound turn this message replies to. Empty for proactive
+	// sends and for confirm/cancel acknowledgements (those are never superseded).
+	// The bridge drops a reply whose turn is no longer the thread's latest —
+	// the second of the two supersession gates
+	// (docs/miriam-inbound-supersession.md).
+	TurnID string `json:"turn_id,omitempty"`
 }
 
 type ResponseBuilder struct{}
