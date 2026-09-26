@@ -217,7 +217,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 	               is_active, created_at, updated_at
 	        FROM users 
 	        WHERE LOWER(email) = LOWER($1)
-	        ORDER BY CASE WHEN email = $1 THEN 0 ELSE 1 END
+	        ORDER BY is_active DESC, created_at ASC
 	        LIMIT 1`
 
 	user := &entities.UserProfile{}
@@ -882,7 +882,7 @@ func (r *UserRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 		       role, is_active, last_login_at, created_at, updated_at
 		FROM users 
 		WHERE LOWER(email) = LOWER($1) AND is_active = true
-		ORDER BY CASE WHEN email = $1 THEN 0 ELSE 1 END
+		ORDER BY created_at ASC
 		LIMIT 1`
 
 	user := &entities.User{}
