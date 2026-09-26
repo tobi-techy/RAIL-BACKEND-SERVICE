@@ -941,6 +941,11 @@ type PlatformConfig struct {
 	AppDownloadURL         string `mapstructure:"app_download_url"`            // App download link shared during chat-first onboarding (e.g. TestFlight)
 	OnboardingEnabled      bool   `mapstructure:"onboarding_enabled"`          // Enable chat-first account creation for unlinked senders
 	PushNotificationRule   string `mapstructure:"push_notification_rule"`      // "always", "action_only", "never"
+	// TurnSupersession, when true, suppresses a reply whose inbound turn a newer
+	// message has already superseded (docs/miriam-inbound-supersession.md). Off
+	// by default: turn ids are neither minted nor stamped, so behavior is
+	// unchanged. Env: PLATFORM_TURN_SUPERSESSION.
+	TurnSupersession bool `mapstructure:"turn_supersession"`
 }
 
 // ConfirmationConfig drives the reusable live iMessage confirmation card
@@ -1502,6 +1507,9 @@ func setDefaults() {
 	viper.SetDefault("platform.push_notification_rule", "action_only")
 	viper.SetDefault("platform.onboarding_enabled", false)
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
+	// Registered so PLATFORM_TURN_SUPERSESSION actually binds: viper only
+	// unmarshals env vars for keys it already knows about.
+	viper.SetDefault("platform.turn_supersession", false)
 
 	// Live confirmation cards (Face ID money actions). The token secret gates
 	// everything: without it the service fails closed and no cards are staged.

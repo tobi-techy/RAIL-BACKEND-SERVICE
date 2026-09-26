@@ -79,6 +79,11 @@ export interface OutboundMessage {
   // so a crash between provider-ack and bookkeeping still dedups.
   client_guid?: string;
 
+  // Inbound turn this reply answers (docs/miriam-inbound-supersession.md). The
+  // bridge drops the reply when a newer turn has superseded it. Absent on
+  // proactive sends and confirm/cancel acknowledgements — those always deliver.
+  turn_id?: string;
+
   // True when this is the first outbound ever to this thread. Links/media are
   // suppressed on first contact (deliverability: Apple suppresses link taps
   // until a reply lands) — the text goes out, the link is dropped with a warn.
@@ -110,8 +115,20 @@ const EFFECTS: Record<string, IMessageMessageEffect> = {
 export class MessageHandler {
   private seen = new Map<string, number>();
   private readonly dedupWindowMs = 2000;
-  /** Stable-GUID dedup for idempotent retries: survives the 2s text window. */
-  private seenGuids = new Map<string, number>();
+  /**
+   * Completed-reply dedup: a client_guid is recorded here only AFTER the whole
+   * reply was accepted by the provider, so a duplicate delivery of a finished
+   * reply is dropped while a retry of a *failed* one still runs. Marking on
+   * attempt (the old behavior) made every queue retry a silent no-op.
+   */
+  private completedGuids = new Map<string, number>();
+  /**
+   * Bubble-level resume cursor (best-practices/recovery-and-state). Each bubble
+   * derives a stable guid from client_guid and is recorded SENT only after the
+   * provider accepts it, so a retry resumes from the first unsent bubble —
+   * neither duplicating the acked ones nor discarding the remainder.
+   */
+  private sentBubbles = new Map<string, number>();
   private readonly guidDedupWindowMs = 10 * 60 * 1000;
   private readonly maxBubbles: number;
   private readonly miniApp: MiniAppConfig;
@@ -159,8 +176,11 @@ export class MessageHandler {
     for (const [key, at] of this.seen) {
       if (now - at >= this.dedupWindowMs) this.seen.delete(key);
     }
-    for (const [guid, at] of this.seenGuids) {
-      if (now - at >= this.guidDedupWindowMs) this.seenGuids.delete(guid);
+    for (const [guid, at] of this.completedGuids) {
+      if (now - at >= this.guidDedupWindowMs) this.completedGuids.delete(guid);
+    }
+    for (const [guid, at] of this.sentBubbles) {
+      if (now - at >= this.guidDedupWindowMs) this.sentBubbles.delete(guid);
     }
     if (this.messageStore.size > 500) {
       const entries = [...this.messageStore.entries()];
@@ -202,7 +222,24 @@ export class MessageHandler {
   }
 
   async handleOutbound(space: Space, msg: OutboundMessage): Promise<void> {
+    const guid = msg.client_guid;
+    // Drop a redelivery of a reply we already finished; let a retry of one
+    // that failed (or crashed partway) through to the bubble-level resume.
+    if (guid) {
+      const done = this.completedGuids.get(guid);
+      if (done && Date.now() - done < this.guidDedupWindowMs) {
+        log.debug({ client_guid: guid }, "dropping duplicate delivery of a completed reply");
+        return;
+      }
+    }
+    await this.handleOutboundInner(space, msg);
+    if (guid) this.completedGuids.set(guid, Date.now());
+  }
+
+  private async handleOutboundInner(space: Space, msg: OutboundMessage): Promise<void> {
     const contentType = msg.content_type || "text";
+    // Stable base for the per-bubble idempotency keys below.
+    const guidBase = msg.client_guid;
 
     if (contentType === "typing") {
       await space.send(typing());
@@ -216,12 +253,14 @@ export class MessageHandler {
         return;
       }
       const buf = Buffer.from(msg.audio_b64, "base64");
-      await space.send(
-        voice(buf, {
-          name: "miriam.mp3",
-          mimeType: msg.audio_mime || "audio/mpeg",
-          duration: msg.duration_sec,
-        }),
+      await this.sendBubble(space, guidBase ? `${guidBase}#voice` : undefined, () =>
+        space.send(
+          voice(buf, {
+            name: "miriam.mp3",
+            mimeType: msg.audio_mime || "audio/mpeg",
+            duration: msg.duration_sec,
+          }),
+        ),
       );
       return;
     }
@@ -249,31 +288,29 @@ export class MessageHandler {
         return;
       }
       try {
-        await target.react(msg.reaction_emoji);
+        await this.sendBubble(space, guidBase ? `${guidBase}#reaction` : undefined, () =>
+          target!.react(msg.reaction_emoji!),
+        );
       } catch (err) {
         log.warn({ err, emoji: msg.reaction_emoji }, "reaction send failed");
       }
       return;
     }
 
-    const dedupKey = `${msg.user_id}:${contentType}:${msg.text}:${msg.reply_to || ""}:${msg.client_guid || ""}`;
-    const now = Date.now();
-    const last = this.seen.get(dedupKey);
-    if (last && now - last < this.dedupWindowMs) {
-      log.debug({ dedupKey }, "deduplicated outbound message");
-      return;
-    }
-    this.seen.set(dedupKey, now);
-    // Stable-GUID idempotency: a retry of the same logical send (queue retry,
-    // crash between ack and bookkeeping) reuses client_guid and is dropped
-    // even past the 2s text window.
-    if (msg.client_guid) {
-      const guidLast = this.seenGuids.get(msg.client_guid);
-      if (guidLast && now - guidLast < this.guidDedupWindowMs) {
-        log.debug({ client_guid: msg.client_guid }, "deduplicated outbound retry by client_guid");
+    // Short text-window dedup: only for payloads WITHOUT a stable client_guid
+    // (the backend doesn't set one; the bridge always mints one). A guid'd
+    // message is governed by the completed-reply guard and the per-bubble
+    // resume instead — running the 2s window on top of it would swallow a
+    // legitimate retry of a reply that failed moments ago.
+    if (!guidBase) {
+      const dedupKey = `${msg.user_id}:${contentType}:${msg.text}:${msg.reply_to || ""}`;
+      const now = Date.now();
+      const last = this.seen.get(dedupKey);
+      if (last && now - last < this.dedupWindowMs) {
+        log.debug({ dedupKey }, "deduplicated outbound message");
         return;
       }
-      this.seenGuids.set(msg.client_guid, now);
+      this.seen.set(dedupKey, now);
     }
 
     // Polls (Confirm/Cancel) are iMessage-only. On platforms without poll
@@ -285,7 +322,7 @@ export class MessageHandler {
       case "poll": {
         if (!supportsPoll) {
           const prompt = `${msg.poll_title || msg.text}\n\nReply YES to confirm or NO to cancel.`;
-          await this.sendWithPacing(space, prompt, "text");
+          await this.sendWithPacing(space, prompt, "text", guidBase);
           return;
         }
         const options = msg.poll_options?.length ? msg.poll_options : ["Confirm", "Cancel"];
@@ -308,14 +345,16 @@ export class MessageHandler {
         // this is the last defense for any legacy payload that still bundles
         // text onto the poll.
         if (rawText) {
-          await this.sendWithPacing(space, rawText, "text");
+          await this.sendWithPacing(space, rawText, "text", guidBase ? `${guidBase}#poll-lead` : undefined);
         } else if (rawTitle && rawTitle !== title) {
-          await this.sendWithPacing(space, rawTitle, "text");
+          await this.sendWithPacing(space, rawTitle, "text", guidBase ? `${guidBase}#poll-lead` : undefined);
         }
         // The guard above keeps the title valid; a build failure here surfaces
         // through sendToSpace's catch like any other send error. (The old
         // probe-build-for-logging built every poll twice.)
-        await space.send(poll(title, options));
+        await this.sendBubble(space, guidBase ? `${guidBase}#poll` : undefined, () =>
+          space.send(poll(title, options)),
+        );
         return;
       }
 
@@ -327,58 +366,79 @@ export class MessageHandler {
             // support reply() resolves as a no-op or throws UnsupportedError —
             // fall back to a guaranteed plain send so the words still land.
             try {
-              await parent.reply(markdown(msg.text));
+              await this.sendBubble(space, guidBase ? `${guidBase}#reply` : undefined, () =>
+                parent.reply(markdown(msg.text)),
+              );
             } catch {
               log.warn({ reply_to: msg.reply_to }, "threaded reply unsupported, sending as markdown");
-              await this.sendWithPacing(space, msg.text, "markdown");
+              await this.sendWithPacing(space, msg.text, "markdown", guidBase);
             }
           } else {
             log.warn({ reply_to: msg.reply_to }, "parent message not found, sending as markdown");
-            await this.sendWithPacing(space, msg.text, "markdown");
+            await this.sendWithPacing(space, msg.text, "markdown", guidBase);
           }
           return;
         }
-        await this.sendWithPacing(space, msg.text, "markdown");
+        await this.sendWithPacing(space, msg.text, "markdown", guidBase);
         return;
       }
 
       case "effect": {
         // Effects are iMessage-only; degrade to a plain message elsewhere.
         const id = msg.platform === "imessage" && msg.effect ? EFFECTS[msg.effect] : undefined;
-        await space.send(typing());
-        await this.delay(this.typingDurationMs(msg.text));
-        await space.send(id ? effect(markdown(msg.text), id) : markdown(msg.text));
+        await this.sendBubble(space, guidBase ? `${guidBase}#effect` : undefined, async () => {
+          await space.send(typing());
+          await this.delay(this.typingDurationMs(msg.text));
+          await space.send(id ? effect(markdown(msg.text), id) : markdown(msg.text));
+        });
         return;
       }
 
       case "appcard": {
-        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
+        if (msg.text) {
+          await this.sendWithPacing(space, msg.text, "markdown", guidBase ? `${guidBase}#app-text` : undefined);
+        }
         // Deliverability: no links/media in the first message — Apple
         // suppresses link taps until a reply lands. Text goes out, link drops.
         if (msg.is_first && msg.card_url) {
           log.warn({ thread_id: msg.thread_id }, "suppressed app link on first-contact message");
           return;
         }
-        if (msg.card_url) await space.send(app(msg.card_url));
+        if (msg.card_url) {
+          await this.sendBubble(space, guidBase ? `${guidBase}#app-link` : undefined, () =>
+            space.send(app(msg.card_url!)),
+          );
+        }
         return;
       }
 
       case "richlink": {
-        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
+        if (msg.text) {
+          await this.sendWithPacing(space, msg.text, "markdown", guidBase ? `${guidBase}#rl-text` : undefined);
+        }
         if (msg.is_first && msg.card_url) {
           log.warn({ thread_id: msg.thread_id }, "suppressed rich link on first-contact message");
           return;
         }
-        if (msg.card_url) await space.send(richlink(msg.card_url));
+        if (msg.card_url) {
+          await this.sendBubble(space, guidBase ? `${guidBase}#rl-link` : undefined, () =>
+            space.send(richlink(msg.card_url!)),
+          );
+        }
         return;
       }
 
       case "cards": {
         // Narrative text first (paced), then each insight card as its own bubble.
-        if (msg.text) await this.sendWithPacing(space, msg.text, "markdown");
-        for (const card of msg.cards ?? []) {
-          const bubble = renderInsightCard(card);
-          if (bubble) await this.sendWithPacing(space, bubble, "markdown");
+        if (msg.text) {
+          await this.sendWithPacing(space, msg.text, "markdown", guidBase ? `${guidBase}#cards-text` : undefined);
+        }
+        const cards = msg.cards ?? [];
+        for (let i = 0; i < cards.length; i++) {
+          const bubble = renderInsightCard(cards[i]);
+          if (bubble) {
+            await this.sendWithPacing(space, bubble, "markdown", guidBase ? `${guidBase}#card-${i}` : undefined);
+          }
         }
         return;
       }
@@ -390,11 +450,11 @@ export class MessageHandler {
       }
 
       case "markdown":
-        await this.sendWithPacing(space, msg.text, "markdown");
+        await this.sendWithPacing(space, msg.text, "markdown", guidBase);
         return;
 
       default:
-        await this.sendWithPacing(space, msg.text, "text");
+        await this.sendWithPacing(space, msg.text, "text", guidBase);
     }
   }
 
@@ -447,7 +507,38 @@ export class MessageHandler {
     }
   }
 
-  private async sendWithPacing(space: Space, text: string, format: "markdown" | "text"): Promise<void> {    const all = text.split(/\n\s*\n/).map((s) => s.trim()).filter((s) => s.length > 0);
+  /**
+   * Send one bubble under a stable idempotency key, skipping ones a previous
+   * attempt already delivered. The key is recorded only after the provider
+   * accepts the bubble, so a retry resumes rather than repeats.
+   */
+  private async sendBubble(
+    space: Space,
+    guid: string | undefined,
+    send: () => Promise<unknown>,
+  ): Promise<boolean> {
+    if (guid) {
+      const at = this.sentBubbles.get(guid);
+      if (at && Date.now() - at < this.guidDedupWindowMs) {
+        log.debug({ bubble: guid }, "resuming reply: bubble already delivered");
+        return false;
+      }
+    }
+    await send();
+    if (guid) this.sentBubbles.set(guid, Date.now());
+    return true;
+  }
+
+  private async sendWithPacing(
+    space: Space,
+    text: string,
+    format: "markdown" | "text",
+    guidBase?: string,
+  ): Promise<void> {
+    const all = text
+      .split(/\n\s*\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
 
     if (all.length === 0) return;
 
@@ -461,7 +552,9 @@ export class MessageHandler {
     }
 
     for (let i = 0; i < bubbles.length; i++) {
-      await this.typeThenSend(space, bubbles[i], format);
+      await this.sendBubble(space, guidBase ? `${guidBase}#${i}` : undefined, () =>
+        this.typeThenSend(space, bubbles[i], format),
+      );
 
       if (i < bubbles.length - 1) {
         await this.delay(this.interBubbleDelayMs(bubbles[i + 1]));

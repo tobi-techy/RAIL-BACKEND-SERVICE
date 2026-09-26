@@ -57,6 +57,12 @@ type InboundMessage struct {
 	SpaceID  string            `json:"space_id,omitempty"`
 	MsgID    string            `json:"msg_id,omitempty"`
 
+	// TurnID identifies the inbound batch (one debounced flush) this message
+	// belongs to. The bridge mints it; the backend echoes it on every reply for
+	// that turn so a newer message can supersede an older one
+	// (docs/miriam-inbound-supersession.md).
+	TurnID string `json:"turn_id,omitempty"`
+
 	// voice note (transcribed into Text before the AI sees it)
 	IsVoice   bool   `json:"is_voice,omitempty"`
 	AudioB64  string `json:"audio_b64,omitempty"`
@@ -107,6 +113,27 @@ type InboundMessage struct {
 	IsUnsupported   bool   `json:"is_unsupported,omitempty"`
 	UnsupportedMIME string `json:"unsupported_mime,omitempty"`
 
+	// The bridge dropped an attachment it could not carry (too large). Text is
+	// empty; answer with a size-specific notice instead of the generic
+	// unreadable-content reply.
+	IsOversized   bool   `json:"is_oversized,omitempty"`
+	OversizedKind string `json:"oversized_kind,omitempty"`
+
+	// Inbound read receipt: the reader (sender) read one of our outbound
+	// messages (ReadTargetID). A delivery signal, not a turn — it carries no
+	// user words. Answering it would be wrong; answering it *and* being read
+	// again is an endless loop (see isLifecycleSignal).
+	IsReadReceipt bool   `json:"is_read_receipt,omitempty"`
+	ReadTargetID  string `json:"read_target_id,omitempty"`
+
+	// Conversation lifecycle: group membership changes and message
+	// retractions. Notifications about the thread, never messages.
+	IsGroupEvent bool     `json:"is_group_event,omitempty"`
+	GroupEvent   string   `json:"group_event,omitempty"`
+	GroupMembers []string `json:"group_members,omitempty"`
+	IsUnsend     bool     `json:"is_unsend,omitempty"`
+	UnsendOf     string   `json:"unsend_of,omitempty"`
+
 	// Delivery attempt counters from the bridge's signed body. Attempt is
 	// 1-based. Both are zero on older bridges, which IsFinalAttempt reads as
 	// "no redelivery is coming".
@@ -122,6 +149,39 @@ func (m InboundMessage) IsFinalAttempt() bool {
 		return true
 	}
 	return m.Attempt >= m.MaxAttempts
+}
+
+// isLifecycleSignal reports whether the payload is a notification about the
+// conversation — a read receipt, a group membership change, or a retraction —
+// rather than something the user said. These carry no words and must never
+// become a conversational turn.
+func (m InboundMessage) isLifecycleSignal() bool {
+	return m.IsReadReceipt || m.IsGroupEvent || m.IsUnsend
+}
+
+// carriesUserContent reports whether the payload holds anything the user
+// actually sent: words, media, a contact card, or a poll choice. Lifecycle
+// signals and unsupported/oversized notices are excluded — they are consumed
+// before this is consulted.
+func (m InboundMessage) carriesUserContent() bool {
+	return strings.TrimSpace(m.Text) != "" ||
+		m.IsVoice || m.IsImage || m.IsDocument ||
+		isContactPayload(m) || m.IsPollVote
+}
+
+// oversizedNotice names the attachment the bridge refused so the user knows
+// what to resend instead of getting the generic "can't open that" line.
+func oversizedNotice(kind string) string {
+	switch kind {
+	case "voice":
+		return "That voice note was too big for me to open. Mind sending a shorter one?"
+	case "image":
+		return "That photo was too big for me to open. Mind sending a smaller one?"
+	case "document":
+		return "That PDF was too big to scan here. Please upload it in the RAIL app and I'll take it from there."
+	default:
+		return "That attachment was too big for me to open. Mind sending a smaller one?"
+	}
 }
 
 // ActionPostback is a poll vote — how a user confirms/cancels an action, since
@@ -237,6 +297,7 @@ type Processor struct {
 	statementHandler StatementAttachmentHandler
 	optOut           OptOutStore
 	emailBackfill    AccountReader
+	turns            TurnTracker
 	sendFunc         func(ctx context.Context, msg *OutboundMessage) error
 	logger           *zap.Logger
 }
@@ -313,6 +374,13 @@ func (p *Processor) SetOptOutStore(store OptOutStore) {
 	p.optOut = store
 }
 
+// SetTurnTracker enables inbound turn supersession (docs/miriam-inbound-supersession.md).
+// Nil-safe: with no tracker, no turn ids are recorded or stamped and every reply
+// is delivered — today's behavior.
+func (p *Processor) SetTurnTracker(t TurnTracker) {
+	p.turns = t
+}
+
 // SetEmailBackfill enables the one-time ask for a real address on accounts that
 // still carry the opaque placeholder. Nil-safe: with no reader the feature is
 // off.
@@ -324,11 +392,38 @@ func (p *Processor) voiceEnabled() bool {
 	return p.voice != nil && p.voice.Available()
 }
 
+// turnContextKey carries the inbound turn a reply belongs to through the
+// processing pipeline so sends can be suppressed once a newer turn supersedes
+// it (docs/miriam-inbound-supersession.md).
+type turnContextKey struct{}
+
+// WithTurnID tags ctx with the inbound turn id. Empty ids are a no-op.
+func WithTurnID(ctx context.Context, turnID string) context.Context {
+	if turnID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, turnContextKey{}, turnID)
+}
+
+func turnIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(turnContextKey{}).(string)
+	return id
+}
+
 func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	var msg InboundMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		log.Printf("drop unparseable inbound message: %v", err)
 		return nil
+	}
+
+	// Turn supersession: record this conversation's newest inbound turn and
+	// carry it on the context, so every reply sent below is dropped if the user
+	// has already sent a newer message. Marking runs before any send so this
+	// turn's own replies are correctly recognised as current.
+	if p.turns != nil && msg.TurnID != "" {
+		p.turns.MarkTurn(ctx, turnConversationKey(msg.Platform, msg.ThreadID), msg.TurnID)
+		ctx = WithTurnID(ctx, msg.TurnID)
 	}
 
 	// Stickers and other custom bubbles arrive with no words. Answer once and
@@ -338,6 +433,29 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	// 500s, and retrying an unreadable bubble cannot make the reply land.
 	if msg.IsUnsupported {
 		p.noticeSender(ctx, msg, "I can't open that kind of message. Text me what you need.")
+		return nil
+	}
+
+	// Lifecycle signals carry no user words — read receipts, group events, and
+	// retractions. Ack them before any identity lookup or model turn. Answering
+	// a read receipt is actively harmful: the user then reads that reply, the
+	// provider mints another receipt, and the chat loops forever on a canned
+	// line ("I can't open that kind of message") that the user never asked for.
+	if msg.isLifecycleSignal() {
+		p.logger.Debug("ignoring inbound lifecycle signal (no user content)",
+			zap.String("platform", string(msg.Platform)),
+			zap.String("user_id", msg.UserID),
+			zap.Bool("read_receipt", msg.IsReadReceipt),
+			zap.Bool("group_event", msg.IsGroupEvent),
+			zap.Bool("unsend", msg.IsUnsend),
+		)
+		return nil
+	}
+
+	// An oversized attachment was dropped by the bridge rather than carried.
+	// Say so once, with the right noun, instead of the generic reply.
+	if msg.IsOversized {
+		p.noticeSender(ctx, msg, oversizedNotice(msg.OversizedKind))
 		return nil
 	}
 
@@ -443,15 +561,37 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			p.logger.Debug("poll vote not handled as vote, falling through to normal message",
 				zap.String("thread_id", msg.ThreadID), zap.String("text", msg.Text))
 		}
+		// Nothing the user said: don't spend a model turn on an empty message.
+		// (Reactions, poll votes, contact cards, and statements were handled
+		// above; lifecycle signals and oversized notices never reach here.)
+		if !msg.carriesUserContent() {
+			p.logger.Debug("ignoring contentless inbound for linked user",
+				zap.String("platform", string(msg.Platform)),
+				zap.String("user_id", msg.UserID),
+			)
+			return nil
+		}
 		err := p.handleNormalMessage(ctx, msg, resolved)
 		// Ask once for a real address, after their reply rather than instead of it.
 		p.maybeAskForEmail(ctx, msg, resolved)
 		return err
 	}
 
-	// Unlinked sender. A handshake token always takes precedence — even if the
-	// sender is in the middle of an onboarding conversation. This prevents the
-	// token from being swallowed as a name/country/email reply.
+	// Unlinked sender. A contentless payload — or a bare tapback, which has no
+	// staged action to decide before linking — must not reach the onboarder: it
+	// would answer the empty turn with "I can't open that kind of message",
+	// which the user then reads, minting another receipt and looping forever.
+	if !msg.carriesUserContent() {
+		p.logger.Debug("ignoring contentless inbound from unlinked sender",
+			zap.String("platform", string(msg.Platform)),
+			zap.String("user_id", msg.UserID),
+		)
+		return nil
+	}
+
+	// A handshake token always takes precedence — even if the sender is in the
+	// middle of an onboarding conversation. This prevents the token from being
+	// swallowed as a name/country/email reply.
 	if handshakeTokenPattern.MatchString(msg.Text) {
 		if hErr := p.tryCompleteHandshake(ctx, msg); hErr != nil {
 			log.Printf("handshake completion failed for %s: %v", msg.UserID, hErr)
@@ -675,7 +815,7 @@ func (p *Processor) tryCompleteHandshake(ctx context.Context, msg InboundMessage
 	out := p.responseBuilder.EffectResponse(identity,
 		"Your iMessage is now linked to RAIL! Ask me about your balances, spending, savings — anything.",
 		msg.ThreadID, EffectCelebration)
-	if err := p.sendFunc(ctx, out); err != nil {
+	if err := p.send(ctx, out); err != nil {
 		return Retryable(fmt.Errorf("send handshake confirmation: %w", err))
 	}
 	return nil
@@ -927,10 +1067,47 @@ func (p *Processor) sendGestures(ctx context.Context, identity *entities.Platfor
 }
 
 func (p *Processor) send(ctx context.Context, out *OutboundMessage) error {
+	// Stamp the reply with its turn so the bridge can drop it if it arrives
+	// after a newer turn, then apply the backend-side gate.
+	if out != nil {
+		if turn := turnIDFromContext(ctx); turn != "" {
+			out.TurnID = turn
+		}
+	}
+	if p.superseded(ctx, out) {
+		return nil
+	}
 	if err := p.sendFunc(ctx, out); err != nil {
 		return Retryable(fmt.Errorf("send reply: %w", err))
 	}
 	return nil
+}
+
+// superseded reports whether this reply belongs to an inbound turn the user has
+// already moved past. Fail-open by design: no tracker, no turn on the context,
+// or any lookup error means nothing is suppressed — a Redis blip must never
+// silently swallow a real reply.
+func (p *Processor) superseded(ctx context.Context, out *OutboundMessage) bool {
+	if p.turns == nil || out == nil {
+		return false
+	}
+	turn := turnIDFromContext(ctx)
+	if turn == "" {
+		return false
+	}
+	key := turnConversationKey(out.Platform, out.ThreadID)
+	if key == "" {
+		return false
+	}
+	if p.turns.IsCurrent(ctx, key, turn) {
+		return false
+	}
+	p.logger.Info("suppressed reply for superseded inbound turn",
+		zap.String("turn_id", turn),
+		zap.String("thread_id", out.ThreadID),
+		zap.String("platform", string(out.Platform)),
+	)
+	return true
 }
 
 func (p *Processor) transcribe(ctx context.Context, msg InboundMessage) (string, error) {
@@ -977,7 +1154,9 @@ func estimateDurationSec(text string) int {
 
 func (p *Processor) sendPlainTo(ctx context.Context, identity *entities.PlatformIdentity, threadID, text string) {
 	out := p.responseBuilder.MarkdownResponse(identity, text, threadID)
-	if err := p.sendFunc(ctx, out); err != nil {
+	// Route through send() so this reply is stamped with its inbound turn and
+	// gated like every other delivery path (docs/miriam-inbound-supersession.md).
+	if err := p.send(ctx, out); err != nil {
 		log.Printf("failed to send message: %v", err)
 	}
 }
@@ -1005,6 +1184,12 @@ func (p *Processor) sendToSender(ctx context.Context, msg InboundMessage, text s
 		ThreadID:    msg.ThreadID,
 		Text:        text,
 		ContentType: ContentTypeText,
+	}
+	if turn := turnIDFromContext(ctx); turn != "" {
+		out.TurnID = turn
+	}
+	if p.superseded(ctx, out) {
+		return nil
 	}
 	if err := p.sendFunc(ctx, out); err != nil {
 		return Retryable(fmt.Errorf("send message: %w", err))

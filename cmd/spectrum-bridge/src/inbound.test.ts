@@ -135,6 +135,147 @@ describe("InboundDebouncer", () => {
     expect(posts.find((p) => p.thread_id === "chat-2")?.text).toBe("other space");
     d.dispose();
   });
+
+  it("carries an undeliverable batch into the next message (carry-forward)", async () => {
+    const posts: InboundPayload[] = [];
+    const carried: string[] = [];
+    let fail = true;
+    const d = new InboundDebouncer({
+      post: (_k, p) => {
+        if (fail) throw new Error("backend down");
+        posts.push(p);
+      },
+      debounceMs: 20,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+      maxFlushRetries: 0,
+      onCarried: (key) => carried.push(key),
+    });
+
+    d.add("chat-1", payload("do you know if the train runs", "m1"));
+    await sleep(60); // flush fires and fails past the retry budget
+    expect(posts.length).toBe(0);
+    expect(carried).toEqual(["chat-1"]);
+    expect(d.hasCarried("chat-1")).toBe(true);
+
+    fail = false;
+    d.add("chat-1", payload("on holidays", "m2"));
+    await sleep(60);
+    expect(posts.length).toBe(1);
+    expect(posts[0].text).toBe(
+      "[Earlier message] do you know if the train runs\non holidays",
+    );
+    expect(posts[0].msg_id).toBe("m2");
+    expect(d.hasCarried("chat-1")).toBe(false);
+    d.dispose();
+  });
+
+  it("drops (does not carry) when carryForward is disabled", async () => {
+    const dropped: string[] = [];
+    const d = new InboundDebouncer({
+      post: () => {
+        throw new Error("boom");
+      },
+      debounceMs: 20,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+      maxFlushRetries: 0,
+      carryForward: false,
+      onDropped: (key) => dropped.push(key),
+    });
+
+    d.add("chat-1", payload("lost", "m1"));
+    await sleep(60);
+    expect(dropped).toEqual(["chat-1"]);
+    expect(d.hasCarried("chat-1")).toBe(false);
+    d.dispose();
+  });
+
+  it("reposts carried batches on shutdown flush", async () => {
+    const posts: InboundPayload[] = [];
+    let fail = true;
+    const d = new InboundDebouncer({
+      post: (_k, p) => {
+        if (fail) throw new Error("down");
+        posts.push(p);
+      },
+      debounceMs: 20,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+      maxFlushRetries: 0,
+    });
+
+    d.add("chat-1", payload("kept", "m1"));
+    await sleep(60);
+    expect(d.hasCarried("chat-1")).toBe(true);
+
+    fail = false;
+    await d.flushAll();
+    expect(posts.length).toBe(1);
+    expect(posts[0].text).toBe("kept");
+    d.dispose();
+  });
+
+  it("snapshots a buffered batch and re-arms it across a restart", async () => {
+    const posts: InboundPayload[] = [];
+    const d1 = new InboundDebouncer({
+      post: (_k, p) => posts.push(p),
+      debounceMs: 30,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+    });
+    d1.add("chat-1", payload("survives a crash", "m1"));
+    const snap = d1.snapshot();
+    expect(snap.length).toBe(1);
+    expect(snap[0].key).toBe("chat-1");
+    expect(snap[0].entries.map((e) => e.text)).toEqual(["survives a crash"]);
+    d1.dispose(); // process dies before the flush
+    expect(posts.length).toBe(0);
+
+    const d2 = new InboundDebouncer({
+      post: (_k, p) => posts.push(p),
+      debounceMs: 30,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+    });
+    expect(d2.restore(snap)).toBe(1);
+    await sleep(80);
+    expect(posts.length).toBe(1);
+    expect(posts[0].text).toBe("survives a crash");
+    d2.dispose();
+  });
+
+  it("snapshots carried batches so they survive a restart", async () => {
+    const d1 = new InboundDebouncer({
+      post: () => {
+        throw new Error("down");
+      },
+      debounceMs: 20,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+      maxFlushRetries: 0,
+    });
+    d1.add("chat-1", payload("kept for later", "m1"));
+    await sleep(60);
+    const snap = d1.snapshot();
+    expect(snap[0].carried?.map((e) => e.text)).toEqual(["kept for later"]);
+    d1.dispose();
+
+    const posts: InboundPayload[] = [];
+    const d2 = new InboundDebouncer({
+      post: (_k, p) => posts.push(p),
+      debounceMs: 20,
+      maxWaitMs: 5000,
+      maxBuffer: 5,
+    });
+    d2.restore(snap);
+    expect(d2.hasCarried("chat-1")).toBe(true);
+
+    d2.add("chat-1", payload("and this now", "m2"));
+    await sleep(60);
+    expect(posts[0].text).toBe("[Earlier message] kept for later\nand this now");
+    d2.dispose();
+  });
 });
 
 describe("routeInboundContent", () => {

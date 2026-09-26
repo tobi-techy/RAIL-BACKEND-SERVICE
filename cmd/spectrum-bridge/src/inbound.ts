@@ -74,6 +74,11 @@ export interface InboundPayload {
   reply_to?: string;
   reply_to_text?: string;
   edit_of?: string;
+
+  /** Inbound turn this batch belongs to (docs/miriam-inbound-supersession.md).
+   *  Minted by the bridge for content-bearing batches; the backend echoes it on
+   *  every reply so a newer turn can supersede an older, still-generating one. */
+  turn_id?: string;
 }
 
 /** Extra fields threaded through reply/edit/effect unwrapping. */
@@ -81,6 +86,19 @@ export interface InboundExtras {
   reply_to?: string;
   reply_to_text?: string;
   edit_of?: string;
+}
+
+/**
+ * One thread's in-flight batch as written to the durable spool, so a hard
+ * crash between "user sent this" and "backend answered" doesn't lose the words
+ * (recovery-and-state). `carried` holds batches awaiting carry-forward.
+ */
+export interface PersistedInboundBuffer {
+  key: string;
+  entries: InboundPayload[];
+  firstAt: number;
+  retries: number;
+  carried?: InboundPayload[];
 }
 
 const REPLY_QUOTE_MAX_CHARS = 200;
@@ -125,6 +143,17 @@ export interface DebouncerOptions {
   onError?: (key: string, err: unknown) => void;
   /** Called when a payload is dropped after exhausting the retry budget. */
   onDropped?: (key: string, err: unknown) => void;
+  /**
+   * Called when a batch could not be delivered after exhausting the retry
+   * budget and is carried forward instead of dropped (the default). The next
+   * message for the thread prepends it as `[Earlier message] …` context.
+   */
+  onCarried?: (key: string, err: unknown) => void;
+  /**
+   * Carry an undeliverable batch into the thread's next one instead of
+   * dropping it (best-practices/inbound-pipeline, carry-forward). Default true.
+   */
+  carryForward?: boolean;
 }
 
 interface BufferState {
@@ -140,18 +169,34 @@ const DEFAULT_MAX_FLUSH_RETRIES = 3;
 
 export class InboundDebouncer {
   private buffers = new Map<string, BufferState>();
+  /**
+   * Batches that exhausted the retry budget and are waiting to be prepended to
+   * the thread's next message (carry-forward). Without this, a backend outage
+   * longer than the retry window silently ate the user's words.
+   */
+  private carried = new Map<string, InboundPayload[]>();
 
   constructor(private readonly opts: DebouncerOptions) {}
 
   /** Buffer a text-ish payload; schedules or triggers a flush. */
   add(key: string, payload: InboundPayload): void {
+    let effective = payload;
+    // Carry-forward: prepend batches we could not deliver last time so the
+    // model sees them as history rather than losing them (inbound-pipeline doc).
+    const carried = this.carried.get(key);
+    if (carried && carried.length > 0) {
+      const prefix = carried.map((p) => `[Earlier message] ${p.text}`).join("\n");
+      effective = { ...payload, text: `${prefix}\n${payload.text}` };
+      this.carried.delete(key);
+    }
+
     let buf = this.buffers.get(key);
     if (!buf) {
       buf = { entries: [], firstAt: Date.now(), timer: null, retries: 0 };
       this.buffers.set(key, buf);
       this.opts.onBufferStart?.(key);
     }
-    buf.entries.push(payload);
+    buf.entries.push(effective);
 
     if (buf.timer) {
       clearTimeout(buf.timer);
@@ -218,7 +263,16 @@ export class InboundDebouncer {
       this.opts.onError?.(key, err);
       const retries = buf.retries + 1;
       if (retries > (this.opts.maxFlushRetries ?? DEFAULT_MAX_FLUSH_RETRIES)) {
-        this.opts.onDropped?.(key, err);
+        if (this.opts.carryForward === false) {
+          this.opts.onDropped?.(key, err);
+          return;
+        }
+        // Carry-forward: keep the drained batch for this thread so the next
+        // message prepends it as `[Earlier message] …` instead of losing it.
+        const list = this.carried.get(key) ?? [];
+        list.push(merged);
+        this.carried.set(key, list);
+        this.opts.onCarried?.(key, err);
         return;
       }
       // Requeue the merged payload with backoff. If a new message created a
@@ -253,6 +307,72 @@ export class InboundDebouncer {
       if (buf.timer) clearTimeout(buf.timer);
     }
     this.buffers.clear();
+    this.carried.clear();
+  }
+
+  /** True when a batch is waiting to be carried into the thread's next message. */
+  hasCarried(key: string): boolean {
+    return (this.carried.get(key)?.length ?? 0) > 0;
+  }
+
+  /** Buffered batches + carried batches, for durable spooling. */
+  snapshot(): PersistedInboundBuffer[] {
+    const out: PersistedInboundBuffer[] = [];
+    const keys = new Set<string>([...this.buffers.keys(), ...this.carried.keys()]);
+    for (const key of keys) {
+      const buf = this.buffers.get(key);
+      const carried = this.carried.get(key);
+      if ((!buf || buf.entries.length === 0) && (!carried || carried.length === 0)) continue;
+      out.push({
+        key,
+        entries: buf?.entries ?? [],
+        firstAt: buf?.firstAt ?? Date.now(),
+        retries: buf?.retries ?? 0,
+        ...(carried && carried.length > 0 ? { carried } : {}),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Rehydrate buffers written by snapshot() on the previous boot. Returns the
+   * number of buffered batches re-armed. A batch whose original deadline
+   * already passed while we were down flushes immediately, so the user's text
+   * goes out rather than waiting a fresh debounce window.
+   */
+  restore(records: PersistedInboundBuffer[]): number {
+    if (!Array.isArray(records)) return 0;
+    const now = Date.now();
+    let restored = 0;
+    for (const rec of records) {
+      if (!rec || typeof rec.key !== "string") continue;
+      const entries = Array.isArray(rec.entries)
+        ? rec.entries.filter((e) => e && typeof e.text === "string")
+        : [];
+      const carried = Array.isArray(rec.carried)
+        ? rec.carried.filter((e) => e && typeof e.text === "string")
+        : [];
+      if (entries.length === 0 && carried.length === 0) continue;
+      if (carried.length > 0) this.carried.set(rec.key, carried);
+      if (entries.length > 0) {
+        const firstAt = typeof rec.firstAt === "number" ? rec.firstAt : now;
+        const elapsed = now - firstAt;
+        const buf: BufferState = {
+          entries,
+          firstAt,
+          timer: null,
+          retries: typeof rec.retries === "number" ? rec.retries : 0,
+        };
+        const wait = Math.max(
+          0,
+          Math.min(this.opts.debounceMs, this.opts.maxWaitMs - elapsed),
+        );
+        buf.timer = setTimeout(() => void this.flush(rec.key), wait);
+        this.buffers.set(rec.key, buf);
+        restored++;
+      }
+    }
+    return restored;
   }
 
   /**
@@ -269,6 +389,23 @@ export class InboundDebouncer {
         // flush() already routes errors via onError; never let one thread's
         // buffer block the rest during shutdown.
       }
+    }
+    // Best-effort repost of carried batches: a backend that recovered by
+    // shutdown time shouldn't wait for the user to text again to receive them.
+    // Anything still undeliverable is KEPT so the spool can persist it — a
+    // failed shutdown flush must not be the moment the words are lost.
+    for (const [key, list] of Array.from(this.carried.entries())) {
+      const remaining: InboundPayload[] = [];
+      for (const payload of list) {
+        try {
+          await this.opts.post(key, payload);
+        } catch (err) {
+          this.opts.onError?.(key, err);
+          remaining.push(payload);
+        }
+      }
+      if (remaining.length > 0) this.carried.set(key, remaining);
+      else this.carried.delete(key);
     }
   }
 }

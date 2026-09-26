@@ -55,6 +55,16 @@ const envSchema = z.object({
   // hard caps that must never be crossed on the wire.
   DELIVERY_DAILY_CAP: z.coerce.number().int().min(1).default(5000),
   DELIVERY_NEW_CONVOS_PER_LINE: z.coerce.number().int().min(1).default(50),
+
+  // Inbound turn supersession: drop a reply whose inbound turn a newer message
+  // has already superseded (docs/miriam-inbound-supersession.md). Off by
+  // default. Accepts "1"/"true"/"yes"/"on" (case-insensitive). Must be paired
+  // with the backend's PLATFORM_TURN_SUPERSESSION — the bridge mints turn ids
+  // and applies gate 2; the backend stamps replies and applies gate 1.
+  MIRIAM_TURN_SUPERSESSION: z
+    .string()
+    .optional()
+    .transform((v) => /^(1|true|yes|on)$/i.test(v ?? "")),
 });
 
 export type Env = z.infer<typeof envSchema>;
