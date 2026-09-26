@@ -836,7 +836,7 @@ type GraphConfig struct {
 // electricity, cable TV, betting, transport; settles in USDC/USDT on Solana).
 type AirbillsConfig struct {
 	SecretKey           string  `mapstructure:"secret_key"`            // business secret key sent in the secretkey header
-	BaseURL             string  `mapstructure:"base_url"`              // default: https://developer.airbills.org/api/vendor/gateway
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.airbills.org/api/vendor/gateway
 	CallbackURL         string  `mapstructure:"callback_url"`          // Rail endpoint Airbills POSTs fulfillment callbacks to
 	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound callbacks
 	WebhookPath         string  `mapstructure:"webhook_path"`          // webhook route mount point; defaults to "/airbills"
@@ -1117,6 +1117,13 @@ func Load() (*Config, error) {
 
 	// Investing is part of the product. An env var or config file cannot turn it off.
 	config.InvestmentGlider.Enabled = true
+
+	// Airbills bills go to the live gateway. An empty value, or the old docs
+	// host, must not require a dashboard change to start working.
+	switch strings.TrimRight(strings.TrimSpace(config.Airbills.BaseURL), "/") {
+	case "", "https://developer.airbills.org/api/vendor/gateway":
+		config.Airbills.BaseURL = "https://api.airbills.org/api/vendor/gateway"
+	}
 
 	// Build database URL if not provided
 	if config.Database.URL == "" {

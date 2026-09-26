@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultBaseURL    = "https://developer.airbills.org/api/vendor/gateway"
+	defaultBaseURL    = "https://api.airbills.org/api/vendor/gateway"
 	defaultTimeout    = 20 * time.Second
 	defaultMaxRetries = 2
 	maxResponseSize   = 1 << 20 // 1MB
@@ -103,17 +103,20 @@ func (c *Client) ListProducts(ctx context.Context, segment, networkId string) ([
 	if networkId != "" {
 		path += "?networkId=" + url.QueryEscape(networkId)
 	}
-	var resp ListResponse
+	var resp listEnvelope
 	if err := c.get(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("airbills list %s: %w", segment, err)
 	}
-	return resp.Data, nil
+	if resp.Status != "" && resp.Status != StatusSuccess {
+		return nil, &StatusError{Status: resp.Status, Message: resp.Message}
+	}
+	return flattenProducts(resp.Data, networkId), nil
 }
 
 // DetectNetwork resolves the Nigerian mobile network for a phone number so
 // airtime/data purchases set the correct networkId automatically.
 func (c *Client) DetectNetwork(ctx context.Context, phoneNumber string) (*NetworkCheckResponse, error) {
-	path := "/network-checker?phoneNumber=" + url.QueryEscape(phoneNumber)
+	path := "/network-checker?phone=" + url.QueryEscape(phoneNumber)
 	var resp NetworkCheckResponse
 	if err := c.get(ctx, path, &resp); err != nil {
 		return nil, fmt.Errorf("airbills network-checker: %w", err)

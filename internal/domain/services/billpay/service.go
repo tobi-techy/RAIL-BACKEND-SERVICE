@@ -175,8 +175,8 @@ func (s *Service) PayBill(ctx context.Context, userID uuid.UUID, req PayBillRequ
 	// Auto-detect the mobile network for airtime/data when not supplied.
 	networkID := req.NetworkID
 	if networkID == "" && (category == CategoryAirtime || category == CategoryData) {
-		if net, derr := s.client.DetectNetwork(ctx, req.Recipient); derr == nil && net.Data.NetworkID != "" {
-			networkID = net.Data.NetworkID
+		if net, derr := s.client.DetectNetwork(ctx, req.Recipient); derr == nil && net.NetworkID() != "" {
+			networkID = net.NetworkID()
 		}
 	}
 
@@ -448,7 +448,7 @@ func (s *Service) DetectNetwork(ctx context.Context, phone string) (string, stri
 	if err != nil {
 		return "", "", err
 	}
-	return res.Data.NetworkID, res.Data.Network, nil
+	return res.NetworkID(), res.Data.Network, nil
 }
 
 // ValidateMeter confirms a meter number and returns the account holder name.

@@ -1,5 +1,7 @@
 package airbills
 
+import "encoding/json"
+
 // Product codes identify the bill type passed as productCode in /transact.
 const (
 	ProductAirtime     = "100"
@@ -118,21 +120,35 @@ type Product struct {
 	NetworkID  string  `json:"networkId"`
 }
 
-// ListResponse is the envelope returned by the /list/* lookup endpoints.
-type ListResponse struct {
-	Status  string    `json:"status"`
-	Message string    `json:"message"`
-	Data    []Product `json:"data"`
+// listEnvelope is the /list/* body. Data is an array for transport and a
+// nested object for electricity, cable, data, and betting.
+type listEnvelope struct {
+	Status  string          `json:"status"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data"`
 }
 
 // NetworkCheckResponse is returned by GET /network-checker.
+// The live API sends network_id; older examples used networkId.
 type NetworkCheckResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
 	Data    struct {
-		NetworkID string `json:"networkId"`
-		Network   string `json:"network"`
+		NetworkIDCamel string `json:"networkId"`
+		NetworkIDSnake string `json:"network_id"`
+		Network        string `json:"network"`
 	} `json:"data"`
+}
+
+// NetworkID returns the carrier code from whichever field the API sent.
+func (r *NetworkCheckResponse) NetworkID() string {
+	if r == nil {
+		return ""
+	}
+	if r.Data.NetworkIDCamel != "" {
+		return r.Data.NetworkIDCamel
+	}
+	return r.Data.NetworkIDSnake
 }
 
 // MeterValidateRequest is the body for POST /validate/elect.
