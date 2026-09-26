@@ -1369,12 +1369,15 @@ func (c *Container) wireChatOnboarding() {
 	// falls back to a different brain. Without the Python agent the onboarder
 	// falls back to its scripted flow (no Go brain on the guest path).
 	if c.PythonAgentClient != nil {
+		guestTurn := time.Duration(c.Config.Platform.GuestTurnTimeoutSeconds) * time.Second
 		onboarder.SetGuestCompleter(&pythonGuestCompleterAdapter{
-			python: c.PythonAgentClient,
-			logger: c.ZapLog,
+			python:      c.PythonAgentClient,
+			logger:      c.ZapLog,
+			turnTimeout: guestTurn,
 		})
 		c.ZapLog.Info("guest onboarding agent enabled",
-			zap.String("brain", "python-miriam"))
+			zap.String("brain", "python-miriam"),
+			zap.Duration("guest_turn_timeout", guestTurn))
 	} else {
 		c.ZapLog.Warn("guest onboarding agent unavailable — Python MIRIAM agent not wired; using scripted retry replies")
 	}

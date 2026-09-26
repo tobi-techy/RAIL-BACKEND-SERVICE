@@ -447,6 +447,33 @@ function basePayload(
   };
 }
 
+/**
+ * The inbound payload for a poll tap. A tap has two possible sources — the
+ * router's `poll_option` arm (message stream / Fusor transport) and the
+ * iMessage poll watcher (webhook transport, where Spectrum never delivers
+ * votes at all) — so the shape lives in one place and both paths agree.
+ */
+export function pollVotePayload(input: {
+  platform: string;
+  senderId: string;
+  threadId: string;
+  spaceId?: string;
+  optionText: string;
+  pollTitle?: string;
+  msgId?: string;
+}): InboundPayload {
+  return {
+    platform: input.platform,
+    user_id: input.senderId,
+    thread_id: input.threadId,
+    text: input.optionText,
+    space_id: input.spaceId ?? input.threadId,
+    is_poll_vote: true,
+    ...(input.pollTitle ? { poll_title: input.pollTitle } : {}),
+    ...(input.msgId ? { msg_id: input.msgId } : {}),
+  };
+}
+
 /** Extract human-readable text from text-like content (for reply quotes). */
 function textOfContent(content: Content): string | undefined {
   if (content.type === "text") return content.text;
@@ -456,15 +483,20 @@ function textOfContent(content: Content): string | undefined {
 
 /**
  * Inbound arms the SDK's native-webhook deserializer has no `case` for. It
- * wraps them as `custom` and keeps the original payload under `.raw`, so a poll
- * tap arrives looking exactly like an unreadable sticker: the router answered
- * "custom → unsupported" and the backend told the user "I can't open that kind
- * of message" instead of counting their answer.
+ * wraps them as `custom` and keeps the original payload under `.raw`, so an
+ * unmapped arm arrives looking exactly like an unreadable sticker and the
+ * backend told the user "I can't open that kind of message" instead of acting
+ * on it.
  *
  * Only arms this router has a branch for are recovered, and only ones the SDK
  * does NOT already map: when a type it maps (text, attachment, reaction, …)
  * surfaces as `custom` its own parser threw, and re-running the router on the
  * same payload would throw again.
+ *
+ * Note for poll taps: the provider's webhook vocabulary is the `messages` event
+ * only, and it never carries a vote, so `poll_option` below is a message-stream
+ * (or Fusor) arm. On the webhook transport — production — votes are read from
+ * the provider's poll API instead; see `poll-watcher.ts`.
  */
 const RECOVERABLE_CUSTOM_TYPES = new Set([
   "poll_option", // poll tap — onboarding answers and Confirm/Cancel
@@ -607,11 +639,16 @@ export async function routeInboundContent(
       if (!text) return;
       await debouncer.flush(ctx.threadID);
       const inbound: InboundPayload = {
-        ...basePayload(ctx, message.id),
+        ...pollVotePayload({
+          platform: ctx.platform,
+          senderId: ctx.senderId,
+          threadId: ctx.threadID,
+          spaceId: ctx.spaceId,
+          optionText: text,
+          pollTitle: content.poll?.title?.trim() || content.title,
+          msgId: message.id,
+        }),
         ...extras,
-        text,
-        is_poll_vote: true,
-        poll_title: content.poll?.title?.trim() || content.title,
       };
       await postToBackend(INBOUND_PATH, inbound);
       log.info(
@@ -1010,8 +1047,10 @@ export async function routeInboundContent(
       return;
     }
 
-    // Typing signals and outbound poll echoes never reach the backend. (Poll
-    // *votes* arrive as poll_option and are handled above.)
+    // Typing signals and outbound poll echoes never reach the backend. Poll
+    // *votes* arrive as poll_option when the message stream delivers them; on
+    // the webhook transport the poll watcher reads them from the provider's
+    // poll API and posts them itself (see poll-watcher.ts).
     case "typing":
     case "poll":
       log.debug({ type: content.type }, "skipping non-message inbound content");

@@ -96,6 +96,20 @@ export interface OutboundMessage {
   send_after?: number;
 }
 
+/** A poll that went out: what the poll watcher needs to attribute a vote. */
+export interface SentPoll {
+  /** The poll's provider identifier. This is the id `space.send(poll(...))`
+   *  resolved to: the SDK records an outbound poll under its
+   *  `poll.pollMessageGuid`, so the sent message id IS the poll id. */
+  pollGuid: string;
+  threadId: string;
+  /** The person we asked (their platform handle). */
+  senderId: string;
+  platform: string;
+  title: string;
+  options: string[];
+}
+
 const EFFECTS: Record<string, IMessageMessageEffect> = {
   celebration: imessage.effect.message.celebration,
   confetti: imessage.effect.message.confetti,
@@ -138,18 +152,29 @@ export class MessageHandler {
   private lastInboundByThread = new Map<string, Message>();
   private pendingReplyLookups = new Map<string, Promise<Message | undefined>>();
 
+  /**
+   * Called after a poll bubble is accepted by the provider, with the poll's
+   * identifier. Spectrum's webhook transport never delivers a vote, so the
+   * bridge has to fetch them from the provider — which needs to know which
+   * polls are outstanding (see poll-watcher.ts). Best-effort: a failure here
+   * must never fail the send.
+   */
+  private readonly onPollSent?: (poll: SentPoll) => void;
+
   constructor(
     opts: {
       maxBubbles?: number;
       miniApp?: MiniAppConfig;
       cardStore?: ConfirmationCardStore;
       cardAssetsDir?: string;
+      onPollSent?: (poll: SentPoll) => void;
     } = {},
   ) {
     this.maxBubbles = Math.min(Math.max(opts.maxBubbles ?? 3, 1), 10);
     this.miniApp = opts.miniApp ?? { appName: "Miriam" };
     this.cardStore = opts.cardStore;
     this.cardAssetsDir = opts.cardAssetsDir ?? "";
+    this.onPollSent = opts.onPollSent;
     setInterval(() => this.evictStaleMessages(), 60_000);
   }
 
@@ -352,9 +377,28 @@ export class MessageHandler {
         // The guard above keeps the title valid; a build failure here surfaces
         // through sendToSpace's catch like any other send error. (The old
         // probe-build-for-logging built every poll twice.)
-        await this.sendBubble(space, guidBase ? `${guidBase}#poll` : undefined, () =>
-          space.send(poll(title, options)),
-        );
+        let sentPollId: string | undefined;
+        await this.sendBubble(space, guidBase ? `${guidBase}#poll` : undefined, async () => {
+          const sent = await space.send(poll(title, options));
+          sentPollId = sent?.id;
+          return sent;
+        });
+        // Only register a poll the provider actually accepted — a resumed
+        // (already-delivered) bubble must not re-register with a stale id.
+        if (sentPollId && this.onPollSent) {
+          try {
+            this.onPollSent({
+              pollGuid: sentPollId,
+              threadId: msg.thread_id,
+              senderId: msg.user_id,
+              platform: msg.platform,
+              title,
+              options,
+            });
+          } catch (err) {
+            log.warn({ err, thread_id: msg.thread_id }, "poll watcher registration failed");
+          }
+        }
         return;
       }
 

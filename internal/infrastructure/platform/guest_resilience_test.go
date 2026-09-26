@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"go.uber.org/zap"
 )
 
 // flakyCompleter fails its first n calls, then behaves like a healthy provider.
@@ -62,6 +63,130 @@ func stepRedeliverable(t *testing.T, ob *ChatOnboarder, sender, text string) (*P
 		Text:          text,
 		Redeliverable: true,
 	})
+}
+
+// budgetCompleter fails every call and declares a custom completion budget,
+// standing in for the Python brain adapter whose turn is configurable.
+type budgetCompleter struct {
+	calls   int
+	timeout time.Duration
+}
+
+func (c *budgetCompleter) CompleteGuest(_ context.Context, _ string, _ []GuestMessage, _ []GuestToolDef) (*GuestResult, error) {
+	c.calls++
+	return nil, fmt.Errorf("brain unavailable")
+}
+
+func (c *budgetCompleter) CompletionTimeout() time.Duration { return c.timeout }
+
+// toolThenTextCompleter makes a tool call with no text on its first pass — which
+// forces the brain's follow-up pass — and records each pass's deadline.
+type toolThenTextCompleter struct {
+	calls     int
+	deadlines []time.Time
+	sleep     time.Duration
+}
+
+func (c *toolThenTextCompleter) CompleteGuest(ctx context.Context, _ string, _ []GuestMessage, _ []GuestToolDef) (*GuestResult, error) {
+	if d, ok := ctx.Deadline(); ok {
+		c.deadlines = append(c.deadlines, d)
+	} else {
+		c.deadlines = append(c.deadlines, time.Time{})
+	}
+	c.calls++
+	if c.calls == 1 {
+		time.Sleep(c.sleep)
+		return &GuestResult{ToolCalls: []GuestToolCall{
+			{Name: "note_detail", Arguments: map[string]interface{}{"field": "goal", "value": "spend freely"}},
+		}}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &GuestResult{Text: "So you want room to spend without the fear."}, nil
+}
+
+// budgetedToolThenText adds a declared whole-turn budget.
+type budgetedToolThenText struct {
+	*toolThenTextCompleter
+	budget time.Duration
+}
+
+func (c budgetedToolThenText) CompletionTimeout() time.Duration { return c.budget }
+
+// A declared budget is the budget for the TURN, so the follow-up pass runs on
+// what is left of it. Otherwise a two-pass turn takes twice the declared time
+// and blows past the bridge's inbound deadline — the user then waits out a
+// redelivery instead of reading a reply.
+func TestGuestBrain_TurnBudgetCoversBothPasses(t *testing.T) {
+	inner := &toolThenTextCompleter{sleep: 40 * time.Millisecond}
+	brain := newGuestBrain(budgetedToolThenText{toolThenTextCompleter: inner, budget: 9 * time.Second}, zap.NewNop())
+
+	out, err := brain.respond(context.Background(), &guestState{}, "build a rich life")
+	if err != nil {
+		t.Fatalf("respond failed: %v", err)
+	}
+	if out.text != "So you want room to spend without the fear." {
+		t.Fatalf("unexpected reply %q", out.text)
+	}
+	if len(inner.deadlines) != 2 {
+		t.Fatalf("expected a tool pass and a follow-up, got %d passes", len(inner.deadlines))
+	}
+	if !inner.deadlines[1].Equal(inner.deadlines[0]) {
+		t.Fatalf("follow-up deadline %v extends past the turn's %v: the budget must cover the whole turn",
+			inner.deadlines[1], inner.deadlines[0])
+	}
+	if left := time.Until(inner.deadlines[0]); left <= 0 || left > 9*time.Second {
+		t.Fatalf("turn deadline is %v away, want it inside the declared 9s budget", left)
+	}
+}
+
+// Without a declared budget, each pass gets its own fresh window — the retry
+// behavior small-model completions rely on.
+func TestGuestBrain_NoBudgetGivesEachPassItsOwnWindow(t *testing.T) {
+	inner := &toolThenTextCompleter{sleep: 40 * time.Millisecond}
+	brain := newGuestBrain(inner, zap.NewNop())
+
+	if _, err := brain.respond(context.Background(), &guestState{}, "build a rich life"); err != nil {
+		t.Fatalf("respond failed: %v", err)
+	}
+	if len(inner.deadlines) != 2 {
+		t.Fatalf("expected two passes, got %d", len(inner.deadlines))
+	}
+	if !inner.deadlines[1].After(inner.deadlines[0]) {
+		t.Fatalf("follow-up deadline %v should be its own window after %v",
+			inner.deadlines[1], inner.deadlines[0])
+	}
+}
+
+// A raised budget must buy ONE longer attempt, not two that together overrun the
+// bridge's inbound deadline. The DI wiring leans on this: it sets a handful of
+// seconds under the bridge timeout on the assumption that it is the whole turn's
+// budget.
+func TestGuestBrain_RaisedBudgetUsesASingleAttempt(t *testing.T) {
+	bc := &budgetCompleter{timeout: 9 * time.Second}
+	brain := newGuestBrain(bc, zap.NewNop())
+
+	if _, err := brain.complete(context.Background(), "sys", nil, nil); err == nil {
+		t.Fatal("expected the failing completer to surface an error")
+	}
+	if bc.calls != 1 {
+		t.Fatalf("completion attempts = %d, want 1 — a custom budget owns its own retries", bc.calls)
+	}
+}
+
+// A completer that declares no budget keeps the default two short attempts, so a
+// single provider blip stays invisible.
+func TestGuestBrain_DefaultBudgetStillRetries(t *testing.T) {
+	fc := &fakeCompleter{err: fmt.Errorf("provider down")}
+	brain := newGuestBrain(fc, zap.NewNop())
+
+	if _, err := brain.complete(context.Background(), "sys", nil, nil); err == nil {
+		t.Fatal("expected the failing completer to surface an error")
+	}
+	if len(fc.calls) != 2 {
+		t.Fatalf("completion attempts = %d, want the default 2", len(fc.calls))
+	}
 }
 
 // A single provider blip must be invisible: the retry inside the brain answers

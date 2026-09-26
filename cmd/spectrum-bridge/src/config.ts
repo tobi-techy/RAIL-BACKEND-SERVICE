@@ -7,6 +7,11 @@ const envSchema = z.object({
   RAIL_BACKEND_URL: z.string().url().default("http://localhost:8080"),
   RAIL_HMAC_SECRET: z.string().min(1),
 
+  // Inbound POST timeout for plain messages (voice/image/statement have their
+  // own budgets). Must exceed the backend's whole-turn budget, or the bridge
+  // hangs up on a turn the backend is about to answer.
+  RAIL_BACKEND_TEXT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15_000),
+
   BRIDGE_PORT: z.coerce.number().default(3000),
 
   SPECTRUM_WEBHOOK_SECRET: z.string().optional(),
@@ -65,6 +70,16 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => /^(1|true|yes|on)$/i.test(v ?? "")),
+
+  // iMessage poll-vote watcher. Spectrum webhooks never deliver poll votes, and
+  // the SDK's own poll cache drops a vote whose poll the server returned without
+  // a title, so votes are read straight from the provider's poll event stream
+  // instead (see poll-watcher.ts). On by default; set "0"/"false"/"no"/"off" to
+  // disable without a redeploy.
+  MIRIAM_POLL_WATCHER: z
+    .string()
+    .optional()
+    .transform((v) => !/^(0|false|no|off)$/i.test(v ?? "")),
 });
 
 export type Env = z.infer<typeof envSchema>;

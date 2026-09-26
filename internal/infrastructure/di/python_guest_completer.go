@@ -43,14 +43,26 @@ import (
 type pythonGuestCompleterAdapter struct {
 	python *ai.PythonAgentClient
 	logger *zap.Logger
+	// turnTimeout overrides guestTurnTimeout when non-zero. Configurable because
+	// it has to be tuned in step with the bridge's inbound POST timeout: the two
+	// are a single budget split across a process boundary, and a turn that
+	// outlives the smaller one is retried from scratch (or, on the last
+	// redelivery, answered with a scripted apology).
+	turnTimeout time.Duration
 }
 
 // guestTurnTimeout is the whole-turn budget a Python-backed guest completion may
-// use. Keeps one agent loop (interview/plan/LLM + HTTP) inside the bridge's 15s
-// inbound deadline while leaving headroom for the executor and the response.
+// use — the guest brain enforces it across every pass of one turn, so it keeps
+// a turn (interview/plan/LLM + HTTP) inside the bridge's inbound deadline while
+// leaving headroom for the executor and the response.
 const guestTurnTimeout = 13 * time.Second
 
-func (a *pythonGuestCompleterAdapter) CompletionTimeout() time.Duration { return guestTurnTimeout }
+func (a *pythonGuestCompleterAdapter) CompletionTimeout() time.Duration {
+	if a.turnTimeout > 0 {
+		return a.turnTimeout
+	}
+	return guestTurnTimeout
+}
 
 func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemPrompt string, messages []platform.GuestMessage, tools []platform.GuestToolDef) (*platform.GuestResult, error) {
 	if a.python == nil {

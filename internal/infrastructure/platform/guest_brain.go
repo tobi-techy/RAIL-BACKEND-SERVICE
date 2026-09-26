@@ -53,13 +53,20 @@ type GuestCompleter interface {
 // completion. A custom budget trades the default two-short-attempts for one
 // longer, careful attempt so the whole turn still fits the bridge deadline; the
 // adapter is expected to own its own retries/fallback at that point.
+//
+// The value is the budget for one CONVERSATIONAL TURN, not one completion: a
+// turn can make two passes (the tool pass and a follow-up when the model called
+// tools without replying), and respond enforces the budget across both. It must
+// stay under the bridge's inbound POST timeout — the bridge gives up on a turn
+// it never hears back about, and the person waits through a redelivery.
 type CompletionBudget interface {
 	CompletionTimeout() time.Duration
 }
 
-// guestCompletionTimeout bounds a single completion attempt. Two attempts plus
-// the retry gap must stay under the bridge's 15s inbound POST timeout, or the
-// bridge gives up on a turn we are about to answer.
+// guestCompletionTimeout bounds a single completion attempt for a completer
+// that declares no CompletionBudget. Two attempts plus the retry gap must stay
+// under the bridge's inbound POST timeout, or the bridge gives up on a turn we
+// are about to answer.
 const guestCompletionTimeout = 6 * time.Second
 
 // guestCompletionAttempts is how many times one completion is tried before the
@@ -309,17 +316,28 @@ func newGuestBrain(completer GuestCompleter, logger *zap.Logger) *guestBrain {
 	return &guestBrain{completer: completer, logger: logger}
 }
 
+// turnBudget is the whole-turn budget the completer declares, or 0 when it
+// declares none (or declares one no larger than the default, which cannot help).
+func (b *guestBrain) turnBudget() time.Duration {
+	cb, ok := b.completer.(CompletionBudget)
+	if !ok {
+		return 0
+	}
+	if t := cb.CompletionTimeout(); t > guestCompletionTimeout {
+		return t
+	}
+	return 0
+}
+
 // complete runs one completion with a bounded deadline, retrying once on
 // failure. A blip here is otherwise visible to the person as an apology, so the
 // retry happens before the turn is given up on.
 func (b *guestBrain) complete(ctx context.Context, systemPrompt string, messages []GuestMessage, tools []GuestToolDef) (*GuestResult, error) {
 	attempts := guestCompletionAttempts
 	timeout := guestCompletionTimeout
-	if cb, ok := b.completer.(CompletionBudget); ok {
-		if t := cb.CompletionTimeout(); t > timeout {
-			timeout = t
-			attempts = 1 // one long careful attempt; budget adapters own their retries
-		}
+	if t := b.turnBudget(); t > 0 {
+		timeout = t
+		attempts = 1 // one long careful attempt; budget adapters own their retries
 	}
 
 	var lastErr error
@@ -355,6 +373,17 @@ func (b *guestBrain) complete(ctx context.Context, systemPrompt string, messages
 func (b *guestBrain) respond(ctx context.Context, st *guestState, userText string) (*guestOutcome, error) {
 	if b.completer == nil {
 		return nil, errNoGuestCompleter
+	}
+
+	// Bound the whole turn, not just each pass: this runs up to two completions,
+	// so a budget adapter's declared timeout would otherwise let a turn take
+	// twice it and overrun the bridge's inbound deadline — the person then waits
+	// out a redelivery instead of getting their reply. Failing here while our
+	// caller is still listening keeps the failure retryable and answerable.
+	if budget := b.turnBudget(); budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
 	}
 
 	messages := make([]GuestMessage, 0, len(st.Turns)+1)
