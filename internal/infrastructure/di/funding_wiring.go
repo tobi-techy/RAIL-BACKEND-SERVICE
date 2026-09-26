@@ -347,8 +347,11 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 	}
 
 	// --- Airbills (Nigerian bill payments: airtime, data, electricity, cable,
-	// betting, transport). Settlement mirrors the RampHub off-ramp path. ---
-	if c.Config.Airbills.SecretKey != "" && c.Config.Airbills.WebhookSecret != "" {
+	// betting, transport). Settlement mirrors the RampHub off-ramp path.
+	// The API key is enough to pay bills. The webhook route stays unmounted
+	// until AIRBILLS_WEBHOOK_SECRET is set, and HandleCallback rejects an
+	// empty secret, so a missing callback secret cannot accept unsigned posts.
+	if c.Config.Airbills.SecretKey != "" {
 		airbillsClient, err := airbills.NewClient(airbills.Config{
 			SecretKey:     c.Config.Airbills.SecretKey,
 			BaseURL:       c.Config.Airbills.BaseURL,
@@ -386,9 +389,11 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		if c.AgentDeps != nil {
 			c.AgentDeps.Bills = buildBillsProvider(c)
 		}
-		c.ZapLog.Info("Airbills bill payments initialized")
-	} else if c.Config.Airbills.SecretKey != "" {
-		c.ZapLog.Fatal("SECURITY: Airbills webhook_secret is required when Airbills secret key is configured — refusing to start with unauthenticated callbacks")
+		if c.Config.Airbills.WebhookSecret == "" {
+			c.ZapLog.Warn("Airbills bill payments initialized without callbacks: set AIRBILLS_WEBHOOK_SECRET before fulfillment webhooks can be accepted")
+		} else {
+			c.ZapLog.Info("Airbills bill payments initialized")
+		}
 	} else {
 		c.ZapLog.Warn("Airbills secret key is empty, skipping bill payments initialization")
 	}
