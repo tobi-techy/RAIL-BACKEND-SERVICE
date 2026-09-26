@@ -2029,8 +2029,10 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				ramphubWebhooks.POST("", container.RampHandlers.HandleWebhook)
 			}
 
-			// Airbills webhooks (HMAC-SHA256 signed; verified in the handler)
-			if container.BillPayHandlers != nil {
+			// Airbills webhooks (HMAC-SHA256 signed; verified in the handler).
+			// Unmounted until a webhook secret exists, so an empty secret
+			// cannot leave an open callback URL.
+			if container.BillPayHandlers != nil && container.Config.Airbills.WebhookSecret != "" {
 				airbillsPath := container.Config.Airbills.WebhookPath
 				if airbillsPath == "" {
 					airbillsPath = "/airbills"
