@@ -313,6 +313,18 @@ webauthn:
     - "https://userail.money"
     - "https://api.userail.money"
 
+# Platform messaging (iMessage / Telegram / WhatsApp via spectrum-bridge).
+# Everything else under `platform.*` is set from the environment
+# (PLATFORM_ENABLED, PLATFORM_BRIDGE_BASE_URL, …); only the supersession flag
+# lives here so it is on by default in the deployed service.
+platform:
+  # Inbound turn supersession: drop a reply whose turn a newer message has
+  # already superseded (docs/miriam-inbound-supersession.md). Pair with the
+  # bridge's MIRIAM_TURN_SUPERSESSION. With only this flag set the gate is inert
+  # — no turn ids are minted, so nothing is ever suppressed.
+  # Env override: PLATFORM_TURN_SUPERSESSION.
+  turn_supersession: true
+
 ai:
   primary: "kimi"
   openai:

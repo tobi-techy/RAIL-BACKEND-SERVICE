@@ -67,6 +67,7 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 | `PLATFORM_BRIDGE_BASE_URL` | `https://spectrum-bridge-tobi-omotade-2cd167ac.atlasflow.dev` (after that project is up) |
 | `PLATFORM_BRIDGE_MESSAGING_ADDRESS` | The bridge's iMessage handle (e.g. `+15555550100`). Users text the link token here. Required for account linking deep links. |
 | `PLATFORM_ONBOARDING_ENABLED` | `true` |
+| `PLATFORM_TURN_SUPERSESSION` | `true` — drop a reply whose inbound turn a newer message has already superseded. Set the spectrum-bridge `MIRIAM_TURN_SUPERSESSION` too; with only this flag set nothing is suppressed. |
 
 ### Blockers for live Face ID cards (Miriam app extension)
 
@@ -176,6 +177,7 @@ Create as AtlasFlow project `spectrum-bridge`, root `cmd/spectrum-bridge/`, port
 | `OUTBOUND_MAX_BUBBLES` | `3` | max message bubbles per backend turn (each counts toward the daily cap) |
 | `DELIVERY_DAILY_CAP` | `5000` | hard outbound/server/day cap (ban risk past it) |
 | `DELIVERY_NEW_CONVOS_PER_LINE` | `50` | new conversations/line/day |
+| `MIRIAM_TURN_SUPERSESSION` | `true` | inbound turn supersession gate 2 — drop a `/send` reply whose turn is no longer the thread's latest. Pairs with the backend's `PLATFORM_TURN_SUPERSESSION`; both gates fail open, and `false`/unset means no turn ids are minted. |
 | `TELEGRAM_BOT_TOKEN` | optional, enables Telegram | **SECRET** |
 | `WHATSAPP_ACCESS_TOKEN` | optional | **SECRET** |
 | `WHATSAPP_PHONE_NUMBER_ID` | optional | |

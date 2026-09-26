@@ -1507,6 +1507,9 @@ func setDefaults() {
 	viper.SetDefault("platform.push_notification_rule", "action_only")
 	viper.SetDefault("platform.onboarding_enabled", false)
 	viper.SetDefault("platform.app_download_url", "https://testflight.apple.com/join/3Q88URnF")
+	// Registered so PLATFORM_TURN_SUPERSESSION actually binds: viper only
+	// unmarshals env vars for keys it already knows about.
+	viper.SetDefault("platform.turn_supersession", false)
 
 	// Live confirmation cards (Face ID money actions). The token secret gates
 	// everything: without it the service fails closed and no cards are staged.
