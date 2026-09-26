@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,37 @@ import (
 	"github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"go.uber.org/zap"
 )
+
+// inboundErrorContext is the subset of an inbound payload worth logging when
+// processing fails: who it was for, and whether the bridge still has a
+// redelivery left. Without the attempt counters a turn that ran out of time
+// looks identical to a hard failure.
+type inboundErrorContext struct {
+	Platform    string `json:"platform"`
+	UserID      string `json:"user_id"`
+	ThreadID    string `json:"thread_id"`
+	Attempt     int    `json:"attempt"`
+	MaxAttempts int    `json:"max_attempts"`
+}
+
+func inboundErrorFields(body []byte) []zap.Field {
+	var ctx inboundErrorContext
+	if err := json.Unmarshal(body, &ctx); err != nil {
+		return nil
+	}
+	fields := make([]zap.Field, 0, 5)
+	if ctx.Platform != "" {
+		fields = append(fields, zap.String("platform", ctx.Platform))
+	}
+	if ctx.UserID != "" {
+		fields = append(fields, zap.String("user_id", ctx.UserID))
+	}
+	if ctx.ThreadID != "" {
+		fields = append(fields, zap.String("thread_id", ctx.ThreadID))
+	}
+	fields = append(fields, zap.Int("attempt", ctx.Attempt), zap.Int("max_attempts", ctx.MaxAttempts))
+	return fields
+}
 
 type PlatformHandler struct {
 	linkingService *platform.LinkingService
@@ -152,8 +184,16 @@ func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.Handl
 			return
 		}
 		if err := processor.Process(c.Request.Context(), body); err != nil {
+			// Every failure here is answered 500, because the bridge retries
+			// 5xx. Log which of the two it was: a retryable (transient) failure
+			// that the bridge will redeliver, or a permanent one. Retryable
+			// errors previously logged without the attempt counters, so a turn
+			// that exhausted its budget was indistinguishable from a crash.
 			if h.logger != nil {
-				h.logger.Warn("platform inbound processing failed", zap.Error(err))
+				fields := make([]zap.Field, 0, 8)
+				fields = append(fields, zap.Error(err), zap.Bool("retryable", platform.IsRetryable(err)))
+				fields = append(fields, inboundErrorFields(body)...)
+				h.logger.Error("platform inbound processing failed", fields...)
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "processing failed"})
 			return

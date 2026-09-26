@@ -5,6 +5,7 @@ import {
   extractCardRows,
   type InsightCard,
   type OutboundMessage,
+  type SentPoll,
 } from "./handler";
 
 describe("renderInsightCard", () => {
@@ -242,6 +243,73 @@ describe("MessageHandler poll content type", () => {
     });
     const textBubbles = sends.filter((s) => typeof s === "string") as string[];
     expect(textBubbles.some((b) => b.includes("Reply YES to confirm"))).toBe(true);
+  });
+
+  it("registers the sent poll so its votes can be read from the provider", async () => {
+    // The provider's webhook never carries a vote, so the bridge has to fetch
+    // them; it can only do that for polls it knows the identifier of.
+    const space = { send: async (_m: unknown) => ({ id: "spc-msg-poll-1" }) };
+    const registered: SentPoll[] = [];
+    const handler = new MessageHandler({ onPollSent: (poll) => registered.push(poll) });
+
+    await handler.handleOutbound(space as never, {
+      platform: "imessage",
+      user_id: "+15551234567",
+      thread_id: "t1",
+      text: "",
+      content_type: "poll",
+      poll_title: "Which one usually eats it most?",
+      poll_options: ["Food and snacks", "Rides/transport"],
+    });
+
+    expect(registered).toHaveLength(1);
+    expect(registered[0]).toEqual({
+      pollGuid: "spc-msg-poll-1",
+      threadId: "t1",
+      senderId: "+15551234567",
+      platform: "imessage",
+      title: "Which one usually eats it most?",
+      options: ["Food and snacks", "Rides/transport"],
+    });
+  });
+
+  it("does not register a poll the provider never accepted", async () => {
+    const space = { send: async (_m: unknown) => undefined };
+    const registered: SentPoll[] = [];
+    const handler = new MessageHandler({ onPollSent: (poll) => registered.push(poll) });
+
+    await handler.handleOutbound(space as never, {
+      platform: "imessage",
+      user_id: "+15551234567",
+      thread_id: "t1",
+      text: "",
+      content_type: "poll",
+      poll_title: "Which one?",
+      poll_options: ["A", "B"],
+    });
+
+    expect(registered).toHaveLength(0);
+  });
+
+  it("still delivers the poll when the watcher hook throws", async () => {
+    const { space, sends } = collector();
+    const handler = new MessageHandler({
+      onPollSent: () => {
+        throw new Error("watcher unavailable");
+      },
+    });
+
+    await handler.handleOutbound(space as never, {
+      platform: "imessage",
+      user_id: "+15551234567",
+      thread_id: "t1",
+      text: "",
+      content_type: "poll",
+      poll_title: "Which one?",
+      poll_options: ["A", "B"],
+    });
+
+    expect(sends.length).toBe(1);
   });
 });
 

@@ -369,6 +369,28 @@ func TestPythonGuestCompleter_PollVoteForwardsVoteFlag(t *testing.T) {
 	}
 }
 
+func TestPythonGuestCompleter_TurnTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		override time.Duration
+		want     time.Duration
+	}{
+		{name: "unset keeps the built-in budget", override: 0, want: guestTurnTimeout},
+		{name: "negative is treated as unset", override: -time.Second, want: guestTurnTimeout},
+		{name: "configured budget wins", override: 9 * time.Second, want: 9 * time.Second},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// The bridge and this adapter share one deadline across a process
+			// boundary; the test pins that an operator can retune our half of it.
+			a := &pythonGuestCompleterAdapter{turnTimeout: tc.override}
+			if got := a.CompletionTimeout(); got != tc.want {
+				t.Fatalf("CompletionTimeout() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPythonGuestCompleter_PlainTextIsNotAVote(t *testing.T) {
 	srv, bodies := servePythonChatCapturing(t, &ai.PythonChatResponse{Response: "Tell me more."})
 	adapter := newGuestCompleterAdapter(srv)

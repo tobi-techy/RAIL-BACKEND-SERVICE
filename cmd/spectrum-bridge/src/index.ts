@@ -25,6 +25,7 @@ import {
 } from "./inbound";
 import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
+import { PollWatcher, resolveIMessageClients } from "./poll-watcher";
 
 const config = loadConfig();
 const log = getLogger();
@@ -104,6 +105,11 @@ const cardStore = new ConfirmationCardStore();
 await cardStore.load();
 cardStore.startAutoSave();
 
+// iMessage poll votes are read from the provider, not from the webhook (see
+// poll-watcher.ts). The watcher needs the Spectrum client, which only exists
+// inside start(), so it is bound late and this handle stays null until then.
+let pollWatcher: PollWatcher | null = null;
+
 const handler = new MessageHandler({
   maxBubbles: config.OUTBOUND_MAX_BUBBLES,
   miniApp: {
@@ -113,6 +119,16 @@ const handler = new MessageHandler({
   },
   cardStore,
   cardAssetsDir: config.CONFIRM_CARD_ASSETS_DIR,
+  onPollSent: (poll) => {
+    pollWatcher?.registerPoll({
+      pollGuid: poll.pollGuid,
+      threadId: poll.threadId,
+      senderId: poll.senderId,
+      platform: normalizePlatform(poll.platform),
+      pollTitle: poll.title,
+      options: poll.options,
+    });
+  },
 });
 const failures = new FailureAudit();
 
@@ -353,7 +369,9 @@ function backendTimeoutMs(body: unknown): number {
     const doc = body as { is_document?: boolean };
     if (doc.is_document) return 150_000;
   }
-  return 15_000;
+  // Must stay above the backend's whole-turn budget (which bounds the guest
+  // onboarding turn), or we hang up on a turn it is about to answer.
+  return config.RAIL_BACKEND_TEXT_TIMEOUT_MS;
 }
 
 // Document scans are idempotent-unsafe to blindly retry: each attempt mints a
@@ -451,6 +469,10 @@ inboundSpool.startAutoSave(() => debouncer.snapshot());
 // send, send error, inbound error — must call stopTypingKeeper.
 const TYPING_REFRESH_MS = 20_000;
 const TYPING_MAX_MS = 90_000;
+
+// Cap on the poll-vote reconciliation that runs before a new inbound turn, so a
+// slow provider read never delays the person's message for long.
+const POLL_RECONCILE_TIMEOUT_MS = 1_500;
 
 interface TypingKeeper {
   refresh: NodeJS.Timeout;
@@ -664,6 +686,17 @@ app.get(["/", "/health"], (_req, res) => {
       enabled: turns.isEnabled,
       tracked_threads: turns.trackedThreads,
     },
+    poll_watcher: {
+      enabled: config.MIRIAM_POLL_WATCHER,
+      ...(pollWatcher?.stats ?? {
+        clients: 0,
+        connected: 0,
+        tracked: 0,
+        votes_forwarded: 0,
+        votes_dropped: 0,
+        reconciles: 0,
+      }),
+    },
     recent_failures: failures.count(),
     uptime_sec: Math.floor(process.uptime()),
   });
@@ -746,6 +779,22 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   // (For debounced text the keeper is (re)started by the debouncer's
   // onBufferStart; starting it here is idempotent.)
   startTypingKeeper(threadID, space);
+
+  // A poll tap that landed while the poll stream was down still has to count,
+  // and it has to count before this new message so onboarding state advances in
+  // the order the person actually acted. Bounded and skipped entirely for
+  // threads with no outstanding poll.
+  if (pollWatcher?.hasTrackedPoll(threadID)) {
+    await Promise.race([
+      pollWatcher.reconcileThread(threadID).catch((err) => {
+        log.warn({ err, thread_id: threadID }, "poll vote reconciliation failed");
+      }),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, POLL_RECONCILE_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  }
 
   try {
     await routeInboundContent(
@@ -840,6 +889,28 @@ async function start() {
   const im = imessage(agent);
   spaceResolver.setFetcher((id: string, params?: { phone?: string }) => im.space.get(id, params));
 
+  // Poll votes never arrive as webhooks, and the SDK drops them when the
+  // provider returns the poll without a title — so read them from the provider
+  // client directly. Bound here because the client only exists once Spectrum
+  // has started.
+  if (config.MIRIAM_POLL_WATCHER) {
+    pollWatcher = new PollWatcher({
+      log,
+      clients: resolveIMessageClients(agent),
+      postVote: async (payload) => {
+        // A tap is a decision: flush any text the user typed around it so the
+        // backend sees the words before the choice, then post the vote.
+        await debouncer.flush(payload.thread_id);
+        const space = spaceResolver.cached(payload.thread_id);
+        if (space) startTypingKeeper(payload.thread_id, space);
+        await postToBackend("/api/v1/platform/inbound", payload);
+      },
+    });
+    pollWatcher.start();
+  } else {
+    log.warn("poll watcher disabled by MIRIAM_POLL_WATCHER; poll taps will not be delivered");
+  }
+
   if (config.SPECTRUM_TRANSPORT_MODE !== "stream" && !config.SPECTRUM_WEBHOOK_SECRET) {
     log.warn(
       "SPECTRUM_WEBHOOK_SECRET is unset: native webhook deliveries will be answered 500 by the SDK. " +
@@ -927,6 +998,8 @@ async function shutdown(signal: string): Promise<void> {
     webhookAgent = null;
   }
 
+  pollWatcher?.dispose();
+  pollWatcher = null;
   pacer.dispose();
   for (const threadID of typingKeepers.keys()) stopTypingKeeper(threadID);
 

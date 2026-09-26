@@ -946,6 +946,14 @@ type PlatformConfig struct {
 	// by default: turn ids are neither minted nor stamped, so behavior is
 	// unchanged. Env: PLATFORM_TURN_SUPERSESSION.
 	TurnSupersession bool `mapstructure:"turn_supersession"`
+	// GuestTurnTimeoutSeconds bounds one Python-backed guest onboarding turn —
+	// the whole agent loop, not a single model call. Keep it a few seconds under
+	// the bridge's inbound POST timeout (SPECTRUM_/RAIL_BACKEND_TEXT_TIMEOUT_MS,
+	// 15s by default), or the bridge gives up on a turn we are about to answer
+	// and the person waits through a redelivery. Zero keeps the built-in default;
+	// values at or below the guest brain's 6s default have no effect.
+	// Env: PLATFORM_GUEST_TURN_TIMEOUT_SECONDS.
+	GuestTurnTimeoutSeconds int `mapstructure:"guest_turn_timeout_seconds"`
 }
 
 // ConfirmationConfig drives the reusable live iMessage confirmation card
