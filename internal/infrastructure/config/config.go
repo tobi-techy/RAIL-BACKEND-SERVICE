@@ -831,7 +831,7 @@ type GraphConfig struct {
 // electricity, cable TV, betting, transport; settles in USDC/USDT on Solana).
 type AirbillsConfig struct {
 	SecretKey           string  `mapstructure:"secret_key"`            // business secret key sent in the secretkey header
-	BaseURL             string  `mapstructure:"base_url"`              // default: https://developer.airbills.org/api/vendor/gateway
+	BaseURL             string  `mapstructure:"base_url"`              // default: https://api.airbills.org/api/vendor/gateway
 	CallbackURL         string  `mapstructure:"callback_url"`          // Rail endpoint Airbills POSTs fulfillment callbacks to
 	WebhookSecret       string  `mapstructure:"webhook_secret"`        // HMAC-SHA256 signing secret for inbound callbacks
 	WebhookPath         string  `mapstructure:"webhook_path"`          // webhook route mount point; defaults to "/airbills"
