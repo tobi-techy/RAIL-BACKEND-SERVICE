@@ -1105,6 +1105,13 @@ func Load() (*Config, error) {
 	// Investing is part of the product. An env var or config file cannot turn it off.
 	config.InvestmentGlider.Enabled = true
 
+	// Airbills bills go to the live gateway. An empty value, or the old docs
+	// host, must not require a dashboard change to start working.
+	switch strings.TrimRight(strings.TrimSpace(config.Airbills.BaseURL), "/") {
+	case "", "https://developer.airbills.org/api/vendor/gateway":
+		config.Airbills.BaseURL = "https://api.airbills.org/api/vendor/gateway"
+	}
+
 	// Build database URL if not provided
 	if config.Database.URL == "" {
 		config.Database.URL = fmt.Sprintf(
