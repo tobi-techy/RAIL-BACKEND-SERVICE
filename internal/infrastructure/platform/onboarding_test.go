@@ -124,8 +124,15 @@ func (u *fakeUsers) GetByEmail(_ context.Context, email string) (*entities.UserP
 	if u.vanishAfterEmailLookups > 0 && u.emailLookups > u.vanishAfterEmailLookups {
 		return nil, fmt.Errorf("not found")
 	}
-	if p, ok := u.byEmail[email]; ok {
+	// Match the repository: an address is the same account regardless of case.
+	key := strings.ToLower(strings.TrimSpace(email))
+	if p, ok := u.byEmail[key]; ok {
 		return p, nil
+	}
+	for stored, p := range u.byEmail {
+		if strings.EqualFold(stored, key) {
+			return p, nil
+		}
 	}
 	return nil, fmt.Errorf("not found")
 }
@@ -729,8 +736,11 @@ func TestCompletionMessage_PersonalizedFirstInsight(t *testing.T) {
 	if !strings.Contains(msg, "naira") {
 		t.Fatalf("expected country-aware naira line, got: %q", msg)
 	}
-	if !strings.Contains(strings.ToLower(msg), "what's money actually for") {
-		t.Fatalf("expected first-session question, got: %q", msg)
+	if !strings.Contains(strings.ToLower(msg), "first deposit") {
+		t.Fatalf("expected the funding next step, got: %q", msg)
+	}
+	if strings.Contains(strings.ToLower(msg), "what's money actually for") {
+		t.Fatalf("wallet signup must not restart the interview, got: %q", msg)
 	}
 }
 
@@ -769,7 +779,8 @@ func TestOnboarding_ExistingEmailVerifiesAndLinks(t *testing.T) {
 	ob, _, ver, users, prov, linker := newTestOnboarder()
 	sender := "+15550008"
 	existingID := uuid.New()
-	users.byEmail["existing@example.com"] = &entities.UserProfile{ID: existingID, Email: "existing@example.com", IsActive: true}
+	// Stored with different capitalization than the address they type.
+	users.byEmail["Existing@Example.com"] = &entities.UserProfile{ID: existingID, Email: "Existing@Example.com", IsActive: true}
 
 	step(t, ob, sender, "hi")
 	step(t, ob, sender, "Zara")

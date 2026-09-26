@@ -216,7 +216,9 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
 	               is_active, created_at, updated_at
 	        FROM users 
-	        WHERE email = $1`
+	        WHERE LOWER(email) = LOWER($1)
+	        ORDER BY CASE WHEN email = $1 THEN 0 ELSE 1 END
+	        LIMIT 1`
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
@@ -879,7 +881,9 @@ func (r *UserRepository) GetUserByEmailForLogin(ctx context.Context, email strin
 		       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 		       role, is_active, last_login_at, created_at, updated_at
 		FROM users 
-		WHERE email = $1 AND is_active = true`
+		WHERE LOWER(email) = LOWER($1) AND is_active = true
+		ORDER BY CASE WHEN email = $1 THEN 0 ELSE 1 END
+		LIMIT 1`
 
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
@@ -1238,7 +1242,7 @@ func (r *UserRepository) ValidatePassword(plainPassword, hashedPassword string) 
 // EmailExists checks if an email is already registered
 func (r *UserRepository) EmailExists(ctx context.Context, email string) (bool, error) {
 	var count int
-	query := `SELECT COUNT(*) FROM users WHERE email = $1 AND is_active = true`
+	query := `SELECT COUNT(*) FROM users WHERE LOWER(email) = LOWER($1) AND is_active = true`
 
 	err := r.db.QueryRowContext(ctx, query, email).Scan(&count)
 	if err != nil {

@@ -1789,7 +1789,7 @@ func (c *ChatOnboarder) completionMessage(st *guestState) string {
 		countryLine = "Wallet's spinning up. I'll keep it in stable dollars until you need shillings."
 	}
 
-	next := "What's money actually for, for you, right now? A trip, breathing room, something you want, anything."
+	next := "Your plan stays as we set it. The next move is the first deposit. Want me to walk you through funding it?"
 	if st.Goal != "" {
 		next = fmt.Sprintf("That goal you mentioned (%s) starts with the first deposit. Want me to walk you through funding it?", truncate(st.Goal, 80))
 	}
