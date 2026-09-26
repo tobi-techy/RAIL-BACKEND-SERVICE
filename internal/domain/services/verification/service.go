@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -111,6 +112,18 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
 
+	// A recipient every provider has permanently refused is answered before the
+	// rate limiter and before anything is enqueued. This is what makes the
+	// app-facing (async) path honest: it normally returns "queued" the moment the
+	// send is enqueued, so without this the caller is told a code is on its way
+	// while the worker is discovering it can never be delivered.
+	if err := s.blockedRecipientError(opCtx, identifierType, identifier); err != nil {
+		s.logger.Warn("OTP send skipped: every provider refuses this recipient",
+			zap.String("identifier_type", identifierType),
+			zap.String("identifier", identifier))
+		return "", err
+	}
+
 	// Check rate limits: cooldown → per-minute → per-hour → per-day
 	if err := s.checkSendRateLimits(opCtx, identifierType, identifier); err != nil {
 		return "", err
@@ -155,7 +168,7 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 
 		if sendErr := s.sendCode(sendCtx, req); sendErr != nil {
 			if entities.IsPermanentEmailDeliveryError(sendErr) {
-				s.refundSendAttempt(opCtx, identifierType, identifier)
+				s.handlePermanentDeliveryFailure(opCtx, identifierType, identifier, sendErr)
 			}
 			if isDevEnvironment(s.config.Environment) {
 				s.logger.Warn("DEV MODE: Failed to send verification code, using locally generated code",
@@ -184,6 +197,14 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 	defer cancel()
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+
+	// Answer a known-blocked recipient before spending budget or a provider call.
+	if err := s.blockedRecipientError(opCtx, identifierType, identifier); err != nil {
+		s.logger.Warn("OTP send skipped: every provider refuses this recipient",
+			zap.String("identifier_type", identifierType),
+			zap.String("identifier", identifier))
+		return "", false, err
+	}
 
 	if err := s.checkSendRateLimits(opCtx, identifierType, identifier); err != nil {
 		return "", false, err
@@ -219,7 +240,7 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 	defer cancel2()
 	if err := s.sendCode(sendCtx, req); err != nil {
 		if entities.IsPermanentEmailDeliveryError(err) {
-			s.refundSendAttempt(opCtx, identifierType, identifier)
+			s.handlePermanentDeliveryFailure(opCtx, identifierType, identifier, err)
 		}
 		s.logger.Error("Failed to send verification code",
 			zap.Error(err),
@@ -422,6 +443,102 @@ func (s *verificationService) checkSendRateLimits(ctx context.Context, identifie
 	return nil
 }
 
+// otpUndeliverableTTL bounds how long a permanently refused recipient is
+// remembered as undeliverable. It needs to outlast a person retrying within one
+// onboarding session (so they are told the truth instead of being queued behind
+// a send that cannot succeed) and stay short enough that clearing the
+// suppression at the provider takes effect the same day.
+const otpUndeliverableTTL = 6 * time.Hour
+
+// undeliverableRecord is the marker payload. It is stored as JSON through the
+// Redis client's normal round-trip, so it survives a process restart and is
+// readable by whichever replica handles the next attempt.
+type undeliverableRecord struct {
+	Provider string    `json:"provider"`
+	Reason   string    `json:"reason"`
+	MarkedAt time.Time `json:"marked_at"`
+}
+
+func otpUndeliverableKey(identifierType, identifier string) string {
+	return fmt.Sprintf("otp_undeliverable:%s:%s", identifierType, identifier)
+}
+
+// blockedRecipientError reports the permanent delivery failure previously
+// recorded for this identifier, so callers can refuse the send up front instead
+// of discovering it after the fact. Every Redis problem fails open: a marker we
+// cannot read must never stop a code that might otherwise arrive.
+func (s *verificationService) blockedRecipientError(ctx context.Context, identifierType, identifier string) error {
+	readCtx, cancel := withTimeout(ctx, redisOperationTimeout)
+	defer cancel()
+
+	key := otpUndeliverableKey(identifierType, identifier)
+	exists, err := s.redisClient.Exists(readCtx, key)
+	if err != nil {
+		s.logger.Warn("Failed to read undeliverable marker", zap.Error(err), zap.String("identifier", identifier))
+		return nil
+	}
+	if !exists {
+		return nil
+	}
+
+	var record undeliverableRecord
+	if err := s.redisClient.Get(readCtx, key, &record); err != nil {
+		s.logger.Warn("Failed to read undeliverable marker payload",
+			zap.Error(err), zap.String("identifier", identifier))
+		return nil
+	}
+
+	// The typed error is what callers switch on, so the same classification flows
+	// through both the up-front refusal and a fresh provider rejection.
+	return fmt.Errorf("email delivery to %s is blocked: provider %s refuses the address (reason %s, recorded %s): %w",
+		identifier,
+		record.Provider,
+		record.Reason,
+		record.MarkedAt.UTC().Format(time.RFC3339),
+		&entities.EmailDeliveryError{
+			Provider:  record.Provider,
+			Recipient: identifier,
+			Reason:    record.Reason,
+			Permanent: true,
+		})
+}
+
+// markUndeliverable records that every configured provider permanently refused
+// this identifier. It is only ever called once the send has failed for good, so
+// a success anywhere clears the need for it.
+func (s *verificationService) markUndeliverable(ctx context.Context, identifierType, identifier string, deliveryErr error) {
+	writeCtx, cancel := withTimeout(ctx, redisOperationTimeout)
+	defer cancel()
+
+	record := undeliverableRecord{MarkedAt: time.Now().UTC()}
+	var typed *entities.EmailDeliveryError
+	if errors.As(deliveryErr, &typed) {
+		record.Provider = typed.Provider
+		record.Reason = typed.Reason
+	}
+
+	if err := s.redisClient.Set(writeCtx, otpUndeliverableKey(identifierType, identifier), record, otpUndeliverableTTL); err != nil {
+		s.logger.Warn("Failed to record undeliverable recipient",
+			zap.Error(err), zap.String("identifier", identifier))
+		return
+	}
+
+	s.logger.Warn("Recipient marked undeliverable until the provider suppression is cleared",
+		zap.String("identifier_type", identifierType),
+		zap.String("identifier", identifier),
+		zap.String("provider", record.Provider),
+		zap.String("reason", record.Reason))
+}
+
+// handlePermanentDeliveryFailure is the single response to a permanent,
+// recipient-level send failure: give the person their OTP budget back, and
+// remember the address so the async path stops claiming a code is on its way.
+// Keeping both in one place is what stops the two halves drifting apart.
+func (s *verificationService) handlePermanentDeliveryFailure(ctx context.Context, identifierType, identifier string, deliveryErr error) {
+	s.refundSendAttempt(ctx, identifierType, identifier)
+	s.markUndeliverable(ctx, identifierType, identifier, deliveryErr)
+}
+
 // refundSendAttempt gives back the rate-limit budget that checkSendRateLimits
 // consumed for an attempt that failed for a permanent, recipient-level reason
 // (the provider refuses this address: suppressed, invalid, blocked).
@@ -543,7 +660,7 @@ func (s *verificationService) sendWorker(workerID int) {
 
 		if lastErr != nil {
 			if entities.IsPermanentEmailDeliveryError(lastErr) {
-				s.refundSendAttempt(context.Background(), req.identifierType, req.identifier)
+				s.handlePermanentDeliveryFailure(context.Background(), req.identifierType, req.identifier, lastErr)
 			}
 
 			if isDevEnvironment(s.config.Environment) {

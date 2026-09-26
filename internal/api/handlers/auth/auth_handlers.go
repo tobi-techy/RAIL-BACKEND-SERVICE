@@ -297,15 +297,7 @@ func (h *AuthHandlers) Register(c *gin.Context) {
 	}
 
 	if _, err := h.verificationService.GenerateAndSendCode(ctx, identifierType, identifier); err != nil {
-		status := http.StatusInternalServerError
-		code := "VERIFICATION_SEND_FAILED"
-		message := "Failed to send verification code. Please try again."
-		lowered := strings.ToLower(err.Error())
-		if strings.Contains(lowered, "too many verification code send attempts") {
-			status = http.StatusTooManyRequests
-			code = "TOO_MANY_REQUESTS"
-			message = "Too many verification code requests. Please wait before retrying."
-		}
+		status, code, message := verificationSendError(err)
 
 		if pendingKey != "" {
 			_ = h.redisClient.Del(ctx, pendingKey)
@@ -652,15 +644,7 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 	// Generate and send new code for either pending registration or existing user
 	_, err = h.verificationService.GenerateAndSendCode(ctx, identifierType, identifier)
 	if err != nil {
-		status := http.StatusInternalServerError
-		code := "VERIFICATION_SEND_FAILED"
-		message := "Failed to send verification code. Please try again."
-		lowered := strings.ToLower(err.Error())
-		if strings.Contains(lowered, "too many verification code send attempts") {
-			status = http.StatusTooManyRequests
-			code = "TOO_MANY_REQUESTS"
-			message = "Too many verification code requests. Please wait before retrying."
-		}
+		status, code, message := verificationSendError(err)
 
 		h.logger.Error("Failed to send verification code", zap.Error(err), zap.String("identifier", identifier))
 		c.JSON(status, entities.ErrorResponse{
@@ -683,6 +667,28 @@ func (h *AuthHandlers) ResendCode(c *gin.Context) {
 
 func isRedisNilError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "redis: nil")
+}
+
+// verificationSendError maps a verification-send failure onto the caller's HTTP
+// response. The default stays deliberately vague, and account existence is never
+// disclosed here. The one exception is a permanent, recipient-level delivery
+// failure: that is the person's own address, it can never succeed by retrying,
+// and the only useful thing to tell them is to use a different one — which also
+// keeps the app in step with what Miriam says over chat.
+func verificationSendError(err error) (status int, code, message string) {
+	if entities.IsPermanentEmailDeliveryError(err) {
+		return http.StatusUnprocessableEntity,
+			"EMAIL_UNDELIVERABLE",
+			"We can't email that address — our email provider refuses it. Try a different email address, or contact support@userail.money."
+	}
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "too many verification code send attempts") {
+		return http.StatusTooManyRequests,
+			"TOO_MANY_REQUESTS",
+			"Too many verification code requests. Please wait before retrying."
+	}
+	return http.StatusInternalServerError,
+		"VERIFICATION_SEND_FAILED",
+		"Failed to send verification code. Please try again."
 }
 
 func normalizeAuthIdentifier(identifierType, identifier string) string {

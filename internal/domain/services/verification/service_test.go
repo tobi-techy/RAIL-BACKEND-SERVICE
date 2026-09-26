@@ -57,7 +57,7 @@ func permanentDeliveryErr(recipient string) error {
 	})
 }
 
-func newTestRedis(t *testing.T) cache.RedisClient {
+func newTestRedis(t *testing.T) (cache.RedisClient, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	port, err := strconv.Atoi(mr.Port())
@@ -73,7 +73,7 @@ func newTestRedis(t *testing.T) cache.RedisClient {
 			t.Logf("close redis client: %v", cerr)
 		}
 	})
-	return client
+	return client, mr
 }
 
 func newTestVerificationService(t *testing.T, client cache.RedisClient, sender *stubEmailSender) VerificationService {
@@ -107,9 +107,9 @@ func assertBudgetReleased(t *testing.T, ctx context.Context, client cache.RedisC
 	}
 }
 
-func TestGenerateAndSendCodeSync_PermanentRejectionLetsThePersonTryAgainImmediately(t *testing.T) {
+func TestGenerateAndSendCodeSync_PermanentRejectionRefundsBudgetAndMarksTheAddress(t *testing.T) {
 	ctx := context.Background()
-	client := newTestRedis(t)
+	client, mr := newTestRedis(t)
 	address := "blocked@example.com"
 	sender := &stubEmailSender{err: permanentDeliveryErr(address)}
 	svc := newTestVerificationService(t, client, sender)
@@ -123,23 +123,92 @@ func TestGenerateAndSendCodeSync_PermanentRejectionLetsThePersonTryAgainImmediat
 	}
 	assertBudgetReleased(t, ctx, client, address)
 
-	// The real assertion is behavioural: the next attempt must reach the sender
-	// instead of dying on the 30-second cooldown the failed send would have set.
-	_, _, err = svc.GenerateAndSendCodeSync(ctx, "email", address)
-	if err == nil {
-		t.Fatal("the provider still refuses the address, so the send must still fail")
+	// The marker is the record of "every provider refused this address". It must
+	// survive the Redis JSON round-trip, because the next attempt may land on a
+	// different replica.
+	raw, err := mr.Get(otpUndeliverableKey("email", address))
+	if err != nil {
+		t.Fatalf("expected an undeliverable marker: %v", err)
 	}
-	if strings.Contains(err.Error(), "wait") {
-		t.Fatalf("a permanent failure must not leave the cooldown in place: %v", err)
+	for _, want := range []string{"provider", "reason", entities.EmailReasonRecipientSuppressed} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("marker payload %q is missing %q", raw, want)
+		}
+	}
+
+	// A marked address is refused up front: no second provider call, and nothing
+	// charged against a budget that can never buy delivery.
+	_, _, err = svc.GenerateAndSendCodeSync(ctx, "email", address)
+	if !entities.IsPermanentEmailDeliveryError(err) {
+		t.Fatalf("a marked address must still report a permanent failure, got: %v", err)
+	}
+	if sender.callCount() != 1 {
+		t.Fatalf("a marked address must not be sent to again, sender calls=%d", sender.callCount())
+	}
+	assertBudgetReleased(t, ctx, client, address)
+
+	// The marker is a hint, not a sentence: once it expires, the provider is
+	// tried again, so clearing the suppression upstream restores delivery without
+	// a deploy or a manual cache flush.
+	mr.FastForward(otpUndeliverableTTL + time.Minute)
+	_, _, err = svc.GenerateAndSendCodeSync(ctx, "email", address)
+	if !entities.IsPermanentEmailDeliveryError(err) {
+		t.Fatalf("expected the provider to be tried and to fail again, got: %v", err)
 	}
 	if sender.callCount() != 2 {
-		t.Fatalf("the released budget should allow a second attempt, sender calls=%d", sender.callCount())
+		t.Fatalf("an expired marker must allow another attempt, sender calls=%d", sender.callCount())
+	}
+}
+
+func TestGenerateAndSendCode_AsyncPathReportsABlockedRecipientInsteadOfQueueing(t *testing.T) {
+	ctx := context.Background()
+	client, _ := newTestRedis(t)
+	address := "blocked@example.com"
+	sender := &stubEmailSender{err: permanentDeliveryErr(address)}
+	svc := newTestVerificationService(t, client, sender)
+
+	// First failure marks the address (this is the send that discovers it).
+	_, _, err := svc.GenerateAndSendCodeSync(ctx, "email", address)
+	if !entities.IsPermanentEmailDeliveryError(err) {
+		t.Fatalf("expected the marking send to fail permanently, got: %v", err)
+	}
+
+	// The app-facing path is the one that used to lie: it charges the budget,
+	// enqueues, and answers "queued" while the worker finds out the code can never
+	// be delivered. It must now answer with the real reason.
+	_, err = svc.GenerateAndSendCode(ctx, "email", address)
+	if !entities.IsPermanentEmailDeliveryError(err) {
+		t.Fatalf("the async path must report the blocked recipient, got: %v", err)
+	}
+	if sender.callCount() != 1 {
+		t.Fatalf("a marked address must not be enqueued, sender calls=%d", sender.callCount())
+	}
+	assertBudgetReleased(t, ctx, client, address)
+}
+
+func TestBlockedRecipientError_FailsOpenWhenRedisIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	client, mr := newTestRedis(t)
+
+	svc := &verificationService{
+		redisClient: client,
+		logger:      zap.NewNop(),
+		config:      &config.Config{Environment: "production"},
+	}
+
+	svc.markUndeliverable(ctx, "email", "blocked@example.com", permanentDeliveryErr("blocked@example.com"))
+	mr.Close()
+
+	// A marker we cannot read must never stop a code that might otherwise arrive:
+	// the check is an optimisation on top of the provider's own answer.
+	if err := svc.blockedRecipientError(ctx, "email", "blocked@example.com"); err != nil {
+		t.Fatalf("a Redis failure must fail open, got: %v", err)
 	}
 }
 
 func TestGenerateAndSendCodeSync_TransientFailureKeepsTheAttemptCharged(t *testing.T) {
 	ctx := context.Background()
-	client := newTestRedis(t)
+	client, _ := newTestRedis(t)
 	address := "person@example.com"
 	sender := &stubEmailSender{err: errors.New("resend: status 500")}
 	svc := newTestVerificationService(t, client, sender)
@@ -176,7 +245,7 @@ func TestGenerateAndSendCodeSync_TransientFailureKeepsTheAttemptCharged(t *testi
 
 func TestRefundSendAttempt_IsIdempotentAndLeavesNoNegativeResidue(t *testing.T) {
 	ctx := context.Background()
-	client := newTestRedis(t)
+	client, _ := newTestRedis(t)
 	address := "blocked@example.com"
 
 	svc := &verificationService{
@@ -206,7 +275,7 @@ func TestRefundSendAttempt_IsIdempotentAndLeavesNoNegativeResidue(t *testing.T) 
 
 func TestSendWorker_PermanentRejectionRefundsAndStopsRetrying(t *testing.T) {
 	ctx := context.Background()
-	client := newTestRedis(t)
+	client, _ := newTestRedis(t)
 	address := "blocked@example.com"
 	sender := &stubEmailSender{err: permanentDeliveryErr(address)}
 

@@ -60,7 +60,7 @@ Since 2026-09-26 the provider decides which key is the primary credential. If **
 
 `EMAIL_FALLBACK_PROVIDER` / `EMAIL_FALLBACK_API_KEY` override that derivation explicitly. The fallback is used **only** when the primary permanently refuses the recipient (`HTTP 400` "recipient … is suppressed", invalid address, blocked) — suppression lists are per provider, so a hard bounce on one provider does not stop another from delivering. Transient failures never fall through, because a retry may already be in the inbox. Set the Resend key to a real value (or leave it unset) — a stale one only logs a fallback failure, it never masks the real error.
 
-A suppressed address stays suppressed at the provider until it is cleared in that provider's dashboard. Clearing it is the only way to restore delivery to the same address; the code path exists so a blocked user can still finish onboarding with a different address, or through the fallback provider, instead of being told to retry something that cannot work.
+A suppressed address stays suppressed at the provider until it is cleared in that provider's dashboard. Clearing it is the only way to restore delivery to the same address; the code path exists so a blocked user can still finish onboarding with a different address, or through the fallback provider, instead of being told to retry something that cannot work. Until it is cleared, the backend remembers the address as undeliverable for 6 hours (`otp_undeliverable:<type>:<id>` in Redis) so both chat and the app report the real reason instead of "queued" — no cache flush is needed after you clear a suppression, the marker simply expires.
 
 ---
 
