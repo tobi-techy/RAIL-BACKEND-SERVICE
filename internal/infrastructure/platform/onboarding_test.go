@@ -1094,3 +1094,52 @@ func TestNormalizeEmail(t *testing.T) {
 		}
 	}
 }
+
+// TestOnboarding_PermanentEmailRejectionAsksForAnotherAddress pins the fix for
+// the suppressed-recipient incident: when the provider will never deliver to the
+// address (suppressed after a bounce, invalid, blocked), telling the person to
+// "try again in a moment" sends them round a loop that cannot terminate. Miriam
+// has to name the real problem and point at the one move that works.
+func TestOnboarding_PermanentEmailRejectionAsksForAnotherAddress(t *testing.T) {
+	ob, _, ver, users, _, _ := newTestOnboarder()
+	sender := "+15550022"
+	users.byEmail["blocked@example.com"] = &entities.UserProfile{
+		ID: uuid.New(), Email: "blocked@example.com", IsActive: true,
+	}
+	ver.sendErr = fmt.Errorf("failed to send verification code: %w", &entities.EmailDeliveryError{
+		Provider:   "unosend",
+		Recipient:  "blocked@example.com",
+		StatusCode: 400,
+		Reason:     entities.EmailReasonRecipientSuppressed,
+		Permanent:  true,
+	})
+
+	step(t, ob, sender, "hi")
+	step(t, ob, sender, "Zara")
+	reply := step(t, ob, sender, "blocked@example.com")
+	lower := strings.ToLower(reply)
+
+	if strings.Contains(lower, "try again in a moment") {
+		t.Fatalf("a permanent rejection must not be answered with a retry prompt: %q", reply)
+	}
+	if strings.Contains(lower, "emailed") {
+		t.Fatalf("nothing was delivered, so Miriam must not claim it was: %q", reply)
+	}
+	if !strings.Contains(lower, "different email") {
+		t.Fatalf("the person needs a way forward — ask for another address, got: %q", reply)
+	}
+	if !strings.Contains(lower, "support@userail.money") {
+		t.Fatalf("a blocked address needs an escalation path, got: %q", reply)
+	}
+
+	// The session must stay usable: a second address has to reach the provider
+	// rather than fall into the failed address's state.
+	ver.sendErr = nil
+	next := step(t, ob, sender, "lola@example.com")
+	if !strings.Contains(next, "emailed") {
+		t.Fatalf("a fresh address must be attempted, got: %q", next)
+	}
+	if len(ver.sentTo) != 1 || ver.sentTo[0] != "lola@example.com" {
+		t.Fatalf("expected the retry to go to the new address, got %v", ver.sentTo)
+	}
+}

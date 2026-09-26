@@ -727,6 +727,11 @@ type EmailConfig struct {
 	BaseURL     string `mapstructure:"base_url"`    // For verification links
 	Environment string `mapstructure:"environment"` // "development", "staging", "production"
 	ReplyTo     string `mapstructure:"reply_to"`
+	// FallbackProvider is used when the primary provider permanently rejects a
+	// recipient (suppressed, invalid, blocked) — suppression is per provider, so
+	// a second provider can still deliver the OTP.
+	FallbackProvider string `mapstructure:"fallback_provider"`
+	FallbackAPIKey   string `mapstructure:"fallback_api_key"`
 }
 
 type SMSConfig struct {
@@ -1268,6 +1273,8 @@ func setDefaults() {
 	viper.SetDefault("email.environment", "development")
 	viper.SetDefault("email.base_url", "http://localhost:3000")
 	viper.SetDefault("email.reply_to", "")
+	viper.SetDefault("email.fallback_provider", "")
+	viper.SetDefault("email.fallback_api_key", "")
 	viper.SetDefault("email.smtp_host", "localhost")
 	viper.SetDefault("email.smtp_port", 1025)
 	viper.SetDefault("email.smtp_use_tls", false)
@@ -1842,14 +1849,63 @@ func overrideFromEnv() error {
 	}
 
 	// Email Service
-	if resendAPIKey := os.Getenv("RESEND_API_KEY"); resendAPIKey != "" {
-		viper.Set("email.api_key", resendAPIKey)
-	}
-	if unosendAPIKey := os.Getenv("UNOSEND_API_KEY"); unosendAPIKey != "" {
-		viper.Set("email.api_key", unosendAPIKey)
-	}
+	//
+	// The provider decides which key is the primary credential. Binding them in
+	// the other order used to be a silent misconfiguration: with both keys set,
+	// the Unosend key always overwrote the Resend one, so a `EMAIL_PROVIDER=resend`
+	// deploy authenticated against Resend with the wrong secret. The key that
+	// does NOT belong to the configured provider is hoisted to the fallback
+	// slot, which the email adapter uses when the primary permanently rejects a
+	// recipient (suppressed after a bounce, invalid, blocked).
 	if emailProvider := os.Getenv("EMAIL_PROVIDER"); emailProvider != "" {
 		viper.Set("email.provider", emailProvider)
+	}
+
+	emailProviderName := strings.ToLower(strings.TrimSpace(viper.GetString("email.provider")))
+	resendAPIKey := strings.TrimSpace(os.Getenv("RESEND_API_KEY"))
+	unosendAPIKey := strings.TrimSpace(os.Getenv("UNOSEND_API_KEY"))
+
+	switch emailProviderName {
+	case "resend":
+		if resendAPIKey != "" {
+			viper.Set("email.api_key", resendAPIKey)
+		}
+		if unosendAPIKey != "" {
+			viper.Set("email.fallback_provider", "unosend")
+			viper.Set("email.fallback_api_key", unosendAPIKey)
+		}
+	case "unosend":
+		if unosendAPIKey != "" {
+			viper.Set("email.api_key", unosendAPIKey)
+		}
+		if resendAPIKey != "" {
+			viper.Set("email.fallback_provider", "resend")
+			viper.Set("email.fallback_api_key", resendAPIKey)
+		}
+	default:
+		// Provider unset or SES (which authenticates with AWS credentials):
+		// keep the historical preference, but never bind the other provider's
+		// key as the primary.
+		switch {
+		case unosendAPIKey != "":
+			viper.Set("email.api_key", unosendAPIKey)
+		case resendAPIKey != "":
+			viper.Set("email.api_key", resendAPIKey)
+		}
+	}
+
+	// Explicit overrides win over the derived pairing. Setting the provider alone
+	// drops the derived key with it: that key belonged to the derived provider,
+	// and carrying it over would either authenticate with the wrong secret or
+	// invite the adapter to treat a keyed fallback as configured when it has no
+	// usable credential. A keyed fallback therefore needs both vars (or the
+	// adapter disables it and says so).
+	if fallbackProvider := os.Getenv("EMAIL_FALLBACK_PROVIDER"); fallbackProvider != "" {
+		viper.Set("email.fallback_provider", fallbackProvider)
+		viper.Set("email.fallback_api_key", "")
+	}
+	if fallbackKey := os.Getenv("EMAIL_FALLBACK_API_KEY"); fallbackKey != "" {
+		viper.Set("email.fallback_api_key", fallbackKey)
 	}
 	if baseURL := os.Getenv("BASE_URL"); baseURL != "" {
 		viper.Set("email.base_url", baseURL)

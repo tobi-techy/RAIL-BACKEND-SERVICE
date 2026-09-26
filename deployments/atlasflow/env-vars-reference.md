@@ -48,6 +48,20 @@ Everything else on your list is still bound and used (or is a real feature flag 
 
 `APPLE_*` (Sign in with Apple), `AUTH_BLACKLIST_FAIL_OPEN`, `BLEND_*` (if `BLEND_ENABLED=true`), `BRIDGE_*`, `CHAINRAILS_*`, `CIRCLE_*` (including `CIRCLE_PUBLIC_KEY_PEM` for signed wallet ops / recovery), `DATABASE_URL`, `DATABASE_SSL_MODE`, `DIDIT_*`, `ELEVENLABS_*`, `EMAIL_PROVIDER` / `EMAIL_FROM_*` / `EMAIL_REPLY_TO`, `ENCRYPTION_KEY`, `ENVIRONMENT`, `GIN_MODE`, `GRAPH_*` (only required when `GRAPH_ENABLED=true`), `JWT_SECRET`, `LANGFUSE_*` (optional LLM traces), `MIXPANEL_TOKEN`, `PAJ_*`, `PORT`, `POSTHOG_*`, `RAMPHUB_*`, `REDIS_*`, `RESEND_API_KEY`, `SECURITY_INTERNAL_API_KEY`, `SUPERMEMORY_API_KEY`, `TELEGRAM_ALERTS_*`.
 
+### Email keys (`EMAIL_PROVIDER` + which key goes with it)
+
+Since 2026-09-26 the provider decides which key is the primary credential. If **both** `RESEND_API_KEY` and `UNOSEND_API_KEY` are set, the one matching `EMAIL_PROVIDER` becomes primary and the other is hoisted to the fallback slot automatically (previously the Unosend key always overwrote the Resend one, so a Resend-provider deploy authenticated with the wrong secret):
+
+| `EMAIL_PROVIDER` | primary key | derived fallback |
+|---|---|---|
+| `unosend` | `UNOSEND_API_KEY` | `resend` via `RESEND_API_KEY` |
+| `resend` | `RESEND_API_KEY` | `unosend` via `UNOSEND_API_KEY` |
+| `ses` | AWS credentials | none |
+
+`EMAIL_FALLBACK_PROVIDER` / `EMAIL_FALLBACK_API_KEY` override that derivation explicitly. The fallback is used **only** when the primary permanently refuses the recipient (`HTTP 400` "recipient … is suppressed", invalid address, blocked) — suppression lists are per provider, so a hard bounce on one provider does not stop another from delivering. Transient failures never fall through, because a retry may already be in the inbox. Set the Resend key to a real value (or leave it unset) — a stale one only logs a fallback failure, it never masks the real error.
+
+A suppressed address stays suppressed at the provider until it is cleared in that provider's dashboard. Clearing it is the only way to restore delivery to the same address; the code path exists so a blocked user can still finish onboarding with a different address, or through the fallback provider, instead of being told to retry something that cannot work.
+
 ---
 
 ## Missing on `rail-backend-service` (needed for Miriam + full prod)

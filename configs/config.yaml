@@ -212,6 +212,14 @@ email:
   # API key is injected via UNOSEND_API_KEY env var (SSM in staging/production).
   # Leaving empty here is safe — overrideFromEnv() in config.go handles it.
   api_key: ""
+  # Used only when the primary provider permanently refuses a recipient
+  # (suppressed after a bounce, invalid, blocked). Suppression lists are per
+  # provider, so a second provider can still deliver. overrideFromEnv() derives
+  # this from the other provider's key automatically:
+  #   provider=unosend + RESEND_API_KEY set   -> fallback resend
+  #   provider=resend  + UNOSEND_API_KEY set  -> fallback unosend
+  fallback_provider: ""
+  fallback_api_key: ""
   from_email: "noreply@userail.money"
   from_name: "RAIL Service"
   base_url: "http://localhost:3000"

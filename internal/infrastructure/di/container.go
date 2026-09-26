@@ -611,13 +611,15 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	// Initialize email service with Unosend configuration
 	var err error
 	emailServiceConfig := adapters.EmailServiceConfig{
-		Provider:    cfg.Email.Provider,
-		APIKey:      cfg.Email.APIKey,
-		FromEmail:   cfg.Email.FromEmail,
-		FromName:    cfg.Email.FromName,
-		Environment: cfg.Email.Environment,
-		BaseURL:     cfg.Email.BaseURL,
-		ReplyTo:     cfg.Email.ReplyTo,
+		Provider:         cfg.Email.Provider,
+		APIKey:           cfg.Email.APIKey,
+		FromEmail:        cfg.Email.FromEmail,
+		FromName:         cfg.Email.FromName,
+		Environment:      cfg.Email.Environment,
+		BaseURL:          cfg.Email.BaseURL,
+		ReplyTo:          cfg.Email.ReplyTo,
+		FallbackProvider: cfg.Email.FallbackProvider,
+		FallbackAPIKey:   cfg.Email.FallbackAPIKey,
 	}
 	var emailService *adapters.EmailService
 	if strings.TrimSpace(cfg.Email.Provider) != "" {

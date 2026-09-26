@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -26,6 +27,102 @@ const (
 	unosendAPIBaseURL = "https://api.unosend.co"
 	emailSendTimeout  = 30 * time.Second
 )
+
+// Supported email providers. The set is closed: an unrecognised provider name
+// is a boot error rather than a silent fall-through to Unosend, which is how a
+// typo in EMAIL_PROVIDER used to go unnoticed.
+const (
+	emailProviderLog     = "log"
+	emailProviderSES     = "ses"
+	emailProviderResend  = "resend"
+	emailProviderUnosend = "unosend"
+)
+
+func normalizeEmailProvider(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
+func isSupportedEmailProvider(provider string) bool {
+	switch provider {
+	case emailProviderLog, emailProviderSES, emailProviderResend, emailProviderUnosend:
+		return true
+	default:
+		return false
+	}
+}
+
+// emailProviderNeedsAPIKey reports whether a provider authenticates with a
+// bearer API key (SES uses AWS credentials instead).
+func emailProviderNeedsAPIKey(provider string) bool {
+	return provider == emailProviderResend || provider == emailProviderUnosend
+}
+
+// emailResponseReason maps a provider rejection body to a reason code, and
+// reports whether the rejection is permanent for that recipient.
+//
+// Only 400/422 can be recipient-level: 401/403 are our credentials, 429 and 5xx
+// are the provider's problem. Both are transient from the sender's point of
+// view and neither proves anything about the address. The phrase list is
+// deliberately small — misreading a transient failure as permanent tells the
+// person their address is dead and stops charging their OTP attempts against
+// the rate limit, so unrecognised bodies stay transient.
+func emailResponseReason(statusCode int, body string) (string, bool) {
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnprocessableEntity {
+		return "", false
+	}
+
+	lower := strings.ToLower(body)
+	switch {
+	case strings.Contains(lower, "suppress"):
+		return entities.EmailReasonRecipientSuppressed, true
+	case strings.Contains(lower, "unsubscrib"), strings.Contains(lower, "opt-out"), strings.Contains(lower, "opted out"):
+		return entities.EmailReasonRecipientUnsubscribed, true
+	case strings.Contains(lower, "invalid recipient"),
+		strings.Contains(lower, "invalid to address"),
+		strings.Contains(lower, "recipient address rejected"),
+		strings.Contains(lower, "not a valid email"),
+		strings.Contains(lower, "mailbox not found"),
+		strings.Contains(lower, "mailbox unavailable"),
+		strings.Contains(lower, "no such user"),
+		strings.Contains(lower, "user unknown"):
+		return entities.EmailReasonRecipientInvalid, true
+	default:
+		return "", false
+	}
+}
+
+// deliveryReason extracts the reason code from a delivery error for logging.
+func deliveryReason(err error) string {
+	var deliveryErr *entities.EmailDeliveryError
+	if errors.As(err, &deliveryErr) && deliveryErr.Reason != "" {
+		return deliveryErr.Reason
+	}
+	return "unspecified"
+}
+
+// providerTarget is one delivery route: the provider plus the credentials and
+// sender identity it must use. The fallback shares the primary's sender
+// identity (same verified domain) but carries its own API key, so a fallback
+// can never authenticate with the primary's credentials.
+type providerTarget struct {
+	provider  string
+	apiKey    string
+	fromEmail string
+	fromName  string
+	replyTo   string
+}
+
+// sender renders the RFC 5322 From header for this target.
+func (t providerTarget) sender() (string, error) {
+	from := strings.TrimSpace(t.fromEmail)
+	if from == "" {
+		return "", fmt.Errorf("%s: from email is required", t.provider)
+	}
+	if t.fromName != "" {
+		return fmt.Sprintf("%s <%s>", t.fromName, from), nil
+	}
+	return from, nil
+}
 
 // Shared email template helpers
 func renderBaseTemplate(contentHTML string) string {
@@ -90,6 +187,14 @@ type EmailServiceConfig struct {
 	Environment string // "development", "staging", "production"
 	BaseURL     string // For verification links
 	ReplyTo     string
+
+	// FallbackProvider is tried once when the primary provider permanently
+	// rejects the recipient (suppressed, invalid, blocked). Only a permanent,
+	// recipient-level rejection falls through, because it is the one failure
+	// that proves nothing was delivered — a transient failure may already be
+	// sitting in the inbox, so retrying it elsewhere could double-send.
+	FallbackProvider string
+	FallbackAPIKey   string
 }
 
 // EmailService implements the email service interface
@@ -98,23 +203,38 @@ type EmailService struct {
 	config     EmailServiceConfig
 	httpClient *http.Client
 	sesClient  *ses.Client
+
+	// Base URLs are fields rather than constants so tests can point a provider
+	// at a local server. Production values are set in NewEmailService.
+	resendBaseURL  string
+	unosendBaseURL string
 }
 
 // NewEmailService creates a new email service
 func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailService, error) {
-	provider := strings.ToLower(strings.TrimSpace(config.Provider))
+	provider := normalizeEmailProvider(config.Provider)
 	if provider == "" {
 		return nil, fmt.Errorf("email provider is required")
 	}
+	if !isSupportedEmailProvider(provider) {
+		return nil, fmt.Errorf("unsupported email provider %q", config.Provider)
+	}
+	config.Provider = provider
+	config.FallbackProvider = normalizeEmailProvider(config.FallbackProvider)
 
-	svc := &EmailService{logger: logger, config: config}
+	svc := &EmailService{
+		logger:         logger,
+		config:         config,
+		resendBaseURL:  resendAPIBaseURL,
+		unosendBaseURL: unosendAPIBaseURL,
+	}
 
-	// "log" is a dev-only sink that writes the rendered email (including any
-	// OTP code) to the logger instead of sending. It exists so local E2E harnesses
-	// can capture verification codes. Never allowed in production.
-	if provider == "log" {
-		if strings.EqualFold(config.Environment, "production") {
-			return nil, fmt.Errorf("email provider 'log' is not allowed in production")
+	// "log" is a dev-only sink that writes the rendered email (including any OTP
+	// code) to the logger instead of sending, so E2E harnesses can capture codes.
+	// It always succeeds, which is why it is fenced off separately below.
+	if provider == emailProviderLog {
+		if err := validateLogSinkConfig(config); err != nil {
+			return nil, err
 		}
 		return svc, nil
 	}
@@ -123,17 +243,22 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 		return nil, fmt.Errorf("email from address is required")
 	}
 
-	if provider == "ses" {
-		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion("us-east-1"))
-		if err != nil {
-			return nil, fmt.Errorf("ses: load aws config: %w", err)
-		}
-		svc.sesClient = ses.NewFromConfig(awsCfg)
-		return svc, nil
+	if err := svc.resolveSESClient(); err != nil {
+		return nil, err
 	}
 
-	if strings.TrimSpace(config.APIKey) == "" {
+	if emailProviderNeedsAPIKey(config.Provider) && strings.TrimSpace(config.APIKey) == "" {
 		return nil, fmt.Errorf("email api key is required")
+	}
+
+	if err := svc.resolveFallbackProvider(); err != nil {
+		return nil, err
+	}
+
+	if svc.config.FallbackProvider != "" {
+		logger.Info("email fallback provider configured",
+			zap.String("provider", svc.config.Provider),
+			zap.String("fallback_provider", svc.config.FallbackProvider))
 	}
 
 	svc.httpClient = &http.Client{
@@ -150,21 +275,158 @@ func NewEmailService(logger *zap.Logger, config EmailServiceConfig) (*EmailServi
 	return svc, nil
 }
 
-// sendEmail routes to the configured provider
+// validateLogSinkConfig enforces that the dev-only "log" sink can never stand in
+// for a real provider: it is forbidden in production, and it always reports
+// success, so putting a fallback behind it would silence that provider entirely.
+func validateLogSinkConfig(config EmailServiceConfig) error {
+	if strings.EqualFold(config.Environment, "production") {
+		return fmt.Errorf("email provider 'log' is not allowed in production")
+	}
+	if config.FallbackProvider != "" {
+		return fmt.Errorf("email provider 'log' cannot have a fallback provider")
+	}
+	return nil
+}
+
+// resolveSESClient loads AWS credentials when SES serves either role, since SES
+// authenticates with them instead of an API key.
+func (e *EmailService) resolveSESClient() error {
+	if e.config.Provider != emailProviderSES && e.config.FallbackProvider != emailProviderSES {
+		return nil
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion("us-east-1"))
+	if err != nil {
+		if e.config.Provider == emailProviderSES {
+			return fmt.Errorf("ses: load aws config: %w", err)
+		}
+		// The fallback is an optimisation, never a boot requirement.
+		e.logger.Warn("email fallback provider 'ses' disabled: could not load aws config", zap.Error(err))
+		e.config.FallbackProvider = ""
+		return nil
+	}
+	e.sesClient = ses.NewFromConfig(awsCfg)
+	return nil
+}
+
+// resolveFallbackProvider keeps the fallback usable or drops it. A fallback that
+// cannot work is a configuration gap, not a reason to refuse to boot: the primary
+// provider still sends everything it can, so the fallback is removed with a
+// warning and delivery continues.
+func (e *EmailService) resolveFallbackProvider() error {
+	switch {
+	case e.config.FallbackProvider == "":
+	case e.config.FallbackProvider == e.config.Provider:
+		e.config.FallbackProvider = ""
+	case e.config.FallbackProvider == emailProviderLog:
+		return fmt.Errorf("email provider 'log' cannot be used as a fallback provider")
+	case e.config.FallbackProvider == emailProviderSES:
+		if e.sesClient == nil {
+			e.config.FallbackProvider = ""
+		}
+	case emailProviderNeedsAPIKey(e.config.FallbackProvider) && strings.TrimSpace(e.config.FallbackAPIKey) == "":
+		e.logger.Warn("email fallback provider disabled: api key missing",
+			zap.String("fallback_provider", e.config.FallbackProvider))
+		e.config.FallbackProvider = ""
+	}
+	return nil
+}
+
+// providerTargets returns the delivery order: the primary provider first, then
+// the fallback when one is configured and usable.
+func (e *EmailService) providerTargets() []providerTarget {
+	primary := providerTarget{
+		provider:  normalizeEmailProvider(e.config.Provider),
+		apiKey:    e.config.APIKey,
+		fromEmail: strings.TrimSpace(e.config.FromEmail),
+		fromName:  strings.TrimSpace(e.config.FromName),
+		replyTo:   strings.TrimSpace(e.config.ReplyTo),
+	}
+
+	targets := []providerTarget{primary}
+	if fallback := normalizeEmailProvider(e.config.FallbackProvider); fallback != "" {
+		targets = append(targets, providerTarget{
+			provider:  fallback,
+			apiKey:    e.config.FallbackAPIKey,
+			fromEmail: primary.fromEmail,
+			fromName:  primary.fromName,
+			replyTo:   primary.replyTo,
+		})
+	}
+	return targets
+}
+
+// sendEmail routes to the configured provider. When the primary permanently
+// rejects the recipient (suppressed, invalid, blocked) the send is retried once
+// through the fallback provider, because a suppression list is per-provider: a
+// hard bounce on one provider says nothing about another. A transient failure
+// never falls through — the provider may already have accepted the message, and
+// a second copy from a different provider is worse than an honest error.
 func (e *EmailService) sendEmail(ctx context.Context, to, subject, htmlContent, textContent string) error {
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, emailSendTimeout)
 	defer cancel()
 
-	switch strings.ToLower(e.config.Provider) {
-	case "log":
+	targets := e.providerTargets()
+	var primaryPermanentErr error
+
+	for i, target := range targets {
+		err := e.sendViaTarget(ctxWithTimeout, target, to, subject, htmlContent, textContent)
+		if err == nil {
+			return nil
+		}
+		if !entities.IsPermanentEmailDeliveryError(err) {
+			// The primary provider's transient failure is the answer: nothing may
+			// fall through to the fallback, because the message might already be
+			// delivered. A *fallback's* failure, however, must not be allowed to
+			// overwrite a primary permanent rejection — that rejection is the only
+			// thing that tells the person their address is the problem, and losing
+			// it would put them back on the unbreakable "try again" loop.
+			if primaryPermanentErr == nil {
+				return err
+			}
+			e.logger.Error("email fallback provider failed after a permanent rejection",
+				zap.String("to", to),
+				zap.String("provider", target.provider),
+				zap.Error(err))
+			continue
+		}
+		if primaryPermanentErr == nil {
+			primaryPermanentErr = err
+		}
+
+		fields := []zap.Field{
+			zap.String("to", to),
+			zap.String("provider", target.provider),
+			zap.String("reason", deliveryReason(err)),
+		}
+		switch remaining := len(targets) - i - 1; {
+		case remaining > 0:
+			e.logger.Warn("provider permanently rejected recipient; trying the fallback provider",
+				append(fields, zap.String("fallback_provider", targets[i+1].provider))...)
+		default:
+			e.logger.Error("every configured email provider permanently rejected the recipient", fields...)
+		}
+	}
+
+	// The primary provider's rejection is what the caller acts on: it names the
+	// address's real state. A fallback failure adds noise, not information.
+	return primaryPermanentErr
+}
+
+// sendViaTarget dispatches one send to one provider.
+func (e *EmailService) sendViaTarget(ctx context.Context, target providerTarget, to, subject, htmlContent, textContent string) error {
+	switch target.provider {
+	case emailProviderLog:
 		e.logNewLogProviderEmail(to, subject, htmlContent, textContent)
 		return nil
-	case "ses":
-		return e.sendViaSES(ctxWithTimeout, to, subject, htmlContent, textContent)
-	case "resend":
-		return e.sendViaResend(ctxWithTimeout, to, subject, htmlContent, textContent)
+	case emailProviderSES:
+		return e.sendViaSES(ctx, target, to, subject, htmlContent, textContent)
+	case emailProviderResend:
+		return e.sendViaResend(ctx, target, to, subject, htmlContent, textContent)
+	case emailProviderUnosend:
+		return e.sendViaUnosend(ctx, target, to, subject, htmlContent, textContent)
 	default:
-		return e.sendViaUnosend(ctxWithTimeout, to, subject, htmlContent, textContent)
+		return fmt.Errorf("unsupported email provider %q", target.provider)
 	}
 }
 
@@ -181,10 +443,14 @@ func (e *EmailService) logNewLogProviderEmail(to, subject, htmlContent, textCont
 	)
 }
 
-func (e *EmailService) sendViaSES(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	from := strings.TrimSpace(e.config.FromEmail)
-	if e.config.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", e.config.FromName, from)
+func (e *EmailService) sendViaSES(ctx context.Context, target providerTarget, to, subject, htmlContent, textContent string) error {
+	if e.sesClient == nil {
+		return fmt.Errorf("ses client not configured")
+	}
+
+	from, err := target.sender()
+	if err != nil {
+		return err
 	}
 
 	input := &ses.SendEmailInput{
@@ -202,12 +468,26 @@ func (e *EmailService) sendViaSES(ctx context.Context, to, subject, htmlContent,
 	if textContent != "" {
 		input.Message.Body.Text = &types.Content{Data: aws.String(textContent), Charset: aws.String("UTF-8")}
 	}
-	if e.config.ReplyTo != "" {
-		input.ReplyToAddresses = []string{e.config.ReplyTo}
+	if target.replyTo != "" {
+		input.ReplyToAddresses = []string{target.replyTo}
 	}
 
-	_, err := e.sesClient.SendEmail(ctx, input)
-	if err != nil {
+	if _, err := e.sesClient.SendEmail(ctx, input); err != nil {
+		// SES reports a suppressed recipient or an unverified address as
+		// MessageRejected (HTTP 400). The exception carries no stable code
+		// beyond that, so the text is classified the same way the HTTP
+		// providers' response bodies are.
+		if reason, permanent := emailResponseReason(http.StatusBadRequest, err.Error()); permanent {
+			e.logger.Error("SES permanently rejected the recipient",
+				zap.String("to", to), zap.String("reason", reason))
+			return &entities.EmailDeliveryError{
+				Provider:   emailProviderSES,
+				Recipient:  to,
+				StatusCode: http.StatusBadRequest,
+				Reason:     reason,
+				Permanent:  true,
+			}
+		}
 		e.logger.Error("SES send failed", zap.String("to", to), zap.String("subject", subject), zap.Error(err))
 		return fmt.Errorf("ses: send failed: %w", err)
 	}
@@ -216,10 +496,10 @@ func (e *EmailService) sendViaSES(ctx context.Context, to, subject, htmlContent,
 	return nil
 }
 
-func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlContent, textContent string) error {
-	from := strings.TrimSpace(e.config.FromEmail)
-	if e.config.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", e.config.FromName, from)
+func (e *EmailService) sendViaResend(ctx context.Context, target providerTarget, to, subject, htmlContent, textContent string) error {
+	from, err := target.sender()
+	if err != nil {
+		return err
 	}
 
 	payload := map[string]any{
@@ -231,17 +511,20 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 	if textContent != "" {
 		payload["text"] = textContent
 	}
-	if e.config.ReplyTo != "" {
-		payload["reply_to"] = e.config.ReplyTo
+	if target.replyTo != "" {
+		payload["reply_to"] = target.replyTo
 	}
 
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resendAPIBaseURL+"/emails", bytes.NewReader(body))
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("resend: marshal payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.resendBaseURL+"/emails", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("resend: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+target.apiKey)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
@@ -253,6 +536,15 @@ func (e *EmailService) sendViaResend(ctx context.Context, to, subject, htmlConte
 	if resp.StatusCode >= 400 {
 		e.logger.Error("Resend returned error",
 			zap.String("to", to), zap.Int("status", resp.StatusCode), zap.String("body", string(respBody)))
+		if reason, permanent := emailResponseReason(resp.StatusCode, string(respBody)); permanent {
+			return &entities.EmailDeliveryError{
+				Provider:   emailProviderResend,
+				Recipient:  to,
+				StatusCode: resp.StatusCode,
+				Reason:     reason,
+				Permanent:  true,
+			}
+		}
 		return fmt.Errorf("resend: status %d", resp.StatusCode)
 	}
 
@@ -280,21 +572,24 @@ func (e *EmailService) SendBatchEmails(ctx context.Context, emails []BatchEmail)
 		return fmt.Errorf("batch: max 100 emails per batch, got %d", len(emails))
 	}
 
-	provider := strings.ToLower(strings.TrimSpace(e.config.Provider))
+	// Batches go to the primary provider only. The fallback exists for a single
+	// recipient the provider refuses, and a batch response aggregates per-recipient
+	// outcomes, so there is nothing to classify or re-route here.
+	primary := e.providerTargets()[0]
 
 	var batchURL string
 	var body []byte
 	var err error
 
-	switch provider {
-	case "resend":
-		batchURL = resendAPIBaseURL + "/emails/batch"
+	switch primary.provider {
+	case emailProviderResend:
+		batchURL = e.resendBaseURL + "/emails/batch"
 		body, err = json.Marshal(emails)
-	case "unosend":
-		batchURL = unosendAPIBaseURL + "/emails/batch"
+	case emailProviderUnosend:
+		batchURL = e.unosendBaseURL + "/emails/batch"
 		body, err = json.Marshal(map[string]any{"emails": emails})
 	default:
-		return fmt.Errorf("batch: unsupported provider %s", provider)
+		return fmt.Errorf("batch: unsupported provider %s", primary.provider)
 	}
 
 	if err != nil {
@@ -306,7 +601,7 @@ func (e *EmailService) SendBatchEmails(ctx context.Context, emails []BatchEmail)
 		return fmt.Errorf("batch: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+primary.apiKey)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
@@ -317,30 +612,25 @@ func (e *EmailService) SendBatchEmails(ctx context.Context, emails []BatchEmail)
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode >= 400 {
 		e.logger.Error("Batch email returned error",
-			zap.String("provider", provider),
+			zap.String("provider", primary.provider),
 			zap.Int("count", len(emails)),
 			zap.Int("status", resp.StatusCode),
 			zap.String("body", string(respBody)))
-		return fmt.Errorf("batch (%s): status %d", provider, resp.StatusCode)
+		return fmt.Errorf("batch (%s): status %d", primary.provider, resp.StatusCode)
 	}
 
-	e.logger.Info("Batch email sent", zap.String("provider", provider), zap.Int("count", len(emails)))
+	e.logger.Info("Batch email sent", zap.String("provider", primary.provider), zap.Int("count", len(emails)))
 	return nil
 }
 
-func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlContent, textContent string) error {
+func (e *EmailService) sendViaUnosend(ctx context.Context, target providerTarget, to, subject, htmlContent, textContent string) error {
 	if e.httpClient == nil {
 		return fmt.Errorf("unosend client not configured")
 	}
 
-	fromEmail := strings.TrimSpace(e.config.FromEmail)
-	if fromEmail == "" {
-		return fmt.Errorf("unosend from email is required")
-	}
-
-	from := fromEmail
-	if strings.TrimSpace(e.config.FromName) != "" {
-		from = fmt.Sprintf("%s <%s>", e.config.FromName, fromEmail)
+	from, err := target.sender()
+	if err != nil {
+		return err
 	}
 
 	payload := map[string]any{
@@ -354,8 +644,8 @@ func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlCont
 	if textContent != "" {
 		payload["text"] = textContent
 	}
-	if strings.TrimSpace(e.config.ReplyTo) != "" {
-		payload["reply_to"] = e.config.ReplyTo
+	if target.replyTo != "" {
+		payload["reply_to"] = target.replyTo
 	}
 
 	body, err := json.Marshal(payload)
@@ -363,13 +653,13 @@ func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlCont
 		return fmt.Errorf("failed to marshal unosend payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, unosendAPIBaseURL+"/emails", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.unosendBaseURL+"/emails", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create unosend request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+target.apiKey)
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
@@ -398,6 +688,15 @@ func (e *EmailService) sendViaUnosend(ctx context.Context, to, subject, htmlCont
 			e.logger.Error("Unosend returned error", logFields...)
 		}
 
+		if reason, permanent := emailResponseReason(resp.StatusCode, string(respBody)); permanent {
+			return &entities.EmailDeliveryError{
+				Provider:   emailProviderUnosend,
+				Recipient:  to,
+				StatusCode: resp.StatusCode,
+				Reason:     reason,
+				Permanent:  true,
+			}
+		}
 		return fmt.Errorf("unosend email error: status %d", resp.StatusCode)
 	}
 

@@ -2077,6 +2077,15 @@ func otpSendErrorMessage(err error) string {
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "too many") {
 		return "You've asked for a few codes already. Give it a minute, then text me to try again."
 	}
+	// A permanent, recipient-level rejection means the code can never arrive at
+	// that address (the provider suppressed it after a bounce or a complaint, or
+	// refuses it outright). "Try again in a moment" would be a lie here — it
+	// sends the person round a loop that cannot terminate. Say what is actually
+	// wrong and give them the one move that works: another address.
+	if entities.IsPermanentEmailDeliveryError(err) {
+		return "Our email sender won't deliver to that address — it's been marked undeliverable, usually after a previous bounce. " +
+			"Send me a different email address and I'll get your code out, or write to support@userail.money and we'll fix it."
+	}
 	return "I couldn't send the code just now. Mind trying again in a moment?"
 }
 

@@ -154,6 +154,9 @@ func (s *verificationService) GenerateAndSendCode(ctx context.Context, identifie
 		defer cancel()
 
 		if sendErr := s.sendCode(sendCtx, req); sendErr != nil {
+			if entities.IsPermanentEmailDeliveryError(sendErr) {
+				s.refundSendAttempt(opCtx, identifierType, identifier)
+			}
 			if isDevEnvironment(s.config.Environment) {
 				s.logger.Warn("DEV MODE: Failed to send verification code, using locally generated code",
 					zap.String("identifier_type", identifierType),
@@ -215,6 +218,9 @@ func (s *verificationService) GenerateAndSendCodeSync(ctx context.Context, ident
 	sendCtx, cancel2 := withTimeout(opCtx, sendOperationTimeout)
 	defer cancel2()
 	if err := s.sendCode(sendCtx, req); err != nil {
+		if entities.IsPermanentEmailDeliveryError(err) {
+			s.refundSendAttempt(opCtx, identifierType, identifier)
+		}
 		s.logger.Error("Failed to send verification code",
 			zap.Error(err),
 			zap.String("identifier_type", identifierType),
@@ -313,34 +319,51 @@ func (s *verificationService) VerifyCode(ctx context.Context, identifierType, id
 	return false, fmt.Errorf("invalid verification code")
 }
 
+// otpAttemptKeys holds the Redis keys that make up one identifier's OTP send
+// budget. Named fields (rather than inline Sprintf calls at each site) are what
+// keep the refund path in step with the charge path: a key mismatch would
+// silently leave an undeliverable address holding the whole budget.
+type otpAttemptKeys struct {
+	minute   string
+	hourly   string
+	daily    string
+	cooldown string
+}
+
+func newOTPAttemptKeys(identifierType, identifier string) otpAttemptKeys {
+	return otpAttemptKeys{
+		minute:   fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier),
+		hourly:   fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier),
+		daily:    fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier),
+		cooldown: fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier),
+	}
+}
+
 // CanResendCode checks if a new verification code can be sent based on rate limits
 func (s *verificationService) CanResendCode(ctx context.Context, identifierType, identifier string) (bool, error) {
 	opCtx, cancel := withTimeout(ctx, redisOperationTimeout)
 	defer cancel()
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+	keys := newOTPAttemptKeys(identifierType, identifier)
 
 	// Check cooldown
-	cooldownKey := fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)
-	if exists, _ := s.redisClient.Exists(opCtx, cooldownKey); exists {
+	if exists, _ := s.redisClient.Exists(opCtx, keys.cooldown); exists {
 		return false, nil
 	}
 
 	// Check per-minute limit
-	minuteKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	if count, _ := s.getCounter(opCtx, minuteKey); count >= maxSendAttempts {
+	if count, _ := s.getCounter(opCtx, keys.minute); count >= maxSendAttempts {
 		return false, nil
 	}
 
 	// Check hourly limit
-	hourlyKey := fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier)
-	if count, _ := s.getCounter(opCtx, hourlyKey); count >= maxSendAttemptsHourly {
+	if count, _ := s.getCounter(opCtx, keys.hourly); count >= maxSendAttemptsHourly {
 		return false, nil
 	}
 
 	// Check daily limit
-	dailyKey := fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier)
-	if count, _ := s.getCounter(opCtx, dailyKey); count >= maxSendAttemptsDaily {
+	if count, _ := s.getCounter(opCtx, keys.daily); count >= maxSendAttemptsDaily {
 		return false, nil
 	}
 
@@ -353,51 +376,85 @@ func (s *verificationService) RecordSendAttempt(ctx context.Context, identifierT
 	defer cancel()
 
 	identifier = normalizeVerificationIdentifier(identifierType, identifier)
+	keys := newOTPAttemptKeys(identifierType, identifier)
 
-	s.incrWithTTL(opCtx, fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier), rateLimitWindow)
-	s.incrWithTTL(opCtx, fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier), time.Hour)
-	s.incrWithTTL(opCtx, fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier), 24*time.Hour)
-	_ = s.redisClient.Set(opCtx, fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier), "1", minResendCooldown)
+	s.incrWithTTL(opCtx, keys.minute, rateLimitWindow)
+	s.incrWithTTL(opCtx, keys.hourly, time.Hour)
+	s.incrWithTTL(opCtx, keys.daily, 24*time.Hour)
+	_ = s.redisClient.Set(opCtx, keys.cooldown, "1", minResendCooldown)
 	return nil
 }
 
 // checkSendRateLimits enforces cooldown, per-minute, hourly, and daily OTP send limits.
 func (s *verificationService) checkSendRateLimits(ctx context.Context, identifierType, identifier string) error {
+	keys := newOTPAttemptKeys(identifierType, identifier)
+
 	// 1. Cooldown between consecutive sends
-	cooldownKey := fmt.Sprintf("otp_cooldown:%s:%s", identifierType, identifier)
-	if exists, _ := s.redisClient.Exists(ctx, cooldownKey); exists {
+	if exists, _ := s.redisClient.Exists(ctx, keys.cooldown); exists {
 		s.logger.Warn("OTP cooldown active", zap.String("identifier", identifier))
 		return fmt.Errorf("please wait %s before requesting another code", minResendCooldown)
 	}
 
 	// 2. Per-minute limit
-	minuteKey := fmt.Sprintf("send_attempts:%s:%s", identifierType, identifier)
-	if count, _ := s.getCounter(ctx, minuteKey); count >= maxSendAttempts {
+	if count, _ := s.getCounter(ctx, keys.minute); count >= maxSendAttempts {
 		s.logger.Warn("Per-minute OTP rate limit exceeded", zap.String("identifier", identifier))
 		return fmt.Errorf("too many verification code send attempts. Please try again after %s", rateLimitWindow)
 	}
 
 	// 3. Hourly limit
-	hourlyKey := fmt.Sprintf("send_attempts_hourly:%s:%s", identifierType, identifier)
-	if count, _ := s.getCounter(ctx, hourlyKey); count >= maxSendAttemptsHourly {
+	if count, _ := s.getCounter(ctx, keys.hourly); count >= maxSendAttemptsHourly {
 		s.logger.Warn("Hourly OTP rate limit exceeded", zap.String("identifier", identifier))
 		return fmt.Errorf("too many verification codes sent this hour. Please try again later")
 	}
 
 	// 4. Daily limit
-	dailyKey := fmt.Sprintf("send_attempts_daily:%s:%s", identifierType, identifier)
-	if count, _ := s.getCounter(ctx, dailyKey); count >= maxSendAttemptsDaily {
+	if count, _ := s.getCounter(ctx, keys.daily); count >= maxSendAttemptsDaily {
 		s.logger.Warn("Daily OTP rate limit exceeded", zap.String("identifier", identifier))
 		return fmt.Errorf("daily verification code limit reached. Please try again tomorrow")
 	}
 
 	// All checks passed — record the attempt across all windows
-	s.incrWithTTL(ctx, minuteKey, rateLimitWindow)
-	s.incrWithTTL(ctx, hourlyKey, time.Hour)
-	s.incrWithTTL(ctx, dailyKey, 24*time.Hour)
-	_ = s.redisClient.Set(ctx, cooldownKey, "1", minResendCooldown)
+	s.incrWithTTL(ctx, keys.minute, rateLimitWindow)
+	s.incrWithTTL(ctx, keys.hourly, time.Hour)
+	s.incrWithTTL(ctx, keys.daily, 24*time.Hour)
+	_ = s.redisClient.Set(ctx, keys.cooldown, "1", minResendCooldown)
 
 	return nil
+}
+
+// refundSendAttempt gives back the rate-limit budget that checkSendRateLimits
+// consumed for an attempt that failed for a permanent, recipient-level reason
+// (the provider refuses this address: suppressed, invalid, blocked).
+//
+// The budget is charged before the send so that a flood of requests cannot
+// outrun the limiter. That is right for transient failures, which a retry can
+// fix, and wrong for a permanent one: the OTP can never arrive, so charging the
+// person turns one undeliverable address into a 24-hour lockout with no way out
+// except a different address. Releasing the counters lets them immediately try
+// another address, and lets us try again if the address is ever cleared.
+func (s *verificationService) refundSendAttempt(ctx context.Context, identifierType, identifier string) {
+	refundCtx, cancel := withTimeout(ctx, redisOperationTimeout)
+	defer cancel()
+
+	keys := newOTPAttemptKeys(identifierType, identifier)
+	for _, key := range []string{keys.minute, keys.hourly, keys.daily} {
+		count, err := s.redisClient.IncrBy(refundCtx, key, -1)
+		if err != nil {
+			s.logger.Warn("Failed to refund OTP send attempt",
+				zap.Error(err), zap.String("key", key), zap.String("identifier", identifier))
+			continue
+		}
+		// A counter that reaches zero must be dropped rather than left at 0:
+		// the next check counts it, and a negative value would be invisible to
+		// the limiter forever.
+		if count <= 0 {
+			_ = s.redisClient.Del(refundCtx, key)
+		}
+	}
+	_ = s.redisClient.Del(refundCtx, keys.cooldown)
+
+	s.logger.Info("Refunded OTP attempt budget after permanent delivery failure",
+		zap.String("identifier_type", identifierType), zap.String("identifier", identifier))
 }
 
 func (s *verificationService) getCounter(ctx context.Context, key string) (int64, error) {
@@ -472,12 +529,23 @@ func (s *verificationService) sendWorker(workerID int) {
 				break
 			}
 
+			// A permanent recipient rejection cannot be fixed by sending again,
+			// and every extra attempt against a refusing provider works against
+			// our sending reputation. Stop, and give the person their budget back.
+			if entities.IsPermanentEmailDeliveryError(lastErr) {
+				break
+			}
+
 			if attempt < sendRetryCount {
 				time.Sleep(sendRetryBackoff * time.Duration(attempt))
 			}
 		}
 
 		if lastErr != nil {
+			if entities.IsPermanentEmailDeliveryError(lastErr) {
+				s.refundSendAttempt(context.Background(), req.identifierType, req.identifier)
+			}
+
 			if isDevEnvironment(s.config.Environment) {
 				s.logger.Warn("DEV MODE: verification code dispatch failed in worker",
 					zap.Int("worker_id", workerID),
