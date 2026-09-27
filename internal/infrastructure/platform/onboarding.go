@@ -230,6 +230,7 @@ type ChatOnboarder struct {
 	transcripts      GuestTranscriptWriter
 	statementHandler StatementAttachmentHandler
 	monoLinker       GuestMonoLinker
+	interviewMerger  GuestInterviewMerger
 	shareAllowlist   map[string]bool
 	accountLinks     *ChatAccountLinker
 }
@@ -272,6 +273,16 @@ func (c *ChatOnboarder) SetGuestCompleter(completer GuestCompleter) {
 func (c *ChatOnboarder) SetGuestHandoff(moneyTypes GuestMoneyTypeWriter, transcripts GuestTranscriptWriter) {
 	c.moneyTypes = moneyTypes
 	c.transcripts = transcripts
+}
+
+// GuestInterviewMerger moves the Python guest interview onto the real user
+// after the phone is linked. Without it the next text is greeted as a stranger.
+type GuestInterviewMerger interface {
+	MergeGuestInterview(ctx context.Context, platform entities.Platform, senderID string, userID uuid.UUID) error
+}
+
+func (c *ChatOnboarder) SetGuestInterviewMerger(m GuestInterviewMerger) {
+	c.interviewMerger = m
 }
 
 // SetStatementAttachmentHandler enables statement scanning for unlinked
@@ -1571,6 +1582,18 @@ func (c *ChatOnboarder) fireGuestHandoff(uid uuid.UUID, identity *entities.Platf
 			if err := c.transcripts.AppendGuestTranscript(ctx, uid, identity, threadID, turns); err != nil {
 				c.logger.Warn("guest transcript handoff failed",
 					zap.Stringer("user_id", uid), zap.String("platform", plat.String()), zap.Error(err))
+			}
+		}()
+	}
+	if c.interviewMerger != nil {
+		plat := in.Platform
+		sender := in.SenderID
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := c.interviewMerger.MergeGuestInterview(ctx, plat, sender, uid); err != nil {
+				c.logger.Warn("guest interview merge failed",
+					zap.Error(err), zap.Stringer("user_id", uid), zap.String("sender", sender))
 			}
 		}()
 	}

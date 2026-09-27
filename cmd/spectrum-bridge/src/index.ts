@@ -26,6 +26,7 @@ import {
 import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
 import { PollWatcher, resolveIMessageClients } from "./poll-watcher";
+import { isProviderDailyCap, PROVIDER_CAP_HOLD_MS } from "./send-hold";
 
 const config = loadConfig();
 const log = getLogger();
@@ -511,7 +512,7 @@ function stopTypingKeeper(threadID: string): void {
 
 /** Outcome of a send attempt: ok | cold (no handle — defer, no retry spent) |
  *  capped (deliverability cap — defer) | failed (provider error — backoff). */
-type SendOutcome = "ok" | "cold" | "capped" | "failed";
+type SendOutcome = "ok" | "cold" | "capped" | "limited" | "failed";
 
 async function sendToSpace(msg: OutboundMessage): Promise<SendOutcome> {
   // Gate 2 of turn supersession: the user has already sent something newer, so
@@ -576,6 +577,9 @@ async function sendToSpace(msg: OutboundMessage): Promise<SendOutcome> {
   } catch (err) {
     failures.record("outbound", msg.client_guid ?? msg.thread_id, msg, err);
     log.error({ err, thread_id: msg.thread_id }, "failed to send to space");
+    // A daily cap will not lift on the 2s/4s/8s retry ladder. Holding the
+    // reply keeps it queued until the window moves, instead of dropping it.
+    if (isProviderDailyCap(err)) return "limited";
     return "failed";
   }
 }
@@ -592,6 +596,14 @@ async function attemptQueuedSend(item: QueuedMessage): Promise<void> {
   }
   if (outcome === "cold" || outcome === "capped") {
     outboundQueue.defer(item.id, 30_000);
+    return;
+  }
+  if (outcome === "limited") {
+    outboundQueue.defer(item.id, PROVIDER_CAP_HOLD_MS);
+    log.warn(
+      { thread_id: item.msg.thread_id, hold_ms: PROVIDER_CAP_HOLD_MS },
+      "photon daily send cap; holding the reply",
+    );
     return;
   }
 
@@ -651,13 +663,14 @@ app.post("/send", (req, res) => {
   // The resolver rehydrates handles from disk, so proactive sends no longer
   // wait for the user to text again.
   sendToSpace(msg).then((outcome) => {
-    if (outcome !== "ok") {
-      outboundQueue.enqueue(
-        msg,
-        msg.category ?? "normal",
-        msg.send_after && msg.send_after > Date.now() ? { notBefore: msg.send_after } : undefined,
-      );
-    }
+    if (outcome === "ok") return;
+    const holdUntil =
+      outcome === "limited" ? Date.now() + PROVIDER_CAP_HOLD_MS : msg.send_after;
+    outboundQueue.enqueue(
+      msg,
+      msg.category ?? "normal",
+      holdUntil && holdUntil > Date.now() ? { notBefore: holdUntil } : undefined,
+    );
   });
   res.json({ status: "queued" });
 });

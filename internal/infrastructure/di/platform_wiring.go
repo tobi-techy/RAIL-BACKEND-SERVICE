@@ -75,6 +75,7 @@ func (c *Container) initializePlatformMessaging() {
 					JWTTTL:             time.Duration(cfg.JWTTTLSeconds) * time.Second,
 					Timeout:            time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
 					NotifyDebitEnabled: cfg.NotifyDebitEnabled,
+					RailServiceKey:     c.Config.Confirmation.RailServiceKey,
 				}, c.ZapLog)
 				platformOrchestrator.python = c.PythonAgentClient
 				platformOrchestrator.confirmStore = ai.NewConfirmStore(
