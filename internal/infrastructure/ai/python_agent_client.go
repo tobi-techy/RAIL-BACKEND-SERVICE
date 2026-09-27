@@ -110,6 +110,7 @@ type PythonAgentClient struct {
 	baseURL            string
 	jwtSecret          string
 	jwtTTL             time.Duration
+	railServiceKey     string
 	httpClient         *http.Client
 	logger             *zap.Logger
 	notifyDebitEnabled bool
@@ -122,6 +123,9 @@ type PythonAgentClientConfig struct {
 	JWTTTL             time.Duration
 	Timeout            time.Duration
 	NotifyDebitEnabled bool
+	// RailServiceKey is the shared X-Rail-Service-Key. Required for the
+	// guest-interview merge, which Python only accepts from Go.
+	RailServiceKey string
 }
 
 // NewPythonAgentClient builds a client for the Python agent.
@@ -137,10 +141,53 @@ func NewPythonAgentClient(cfg PythonAgentClientConfig, logger *zap.Logger) *Pyth
 		baseURL:            strings.TrimRight(cfg.BaseURL, "/"),
 		jwtSecret:          cfg.JWTSecret,
 		jwtTTL:             cfg.JWTTTL,
+		railServiceKey:     cfg.RailServiceKey,
 		httpClient:         &http.Client{Timeout: timeout},
 		logger:             logger,
 		notifyDebitEnabled: cfg.NotifyDebitEnabled,
 	}
+}
+
+// MergeUsers moves portable Python history, including the guest interview,
+// from fromID onto targetID. Python requires the rail service key plus a
+// bearer token for the target account.
+func (c *PythonAgentClient) MergeUsers(ctx context.Context, targetID uuid.UUID, email string, fromID uuid.UUID) error {
+	if strings.TrimSpace(c.railServiceKey) == "" {
+		return fmt.Errorf("python merge: rail service key is not configured")
+	}
+	if targetID == uuid.Nil || fromID == uuid.Nil || targetID == fromID {
+		return fmt.Errorf("python merge: need two distinct user ids")
+	}
+	ttl := int(c.jwtTTL.Seconds())
+	if ttl <= 0 {
+		ttl = 60
+	}
+	token, _, err := auth.GenerateAgentToken(targetID, email, "", "user", c.jwtSecret, ttl)
+	if err != nil {
+		return fmt.Errorf("mint python merge jwt: %w", err)
+	}
+	payload, err := json.Marshal(map[string]string{"from_user_id": fromID.String()})
+	if err != nil {
+		return fmt.Errorf("marshal python merge: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/users/merge", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("create python merge request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Rail-Service-Key", c.railServiceKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("python merge request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("python merge: unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 // Chat sends a message to the Python agent on behalf of the given user. `email`

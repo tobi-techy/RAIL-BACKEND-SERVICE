@@ -1375,6 +1375,11 @@ func (c *Container) wireChatOnboarding() {
 			logger:      c.ZapLog,
 			turnTimeout: guestTurn,
 		})
+		onboarder.SetGuestInterviewMerger(&guestInterviewMerger{
+			python: c.PythonAgentClient,
+			users:  c.UserRepo,
+			logger: c.ZapLog,
+		})
 		c.ZapLog.Info("guest onboarding agent enabled",
 			zap.String("brain", "python-miriam"),
 			zap.Duration("guest_turn_timeout", guestTurn))

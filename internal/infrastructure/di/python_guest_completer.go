@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/ai"
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"go.uber.org/zap"
@@ -197,6 +198,33 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		})
 	}
 	return res, nil
+}
+
+// guestInterviewMerger asks Python to move the synthetic guest interview onto
+// the Rail user the phone was just linked to.
+type guestInterviewMerger struct {
+	python *ai.PythonAgentClient
+	users  interface {
+		GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
+	}
+	logger *zap.Logger
+}
+
+func (m *guestInterviewMerger) MergeGuestInterview(ctx context.Context, plat entities.Platform, senderID string, userID uuid.UUID) error {
+	if m == nil || m.python == nil {
+		return nil
+	}
+	email := ""
+	if m.users != nil {
+		u, err := m.users.GetByID(ctx, userID)
+		if err != nil {
+			m.logger.Warn("guest interview merge: user lookup failed", zap.Error(err), zap.Stringer("user_id", userID))
+		} else if u != nil {
+			email = u.Email
+		}
+	}
+	guestID := guestSyntheticID(platform.GuestSender{Platform: plat, SenderID: senderID})
+	return m.python.MergeUsers(ctx, userID, email, guestID)
 }
 
 // guestSyntheticID derives a stable UUID for an unlinked sender so Python memory
