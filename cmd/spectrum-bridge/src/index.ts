@@ -18,6 +18,7 @@ import { extractSpaceMeta } from "./space-meta";
 import { PersistentOutboundQueue, type QueuedMessage } from "./outbound-queue";
 import { InboundSpool } from "./inbound-spool";
 import {
+  expectsReply,
   InboundDebouncer,
   isOutboundEcho,
   routeInboundContent,
@@ -444,10 +445,18 @@ const debouncer = new InboundDebouncer({
     log.error({ err, thread_id: threadID }, "debounced inbound flush failed");
   },
   onCarried: (threadID, err) => {
+    // Terminal: no reply is coming for this batch until the user texts again.
+    // Stop the "..." indicator now instead of letting it run to the 90s safety
+    // deadline with nothing to show for it (the trailing-typing ghost).
+    stopTypingKeeper(threadID);
     log.warn(
       { err, thread_id: threadID },
       "inbound flush exhausted retries — carried forward to the thread's next message",
     );
+  },
+  onDropped: (threadID, err) => {
+    stopTypingKeeper(threadID);
+    log.warn({ err, thread_id: threadID }, "inbound flush exhausted retries — dropped");
   },
 });
 
@@ -790,8 +799,14 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
 
   // Keep the typing indicator alive for as long as backend processing takes.
   // (For debounced text the keeper is (re)started by the debouncer's
-  // onBufferStart; starting it here is idempotent.)
-  startTypingKeeper(threadID, space);
+  // onBufferStart; starting it here is idempotent.) Lifecycle signals and
+  // other ack-only content never earn a reply, so starting the keeper for
+  // them strands the user in "..." until the 90s safety deadline — skip it.
+  if (expectsReply(content)) {
+    startTypingKeeper(threadID, space);
+  } else {
+    reqLog.debug({ msg_id: message.id }, "ack-only inbound content, skipping typing keeper");
+  }
 
   // A poll tap that landed while the poll stream was down still has to count,
   // and it has to count before this new message so onboarding state advances in
@@ -916,7 +931,14 @@ async function start() {
         await debouncer.flush(payload.thread_id);
         const space = spaceResolver.cached(payload.thread_id);
         if (space) startTypingKeeper(payload.thread_id, space);
-        await postToBackend("/api/v1/platform/inbound", payload);
+        try {
+          await postToBackend("/api/v1/platform/inbound", payload);
+        } catch (err) {
+          // No reply is coming for this vote (the watcher will retry it
+          // later) — don't strand the "..." indicator to the safety deadline.
+          stopTypingKeeper(payload.thread_id);
+          throw err;
+        }
       },
     });
     pollWatcher.start();

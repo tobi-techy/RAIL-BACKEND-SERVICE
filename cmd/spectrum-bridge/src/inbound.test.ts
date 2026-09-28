@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Content, Message } from "spectrum-ts";
 import {
+  expectsReply,
   InboundDebouncer,
   isOutboundEcho,
   routeInboundContent,
@@ -689,6 +690,94 @@ describe("routeInboundContent", () => {
     await route(deps, fakeMessage("m1", { type: "hologram", beams: 2 } as unknown as Content));
     expect(posts.length).toBe(0);
     debouncer.dispose();
+  });
+
+  describe("expectsReply (typing-keeper gate)", () => {
+    // Ack-only signals must never start the typing keeper: the backend never
+    // answers them, so the user would watch "..." until the 90s safety
+    // deadline with no message (the trailing-typing ghost in production).
+    const silent: Array<[string, Content]> = [
+      ["read receipt", { type: "read", target: { id: "spc-msg-1" } } as unknown as Content],
+      ["typing echo", { type: "typing" } as unknown as Content],
+      ["poll echo", { type: "poll", title: "Your call" } as unknown as Content],
+      ["unsend", { type: "unsend", target: { id: "m1" } } as unknown as Content],
+      ["rename", { type: "rename", displayName: "new" } as unknown as Content],
+      ["avatar", { type: "avatar" } as unknown as Content],
+      ["addMember", { type: "addMember", members: ["+1555"] } as unknown as Content],
+      ["removeMember", { type: "removeMember", members: ["+1555"] } as unknown as Content],
+      ["leaveSpace", { type: "leaveSpace" } as unknown as Content],
+      [
+        "no-content sentinel",
+        { type: "custom", raw: { imessage_type: "unsupported-message" } } as unknown as Content,
+      ],
+      [
+        "custom-wrapped read receipt",
+        { type: "custom", raw: { type: "read", target: { id: "spc-msg-1" } } } as unknown as Content,
+      ],
+      [
+        "custom-wrapped typing",
+        { type: "custom", raw: { type: "typing", state: "start" } } as unknown as Content,
+      ],
+      [
+        "link without URL",
+        { type: "richlink", url: "" } as unknown as Content,
+      ],
+      [
+        "reply wrapping a read receipt (routes as a read)",
+        {
+          type: "reply",
+          target: { id: "m1", content: { type: "text", text: "q" } },
+          content: { type: "read", target: { id: "m2" } },
+        } as unknown as Content,
+      ],
+    ];
+    for (const [name, content] of silent) {
+      it(`is silent: ${name}`, () => {
+        expect(expectsReply(content)).toBe(false);
+      });
+    }
+
+    const loud: Array<[string, Content]> = [
+      ["text", { type: "text", text: "Hey!" } as unknown as Content],
+      ["markdown", { type: "markdown", markdown: "hi" } as unknown as Content],
+      ["voice", { type: "voice", mimeType: "audio/mp4" } as unknown as Content],
+      [
+        "image attachment",
+        { type: "attachment", name: "r.png", mimeType: "image/png" } as unknown as Content,
+      ],
+      ["contact", { type: "contact" } as unknown as Content],
+      ["reaction", { type: "reaction", emoji: "👍", target: { id: "m1" } } as unknown as Content],
+      [
+        "poll_option",
+        { type: "poll_option", selected: true, option: { title: "Confirm" } } as unknown as Content,
+      ],
+      ["link with URL", { type: "richlink", url: "https://example.com/x" } as unknown as Content],
+      ["app with URL", { type: "app", url: "https://example.com/app" } as unknown as Content],
+      [
+        "custom-wrapped poll tap",
+        {
+          type: "custom",
+          raw: { type: "poll_option", selected: true, option: { title: "Confirm" } },
+        } as unknown as Content,
+      ],
+      [
+        "unknown custom (unsupported notice gets a courtesy reply)",
+        { type: "custom", raw: { type: "sticker", id: "s1" } } as unknown as Content,
+      ],
+      [
+        "reply wrapping text",
+        {
+          type: "reply",
+          target: { id: "m1", content: { type: "text", text: "q" } },
+          content: { type: "text", text: "yes that" },
+        } as unknown as Content,
+      ],
+    ];
+    for (const [name, content] of loud) {
+      it(`may reply: ${name}`, () => {
+        expect(expectsReply(content)).toBe(true);
+      });
+    }
   });
 
   it("debouncer errors are reported via onError, not thrown", async () => {
