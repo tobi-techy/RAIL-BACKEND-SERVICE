@@ -534,6 +534,59 @@ export function isNoContentEvent(raw: unknown): boolean {
   return (raw as Record<string, unknown>).imessage_type === "unsupported-message";
 }
 
+/**
+ * True when inbound content can produce a backend reply (so a typing indicator
+ * is warranted). Lifecycle signals (read receipts, group events, retractions),
+ * typing echoes, and outbound poll echoes are acked silently — the backend
+ * never answers them, so starting the typing keeper for them leaves the user
+ * watching "..." for 90s until the safety deadline with no message ever coming
+ * (the trailing-typing ghost). Everything else — text, media, contacts, votes,
+ * reactions, links, and the unsupported/oversized notices the backend answers
+ * with a courtesy line — may reply.
+ */
+export function expectsReply(content: Content): boolean {
+  switch (content.type) {
+    case "read":
+    case "typing":
+    case "poll":
+    case "unsend":
+    case "rename":
+    case "avatar":
+      return false;
+    case "reply":
+    case "edit":
+    case "effect":
+      return expectsReply(content.content as Content);
+    case "group":
+      return content.items.some((item) => expectsReply(item.content));
+    case "richlink":
+    case "app": {
+      const url =
+        (content as { url?: unknown }).url ??
+        (content as { raw?: unknown }).raw;
+      return typeof url === "string" && url.trim().length > 0;
+    }
+    case "custom": {
+      const raw = (content as { raw?: unknown }).raw;
+      if (isNoContentEvent(raw)) return false;
+      const recovered = recoverCustomContent(raw);
+      if (recovered) return expectsReply(recovered);
+      // Unknown custom → the router posts an unsupported notice, which the
+      // backend answers with a courtesy line. A reply is coming.
+      return true;
+    }
+    default: {
+      const type = (content as { type?: string })?.type;
+      // Provider-extension group lifecycle (not in the 8.2.1 union): forwarded
+      // for delivery tracking, never answered.
+      if (type === "addMember" || type === "removeMember" || type === "leaveSpace") {
+        return false;
+      }
+      return true;
+    }
+  }
+}
+
 /** Log-safe summary of an unreadable payload (types and keys, no bodies). */
 function describeCustom(raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== "object") return { raw_kind: typeof raw };
