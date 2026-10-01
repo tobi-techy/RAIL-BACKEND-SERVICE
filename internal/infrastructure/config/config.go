@@ -2436,6 +2436,12 @@ func validate(config *Config) error {
 		}
 	}
 
+	// Internal signing secret must be long enough whenever it is set,
+	// not just in production (review: move outside production-only).
+	if s := config.Security.InternalRequestSigningSecret; s != "" && len(s) < 32 {
+		return fmt.Errorf("internal_request_signing_secret must be at least 32 characters when set (got %d)", len(s))
+	}
+
 	return nil
 }
 

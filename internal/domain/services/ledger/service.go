@@ -98,11 +98,13 @@ func NewService(
 	logger *logger.Logger,
 	outbox *OutboxWriter,
 ) *Service {
+	cfg := entities.DefaultVelocityConfig
 	return &Service{
-		ledgerRepo: ledgerRepo,
-		db:         db,
-		logger:     logger,
-		outbox:     outbox,
+		ledgerRepo:     ledgerRepo,
+		db:             db,
+		logger:         logger,
+		outbox:         outbox,
+		velocityConfig: &cfg,
 	}
 }
 
@@ -222,7 +224,18 @@ func (s *Service) CreatePendingTransaction(ctx context.Context, req *entities.Cr
 // by locking the affected accounts, updating their balances, and marking the
 // transaction as completed. This is called after the external transfer succeeds.
 func (s *Service) CommitPendingTransaction(ctx context.Context, idempotencyKey string) error {
-	ledgerTx, err := s.ledgerRepo.GetTransactionByIdempotencyKey(ctx, idempotencyKey)
+	// Use its own DB transaction to atomically claim the pending row and update balances.
+	// The status check is inside the tx with a conditional UPDATE so two concurrent
+	// committers cannot both apply balances (G5).
+	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin commit transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	txCtx := repositories.WithTx(ctx, tx)
+
+	ledgerTx, err := s.ledgerRepo.GetTransactionByIdempotencyKey(txCtx, idempotencyKey)
 	if err != nil {
 		return fmt.Errorf("get pending transaction: %w", err)
 	}
@@ -238,22 +251,13 @@ func (s *Service) CommitPendingTransaction(ctx context.Context, idempotencyKey s
 		return fmt.Errorf("transaction %s is in status %s, cannot commit", ledgerTx.ID, ledgerTx.Status)
 	}
 
-	entries, err := s.ledgerRepo.GetEntriesByTransactionID(ctx, ledgerTx.ID)
+	entries, err := s.ledgerRepo.GetEntriesByTransactionID(txCtx, ledgerTx.ID)
 	if err != nil {
 		return fmt.Errorf("get pending entries: %w", err)
 	}
 	if len(entries) == 0 {
 		return fmt.Errorf("pending transaction %s has no entries", ledgerTx.ID)
 	}
-
-	// Use its own DB transaction to lock accounts and update balances atomically.
-	tx, err := s.db.BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		return fmt.Errorf("begin commit transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	txCtx := repositories.WithTx(ctx, tx)
 
 	// Convert repo entries to CreateEntryRequest for the existing helper.
 	entryReqs := make([]entities.CreateEntryRequest, len(entries))
@@ -274,8 +278,13 @@ func (s *Service) CommitPendingTransaction(ctx context.Context, idempotencyKey s
 	}
 
 	ledgerTx.MarkCompleted()
-	if err := s.ledgerRepo.UpdateTransactionStatus(txCtx, ledgerTx.ID, entities.TransactionStatusCompleted); err != nil {
+	// Conditional so a concurrent committer that already flipped the row does not double-apply.
+	if rows, err := s.ledgerRepo.UpdateTransactionStatusIfPending(txCtx, ledgerTx.ID, entities.TransactionStatusCompleted); err != nil {
 		return fmt.Errorf("mark transaction completed: %w", err)
+	} else if rows == 0 {
+		s.logger.Info("Transaction already committed by concurrent committer (idempotent)",
+			"idempotency_key", idempotencyKey)
+		return nil
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -512,7 +521,8 @@ func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTr
 	// Insert entries and update balances. Each account already holds FOR
 	// UPDATE, so the repeated lock inside updateAccountBalanceInTx is a
 	// no-op within the same transaction.
-	today := now.Truncate(24 * time.Hour)
+	lagosNow := now.In(mustLoadLocation("Africa/Lagos"))
+	today := time.Date(lagosNow.Year(), lagosNow.Month(), lagosNow.Day(), 0, 0, 0, 0, lagosNow.Location()).In(time.UTC)
 	for _, entryReq := range sortedEntries {
 		// Circuit-breaker: check velocity limits before debiting an account.
 		if entryReq.EntryType == entities.EntryTypeCredit {
@@ -794,7 +804,7 @@ func (s *Service) ReserveForInvestment(ctx context.Context, userID uuid.UUID, am
 	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Create reservation transaction
-	idempotencyKey := fmt.Sprintf("reserve-%s-%s-%d", userID.String(), amount.String(), time.Now().UnixNano())
+	idempotencyKey := fmt.Sprintf("reserve-%s-%s-%s", userID.String(), amount.String(), hashDeterministicKey(userID.String(), amount.String(), "reserve")[:12])
 	desc := "Reserve funds for investment"
 
 	req := &entities.CreateTransactionRequest{
@@ -849,7 +859,7 @@ func (s *Service) ReleaseReservation(ctx context.Context, userID uuid.UUID, amou
 	// which atomically checks and prevents overdraft. Pre-flight check was a TOCTOU race.
 
 	// Create release transaction
-	idempotencyKey := fmt.Sprintf("release-%s-%s-%d", userID.String(), amount.String(), time.Now().UnixNano())
+	idempotencyKey := fmt.Sprintf("release-%s-%s-%s", userID.String(), amount.String(), hashDeterministicKey(userID.String(), amount.String(), "release")[:12])
 	desc := "Release reserved funds"
 
 	req := &entities.CreateTransactionRequest{
@@ -884,6 +894,57 @@ func (s *Service) ReleaseReservation(ctx context.Context, userID uuid.UUID, amou
 		"user_id", userID,
 		"amount", amount.String())
 
+	return nil
+}
+
+// ReserveForInvestmentForOrder reserves funds with a caller-supplied stable key.
+// Callers (investment execution) should prefer this when an order/strategy ID
+// is available so concurrent same-amount calls don't collide on idempotency.
+func (s *Service) ReserveForInvestmentForOrder(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, stableID string) error {
+	usdcAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("get usdc account: %w", err)
+	}
+	pendingAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingInvestment)
+	if err != nil {
+		return fmt.Errorf("get pending account: %w", err)
+	}
+	desc := "Reserve funds for investment"
+	k := hashDeterministicKey(userID.String(), stableID, amount.String(), "reserve-order")[:16]
+	idempotencyKey := fmt.Sprintf("reserve-order-%s-%s", stableID, k)
+	req := &entities.CreateTransactionRequest{
+		UserID: &userID, TransactionType: entities.TransactionTypeInternalTransfer,
+		IdempotencyKey: idempotencyKey, Description: &desc,
+		Entries: []entities.CreateEntryRequest{{AccountID: usdcAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},{AccountID: pendingAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},},
+	}
+	if _, err := s.CreateTransaction(ctx, req); err != nil {
+		return fmt.Errorf("create reservation transaction: %w", err)
+	}
+	s.logger.Info("Funds reserved for investment (stable key)", "user_id", userID, "amount", amount.String(), "stable_id", stableID)
+	return nil
+}
+
+func (s *Service) ReleaseReservationForOrder(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, stableID string) error {
+	usdcAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("get usdc account: %w", err)
+	}
+	pendingAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingInvestment)
+	if err != nil {
+		return fmt.Errorf("get pending account: %w", err)
+	}
+	desc := "Release reserved funds"
+	k := hashDeterministicKey(userID.String(), stableID, amount.String(), "release-order")[:16]
+	idempotencyKey := fmt.Sprintf("release-order-%s-%s", stableID, k)
+	req := &entities.CreateTransactionRequest{
+		UserID: &userID, TransactionType: entities.TransactionTypeInternalTransfer,
+		IdempotencyKey: idempotencyKey, Description: &desc,
+		Entries: []entities.CreateEntryRequest{{AccountID: pendingAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},{AccountID: usdcAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},},
+	}
+	if _, err := s.CreateTransaction(ctx, req); err != nil {
+		return fmt.Errorf("create release transaction: %w", err)
+	}
+	s.logger.Info("Reserved funds released (stable key)", "user_id", userID, "amount", amount.String(), "stable_id", stableID)
 	return nil
 }
 
@@ -1052,7 +1113,7 @@ func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, a
 	}
 
 	// Create card transaction
-	idempotencyKey := fmt.Sprintf("card-tx-%s-%s-%d", userID.String(), reference, time.Now().UnixNano())
+	idempotencyKey := fmt.Sprintf("card-tx-%s-%s-%s", userID.String(), reference, hashDeterministicKey(userID.String(), reference, "card-tx")[:12])
 	desc := fmt.Sprintf("Card transaction: %s", reference)
 	refType := "card_transaction"
 
@@ -1091,6 +1152,24 @@ func (s *Service) RecordCardTransaction(ctx context.Context, userID uuid.UUID, a
 		"reference", reference)
 
 	return nil
+}
+
+func hashDeterministicKey(parts ...string) string {
+    h := sha256.New()
+    for _, p := range parts {
+        h.Write([]byte(p))
+        h.Write([]byte{0})
+    }
+    return hex.EncodeToString(h.Sum(nil))
+}
+
+func mustLoadLocation(name string) *time.Location {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		// Fallback to UTC rather than panicking in production.
+		return time.UTC
+	}
+	return loc
 }
 
 func stringPtr(s string) *string {
