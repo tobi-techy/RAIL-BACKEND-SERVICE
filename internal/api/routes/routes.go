@@ -201,6 +201,13 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// a fresh HMAC-SHA256 request signature so a leaked static key alone cannot
 	// drive money-moving internal routes (TM-001). No-op until configured.
 	internal.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
+	// Miriam evaluation can run up to 5 minutes (per-handler WithTimeout);
+	// it must not be killed by the 10s group timeout above, so it lives on
+	// a sibling group with the same auth but no TimeoutMiddleware.
+	internalMiriam := router.Group("/internal")
+	internalMiriam.Use(middleware.RateLimit(5))
+	internalMiriam.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
+	internalMiriam.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
@@ -392,7 +399,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Internal Miriam evaluation trigger. Cloudflare Cron calls this endpoint;
 	// Rail keeps the financial execution, DB state, and audit trail in the backend.
 	if container.MiriamIntelligenceService != nil && container.UserRepo != nil {
-		internal.POST("/miriam/evaluate", func(c *gin.Context) {
+		internalMiriam.POST("/miriam/evaluate", func(c *gin.Context) {
 			reqCtx, reqCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 			defer reqCancel()
 

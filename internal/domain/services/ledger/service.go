@@ -521,7 +521,8 @@ func (s *Service) executeTransaction(ctx context.Context, req *entities.CreateTr
 	// Insert entries and update balances. Each account already holds FOR
 	// UPDATE, so the repeated lock inside updateAccountBalanceInTx is a
 	// no-op within the same transaction.
-	today := now.In(mustLoadLocation("Africa/Lagos")).Truncate(24 * time.Hour).In(time.UTC)
+	lagosNow := now.In(mustLoadLocation("Africa/Lagos"))
+	today := time.Date(lagosNow.Year(), lagosNow.Month(), lagosNow.Day(), 0, 0, 0, 0, lagosNow.Location()).In(time.UTC)
 	for _, entryReq := range sortedEntries {
 		// Circuit-breaker: check velocity limits before debiting an account.
 		if entryReq.EntryType == entities.EntryTypeCredit {
@@ -893,6 +894,57 @@ func (s *Service) ReleaseReservation(ctx context.Context, userID uuid.UUID, amou
 		"user_id", userID,
 		"amount", amount.String())
 
+	return nil
+}
+
+// ReserveForInvestmentForOrder reserves funds with a caller-supplied stable key.
+// Callers (investment execution) should prefer this when an order/strategy ID
+// is available so concurrent same-amount calls don't collide on idempotency.
+func (s *Service) ReserveForInvestmentForOrder(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, stableID string) error {
+	usdcAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("get usdc account: %w", err)
+	}
+	pendingAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingInvestment)
+	if err != nil {
+		return fmt.Errorf("get pending account: %w", err)
+	}
+	desc := "Reserve funds for investment"
+	k := hashDeterministicKey(userID.String(), stableID, amount.String(), "reserve-order")[:16]
+	idempotencyKey := fmt.Sprintf("reserve-order-%s-%s", stableID, k)
+	req := &entities.CreateTransactionRequest{
+		UserID: &userID, TransactionType: entities.TransactionTypeInternalTransfer,
+		IdempotencyKey: idempotencyKey, Description: &desc,
+		Entries: []entities.CreateEntryRequest{{AccountID: usdcAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},{AccountID: pendingAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},},
+	}
+	if _, err := s.CreateTransaction(ctx, req); err != nil {
+		return fmt.Errorf("create reservation transaction: %w", err)
+	}
+	s.logger.Info("Funds reserved for investment (stable key)", "user_id", userID, "amount", amount.String(), "stable_id", stableID)
+	return nil
+}
+
+func (s *Service) ReleaseReservationForOrder(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, stableID string) error {
+	usdcAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeUSDCBalance)
+	if err != nil {
+		return fmt.Errorf("get usdc account: %w", err)
+	}
+	pendingAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypePendingInvestment)
+	if err != nil {
+		return fmt.Errorf("get pending account: %w", err)
+	}
+	desc := "Release reserved funds"
+	k := hashDeterministicKey(userID.String(), stableID, amount.String(), "release-order")[:16]
+	idempotencyKey := fmt.Sprintf("release-order-%s-%s", stableID, k)
+	req := &entities.CreateTransactionRequest{
+		UserID: &userID, TransactionType: entities.TransactionTypeInternalTransfer,
+		IdempotencyKey: idempotencyKey, Description: &desc,
+		Entries: []entities.CreateEntryRequest{{AccountID: pendingAccount.ID, EntryType: entities.EntryTypeCredit, Amount: amount, Currency: "USDC", Description: &desc},{AccountID: usdcAccount.ID, EntryType: entities.EntryTypeDebit, Amount: amount, Currency: "USDC", Description: &desc},},
+	}
+	if _, err := s.CreateTransaction(ctx, req); err != nil {
+		return fmt.Errorf("create release transaction: %w", err)
+	}
+	s.logger.Info("Reserved funds released (stable key)", "user_id", userID, "amount", amount.String(), "stable_id", stableID)
 	return nil
 }
 
