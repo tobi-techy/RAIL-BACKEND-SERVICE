@@ -2434,6 +2434,9 @@ func validate(config *Config) error {
 		if config.Payment.WebhookSecret == "" {
 			return fmt.Errorf("payment webhook secret is required in production")
 		}
+		if s := config.Security.InternalRequestSigningSecret; s != "" && len(s) < 32 {
+			return fmt.Errorf("internal_request_signing_secret must be at least 32 characters when set (got %d)", len(s))
+		}
 	}
 
 	return nil

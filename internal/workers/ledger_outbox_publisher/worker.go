@@ -174,6 +174,9 @@ func detachedWriteCtx(ctx context.Context) (context.Context, context.CancelFunc)
 }
 
 func (w *Worker) dispatch(evt repositories.OutboxRecord) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = ctx // used below for publisher
 	// TODO: Route to message broker (RabbitMQ, Kafka, etc.) based on event_type.
 	// For now, just log the event. Integration with the message broker is a
 	// future enhancement.
@@ -207,7 +210,7 @@ func (w *Worker) dispatch(evt repositories.OutboxRecord) error {
 				return fmt.Errorf("decode outbox payload for miriam event: %w", err)
 			}
 		}
-		publishErr := w.publisher.PublishMoneyEvent(context.Background(), miriam.MoneyEvent{
+		publishErr := w.publisher.PublishMoneyEvent(ctx, miriam.MoneyEvent{
 			ID:         evt.ID.String(),
 			UserID:     evt.AggregateID,
 			EventType:  evt.EventType,

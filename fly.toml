@@ -1,3 +1,6 @@
+# STAGING ONLY — live deploys target AtlasFlow (deployments/atlasflow/README.md).
+# This fly.toml is kept for the staging app rail-staging on Fly.io and is not
+# the production deploy path; do not add production secrets or scale config here.
 app = "rail-staging"
 primary_region = "lhr"
 

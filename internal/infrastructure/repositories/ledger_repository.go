@@ -594,6 +594,31 @@ func (r *LedgerRepository) UpdateTransactionStatus(ctx context.Context, txID uui
 	return nil
 }
 
+// UpdateTransactionStatusIfPending sets status only when current status is pending.
+// Returns rows affected (0 means already claimed). Used by CommitPendingTransaction's
+// conditional commit to avoid double-applying balances (G5).
+func (r *LedgerRepository) UpdateTransactionStatusIfPending(ctx context.Context, txID uuid.UUID, status entities.TransactionStatus) (int64, error) {
+	var completedAt *time.Time
+	if status == entities.TransactionStatusCompleted {
+		now := time.Now()
+		completedAt = &now
+	}
+	query := `
+		UPDATE ledger_transactions
+		SET status = $1, completed_at = $2
+		WHERE id = $3 AND status = 'pending'
+	`
+	result, err := r.execContext(ctx, query, status, completedAt, txID)
+	if err != nil {
+		return 0, fmt.Errorf("update transaction status if pending: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // ===== Entry Operations =====
 
 // CreateEntry creates a new ledger entry

@@ -194,6 +194,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// Rate limited: 5 requests/minute to prevent abuse
 	internalHandlers := handlers.NewInternalHandlers(container.DB, container.Config.Security.InternalAPIKey, container.ZapLog)
 	internal := router.Group("/internal")
+	internal.Use(middleware.TimeoutMiddleware(10 * time.Second))
 	internal.Use(middleware.RateLimit(5))
 	internal.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
 	// Defense-in-depth: when an internal signing secret is configured, require
