@@ -1,5 +1,3 @@
-// Package handlers provides HTTP request handlers for the Rail API.
-// This file re-exports handler constructors from subpackages for backward compatibility.
 package handlers
 
 import (
@@ -15,7 +13,6 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 )
 
-// Re-export types from subpackages
 type (
 	// Auth
 	AuthHandlers       = auth.AuthHandlers
@@ -36,25 +33,16 @@ type (
 	StationHandlers = funding.StationHandlers
 
 	// Investing
-	InvestmentHandlers         = investing.InvestmentHandlers
 	InvestingHandlers          = investing.InvestingHandlers
 	AllocationHandlers         = investing.AllocationHandlers
-	PortfolioActivityHandlers  = investing.PortfolioActivityHandlers
 	AnalyticsHandlers          = investing.AnalyticsHandlers
-	MarketHandlers             = investing.MarketHandlers
-	AIChatHandlers             = investing.AIChatHandlers
 	AICfoHandler               = investing.AICfoHandler
-	ImageAnalysisHandler       = investing.ImageAnalysisHandler
-	ConversationHandlers       = investing.ConversationHandlers
 	UsageHandlers              = investing.UsageHandlers
 	KnowledgeHandlers          = investing.KnowledgeHandlers
 	AutomationHandler          = investing.AutomationHandler
-	EnhancedNudgeHandler       = investing.EnhancedNudgeHandler
 	FinancialObligationHandler = investing.FinancialObligationHandler
 	MoneyGuardHandler          = investing.MoneyGuardHandler
 	SpendingCommitmentHandler  = investing.SpendingCommitmentHandler
-	MiriamIntelligenceHandler  = investing.MiriamIntelligenceHandler
-	MiriamPreferencesHandler   = investing.MiriamPreferencesHandler
 	FinancialSnapshotHandler   = investing.FinancialSnapshotHandler
 	StatementUploadHandler     = investing.StatementUploadHandler
 
@@ -74,10 +62,9 @@ type (
 	EnhancedSecurityHandlers = admin.EnhancedSecurityHandlers // 2FA and session handlers
 
 	// Webhooks
-	WebhookHandlers       = webhooks.WebhookHandlers
-	BridgeWebhookHandler  = webhooks.BridgeWebhookHandler
-	AlpacaWebhookHandlers = webhooks.AlpacaWebhookHandlers
-	BridgeKYCHandlers     = webhooks.BridgeKYCHandlers
+	WebhookHandlers      = webhooks.WebhookHandlers
+	BridgeWebhookHandler = webhooks.BridgeWebhookHandler
+	BridgeKYCHandlers    = webhooks.BridgeKYCHandlers
 
 	// Security
 	SecurityEnhancedHandlers = security.SecurityEnhancedHandlers
@@ -85,11 +72,9 @@ type (
 	LimitsHandler            = security.LimitsHandler
 
 	// Common
-	CoreHandlers        = common.CoreHandlers
-	HealthHandler       = common.HealthHandler
-	IntegrationHandlers = common.IntegrationHandlers
-	MobileHandlers      = common.MobileHandlers
-	NewsHandlers        = common.NewsHandlers
+	CoreHandlers   = common.CoreHandlers
+	HealthHandler  = common.HealthHandler
+	MobileHandlers = common.MobileHandlers
 	// NotificationWorkerHandlers is deprecated — use WorkerAdminHandlers for worker admin
 	// and NotificationHandlers for notification CRUD.
 	NotificationWorkerHandlers = common.WorkerAdminHandlers
@@ -125,36 +110,23 @@ var (
 
 // Investing constructors
 var (
-	NewInvestmentHandlers             = investing.NewInvestmentHandlers
-	NewInvestingHandlers              = investing.NewInvestingHandlers
-	NewAllocationHandlers             = investing.NewAllocationHandlers
-	NewPortfolioActivityHandlers      = investing.NewPortfolioActivityHandlers
-	NewAnalyticsHandlers              = investing.NewAnalyticsHandlers
-	NewMarketHandlers                 = investing.NewMarketHandlers
-	NewAIChatHandlers                 = investing.NewAIChatHandlers
-	NewAICfoHandler                   = investing.NewAICfoHandler
-	NewVoiceHandler                   = investing.NewVoiceHandler
-	NewSupportHandler                 = investing.NewSupportHandler
-	NewImageAnalysisHandler           = investing.NewImageAnalysisHandler
-	NewImageAnalysisHandlerWithVision = investing.NewImageAnalysisHandlerWithVision
-	NewPremiumAIHandlers              = investing.NewPremiumAIHandlers
-	NewConversationHandlers           = investing.NewConversationHandlers
-	NewUsageHandlers                  = investing.NewUsageHandlers
-	NewKnowledgeHandlers              = investing.NewKnowledgeHandlers
-	NewReceiptSplitHandler            = investing.NewReceiptSplitHandler
-	NewReceiptSplitTrackingHandler    = investing.NewReceiptSplitTrackingHandler
-	NewHouseholdHandler               = investing.NewHouseholdHandler
-	NewAutomationHandler              = investing.NewAutomationHandler
-	NewEnhancedNudgeHandler           = investing.NewEnhancedNudgeHandler
-	NewFinancialObligationHandler     = investing.NewFinancialObligationHandler
-	NewMoneyGuardHandler              = investing.NewMoneyGuardHandler
-	NewSpendingCommitmentHandler      = investing.NewSpendingCommitmentHandler
-	NewMiriamIntelligenceHandler      = investing.NewMiriamIntelligenceHandler
-	NewMiriamPreferencesHandler       = investing.NewMiriamPreferencesHandler
-	NewFinancialSnapshotHandler       = investing.NewFinancialSnapshotHandler
-	NewStatementUploadHandler         = investing.NewStatementUploadHandler
-	NewStatementUploadHandlerV2       = investing.NewStatementUploadHandlerV2
-	NewDocumentHandler                = investing.NewDocumentHandler
+	NewInvestingHandlers           = investing.NewInvestingHandlers
+	NewAllocationHandlers          = investing.NewAllocationHandlers
+	NewAnalyticsHandlers           = investing.NewAnalyticsHandlers
+	NewAICfoHandler                = investing.NewAICfoHandler
+	NewUsageHandlers               = investing.NewUsageHandlers
+	NewKnowledgeHandlers           = investing.NewKnowledgeHandlers
+	NewReceiptSplitHandler         = investing.NewReceiptSplitHandler
+	NewReceiptSplitTrackingHandler = investing.NewReceiptSplitTrackingHandler
+	NewHouseholdHandler            = investing.NewHouseholdHandler
+	NewAutomationHandler           = investing.NewAutomationHandler
+	NewFinancialObligationHandler  = investing.NewFinancialObligationHandler
+	NewMoneyGuardHandler           = investing.NewMoneyGuardHandler
+	NewSpendingCommitmentHandler   = investing.NewSpendingCommitmentHandler
+	NewFinancialSnapshotHandler    = investing.NewFinancialSnapshotHandler
+	NewStatementUploadHandler      = investing.NewStatementUploadHandler
+	NewStatementUploadHandlerV2    = investing.NewStatementUploadHandlerV2
+	NewDocumentHandler             = investing.NewDocumentHandler
 )
 
 // Trading constructors
@@ -180,10 +152,9 @@ var (
 
 // Webhooks constructors
 var (
-	NewWebhookHandlers       = webhooks.NewWebhookHandlers
-	NewBridgeWebhookHandler  = webhooks.NewBridgeWebhookHandler
-	NewAlpacaWebhookHandlers = webhooks.NewAlpacaWebhookHandlers
-	NewBridgeKYCHandlers     = webhooks.NewBridgeKYCHandlers
+	NewWebhookHandlers      = webhooks.NewWebhookHandlers
+	NewBridgeWebhookHandler = webhooks.NewBridgeWebhookHandler
+	NewBridgeKYCHandlers    = webhooks.NewBridgeKYCHandlers
 )
 
 // Security constructors (device/IP/withdrawal security features)
@@ -197,9 +168,7 @@ var (
 var (
 	NewCoreHandlers               = common.NewCoreHandlers
 	NewHealthHandler              = common.NewHealthHandler
-	NewIntegrationHandlers        = common.NewIntegrationHandlers
 	NewMobileHandlers             = common.NewMobileHandlers
-	NewNewsHandlers               = common.NewNewsHandlers
 	NewNotificationWorkerHandlers = common.NewWorkerAdminHandlers
 	NewWorkerAdminHandlers        = common.NewWorkerAdminHandlers
 )
@@ -210,10 +179,4 @@ var (
 	RespondWithSuccess = common.RespondSuccess
 	GetUserID          = common.GetUserID
 	GetPagination      = common.ExtractPagination
-)
-
-// Re-export interfaces from investing package
-type (
-	InvestmentStreakRepository  = investing.InvestmentStreakRepository
-	UserContributionsRepository = investing.UserContributionsRepository
 )

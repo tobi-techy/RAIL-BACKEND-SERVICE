@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rail-service/rail_service/internal/domain/services/miriam"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -35,19 +34,12 @@ type OutboxReader interface {
 }
 
 type Worker struct {
-	store     OutboxReader
-	publisher miriam.MoneyEventPublisher
-	logger    *zap.Logger
+	store  OutboxReader
+	logger *zap.Logger
 }
 
 func NewWorker(store OutboxReader, logger *zap.Logger) *Worker {
 	return &Worker{store: store, logger: logger}
-}
-
-// SetMiriamPublisher wires a publisher that sends money events to Miriam's
-// always-on event stream. Optional; when nil the worker logs events only.
-func (w *Worker) SetMiriamPublisher(p miriam.MoneyEventPublisher) {
-	w.publisher = p
 }
 
 func (w *Worker) Start(ctx context.Context) {
@@ -197,25 +189,6 @@ func (w *Worker) dispatch(evt repositories.OutboxRecord) error {
 			w.logger.Debug("Outbox event payload",
 				zap.String("event_id", evt.ID.String()),
 				zap.ByteString("payload", payload))
-		}
-	}
-
-	if w.publisher != nil {
-		var payload map[string]interface{}
-		if len(evt.Payload) > 0 {
-			if err := json.Unmarshal(evt.Payload, &payload); err != nil {
-				return fmt.Errorf("decode outbox payload for miriam event: %w", err)
-			}
-		}
-		publishErr := w.publisher.PublishMoneyEvent(context.Background(), miriam.MoneyEvent{
-			ID:         evt.ID.String(),
-			UserID:     evt.AggregateID,
-			EventType:  evt.EventType,
-			Payload:    payload,
-			OccurredAt: evt.CreatedAt,
-		})
-		if publishErr != nil {
-			return fmt.Errorf("publish miriam event: %w", publishErr)
 		}
 	}
 

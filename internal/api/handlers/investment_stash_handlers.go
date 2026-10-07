@@ -26,6 +26,17 @@ import (
 
 var errInvestmentDependencyUnavailable = errors.New("investment dependency unavailable")
 
+// providerUnavailable maps the sentinel from a nil positions/orders/analytics
+// provider to an explicit 503. Genuine query failures keep their 500 mapping,
+// so "provider removed" never looks like "query failed".
+func providerUnavailable(c *gin.Context, err error, code, message string) bool {
+	if errors.Is(err, errInvestmentDependencyUnavailable) {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: code, Message: message})
+		return true
+	}
+	return false
+}
+
 const (
 	defaultInvestmentPageSize = 20
 	maxInvestmentPageSize     = 50
@@ -80,7 +91,7 @@ type StrategyProvider interface {
 	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
 }
 
-// PortfolioSyncer triggers a live sync of positions from Alpaca.
+// PortfolioSyncer triggers a live sync of positions from the broker.
 type PortfolioSyncer interface {
 	SyncPositions(ctx context.Context, userID uuid.UUID) error
 }
@@ -146,10 +157,11 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	var (
 		wg sync.WaitGroup
 
-		balances        *entities.AllocationBalances
-		autoInvest      *entities.AutoInvestSettings
-		positions       []*entities.InvestmentPosition
-		strategyResult  *strategy.StrategyResult
+		balances   *entities.AllocationBalances
+		autoInvest *entities.AutoInvestSettings
+		positions  []*entities.InvestmentPosition
+
+		strategyResult *strategy.StrategyResult
 
 		balancesErr   error
 		autoInvestErr error
@@ -189,13 +201,20 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	}()
 	wg.Wait()
 
-	if errors.Is(balancesErr, errInvestmentDependencyUnavailable) || errors.Is(positionsErr, errInvestmentDependencyUnavailable) {
+	if errors.Is(balancesErr, errInvestmentDependencyUnavailable) {
 		h.logger.Error("Investment stash dependencies unavailable", zap.String("user_id", userID.String()))
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
 			Code:    "SERVICE_UNAVAILABLE",
 			Message: "Investment service temporarily unavailable",
 		})
 		return
+	}
+	// A missing positions provider degrades instead of failing: the dashboard
+	// still serves allocation- and ledger-backed figures with an empty
+	// positions list, and DataHealth marks the section "degraded" so clients
+	// can say "unavailable" instead of showing zeros as fact.
+	if errors.Is(positionsErr, errInvestmentDependencyUnavailable) {
+		h.logger.Warn("Investment positions provider unavailable — serving degraded dashboard", zap.String("user_id", userID.String()))
 	}
 
 	if balancesErr != nil {
@@ -240,6 +259,9 @@ func (h *InvestmentStashHandlers) GetInvestmentPositions(c *gin.Context) {
 
 	positions, err := h.getPositions(ctx, userID)
 	if err != nil {
+		if providerUnavailable(c, err, "POSITIONS_UNAVAILABLE", "Investment positions are currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment positions", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "POSITIONS_ERROR", Message: "Failed to retrieve investment positions"})
 		return
@@ -279,6 +301,9 @@ func (h *InvestmentStashHandlers) GetInvestmentDistribution(c *gin.Context) {
 
 	positions, err := h.getPositions(ctx, userID)
 	if err != nil {
+		if providerUnavailable(c, err, "DISTRIBUTION_UNAVAILABLE", "Investment distribution is currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment distribution", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DISTRIBUTION_ERROR", Message: "Failed to retrieve investment distribution"})
 		return
@@ -350,6 +375,9 @@ func (h *InvestmentStashHandlers) GetInvestmentTransactions(c *gin.Context) {
 	locale := localeFromRequest(c)
 	response, err := h.fetchTradeTransactions(ctx, userID, limit, offset, sideFilter, statusFilter, locale)
 	if err != nil {
+		if providerUnavailable(c, err, "TRANSACTIONS_UNAVAILABLE", "Investment transactions are currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment transactions", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TRANSACTIONS_ERROR", Message: "Failed to retrieve investment transactions"})
 		return
@@ -381,6 +409,9 @@ func (h *InvestmentStashHandlers) GetInvestmentPerformance(c *gin.Context) {
 	locale := localeFromRequest(c)
 	resp, err := h.buildPerformanceResponse(ctx, userID, period, locale)
 	if err != nil {
+		if providerUnavailable(c, err, "PERFORMANCE_UNAVAILABLE", "Investment performance is currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment performance", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "PERFORMANCE_ERROR", Message: "Failed to retrieve investment performance"})
 		return
@@ -548,10 +579,10 @@ func (h *InvestmentStashHandlers) getPositions(ctx context.Context, userID uuid.
 		return nil, err
 	}
 
-	// If no local positions, trigger a live sync from Alpaca then re-fetch.
+	// If no local positions, trigger a live sync then re-fetch.
 	if len(positions) == 0 && h.portfolioSyncer != nil {
 		if syncErr := h.portfolioSyncer.SyncPositions(ctx, userID); syncErr != nil {
-			h.logger.Warn("Failed to sync positions from Alpaca", zap.String("user_id", userID.String()), zap.Error(syncErr))
+			h.logger.Warn("Failed to sync positions", zap.String("user_id", userID.String()), zap.Error(syncErr))
 		} else {
 			positions, err = h.positionsRepo.GetByUserID(ctx, userID)
 			if err != nil {
@@ -755,38 +786,38 @@ func buildPositionViews(
 		if totalValue.GreaterThan(decimal.Zero) {
 			weight, _ = pos.MarketValue.Div(totalValue).Mul(decimal.NewFromInt(100)).Float64()
 		}
-
 		unrealizedPct, _ := pos.UnrealizedPLPC.Float64()
-		dayChange := pos.CurrentPrice.Sub(pos.LastdayPrice).Mul(pos.Qty)
-		dayChangePct, _ := pos.ChangeToday.Mul(decimal.NewFromInt(100)).Float64()
+		dayChange, _ := pos.ChangeToday.Float64()
+		dayChangePct := dayChange * 100
 
 		details = append(details, InvestmentPositionDetail{
-			ID:                   pos.ID.String(),
+			ID:                   "position",
 			Symbol:               pos.Symbol,
-			Name:                 pos.Symbol,
-			Quantity:             pos.Qty.String(),
-			AvgEntryPrice:        moneyValue(pos.AvgEntryPrice, locale),
+			Name:                 pos.Name,
+			Quantity:             "0",
+			AvgEntryPrice:        nil,
 			CurrentPrice:         moneyValue(pos.CurrentPrice, locale),
 			MarketValue:          moneyValue(pos.MarketValue, locale),
 			CostBasis:            moneyValue(pos.CostBasis, locale),
 			UnrealizedPnL:        moneyValue(pos.UnrealizedPL, locale),
 			UnrealizedPnLPercent: unrealizedPct,
 			PortfolioWeight:      weight,
+			DayChangePct:         dayChangePct,
 		})
 
 		legacy = append(legacy, PositionSummary{
-			ID:                pos.ID.String(),
+			ID:                "position",
 			Symbol:            pos.Symbol,
 			Name:              pos.Symbol,
 			Type:              "asset",
-			Quantity:          pos.Qty.String(),
+			Quantity:          "0",
 			CurrentPrice:      pos.CurrentPrice.String(),
 			MarketValue:       pos.MarketValue.String(),
 			CostBasis:         pos.CostBasis.String(),
-			AvgCost:           pos.AvgEntryPrice.String(),
+			AvgCost:           "0",
 			UnrealizedGain:    pos.UnrealizedPL.String(),
 			UnrealizedGainPct: unrealizedPct,
-			DayChange:         dayChange.StringFixed(2),
+			DayChange:         "0",
 			DayChangePct:      dayChangePct,
 			PortfolioWeight:   weight,
 		})
@@ -915,10 +946,7 @@ func parseSideFilter(side string) (*entities.AlpacaOrderSide, error) {
 
 func parseStatusFilter(status string) (*entities.AlpacaOrderStatus, error) {
 	switch status {
-	case "", "filled":
-		v := entities.AlpacaOrderStatusFilled
-		return &v, nil
-	case "all":
+	case "", "all":
 		return nil, nil
 	default:
 		return nil, errors.New("invalid status")

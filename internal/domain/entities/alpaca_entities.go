@@ -1,14 +1,21 @@
+// Package entities — Alpaca brokerage entity stubs.
+//
+// Alpaca brokerage onboarding and order execution have been removed from the
+// live code path (investment execution now routes through the Glider/Solana
+// sleeve). These types are retained as compile-time stubs so that the domain
+// and infrastructure packages that still reference them (balance, station,
+// portfolio analytics, investing, account deletion) continue to build. They
+// carry no runtime behavior and are not populated from a live Alpaca backend.
 package entities
 
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
-// Alpaca Account Management Entities
-
-// AlpacaAccountType represents the type of brokerage account
+// AlpacaAccountType represents the type of brokerage account.
 type AlpacaAccountType string
 
 const (
@@ -16,7 +23,7 @@ const (
 	AlpacaAccountTypeTradingMargin AlpacaAccountType = "trading_margin"
 )
 
-// AlpacaAccountStatus represents the status of an account
+// AlpacaAccountStatus represents the status of an account.
 type AlpacaAccountStatus string
 
 const (
@@ -29,7 +36,8 @@ const (
 	AlpacaAccountStatusSubmitted       AlpacaAccountStatus = "SUBMITTED"
 )
 
-// AlpacaCreateAccountRequest represents a request to create a new brokerage account
+// AlpacaCreateAccountRequest is a deprecated request shape retained for the
+// optional KYC-side account creation stub.
 type AlpacaCreateAccountRequest struct {
 	Contact        AlpacaContact         `json:"contact"`
 	Identity       AlpacaIdentity        `json:"identity"`
@@ -39,67 +47,84 @@ type AlpacaCreateAccountRequest struct {
 	TrustedContact *AlpacaTrustedContact `json:"trusted_contact,omitempty"`
 }
 
-// AlpacaContact contains contact information
 type AlpacaContact struct {
 	EmailAddress  string   `json:"email_address"`
 	PhoneNumber   string   `json:"phone_number"`
 	StreetAddress []string `json:"street_address"`
 	City          string   `json:"city"`
-	State         string   `json:"state,omitempty"` // For US addresses
+	State         string   `json:"state,omitempty"`
 	PostalCode    string   `json:"postal_code"`
 	Country       string   `json:"country,omitempty"`
 }
 
-// AlpacaIdentity contains identity information
 type AlpacaIdentity struct {
-	GivenName             string   `json:"given_name"`
-	MiddleName            string   `json:"middle_name,omitempty"`
-	FamilyName            string   `json:"family_name"`
-	DateOfBirth           string   `json:"date_of_birth"` // YYYY-MM-DD format
-	TaxID                 string   `json:"tax_id,omitempty"`
-	TaxIDType             string   `json:"tax_id_type,omitempty"` // USA_SSN, etc.
-	CountryOfCitizenship  string   `json:"country_of_citizenship,omitempty"`
-	CountryOfBirth        string   `json:"country_of_birth,omitempty"`
-	CountryOfTaxResidence string   `json:"country_of_tax_residence,omitempty"`
-	FundingSource         []string `json:"funding_source,omitempty"`
+	GivenName             string `json:"given_name"`
+	MiddleName            string `json:"middle_name,omitempty"`
+	FamilyName            string `json:"family_name"`
+	DateOfBirth           string `json:"date_of_birth"`
+	TaxID                 string `json:"tax_id,omitempty"`
+	TaxIDType             string `json:"tax_id_type,omitempty"`
+	CountryOfTaxResidence string `json:"country_of_tax_residence,omitempty"`
 }
 
-// AlpacaDisclosures contains regulatory disclosures
 type AlpacaDisclosures struct {
-	IsControlPerson             bool   `json:"is_control_person"`
-	IsAffiliatedExchangeOrFINRA bool   `json:"is_affiliated_exchange_or_finra"`
-	IsPoliticallyExposed        bool   `json:"is_politically_exposed"`
-	ImmediateFamilyExposed      bool   `json:"immediate_family_exposed"`
-	EmploymentStatus            string `json:"employment_status,omitempty"` // employed, unemployed, student, retired
-	EmployerName                string `json:"employer_name,omitempty"`
-	EmployerAddress             string `json:"employer_address,omitempty"`
-	EmploymentPosition          string `json:"employment_position,omitempty"`
+	DayTradingAsMargin          bool             `json:"day_trading_as_margin,omitempty"`
+	IsControlPerson             bool             `json:"is_control_person,omitempty"`
+	FinancialStatus             *FinancialStatus `json:"financial_status,omitempty"`
+	AnnualIncome                string           `json:"annual_income,omitempty"`
+	Networth                    *NetWorth        `json:"net_worth,omitempty"`
+	VoluntaryDayTrading         bool             `json:"voluntary_day_trading,omitempty"`
+	UnderstandsSpeculation      bool             `json:"understands_speculation,omitempty"`
+	UnderstandsRisk             bool             `json:"understands_risk,omitempty"`
+	IntentToReserve             *IntentToReserve `json:"intent_to_reserve,omitempty"`
+	Employment                  *Employment      `json:"employment,omitempty"`
+	MailingAddress              *MailingAddress  `json:"mailing_address,omitempty"`
+	MarginPercentage            string           `json:"margin_percentage,omitempty"`
+	IsAffiliatedExchangeOrFINRA bool             `json:"is_affiliated_exchange_or_finra,omitempty"`
+	IsPoliticallyExposed        bool             `json:"is_politically_exposed,omitempty"`
+	ImmediateFamilyExposed      bool             `json:"immediate_family_exposed,omitempty"`
 }
 
-// AlpacaAgreement represents a signed agreement
+type FinancialStatus string
+type NetWorth string
+type IntentToReserve string
+type Employment struct {
+	Status           string `json:"status"`
+	EmployerName     string `json:"employer_name,omitempty"`
+	EmployerAddr     string `json:"employer_address,omitempty"`
+	EmploymentStatus string `json:"employment_status,omitempty"`
+}
+type MailingAddress struct {
+	City       string `json:"city"`
+	State      string `json:"state"`
+	PostalCode string `json:"postal_code"`
+}
+
 type AlpacaAgreement struct {
-	Agreement string `json:"agreement"` // account, customer, margin, etc.
-	SignedAt  string `json:"signed_at"` // RFC3339 format
-	IPAddress string `json:"ip_address"`
-	Revision  string `json:"revision,omitempty"`
+	AgreementType string `json:"agreement_type"` // customer, margin, account
+	SigningDate   string `json:"signing_date,omitempty"`
+	Content       string `json:"content,omitempty"`
+	Agreement     string `json:"agreement,omitempty"`
+	SignedAt      string `json:"signed_at,omitempty"`
+	IPAddress     string `json:"ip_address,omitempty"`
 }
 
-// AlpacaDocument represents an uploaded document
 type AlpacaDocument struct {
-	DocumentType    string `json:"document_type"` // identity_verification, etc.
+	DocumentType    string `json:"document_type"` // IDENTITY_VERIFICATION, ADDRESS_VERIFICATION
 	DocumentSubType string `json:"document_sub_type,omitempty"`
-	Content         string `json:"content"` // Base64 encoded
-	MIMEType        string `json:"mime_type"`
+	Content         string `json:"content,omitempty"`
 }
 
-// AlpacaTrustedContact contains trusted contact information
 type AlpacaTrustedContact struct {
-	GivenName    string `json:"given_name"`
-	FamilyName   string `json:"family_name"`
-	EmailAddress string `json:"email_address,omitempty"`
+	GivenName   string         `json:"given_name,omitempty"`
+	MiddleName  string         `json:"middle_name,omitempty"`
+	FamilyName  string         `json:"family_name,omitempty"`
+	Email       string         `json:"email,omitempty"`
+	PhoneNumber string         `json:"phone_number,omitempty"`
+	Address     *AlpacaContact `json:"address,omitempty"`
 }
 
-// AlpacaAccountResponse represents the response when creating/getting an account
+// AlpacaAccountResponse is the account response shape (stub).
 type AlpacaAccountResponse struct {
 	ID                   string              `json:"id"`
 	AccountNumber        string              `json:"account_number"`
@@ -121,9 +146,7 @@ type AlpacaAccountResponse struct {
 	Disclosures          AlpacaDisclosures   `json:"disclosures,omitempty"`
 }
 
-// Alpaca Trading Entities
-
-// AlpacaOrderSide represents the side of an order
+// AlpacaOrderSide is the side of an order.
 type AlpacaOrderSide string
 
 const (
@@ -131,7 +154,7 @@ const (
 	AlpacaOrderSideSell AlpacaOrderSide = "sell"
 )
 
-// AlpacaOrderType represents the type of order
+// AlpacaOrderType is the type of order.
 type AlpacaOrderType string
 
 const (
@@ -142,19 +165,19 @@ const (
 	AlpacaOrderTypeTrailingStop AlpacaOrderType = "trailing_stop"
 )
 
-// AlpacaTimeInForce represents how long an order stays active
+// AlpacaTimeInForce is how long an order stays active.
 type AlpacaTimeInForce string
 
 const (
 	AlpacaTimeInForceDay AlpacaTimeInForce = "day"
-	AlpacaTimeInForceGTC AlpacaTimeInForce = "gtc" // Good til canceled
-	AlpacaTimeInForceOPG AlpacaTimeInForce = "opg" // Market on open
-	AlpacaTimeInForceCLS AlpacaTimeInForce = "cls" // Market on close
-	AlpacaTimeInForceIOC AlpacaTimeInForce = "ioc" // Immediate or cancel
-	AlpacaTimeInForceFOK AlpacaTimeInForce = "fok" // Fill or kill
+	AlpacaTimeInForceGTC AlpacaTimeInForce = "gtc"
+	AlpacaTimeInForceOPG AlpacaTimeInForce = "opg"
+	AlpacaTimeInForceCLS AlpacaTimeInForce = "cls"
+	AlpacaTimeInForceIOC AlpacaTimeInForce = "ioc"
+	AlpacaTimeInForceFOK AlpacaTimeInForce = "fok"
 )
 
-// AlpacaOrderStatus represents the status of an order
+// AlpacaOrderStatus is the status of an order.
 type AlpacaOrderStatus string
 
 const (
@@ -176,11 +199,11 @@ const (
 	AlpacaOrderStatusCalculated         AlpacaOrderStatus = "calculated"
 )
 
-// AlpacaCreateOrderRequest represents a request to create an order
+// AlpacaCreateOrderRequest is a deprecated order request shape (stub).
 type AlpacaCreateOrderRequest struct {
 	Symbol         string            `json:"symbol"`
-	Qty            *decimal.Decimal  `json:"qty,omitempty"`      // Quantity (fractional shares supported)
-	Notional       *decimal.Decimal  `json:"notional,omitempty"` // Dollar amount (for market orders)
+	Qty            *decimal.Decimal  `json:"qty,omitempty"`
+	Notional       *decimal.Decimal  `json:"notional,omitempty"`
 	Side           AlpacaOrderSide   `json:"side"`
 	Type           AlpacaOrderType   `json:"type"`
 	TimeInForce    AlpacaTimeInForce `json:"time_in_force"`
@@ -190,12 +213,12 @@ type AlpacaCreateOrderRequest struct {
 	TrailPercent   *decimal.Decimal  `json:"trail_percent,omitempty"`
 	ExtendedHours  bool              `json:"extended_hours,omitempty"`
 	ClientOrderID  string            `json:"client_order_id,omitempty"`
-	OrderClass     string            `json:"order_class,omitempty"` // simple, bracket, oco, oto
+	OrderClass     string            `json:"order_class,omitempty"`
 	Commission     *decimal.Decimal  `json:"commission,omitempty"`
-	CommissionType string            `json:"commission_type,omitempty"` // notional, qty, bps
+	CommissionType string            `json:"commission_type,omitempty"`
 }
 
-// AlpacaOrderResponse represents the response when creating/getting an order
+// AlpacaOrderResponse is the order response shape (stub).
 type AlpacaOrderResponse struct {
 	ID             string                `json:"id"`
 	ClientOrderID  string                `json:"client_order_id"`
@@ -230,9 +253,7 @@ type AlpacaOrderResponse struct {
 	CommissionType string                `json:"commission_type,omitempty"`
 }
 
-// Alpaca Asset Entities
-
-// AlpacaAssetClass represents the class of an asset
+// AlpacaAssetClass is the class of an asset.
 type AlpacaAssetClass string
 
 const (
@@ -240,7 +261,7 @@ const (
 	AlpacaAssetClassCrypto   AlpacaAssetClass = "crypto"
 )
 
-// AlpacaAssetStatus represents the status of an asset
+// AlpacaAssetStatus is the status of an asset.
 type AlpacaAssetStatus string
 
 const (
@@ -248,7 +269,7 @@ const (
 	AlpacaAssetStatusInactive AlpacaAssetStatus = "inactive"
 )
 
-// AlpacaAssetResponse represents an asset (stock, ETF, crypto)
+// AlpacaAssetResponse is the asset response shape (stub).
 type AlpacaAssetResponse struct {
 	ID                string            `json:"id"`
 	Class             AlpacaAssetClass  `json:"class"`
@@ -268,9 +289,7 @@ type AlpacaAssetResponse struct {
 	PriceIncrement    *decimal.Decimal  `json:"price_increment,omitempty"`
 }
 
-// Alpaca Position Entities
-
-// AlpacaPositionResponse represents a position in a portfolio
+// AlpacaPositionResponse is the position response shape (stub).
 type AlpacaPositionResponse struct {
 	AssetID                string          `json:"asset_id"`
 	Symbol                 string          `json:"symbol"`
@@ -279,11 +298,11 @@ type AlpacaPositionResponse struct {
 	AvgEntryPrice          decimal.Decimal `json:"avg_entry_price"`
 	Qty                    decimal.Decimal `json:"qty"`
 	QtyAvailable           decimal.Decimal `json:"qty_available"`
-	Side                   string          `json:"side"` // long or short
+	Side                   string          `json:"side"`
 	MarketValue            decimal.Decimal `json:"market_value"`
 	CostBasis              decimal.Decimal `json:"cost_basis"`
 	UnrealizedPL           decimal.Decimal `json:"unrealized_pl"`
-	UnrealizedPLPC         decimal.Decimal `json:"unrealized_plpc"` // percentage
+	UnrealizedPLPC         decimal.Decimal `json:"unrealized_plpc"`
 	UnrealizedIntradayPL   decimal.Decimal `json:"unrealized_intraday_pl"`
 	UnrealizedIntradayPLPC decimal.Decimal `json:"unrealized_intraday_plpc"`
 	CurrentPrice           decimal.Decimal `json:"current_price"`
@@ -291,9 +310,129 @@ type AlpacaPositionResponse struct {
 	ChangeToday            decimal.Decimal `json:"change_today"`
 }
 
-// Alpaca Market Data Entities
+// AlpacaAccount is a deprecated account lookup model (stub).
+type AlpacaAccount struct {
+	AlpacaAccountID     string              `json:"alpaca_account_id"`
+	BrokerAccountID     string              `json:"broker_account_id"`
+	AlpacaAccountStatus AlpacaAccountStatus `json:"alpaca_account_status"`
+	Status              AlpacaAccountStatus `json:"status"`
+	AccountID           string              `json:"account_id"`
+	UserID              uuid.UUID           `json:"user_id"`
+	Cash                decimal.Decimal     `json:"cash"`
+	PortfolioValue      decimal.Decimal     `json:"portfolio_value"`
+	CreatedAt           time.Time           `json:"created_at"`
+}
 
-// AlpacaNewsArticle represents a news article from market data API
+// AlpacaJournalRequest is a deprecated journal request shape (stub).
+type AlpacaJournalRequest struct {
+	FromAccount                     string          `json:"from_account"`
+	ToAccount                       string          `json:"to_account"`
+	EntryType                       string          `json:"entry_type"`
+	Amount                          decimal.Decimal `json:"amount"`
+	Description                     string          `json:"description,omitempty"`
+	ClientTransferID                string          `json:"client_transfer_id,omitempty"`
+	TransmitterName                 string          `json:"transmitter_name,omitempty"`
+	TransmitterAccountNumber        string          `json:"transmitter_account_number,omitempty"`
+	TransmitterAddress              string          `json:"transmitter_address,omitempty"`
+	TransmitterFinancialInstitution string          `json:"transmitter_financial_institution,omitempty"`
+}
+
+// AlpacaJournalResponse is a deprecated journal response shape (stub).
+type AlpacaJournalResponse struct {
+	ID          string          `json:"id"`
+	FromAccount string          `json:"from_account"`
+	ToAccount   string          `json:"to_account"`
+	EntryType   string          `json:"entry_type"`
+	Amount      decimal.Decimal `json:"amount"`
+	Status      string          `json:"status"`
+	SettleDate  string          `json:"settle_date,omitempty"`
+	SystemDate  string          `json:"system_date,omitempty"`
+	NetAmount   decimal.Decimal `json:"net_amount"`
+	Description string          `json:"description,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// AlpacaErrorResponse is a deprecated Alpaca error shape (stub).
+type AlpacaErrorResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (e *AlpacaErrorResponse) Error() string { return e.Message }
+
+// AlpacaInstantFundingRequest is a deprecated instant-funding request shape (stub).
+type AlpacaInstantFundingRequest struct {
+	AccountNo       string          `json:"account_no"`
+	SourceAccountNo string          `json:"source_account_no"`
+	Amount          decimal.Decimal `json:"amount"`
+}
+
+// AlpacaInstantFundingResponse is a deprecated instant-funding response shape (stub).
+type AlpacaInstantFundingResponse struct {
+	ID               string           `json:"id"`
+	AccountNo        string           `json:"account_no"`
+	SourceAccountNo  string           `json:"source_account_no"`
+	Amount           decimal.Decimal  `json:"amount"`
+	RemainingPayable decimal.Decimal  `json:"remaining_payable"`
+	TotalInterest    decimal.Decimal  `json:"total_interest"`
+	Status           string           `json:"status"`
+	SystemDate       string           `json:"system_date"`
+	Deadline         string           `json:"deadline"`
+	CreatedAt        time.Time        `json:"created_at"`
+	Fees             []AlpacaFee      `json:"fees,omitempty"`
+	Interests        []AlpacaInterest `json:"interests,omitempty"`
+}
+
+// AlpacaFee represents a fee associated with instant funding (stub).
+type AlpacaFee struct {
+	Amount      decimal.Decimal `json:"amount"`
+	Description string          `json:"description"`
+}
+
+// AlpacaInterest represents interest charges for late settlement (stub).
+type AlpacaInterest struct {
+	Amount      decimal.Decimal `json:"amount"`
+	Description string          `json:"description"`
+}
+
+// AlpacaInstantFundingLimitsResponse is a deprecated funding-limits shape (stub).
+type AlpacaInstantFundingLimitsResponse struct {
+	AmountAvailable decimal.Decimal `json:"amount_available"`
+	AmountInUse     decimal.Decimal `json:"amount_in_use"`
+	AmountLimit     decimal.Decimal `json:"amount_limit"`
+}
+
+// AlpacaActivityResponse is a deprecated account-activity shape (stub).
+type AlpacaActivityResponse struct {
+	ID           string          `json:"id"`
+	AccountID    string          `json:"account_id"`
+	ActivityType string          `json:"activity_type"`
+	Date         string          `json:"date"`
+	NetAmount    decimal.Decimal `json:"net_amount"`
+	Symbol       string          `json:"symbol,omitempty"`
+	Qty          decimal.Decimal `json:"qty,omitempty"`
+	Price        decimal.Decimal `json:"price,omitempty"`
+	Side         string          `json:"side,omitempty"`
+	Description  string          `json:"description,omitempty"`
+}
+
+// AlpacaPortfolioHistoryResponse is a deprecated portfolio-history shape (stub).
+type AlpacaPortfolioHistoryResponse struct {
+	Timestamp    []int64           `json:"timestamp"`
+	Equity       []decimal.Decimal `json:"equity"`
+	ProfitLoss   []decimal.Decimal `json:"profit_loss"`
+	ProfitLossPC []decimal.Decimal `json:"profit_loss_pct"`
+	BaseValue    decimal.Decimal   `json:"base_value"`
+	Timeframe    string            `json:"timeframe"`
+}
+
+// AlpacaNewsImage is a deprecated market-data shape (stub).
+type AlpacaNewsImage struct {
+	Size string `json:"size"`
+	URL  string `json:"url"`
+}
+
+// AlpacaNewsArticle is a deprecated market-data shape (stub).
 type AlpacaNewsArticle struct {
 	ID        int               `json:"id"`
 	Author    string            `json:"author"`
@@ -308,137 +447,60 @@ type AlpacaNewsArticle struct {
 	URL       string            `json:"url"`
 }
 
-// AlpacaNewsImage represents an image in a news article
-type AlpacaNewsImage struct {
-	Size string `json:"size"` // thumb, small, large
-	URL  string `json:"url"`
-}
-
-// AlpacaNewsRequest represents a request for news articles
+// AlpacaNewsRequest is a deprecated market-data shape (stub).
 type AlpacaNewsRequest struct {
-	Symbols            []string   `json:"symbols,omitempty"`             // Filter by symbols
-	Start              *time.Time `json:"start,omitempty"`               // Start time (RFC3339)
-	End                *time.Time `json:"end,omitempty"`                 // End time (RFC3339)
-	Limit              int        `json:"limit,omitempty"`               // Max results (default 10, max 50)
-	Sort               string     `json:"sort,omitempty"`                // ASC or DESC
-	IncludeContent     bool       `json:"include_content,omitempty"`     // Include full content
-	ExcludeContentless bool       `json:"exclude_contentless,omitempty"` // Exclude articles without content
-	PageToken          string     `json:"page_token,omitempty"`          // Pagination token
+	Symbols            []string   `json:"symbols,omitempty"`
+	Start              *time.Time `json:"start,omitempty"`
+	End                *time.Time `json:"end,omitempty"`
+	Limit              int        `json:"limit,omitempty"`
+	Sort               string     `json:"sort,omitempty"`
+	IncludeContent     bool       `json:"include_content,omitempty"`
+	ExcludeContentless bool       `json:"exclude_contentless,omitempty"`
+	PageToken          string     `json:"page_token,omitempty"`
 }
 
-// AlpacaNewsResponse represents the response for news articles
+// AlpacaNewsResponse is a deprecated market-data shape (stub).
 type AlpacaNewsResponse struct {
 	News          []AlpacaNewsArticle `json:"news"`
 	NextPageToken string              `json:"next_page_token,omitempty"`
 }
 
-// Alpaca Error Response
-
-// Alpaca Funding Entities
-
-// AlpacaInstantFundingRequest represents a request to create an instant funding transfer
-type AlpacaInstantFundingRequest struct {
-	AccountNo       string          `json:"account_no"`
-	SourceAccountNo string          `json:"source_account_no"`
-	Amount          decimal.Decimal `json:"amount"`
+// InvestmentPosition represents a single holding in a portfolio.
+// Used by portfolio analytics, rebalancing, and investment-stash handlers.
+type InvestmentPosition struct {
+	ID                   uuid.UUID       `json:"id"`
+	UserID               uuid.UUID       `json:"user_id"`
+	Symbol               string          `json:"symbol"`
+	Name                 string          `json:"name"`
+	QTY                  decimal.Decimal `json:"qty"`
+	AvgEntryPrice        decimal.Decimal `json:"avg_entry_price"`
+	CurrentPrice         decimal.Decimal `json:"current_price"`
+	MarketValue          decimal.Decimal `json:"market_value"`
+	CostBasis            decimal.Decimal `json:"cost_basis"`
+	UnrealizedPL         decimal.Decimal `json:"unrealized_pl"`
+	UnrealizedPLPC       decimal.Decimal `json:"unrealized_plpc"`
+	UnrealizedIntradayPL decimal.Decimal `json:"unrealized_intraday_pl"`
+	LastdayPrice         decimal.Decimal `json:"lastday_price"`
+	ChangeToday          decimal.Decimal `json:"change_today"`
 }
 
-// AlpacaInstantFundingResponse represents the response for an instant funding transfer
-type AlpacaInstantFundingResponse struct {
-	ID               string           `json:"id"`
-	AccountNo        string           `json:"account_no"`
-	SourceAccountNo  string           `json:"source_account_no"`
-	Amount           decimal.Decimal  `json:"amount"`
-	RemainingPayable decimal.Decimal  `json:"remaining_payable"`
-	TotalInterest    decimal.Decimal  `json:"total_interest"`
-	Status           string           `json:"status"` // PENDING, EXECUTED, COMPLETED, CANCELED, FAILED
-	SystemDate       string           `json:"system_date"`
-	Deadline         string           `json:"deadline"`
-	CreatedAt        time.Time        `json:"created_at"`
-	Fees             []AlpacaFee      `json:"fees,omitempty"`
-	Interests        []AlpacaInterest `json:"interests,omitempty"`
-}
-
-// AlpacaFee represents a fee associated with instant funding
-type AlpacaFee struct {
-	Amount      decimal.Decimal `json:"amount"`
-	Description string          `json:"description"`
-}
-
-// AlpacaInterest represents interest charges for late settlement
-type AlpacaInterest struct {
-	Amount      decimal.Decimal `json:"amount"`
-	Description string          `json:"description"`
-}
-
-// AlpacaInstantFundingLimitsResponse represents instant funding limits
-type AlpacaInstantFundingLimitsResponse struct {
-	AmountAvailable decimal.Decimal `json:"amount_available"`
-	AmountInUse     decimal.Decimal `json:"amount_in_use"`
-	AmountLimit     decimal.Decimal `json:"amount_limit"`
-}
-
-// AlpacaJournalRequest represents a request to create a journal entry
-type AlpacaJournalRequest struct {
-	FromAccount                     string          `json:"from_account"`
-	ToAccount                       string          `json:"to_account"`
-	EntryType                       string          `json:"entry_type"` // JNLC (cash), JNLS (securities)
-	Amount                          decimal.Decimal `json:"amount"`
-	Description                     string          `json:"description,omitempty"`
-	ClientTransferID                string          `json:"client_transfer_id,omitempty"` // idempotency key
-	TransmitterName                 string          `json:"transmitter_name,omitempty"`
-	TransmitterAccountNumber        string          `json:"transmitter_account_number,omitempty"`
-	TransmitterAddress              string          `json:"transmitter_address,omitempty"`
-	TransmitterFinancialInstitution string          `json:"transmitter_financial_institution,omitempty"`
-}
-
-// AlpacaJournalResponse represents the response for a journal entry
-type AlpacaJournalResponse struct {
-	ID          string          `json:"id"`
-	FromAccount string          `json:"from_account"`
-	ToAccount   string          `json:"to_account"`
-	EntryType   string          `json:"entry_type"`
-	Amount      decimal.Decimal `json:"amount"`
-	Status      string          `json:"status"` // pending, executed, canceled
-	SettleDate  string          `json:"settle_date,omitempty"`
-	SystemDate  string          `json:"system_date,omitempty"`
-	NetAmount   decimal.Decimal `json:"net_amount"`
-	Description string          `json:"description,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-}
-
-// AlpacaErrorResponse represents an error response from Alpaca API
-type AlpacaErrorResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func (e *AlpacaErrorResponse) Error() string {
-	return e.Message
-}
-
-// Additional Alpaca Entities
-
-// AlpacaActivityResponse represents account activity (trades, dividends, etc.)
-type AlpacaActivityResponse struct {
-	ID           string          `json:"id"`
-	AccountID    string          `json:"account_id"`
-	ActivityType string          `json:"activity_type"` // FILL, DIV, etc.
-	Date         string          `json:"date"`
-	NetAmount    decimal.Decimal `json:"net_amount"`
-	Symbol       string          `json:"symbol,omitempty"`
-	Qty          decimal.Decimal `json:"qty,omitempty"`
-	Price        decimal.Decimal `json:"price,omitempty"`
-	Side         string          `json:"side,omitempty"`
-	Description  string          `json:"description,omitempty"`
-}
-
-// AlpacaPortfolioHistoryResponse represents portfolio performance over time
-type AlpacaPortfolioHistoryResponse struct {
-	Timestamp    []int64           `json:"timestamp"`
-	Equity       []decimal.Decimal `json:"equity"`
-	ProfitLoss   []decimal.Decimal `json:"profit_loss"`
-	ProfitLossPC []decimal.Decimal `json:"profit_loss_pct"`
-	BaseValue    decimal.Decimal   `json:"base_value"`
-	Timeframe    string            `json:"timeframe"`
+// InvestmentOrder represents an executed or pending investment order.
+type InvestmentOrder struct {
+	ID             uuid.UUID         `json:"id"`
+	UserID         uuid.UUID         `json:"user_id"`
+	BasketID       *uuid.UUID        `json:"basket_id,omitempty"`
+	Symbol         string            `json:"symbol"`
+	Side           AlpacaOrderSide   `json:"side"`
+	Type           AlpacaOrderType   `json:"type"`
+	ClientOrderID  string            `json:"client_order_id"`
+	Status         AlpacaOrderStatus `json:"status"`
+	Qty            *decimal.Decimal  `json:"qty,omitempty"`
+	Notional       *decimal.Decimal  `json:"notional,omitempty"`
+	LimitPrice     *decimal.Decimal  `json:"limit_price,omitempty"`
+	FilledQty      decimal.Decimal   `json:"filled_qty"`
+	FilledAvgPrice *decimal.Decimal  `json:"filled_avg_price,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	SubmittedAt    *time.Time        `json:"submitted_at,omitempty"`
+	FilledAt       *time.Time        `json:"filled_at,omitempty"`
+	AlpacaOrderID  *string           `json:"alpaca_order_id,omitempty"`
 }

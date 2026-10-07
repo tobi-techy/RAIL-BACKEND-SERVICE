@@ -46,19 +46,6 @@ type SessionService interface {
 	InvalidateAllUserSessions(ctx context.Context, userID uuid.UUID) error
 }
 
-// AlpacaAccountRepository interface for Alpaca account lookup
-type AlpacaAccountRepository interface {
-	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
-}
-
-// AlpacaClient interface for Alpaca operations
-type AlpacaClient interface {
-	CloseAccount(ctx context.Context, accountID string) error
-	CloseAllPositions(ctx context.Context, accountID string) error
-	CancelAllOrders(ctx context.Context, accountID string) error
-	ListPositions(ctx context.Context, accountID string) ([]entities.AlpacaPositionResponse, error)
-}
-
 // VirtualAccountRepository interface for Bridge virtual accounts
 type VirtualAccountRepository interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
@@ -102,8 +89,6 @@ type DeletionService struct {
 	diditClient           DiditSessionDeleter
 	kycUserLookup         KYCUserLookup
 	kycSubmissionRepo     KYCSubmissionRepository
-	alpacaAccountRepo     AlpacaAccountRepository
-	alpacaClient          AlpacaClient
 	virtualAccountRepo    VirtualAccountRepository
 	bridgeClient          BridgeClient
 	treasuryWalletAddress string
@@ -129,12 +114,6 @@ func NewDeletionService(
 		treasuryWalletAddress: treasuryWalletAddress,
 		logger:                logger,
 	}
-}
-
-// SetAlpacaClient sets the Alpaca client for account closure
-func (s *DeletionService) SetAlpacaClient(repo AlpacaAccountRepository, client AlpacaClient) {
-	s.alpacaAccountRepo = repo
-	s.alpacaClient = client
 }
 
 // SetBridgeClient sets the Bridge client for virtual account deactivation
@@ -262,43 +241,9 @@ func (s *DeletionService) deleteAccountInternal(ctx context.Context, req *Delete
 }
 
 // cleanupExternalProviders closes/deactivates accounts on external providers
-// Returns error if critical cleanup fails (Alpaca positions/orders)
+// Returns error if critical cleanup fails
 func (s *DeletionService) cleanupExternalProviders(ctx context.Context, userID uuid.UUID) error {
 	var criticalErrors []string
-
-	// Close Alpaca account - must liquidate positions and cancel orders first
-	if s.alpacaAccountRepo != nil && s.alpacaClient != nil {
-		if alpacaAccount, err := s.alpacaAccountRepo.GetByUserID(ctx, userID); err == nil && alpacaAccount != nil {
-			alpacaID := alpacaAccount.AlpacaAccountID
-
-			// Step 1: Cancel all open orders
-			if err := s.alpacaClient.CancelAllOrders(ctx, alpacaID); err != nil {
-				s.logger.Warn("Failed to cancel Alpaca orders", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
-				// Continue - orders may already be filled or none exist
-			}
-
-			// Step 2: Close all positions (liquidate)
-			positions, _ := s.alpacaClient.ListPositions(ctx, alpacaID)
-			if len(positions) > 0 {
-				if err := s.alpacaClient.CloseAllPositions(ctx, alpacaID); err != nil {
-					s.logger.Error("Failed to liquidate Alpaca positions", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
-					criticalErrors = append(criticalErrors, fmt.Sprintf("alpaca positions: %v", err))
-				} else {
-					s.logger.Info("Liquidated Alpaca positions", "user_id", userID.String(), "alpaca_id", alpacaID, "count", len(positions))
-				}
-			}
-
-			// Step 3: Close the account (only if positions were liquidated)
-			if len(criticalErrors) == 0 {
-				if err := s.alpacaClient.CloseAccount(ctx, alpacaID); err != nil {
-					s.logger.Warn("Failed to close Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaID, "error", err)
-					// Not critical - account may have pending settlements
-				} else {
-					s.logger.Info("Closed Alpaca account", "user_id", userID.String(), "alpaca_id", alpacaID)
-				}
-			}
-		}
-	}
 
 	// Delete Bridge customer record (removes all PII from Bridge)
 	// Source customer ID from user record first, fall back to virtual accounts

@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
+	_ "time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -66,22 +66,11 @@ func (a *orchestratorAdapter) pythonTokenClaims(ctx context.Context, uid uuid.UU
 	return u.Email, pythonRole(u.KYCStatus, u.EmailVerified, u.IsActive)
 }
 
-// costCeilingMessage returns the monthly-AI-limit reply when the user is over
-// the ceiling, mirroring the Go path. The bool reports whether the ceiling hit.
-func (a *orchestratorAdapter) costCeilingMessage(ctx context.Context, uid uuid.UUID) (*platform.PlatformReply, bool) {
-	if a.orchestrator == nil {
-		return nil, false
-	}
-	if !a.orchestrator.IsUserOverCostCeiling(ctx, uid) {
-		return nil, false
-	}
-	nextMonth := time.Now().AddDate(0, 1, 0)
-	resetDate := time.Date(nextMonth.Year(), nextMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
-	daysUntil := int(resetDate.Sub(time.Now()).Hours() / 24)
-	return &platform.PlatformReply{
-		Text: fmt.Sprintf("You've hit your monthly AI limit. Miriam will be back on %s (%d days).",
-			resetDate.Format("Jan 2"), daysUntil),
-	}, true
+// costCeilingMessage used to mirror the in-process Go AI cost guard. With the
+// AI brain removed from Go, the monthly AI limit is enforced entirely by the
+// Python ledger's own ceilings; Go has no cost-ceiling reply to render.
+func (a *orchestratorAdapter) costCeilingMessage(_ context.Context, _ uuid.UUID) (*platform.PlatformReply, bool) {
+	return nil, false
 }
 
 // mapPythonChatReply projects a Python chat response onto a PlatformReply,

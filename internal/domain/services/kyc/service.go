@@ -48,15 +48,15 @@ var (
 	ErrTaxIDDecryptionFailed  = errors.New("failed to decrypt stored tax_id - cannot proceed")
 	ErrDiditGovIDDataMissing  = errors.New("didit gov ID document data missing")
 
-	ErrSproutPhoneRequired   = errors.New("phone number is required")
-	ErrSproutInvalidDOB      = errors.New("invalid date_of_birth format")
-	ErrSproutInvalidBVN      = errors.New("invalid BVN format")
-	ErrSproutMissingRequest  = errors.New("missing request")
+	ErrSproutPhoneRequired  = errors.New("phone number is required")
+	ErrSproutInvalidDOB     = errors.New("invalid date_of_birth format")
+	ErrSproutInvalidBVN     = errors.New("invalid BVN format")
+	ErrSproutMissingRequest = errors.New("missing request")
 
-	ErrBloomNotAtSproutTier    = errors.New("must be at Sprout tier to upgrade to Bloom")
+	ErrBloomNotAtSproutTier     = errors.New("must be at Sprout tier to upgrade to Bloom")
 	ErrBloomBridgeNotConfigured = errors.New("Bridge adapter not available")
-	ErrBloomBridgeSubmission   = errors.New("Bridge KYC submission failed")
-	ErrBloomMissingRequest     = errors.New("missing request")
+	ErrBloomBridgeSubmission    = errors.New("Bridge KYC submission failed")
+	ErrBloomMissingRequest      = errors.New("missing request")
 
 	BridgeCustomerExistsError = errors.New("Bridge customer already exists")
 )
@@ -123,10 +123,6 @@ type BridgeAdapter interface {
 	UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error)
 }
 
-type AlpacaAdapter interface {
-	CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error)
-}
-
 // KYCNotifier sends push notifications on KYC outcome.
 type KYCNotifier interface {
 	NotifyKYCApproved(ctx context.Context, userID uuid.UUID) error
@@ -137,7 +133,6 @@ type Service struct {
 	userRepo               UserRepository
 	kycSubmissionRepo      KYCSubmissionRepository
 	bridgeAdapter          BridgeAdapter
-	alpacaAdapter          AlpacaAdapter
 	sumsubAdapter          SumsubAdapter
 	diditAdapter           DiditAdapter
 	sumsubWebhookEventRepo SumsubWebhookEventRepository
@@ -215,7 +210,6 @@ func NewService(
 	userRepo UserRepository,
 	kycSubmissionRepo KYCSubmissionRepository,
 	bridgeAdapter BridgeAdapter,
-	alpacaAdapter AlpacaAdapter,
 	sumsubAdapter SumsubAdapter,
 	sumsubWebhookEventRepo SumsubWebhookEventRepository,
 	kycSyncJobRepo KYCSyncJobRepository,
@@ -232,7 +226,6 @@ func NewService(
 		userRepo:               userRepo,
 		kycSubmissionRepo:      kycSubmissionRepo,
 		bridgeAdapter:          bridgeAdapter,
-		alpacaAdapter:          alpacaAdapter,
 		sumsubAdapter:          sumsubAdapter,
 		sumsubWebhookEventRepo: sumsubWebhookEventRepo,
 		kycSyncJobRepo:         kycSyncJobRepo,
@@ -346,14 +339,6 @@ func (s *Service) SubmitKYC(ctx context.Context, req *entities.KYCSubmitRequest)
 
 		user.KYCStatus = "pending"
 		user.KYCSubmittedAt = timePtr(submittedAt)
-
-		if alpacaResult.Success && alpacaResult.Status != "skipped" {
-			// Extract account ID from alpaca response status (format: "account_id:status")
-			parts := strings.Split(alpacaResult.Status, ":")
-			if len(parts) > 0 {
-				user.AlpacaAccountID = &parts[0]
-			}
-		}
 
 		if err := s.userRepo.Update(ctx, user); err != nil {
 			s.logger.Error("Failed to update user after KYC submission",
@@ -997,83 +982,6 @@ func (s *Service) submitToBridgeFromSumsub(ctx context.Context, customerID strin
 	return entities.KYCProviderResult{
 		Success: true,
 		Status:  string(customer.Status),
-	}
-}
-
-func (s *Service) submitToAlpaca(ctx context.Context, user *entities.UserProfile, req *entities.KYCSubmitRequest) entities.KYCProviderResult {
-	if existingAccountID := strings.TrimSpace(stringValue(user.AlpacaAccountID)); existingAccountID != "" {
-		return entities.KYCProviderResult{
-			Success: true,
-			Status:  fmt.Sprintf("%s:%s", existingAccountID, "existing_account"),
-		}
-	}
-
-	streetAddress := []string{}
-	if street := stringValue(user.AddressStreet); street != "" {
-		streetAddress = append(streetAddress, street)
-	}
-
-	contactCountry := stringValue(user.AddressCountry)
-	if contactCountry == "" {
-		contactCountry = req.IssuingCountry
-	}
-	// Alpaca requires ISO 3166-1 alpha-3; address form may store alpha-2
-	contactCountry = toAlpha3(contactCountry)
-
-	// Build Alpaca account request
-	alpacaReq := &entities.AlpacaCreateAccountRequest{
-		Contact: entities.AlpacaContact{
-			EmailAddress:  user.Email,
-			PhoneNumber:   stringValue(user.Phone),
-			StreetAddress: streetAddress,
-			City:          stringValue(user.AddressCity),
-			State:         stringValue(user.AddressState),
-			PostalCode:    stringValue(user.AddressPostalCode),
-			Country:       contactCountry,
-		},
-		Identity: entities.AlpacaIdentity{
-			GivenName:             stringValue(user.FirstName),
-			FamilyName:            stringValue(user.LastName),
-			DateOfBirth:           formatDate(user.DateOfBirth),
-			TaxID:                 req.TaxID,
-			TaxIDType:             MapTaxIDTypeToAlpaca(req.TaxIDType),
-			CountryOfTaxResidence: req.IssuingCountry,
-		},
-		Disclosures: entities.AlpacaDisclosures{
-			IsControlPerson:             req.Disclosures.IsControlPerson,
-			IsAffiliatedExchangeOrFINRA: req.Disclosures.IsAffiliatedExchangeOrFINRA,
-			IsPoliticallyExposed:        req.Disclosures.IsPoliticallyExposed,
-			ImmediateFamilyExposed:      req.Disclosures.ImmediateFamilyExposed,
-		},
-		Agreements: []entities.AlpacaAgreement{
-			{
-				Agreement: "account_agreement",
-				SignedAt:  time.Now().Format(time.RFC3339),
-				IPAddress: req.IPAddress,
-			},
-			{
-				Agreement: "customer_agreement",
-				SignedAt:  time.Now().Format(time.RFC3339),
-				IPAddress: req.IPAddress,
-			},
-		},
-	}
-
-	account, err := s.alpacaAdapter.CreateAccount(ctx, alpacaReq)
-	if err != nil {
-		s.logger.Error("Alpaca account creation failed",
-			zap.Error(err),
-			zap.String("user_id", req.UserID.String()),
-		)
-		return entities.KYCProviderResult{
-			Success: false,
-			Error:   "Failed to create Alpaca account",
-		}
-	}
-
-	return entities.KYCProviderResult{
-		Success: true,
-		Status:  fmt.Sprintf("%s:%s", account.ID, account.Status),
 	}
 }
 
@@ -1963,51 +1871,6 @@ func (s *Service) RetryBridgeDiditSync(ctx context.Context, payload []byte) erro
 	return s.RepairBridgeGovID(ctx, userID)
 }
 
-// RetryAlpacaSync re-submits to Alpaca using the job payload.
-func (s *Service) RetryAlpacaSync(ctx context.Context, payload []byte) error {
-	var data map[string]any
-	if err := json.Unmarshal(payload, &data); err != nil {
-		return fmt.Errorf("invalid alpaca retry payload: %w", err)
-	}
-
-	userIDStr := getMapString(data, "user_id")
-	if userIDStr == "" {
-		return fmt.Errorf("alpaca retry payload missing user_id")
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		return fmt.Errorf("alpaca retry payload invalid user_id: %w", err)
-	}
-
-	profile, err := s.userRepo.GetProfileByUserID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user profile for alpaca retry: %w", err)
-	}
-
-	req := sumsubRequestFromVerificationData(data)
-	req.UserID = userID
-	req.IPAddress = "retry"
-
-	result := s.submitToAlpaca(ctx, profile, req)
-	if !result.Success {
-		return fmt.Errorf("alpaca retry failed: %s", result.Error)
-	}
-
-	user, err := s.userRepo.GetByID(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get user for alpaca retry update: %w", err)
-	}
-	now := time.Now()
-	user.KYCStatus = string(entities.KYCStatusApproved)
-	user.KYCApprovedAt = &now
-	user.KYCRejectionReason = nil
-	parts := strings.Split(result.Status, ":")
-	if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-		user.AlpacaAccountID = &parts[0]
-	}
-	return s.userRepo.Update(ctx, user)
-}
-
 // RefreshSumsubToken issues a new short-lived WebSDK access token for the user's
 // existing Sumsub applicant. Used when the SDK token expires mid-flow.
 func (s *Service) RefreshSumsubToken(ctx context.Context, userID uuid.UUID) (*entities.KYCSumsubSessionResponse, error) {
@@ -2515,11 +2378,11 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 		msg += " NGN account provisioning is not configured."
 	}
 	response := &entities.SproutUpgradeResponse{
-		Status:        "upgraded",
-		Message:       msg,
-		KYCTier:       entities.KYCTierLevelBasic,
-		TierName:      "basic",
-		BridgeResult:  bridgeResult,
+		Status:       "upgraded",
+		Message:      msg,
+		KYCTier:      entities.KYCTierLevelBasic,
+		TierName:     "basic",
+		BridgeResult: bridgeResult,
 		Capabilities: entities.TierCapabilities{
 			Tier:               caps.Tier,
 			CanDepositCrypto:   caps.CanDepositCrypto,
@@ -2529,7 +2392,7 @@ func (s *Service) SproutUpgrade(ctx context.Context, userID uuid.UUID, req *enti
 			CanInvest:          caps.CanInvest,
 			CanInvestTokenized: caps.CanInvestTokenized,
 		},
-		NGNAccount:     ngnaAccount,
+		NGNAccount: ngnaAccount,
 	}
 
 	s.logger.Info("Sprout upgrade completed",

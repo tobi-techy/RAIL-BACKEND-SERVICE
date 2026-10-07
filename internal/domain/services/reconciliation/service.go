@@ -31,8 +31,7 @@ type Service struct {
 	conversionRepo     *repositories.ConversionRepository
 
 	// External services
-	ledgerService  LedgerService
-	alpacaClient   AlpacaClient
+	ledgerService LedgerService
 
 	// Observability
 	logger         *logger.Logger
@@ -46,7 +45,6 @@ type Service struct {
 type Config struct {
 	AutoCorrectLowSeverity bool
 	ToleranceCircle        decimal.Decimal
-	ToleranceAlpaca        decimal.Decimal
 	EnableAlerting         bool
 	AlertWebhookURL        string
 	AlertWebhookSecret     string
@@ -64,11 +62,6 @@ type LedgerService interface {
 // Deprecated: remove once all callers are updated.
 type CircleClient interface {
 	GetTotalUSDCBalance(ctx context.Context) (decimal.Decimal, error)
-}
-
-// AlpacaClient interface for Alpaca API operations
-type AlpacaClient interface {
-	GetTotalBuyingPower(ctx context.Context) (decimal.Decimal, error)
 }
 
 // MetricsService interface for metrics operations
@@ -90,7 +83,6 @@ func NewService(
 	conversionRepo *repositories.ConversionRepository,
 	ledgerService LedgerService,
 	_ CircleClient, // deprecated, kept for signature compatibility
-	alpacaClient AlpacaClient,
 	logger *logger.Logger,
 	metricsService MetricsService,
 	config *Config,
@@ -102,7 +94,6 @@ func NewService(
 		withdrawalRepo:     withdrawalRepo,
 		conversionRepo:     conversionRepo,
 		ledgerService:      ledgerService,
-		alpacaClient:       alpacaClient,
 		logger:             logger,
 		metricsService:     metricsService,
 		config:             config,
@@ -201,7 +192,6 @@ func (s *Service) RunReconciliation(ctx context.Context, runType string) (*entit
 func (s *Service) runAllChecks(ctx context.Context, reportID uuid.UUID) []*entities.ReconciliationCheckResult {
 	checks := []func(context.Context, uuid.UUID) (*entities.ReconciliationCheckResult, error){
 		s.CheckLedgerConsistency,
-		s.CheckAlpacaBalance,
 		s.CheckDeposits,
 		s.CheckConversionJobs,
 		s.CheckWithdrawals,
@@ -276,8 +266,6 @@ func (s *Service) determineCorrectionAction(exception *entities.ReconciliationEx
 	switch exception.CheckType {
 	case entities.ReconciliationCheckLedgerConsistency:
 		return "Logged ledger inconsistency for manual review"
-	case entities.ReconciliationCheckAlpacaBalance:
-		return "Logged Alpaca balance discrepancy for investigation"
 	default:
 		return "Logged discrepancy for manual review"
 	}

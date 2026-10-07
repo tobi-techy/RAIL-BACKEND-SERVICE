@@ -1172,7 +1172,7 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Look up user profile to get BridgeCustomerID and AlpacaAccountID server-side
+	// Look up user profile to get BridgeCustomerID server-side
 	if h.userProfileProvider == nil {
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "CONFIG_ERROR", Message: "User profile service not configured"})
 		return
@@ -1188,11 +1188,6 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 		return
 	}
 
-	alpacaAccountID := ""
-	if profile.AlpacaAccountID != nil {
-		alpacaAccountID = *profile.AlpacaAccountID
-	}
-
 	var body struct {
 		Currency string `json:"currency"`
 	}
@@ -1200,7 +1195,6 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 
 	response, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
 		UserID:           userUUID,
-		AlpacaAccountID:  alpacaAccountID,
 		BridgeCustomerID: *profile.BridgeCustomerID,
 		Currency:         body.Currency,
 	})
@@ -1209,10 +1203,6 @@ func (h *WalletFundingHandlers) CreateVirtualAccount(c *gin.Context) {
 		switch {
 		case strings.Contains(err.Error(), "already exists"):
 			c.JSON(http.StatusConflict, entities.ErrorResponse{Code: "VIRTUAL_ACCOUNT_EXISTS", Message: "Virtual account already exists"})
-		case strings.Contains(err.Error(), "not active"):
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_INACTIVE", Message: "Brokerage account is not yet active"})
-		case strings.Contains(err.Error(), "does not belong to authenticated user"):
-			c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_FORBIDDEN", Message: "Account mismatch"})
 		case strings.Contains(err.Error(), "has_not_accepted_tos"):
 			c.JSON(http.StatusBadRequest, entities.ErrorResponse{Code: "has_not_accepted_tos", Message: "Please accept the Bridge Terms of Service before creating a virtual account"})
 		default:

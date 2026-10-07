@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,155 +14,46 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services"
-	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
-	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
-	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	"github.com/rail-service/rail_service/internal/domain/services/roundup"
 	spendingsvc "github.com/rail-service/rail_service/internal/domain/services/spending"
 	"github.com/rail-service/rail_service/internal/domain/services/station"
 	"github.com/rail-service/rail_service/internal/domain/services/wallet"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/publictrades"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
-	"go.uber.org/zap"
 )
 
-func (c *Container) initializeAlpacaInvestmentServices(sqlxDB *sqlx.DB) error {
-	// Initialize repositories
-	c.AlpacaAccountRepo = repositories.NewAlpacaAccountRepository(sqlxDB)
-	c.InvestmentOrderRepo = repositories.NewInvestmentOrderRepository(sqlxDB)
-	c.InvestmentPositionRepo = repositories.NewInvestmentPositionRepository(sqlxDB)
-	c.AlpacaEventRepo = repositories.NewAlpacaEventRepository(sqlxDB)
-	c.AlpacaInstantFundingRepo = repositories.NewAlpacaInstantFundingRepository(sqlxDB)
-
-	// User profile adapter for account service
-	userProfileAdapter := repositories.NewUserProfileAdapter(c.UserRepo)
-
-	// Initialize Account Service
-	c.AlpacaAccountService = alpacaservice.NewAccountService(
-		c.AlpacaClient,
-		c.AlpacaAccountRepo,
-		userProfileAdapter,
-		c.ZapLog,
-	)
-
-	// Initialize Funding Bridge
-	c.AlpacaFundingBridge = alpacaservice.NewFundingBridge(
-		c.AlpacaClient,
-		c.AlpacaAccountRepo,
-		c.AlpacaInstantFundingRepo,
-		c.BalanceRepo,
-		c.Config.Alpaca.FirmAccountNo,
-		c.ZapLog,
-	)
-
-	// Initialize Event Processor
-	c.AlpacaEventProcessor = alpacaservice.NewEventProcessor(
-		c.AlpacaAccountRepo,
-		c.InvestmentOrderRepo,
-		c.InvestmentPositionRepo,
-		c.AlpacaEventRepo,
-		c.BalanceRepo,
-		c.ZapLog,
-	)
-
-	// Initialize Portfolio Sync Service
-	c.AlpacaPortfolioSync = alpacaservice.NewPortfolioSyncService(
-		c.AlpacaClient,
-		c.AlpacaAccountRepo,
-		c.InvestmentPositionRepo,
-		c.BalanceRepo,
-		c.ZapLog,
-	)
-
-	c.ZapLog.Info("Alpaca investment services initialized")
-	return nil
-}
-
-func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
-	// Initialize repositories
-	c.PortfolioSnapshotRepo = repositories.NewPortfolioSnapshotRepository(sqlxDB)
-	c.ScheduledInvestmentRepo = repositories.NewScheduledInvestmentRepository(sqlxDB)
-	c.RebalancingConfigRepo = repositories.NewRebalancingConfigRepository(sqlxDB)
-	c.MarketAlertRepo = repositories.NewMarketAlertRepository(sqlxDB)
-
-	// Initialize Portfolio Analytics Service
-	c.PortfolioAnalyticsService = analyticsservice.NewPortfolioAnalyticsService(
-		c.PortfolioSnapshotRepo,
-		c.InvestmentPositionRepo,
-		c.AlpacaAccountRepo,
-		c.ZapLog,
-	)
-
-	// Initialize Market Data Service
-	c.MarketDataService = marketservice.NewMarketDataService(
-		c.AlpacaClient,
-		c.MarketAlertRepo,
-		&marketNotificationAdapter{svc: c.NotificationService},
-		c.ZapLog,
-		c.Config.Alpaca.TaxonomyFile,
-	)
-
-	// Initialize Order Placer adapter for scheduled investments
-	orderPlacer := &orderPlacerAdapter{
-		investingService: c.InvestingService,
-		accountService:   c.AlpacaAccountService,
-		alpacaClient:     c.AlpacaClient,
-		orderRepo:        c.InvestmentOrderRepo,
-		logger:           c.ZapLog,
-	}
-
-	// Initialize Scheduled Investment Service
-	c.ScheduledInvestmentService = investing.NewScheduledInvestmentService(
-		c.ScheduledInvestmentRepo,
-		orderPlacer,
-		c.BrokerageAdapter, // BasketOrderPlacer
-		c.ZapLog,
-	)
-
-	// Initialize Rebalancing Service
-	c.RebalancingService = investing.NewRebalancingService(
-		c.RebalancingConfigRepo,
-		c.InvestmentPositionRepo,
-		c.MarketDataService,
-		orderPlacer,
-		c.ZapLog,
-	)
-
-	// Initialize Round-up Service
+func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) {
+	// Initialize Round-up Service. The brokerage order placer that used to
+	// execute round-ups was removed with the Alpaca stack; roundup.Service
+	// tolerates a nil order placer (auto-invest execution is skipped).
 	c.RoundupRepo = repositories.NewRoundupRepository(sqlxDB)
 	c.RoundupService = roundup.NewService(
 		c.RoundupRepo,
 		c.LedgerService,
-		orderPlacer,
+		nil, // OrderPlacer — brokerage execution removed
 		nil, // ContributionRecorder - can be added later
 		c.ZapLog,
 		sqlxDB,
 	)
 
-	// Initialize Copy Trading Service
+	// Initialize Copy Trading Service. Order execution against the removed
+	// brokerage adapter is fail-closed (removedCopyTradingAdapter); signal
+	// ingestion (FMP congressional disclosures) still powers
+	// conductor/draft listings.
 	c.CopyTradingRepo = repositories.NewCopyTradingRepository(sqlxDB)
 	c.CopyTradingService = copytrading.NewService(
 		c.CopyTradingRepo,
 		&copyTradingBalanceAdapter{ledgerService: c.LedgerService, userID: uuid.Nil},
-		&copyTradingTradingAdapter{alpacaClient: c.AlpacaClient, accountRepo: c.AlpacaAccountRepo},
+		&removedCopyTradingAdapter{},
 		c.ZapLog,
 	)
-	// Conductor order fills become copy-trading signals; the copy trading
-	// worker then replicates them into drafter accounts.
-	if c.AlpacaEventProcessor != nil {
-		c.AlpacaEventProcessor.SetSignalGenerator(c.CopyTradingService)
-	}
-	// Public-figure copy trading: FMP congressional disclosure feeds power the
-	// same signal pipeline. Without FMP_API_KEY the tools report the data
-	// source as unavailable instead of failing silently.
 	c.PublicTradesClient = publictrades.NewClient(publictrades.Config{APIKey: os.Getenv("FMP_API_KEY")}, c.ZapLog)
 	if !c.PublicTradesClient.Configured() {
 		c.ZapLog.Warn("FMP_API_KEY not set — public-figure copy trading data unavailable")
@@ -211,19 +101,23 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	}
 
 	c.ZapLog.Info("Advanced features initialized")
-	return nil
 }
 
-// marketNotificationAdapter adapts NotificationService for market alerts
-type marketNotificationAdapter struct {
-	svc *services.NotificationService
+// removedCopyTradingAdapter is a fail-closed stub for copytrading.TradingAdapter.
+// The Alpaca brokerage provider has been removed; until order execution is
+// migrated to the Glider/Solana sleeve, every trading call returns an error
+// rather than panicking on a nil interface. Callers already map these errors
+// to failed executions (executeCopyTrade) or skipped signals
+// (ensurePublicSignal), so pending signals fail cleanly instead of crashing
+// the worker process.
+type removedCopyTradingAdapter struct{}
+
+func (a *removedCopyTradingAdapter) PlaceOrder(ctx context.Context, userID uuid.UUID, symbol string, side string, quantity decimal.Decimal) (string, decimal.Decimal, error) {
+	return "", decimal.Zero, fmt.Errorf("trading adapter removed — order execution is not available")
 }
 
-func (a *marketNotificationAdapter) SendPushNotification(ctx context.Context, userID uuid.UUID, title, message string) error {
-	if a.svc == nil {
-		return nil
-	}
-	return a.svc.SendGenericNotification(ctx, userID, title, message)
+func (a *removedCopyTradingAdapter) GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
+	return decimal.Zero, fmt.Errorf("trading adapter removed — market pricing is not available")
 }
 
 type automationCardControllerAdapter struct {
@@ -340,154 +234,6 @@ func (a *copyTradingBalanceAdapter) AddBalance(ctx context.Context, userID uuid.
 	return a.ledgerService.ReleaseReservation(ctx, userID, amount)
 }
 
-// copyTradingTradingAdapter adapts Alpaca client for copy trading order execution
-type copyTradingTradingAdapter struct {
-	alpacaClient *alpaca.Client
-	accountRepo  *repositories.AlpacaAccountRepository
-}
-
-func (a *copyTradingTradingAdapter) PlaceOrder(ctx context.Context, userID uuid.UUID, symbol string, side string, quantity decimal.Decimal) (string, decimal.Decimal, error) {
-	if a.alpacaClient == nil || a.accountRepo == nil {
-		return "", decimal.Zero, fmt.Errorf("trading adapter not configured")
-	}
-
-	// Get user's Alpaca account
-	account, err := a.accountRepo.GetByUserID(ctx, userID)
-	if err != nil || account == nil {
-		return "", decimal.Zero, fmt.Errorf("user has no brokerage account")
-	}
-
-	// Place order via Alpaca
-	orderSide := entities.AlpacaOrderSideBuy
-	if side == "sell" {
-		orderSide = entities.AlpacaOrderSideSell
-	}
-
-	orderReq := &entities.AlpacaCreateOrderRequest{
-		Symbol:      symbol,
-		Qty:         &quantity,
-		Side:        orderSide,
-		Type:        entities.AlpacaOrderTypeMarket,
-		TimeInForce: entities.AlpacaTimeInForceDay,
-	}
-
-	resp, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
-	if err != nil {
-		return "", decimal.Zero, fmt.Errorf("failed to place order: %w", err)
-	}
-
-	// Get executed price (for market orders, use filled_avg_price or current price)
-	executedPrice := decimal.Zero
-	if resp.FilledAvgPrice != nil && !resp.FilledAvgPrice.IsZero() {
-		executedPrice = *resp.FilledAvgPrice
-	}
-
-	return resp.ID, executedPrice, nil
-}
-
-func (a *copyTradingTradingAdapter) GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
-	if a.alpacaClient == nil {
-		return decimal.Zero, fmt.Errorf("trading adapter not configured")
-	}
-
-	quote, err := a.alpacaClient.GetLatestQuote(ctx, symbol)
-	if err != nil {
-		return decimal.Zero, fmt.Errorf("failed to get quote: %w", err)
-	}
-
-	return quote.Ask, nil
-}
-
-// autoInvestOrderPlacerAdapter implements autoinvest.OrderPlacer interface
-type autoInvestOrderPlacerAdapter struct {
-	accountService *alpacaservice.AccountService
-	alpacaClient   *alpaca.Client
-	orderRepo      *repositories.InvestmentOrderRepository
-	logger         *zap.Logger
-}
-
-func (a *autoInvestOrderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error) {
-	// Get user's Alpaca account
-	account, err := a.accountService.GetUserAccount(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("get account: %w", err)
-	}
-	if account == nil {
-		return nil, fmt.Errorf("user has no Alpaca account")
-	}
-
-	// Guard: account must be tradeable
-	if account.AccountBlocked {
-		return nil, fmt.Errorf("alpaca account is blocked for user %s", userID)
-	}
-	if account.TradingBlocked {
-		return nil, fmt.Errorf("trading is blocked on alpaca account for user %s", userID)
-	}
-
-	// Guard: only place orders during market hours (Mon–Fri 09:30–16:00 ET)
-	// DAY orders are rejected by Alpaca outside these hours; queue for next open instead.
-	if !isMarketOpen() {
-		return nil, fmt.Errorf("market is closed: order for %s queued for next market open", symbol)
-	}
-
-	// Create market order via Alpaca
-	orderReq := &entities.AlpacaCreateOrderRequest{
-		Symbol:        symbol,
-		Notional:      &amount,
-		Side:          entities.AlpacaOrderSideBuy,
-		Type:          entities.AlpacaOrderTypeMarket,
-		TimeInForce:   entities.AlpacaTimeInForceDay,
-		ClientOrderID: clientOrderID,
-	}
-
-	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
-	if err != nil {
-		return nil, fmt.Errorf("create order: %w", err)
-	}
-
-	// Store order in database for tracking
-	now := time.Now()
-	order := &entities.InvestmentOrder{
-		ID:              uuid.New(),
-		UserID:          userID,
-		AlpacaAccountID: &account.ID,
-		AlpacaOrderID:   &alpacaOrder.ID,
-		ClientOrderID:   alpacaOrder.ClientOrderID,
-		Symbol:          symbol,
-		Side:            entities.AlpacaOrderSideBuy,
-		OrderType:       entities.AlpacaOrderTypeMarket,
-		TimeInForce:     entities.AlpacaTimeInForceDay,
-		Notional:        &amount,
-		Status:          alpacaOrder.Status,
-		SubmittedAt:     &now,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-
-	if err := a.orderRepo.Create(ctx, order); err != nil {
-		a.logger.Error("Failed to store auto-invest order", zap.Error(err))
-	}
-
-	return alpacaOrder, nil
-}
-
-// isMarketOpen returns true when the US equity market is currently open (Mon–Fri 09:30–16:00 ET).
-func isMarketOpen() bool {
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		// If timezone data is unavailable, fail open so orders aren't silently dropped.
-		return true
-	}
-	et := time.Now().In(loc)
-	wd := et.Weekday()
-	if wd == time.Saturday || wd == time.Sunday {
-		return false
-	}
-	open := time.Date(et.Year(), et.Month(), et.Day(), 9, 30, 0, 0, loc)
-	close := time.Date(et.Year(), et.Month(), et.Day(), 16, 0, 0, 0, loc)
-	return et.After(open) && et.Before(close)
-}
-
 // strategyUserProfileAdapter adapts UserRepository for strategy engine
 type strategyUserProfileAdapter struct {
 	userRepo *repositories.UserRepository
@@ -498,72 +244,6 @@ func (a *strategyUserProfileAdapter) GetByID(ctx context.Context, id uuid.UUID) 
 		return nil, fmt.Errorf("user repository not available")
 	}
 	return a.userRepo.GetByID(ctx, id)
-}
-
-// orderPlacerAdapter implements OrderPlacer interface for scheduled investments
-type orderPlacerAdapter struct {
-	investingService *investing.Service
-	accountService   *alpacaservice.AccountService
-	alpacaClient     *alpaca.Client
-	orderRepo        *repositories.InvestmentOrderRepository
-	logger           *zap.Logger
-}
-
-func (a *orderPlacerAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, notional decimal.Decimal) (*entities.InvestmentOrder, error) {
-	// Get user's Alpaca account
-	account, err := a.accountService.GetUserAccount(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("get account: %w", err)
-	}
-	if account == nil {
-		return nil, fmt.Errorf("user has no Alpaca account")
-	}
-
-	// Determine side based on notional sign
-	side := entities.AlpacaOrderSideBuy
-	if notional.LessThan(decimal.Zero) {
-		side = entities.AlpacaOrderSideSell
-		notional = notional.Abs()
-	}
-
-	// Create order via Alpaca
-	orderReq := &entities.AlpacaCreateOrderRequest{
-		Symbol:      symbol,
-		Notional:    &notional,
-		Side:        side,
-		Type:        entities.AlpacaOrderTypeMarket,
-		TimeInForce: entities.AlpacaTimeInForceDay,
-	}
-
-	alpacaOrder, err := a.alpacaClient.CreateOrder(ctx, account.AlpacaAccountID, orderReq)
-	if err != nil {
-		return nil, fmt.Errorf("create order: %w", err)
-	}
-
-	// Store order in database
-	now := time.Now()
-	order := &entities.InvestmentOrder{
-		ID:              uuid.New(),
-		UserID:          userID,
-		AlpacaAccountID: &account.ID,
-		AlpacaOrderID:   &alpacaOrder.ID,
-		ClientOrderID:   alpacaOrder.ClientOrderID,
-		Symbol:          symbol,
-		Side:            side,
-		OrderType:       entities.AlpacaOrderTypeMarket,
-		TimeInForce:     entities.AlpacaTimeInForceDay,
-		Notional:        &notional,
-		Status:          alpacaOrder.Status,
-		SubmittedAt:     &now,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-
-	if err := a.orderRepo.Create(ctx, order); err != nil {
-		a.logger.Error("Failed to store order", zap.Error(err))
-	}
-
-	return order, nil
 }
 
 // Card service adapters
@@ -618,84 +298,6 @@ func (a *cardBalanceAdapter) DeductSpendBalance(ctx context.Context, userID uuid
 	return a.ledgerService.RecordCardTransaction(ctx, userID, amount, reference)
 }
 
-// Getters for new services
-
-// GetAlpacaAccountService returns the Alpaca account service
-func (c *Container) GetAlpacaAccountService() *alpacaservice.AccountService {
-	return c.AlpacaAccountService
-}
-
-// GetAlpacaFundingBridge returns the Alpaca funding bridge
-func (c *Container) GetAlpacaFundingBridge() *alpacaservice.FundingBridge {
-	return c.AlpacaFundingBridge
-}
-
-// GetAlpacaEventProcessor returns the Alpaca event processor
-func (c *Container) GetAlpacaEventProcessor() *alpacaservice.EventProcessor {
-	return c.AlpacaEventProcessor
-}
-
-// GetAlpacaPortfolioSync returns the Alpaca portfolio sync service
-func (c *Container) GetAlpacaPortfolioSync() *alpacaservice.PortfolioSyncService {
-	return c.AlpacaPortfolioSync
-}
-
-// GetPortfolioAnalyticsService returns the portfolio analytics service
-func (c *Container) GetPortfolioAnalyticsService() *analyticsservice.PortfolioAnalyticsService {
-	return c.PortfolioAnalyticsService
-}
-
-// GetMarketDataService returns the market data service
-func (c *Container) GetMarketDataService() *marketservice.MarketDataService {
-	return c.MarketDataService
-}
-
-// GetScheduledInvestmentService returns the scheduled investment service
-func (c *Container) GetScheduledInvestmentService() *investing.ScheduledInvestmentService {
-	return c.ScheduledInvestmentService
-}
-
-// GetRebalancingService returns the rebalancing service
-func (c *Container) GetRebalancingService() *investing.RebalancingService {
-	return c.RebalancingService
-}
-
-// GetInvestmentHandlers returns investment handlers
-func (c *Container) GetInvestmentHandlers() *handlers.InvestmentHandlers {
-	if c.AlpacaAccountService == nil {
-		return nil
-	}
-	return handlers.NewInvestmentHandlers(
-		c.AlpacaAccountService,
-		c.AlpacaFundingBridge,
-		c.AlpacaPortfolioSync,
-		c.Logger,
-	)
-}
-
-// GetAlpacaWebhookHandlers returns Alpaca webhook handlers
-func (c *Container) GetAlpacaWebhookHandlers() *handlers.AlpacaWebhookHandlers {
-	if c.AlpacaEventProcessor == nil {
-		return nil
-	}
-	// Get webhook secret from config
-	webhookSecret := c.Config.Alpaca.WebhookSecret
-	if webhookSecret == "" {
-		c.ZapLog.Warn("Alpaca webhook secret not configured")
-	}
-	// Determine if webhook verification should be skipped (only in development)
-	skipWebhookVerification := c.Config.Environment == "development" && webhookSecret == ""
-	return handlers.NewAlpacaWebhookHandlers(c.AlpacaEventProcessor, c.Logger, webhookSecret, skipWebhookVerification, c.Config.Environment)
-}
-
-// GetAnalyticsHandlers returns analytics handlers
-func (c *Container) GetAnalyticsHandlers() *handlers.AnalyticsHandlers {
-	if c.PortfolioAnalyticsService == nil {
-		return nil
-	}
-	return handlers.NewAnalyticsHandlers(c.PortfolioAnalyticsService, c.Logger)
-}
-
 // GetFinancialSnapshotHandler returns the ledger-backed financial-snapshot
 // handler used by the delegated Python agent's financial intelligence engine.
 // It degrades field-by-field (zeros / unset) when a provider is missing, so it
@@ -715,33 +317,51 @@ func (c *Container) GetFinancialSnapshotHandler() *handlers.FinancialSnapshotHan
 	)
 }
 
-// GetMarketHandlers returns market data handlers
-func (c *Container) GetMarketHandlers() *handlers.MarketHandlers {
-	if c.MarketDataService == nil {
-		return nil
-	}
-	return handlers.NewMarketHandlers(c.MarketDataService, c.Logger)
+// GetPortfolioAnalyticsService returns the portfolio analytics service.
+// Removed with the Alpaca brokerage (it read Alpaca positions/cash); returns
+// nil so the portfolio-snapshot worker stays idle until a Glider-backed
+// position source is wired.
+func (c *Container) GetPortfolioAnalyticsService() *analyticsservice.PortfolioAnalyticsService {
+	return nil
 }
 
-// GetScheduledInvestmentHandlers returns scheduled investment handlers
+// GetAnalyticsHandlers returns portfolio analytics handlers.
+// The Alpaca-backed PortfolioAnalyticsService was removed with the brokerage
+// provider; until analytics is re-sourced from the Glider/Solana sleeve this
+// returns nil and the advanced-features routes stay unregistered.
+func (c *Container) GetAnalyticsHandlers() *handlers.AnalyticsHandlers {
+	return nil
+}
+
+// GetScheduledInvestmentHandlers returns scheduled-investment handlers.
+// Unwired post-Alpaca (execution was brokered through Alpaca orders).
 func (c *Container) GetScheduledInvestmentHandlers() *handlers.ScheduledInvestmentHandlers {
-	if c.ScheduledInvestmentService == nil {
-		return nil
-	}
-	return handlers.NewScheduledInvestmentHandlers(c.ScheduledInvestmentService, c.Logger)
+	return nil
 }
 
-// GetRebalancingHandlers returns rebalancing handlers
+// GetRebalancingHandlers returns rebalancing handlers.
+// Unwired post-Alpaca (rebalancing traded Alpaca positions against market data).
 func (c *Container) GetRebalancingHandlers() *handlers.RebalancingHandlers {
-	if c.RebalancingService == nil {
-		return nil
-	}
-	return handlers.NewRebalancingHandlers(c.RebalancingService, c.Logger)
+	return nil
 }
 
 // GetRoundupService returns the round-up service
 func (c *Container) GetRoundupService() *roundup.Service {
 	return c.RoundupService
+}
+
+// GetInvestmentStashHandlers returns the investment-stash dashboard handlers.
+// Position, order and performance providers were removed with the Alpaca
+// brokerage; the handler degrades those sections (explicit "unavailable")
+// while allocation- and ledger-backed figures keep working.
+func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
+	return handlers.NewInvestmentStashHandlers(
+		c.AllocationService,
+		nil, // positions provider — pending Glider-backed source
+		nil, // orders provider — pending Glider-backed source
+		nil, // portfolio analytics provider — pending Glider-backed source
+		c.ZapLog,
+	)
 }
 
 // GetRoundupHandlers returns round-up handlers
@@ -803,29 +423,6 @@ func (c *Container) GetSpendingStashHandlers() *handlers.SpendingStashHandlers {
 	}
 	if c.WithdrawalRepo != nil {
 		h.SetWithdrawalRepo(c.WithdrawalRepo)
-	}
-	return h
-}
-
-// GetInvestmentStashHandlers returns investment stash handlers
-func (c *Container) GetInvestmentStashHandlers() *handlers.InvestmentStashHandlers {
-	if c.AllocationService == nil || c.InvestmentPositionRepo == nil || c.InvestmentOrderRepo == nil || c.PortfolioAnalyticsService == nil {
-		return nil
-	}
-
-	h := handlers.NewInvestmentStashHandlers(
-		c.AllocationService,
-		c.InvestmentPositionRepo,
-		c.InvestmentOrderRepo,
-		c.PortfolioAnalyticsService,
-		c.ZapLog,
-	)
-	h.SetAutoInvestRepository(repositories.NewAutoInvestRepository(sqlx.NewDb(c.DB, "postgres")))
-	if c.StrategyEngine != nil {
-		h.SetStrategyProvider(c.StrategyEngine)
-	}
-	if c.AlpacaPortfolioSync != nil {
-		h.SetPortfolioSyncer(c.AlpacaPortfolioSync)
 	}
 	return h
 }

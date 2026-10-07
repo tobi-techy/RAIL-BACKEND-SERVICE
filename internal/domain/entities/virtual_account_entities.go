@@ -25,13 +25,12 @@ const (
 	VirtualAccountProviderGraph  VirtualAccountProvider = "graph"
 )
 
-// VirtualAccount represents a virtual account linked to an Alpaca brokerage account
+// VirtualAccount represents a virtual account issued by a fiat rails provider.
 type VirtualAccount struct {
 	ID               uuid.UUID              `json:"id" db:"id"`
 	UserID           uuid.UUID              `json:"user_id" db:"user_id"`
 	Provider         VirtualAccountProvider `json:"provider" db:"provider"`
 	BridgeCustomerID string                 `json:"bridge_customer_id" db:"bridge_customer_id"`
-	AlpacaAccountID  string                 `json:"alpaca_account_id" db:"alpaca_account_id"`
 	BridgeAccountID  *string                `json:"bridge_account_id,omitempty" db:"bridge_account_id"`
 	GraphPersonID    *string                `json:"graph_person_id,omitempty" db:"graph_person_id"`
 	GraphAccountID   *string                `json:"graph_account_id,omitempty" db:"graph_account_id"`
@@ -52,7 +51,6 @@ type VirtualAccount struct {
 // CreateVirtualAccountRequest represents a request to create a virtual account
 type CreateVirtualAccountRequest struct {
 	UserID           uuid.UUID `json:"user_id"`
-	AlpacaAccountID  string    `json:"alpaca_account_id"`
 	BridgeCustomerID string    `json:"bridge_customer_id"`
 	Currency         string    `json:"currency"` // USD, EUR, GBP — defaults to USD
 }

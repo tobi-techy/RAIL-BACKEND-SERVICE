@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -199,20 +199,12 @@ func (s *ScheduledInvestmentService) executeScheduledInvestment(ctx context.Cont
 			if err != nil {
 				execErr = fmt.Errorf("failed to place basket order: %w", err)
 			} else {
-				// Create order record for tracking
-				notional := si.Amount
+				_ = orderResp
 				order = &entities.InvestmentOrder{
 					ID:            uuid.New(),
 					UserID:        si.UserID,
 					BasketID:      si.BasketID,
 					ClientOrderID: orderResp.OrderRef,
-					Symbol:        "BASKET",
-					Side:          entities.AlpacaOrderSideBuy,
-					OrderType:     entities.AlpacaOrderTypeMarket,
-					TimeInForce:   entities.AlpacaTimeInForceDay,
-					Notional:      &notional,
-					Status:        entities.AlpacaOrderStatusNew,
-					CreatedAt:     time.Now(),
 				}
 			}
 		} else {

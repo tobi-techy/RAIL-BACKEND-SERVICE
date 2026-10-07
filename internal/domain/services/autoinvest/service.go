@@ -48,22 +48,24 @@ type LedgerService interface {
 	GetOrCreateUserAccount(ctx context.Context, userID uuid.UUID, accountType entities.AccountType) (*entities.LedgerAccount, error)
 }
 
-// OrderPlacer defines order placement operations
+// OrderPlacer defines order placement operations. The broker backend is the
+// Glider/Solana sleeve; Alpaca order types are retained as opaque return
+// values for compatibility but never populated from an Alpaca backend.
 type OrderPlacer interface {
 	PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal, clientOrderID string) (*entities.AlpacaOrderResponse, error)
 }
 
-// FundingBridge journals cash into a user's Alpaca account before orders are placed
+// FundingBridge journals cash before orders are placed. Optional — nil skips
+// pre-order journal funding (the Glider sleeve consumes stash balances directly).
 type FundingBridge interface {
-	JournalToAccount(ctx context.Context, alpacaAccountID string, amount decimal.Decimal, correlationID string) error
+	JournalToAccount(ctx context.Context, accountID string, amount decimal.Decimal, correlationID string) error
 }
 
-// AccountLookup resolves a user's Alpaca account ID for journaling
+// AccountLookup resolves a user's brokerage account. Optional — nil skips
+// the account-resolution/journal path.
 type AccountLookup interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
 }
-
-// StrategyEngine defines strategy selection operations
 type StrategyEngine interface {
 	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
 	GetStrategyForAmount(ctx context.Context, userID uuid.UUID, amount decimal.Decimal) (*strategy.StrategyResult, error)
@@ -190,6 +192,17 @@ func (s *Service) TriggerAutoInvestment(ctx context.Context, req TriggerRequest)
 
 	if req.CorrelationID == "" {
 		return fmt.Errorf("correlation_id is required for idempotency")
+	}
+
+	// Fail closed when there is no execution venue. The Alpaca brokerage was
+	// removed and auto-invest has no order placer wired; without this guard the
+	// service would move stash funds into fiat_exposure and then have nothing
+	// able to place the order, stranding the money.
+	if s.orderPlacer == nil {
+		s.logger.Info("Skipping auto-invest: no order venue configured",
+			"user_id", req.UserID,
+			"correlation_id", req.CorrelationID)
+		return nil
 	}
 
 	// Fix #3: Check if this correlation ID was already processed
@@ -408,31 +421,34 @@ func (s *Service) executeAutoInvestment(ctx context.Context, userID, stashID uui
 		}
 	}
 
-	// Step 2: Journal cash into the user's Alpaca account
+	// Step 2: Journal cash into the user's brokerage account.
+	// Post-Alpaca the journal bridge is optional; when wired it journals into
+	// the Glider/Solana sleeve account rather than an Alpaca account.
 	if s.fundingBridge != nil && s.accountLookup != nil {
 		account, err := s.accountLookup.GetByUserID(ctx, userID)
 		if err != nil {
 			span.RecordError(err)
 			// Fix #6: Compensate — reverse the ledger transfer
 			s.compensateLedgerTransfer(ctx, userID, stashID, amount, correlationID)
-			s.markEventFailed(ctx, userID, eventID, "alpaca account lookup failed")
-			return fmt.Errorf("failed to resolve Alpaca account for journal: %w", err)
+			s.markEventFailed(ctx, userID, eventID, "brokerage account lookup failed")
+			return fmt.Errorf("failed to resolve brokerage account for journal: %w", err)
 		}
 		if account == nil {
 			s.compensateLedgerTransfer(ctx, userID, stashID, amount, correlationID)
-			s.markEventFailed(ctx, userID, eventID, "no alpaca account")
-			return fmt.Errorf("user has no Alpaca account")
+			s.markEventFailed(ctx, userID, eventID, "no brokerage account")
+			return fmt.Errorf("user has no brokerage account")
 		}
-		if err := s.fundingBridge.JournalToAccount(ctx, account.AlpacaAccountID, amount, correlationID); err != nil {
+		brokerAccountID := account.BrokerAccountID
+		if err := s.fundingBridge.JournalToAccount(ctx, brokerAccountID, amount, correlationID); err != nil {
 			span.RecordError(err)
 			// Fix #6: Compensate — reverse the ledger transfer
 			s.compensateLedgerTransfer(ctx, userID, stashID, amount, correlationID)
-			s.markEventFailed(ctx, userID, eventID, "journal to alpaca failed")
-			return fmt.Errorf("failed to journal funds to Alpaca: %w", err)
+			s.markEventFailed(ctx, userID, eventID, "journal to brokerage failed")
+			return fmt.Errorf("failed to journal funds to brokerage: %w", err)
 		}
-		s.logger.Info("Journaled funds to Alpaca account",
+		s.logger.Info("Journaled funds to brokerage account",
 			"user_id", userID,
-			"alpaca_account_id", account.AlpacaAccountID,
+			"account_id", account.BrokerAccountID,
 			"amount", amount)
 	}
 
@@ -562,9 +578,6 @@ func (s *Service) isUserEligibleForAutoInvest(ctx context.Context, userID uuid.U
 	if user.BridgeKYCStatus == nil || strings.ToLower(strings.TrimSpace(*user.BridgeKYCStatus)) != "active" {
 		return false, "bridge_kyc_not_active", nil
 	}
-	if user.AlpacaAccountID == nil || strings.TrimSpace(*user.AlpacaAccountID) == "" {
-		return false, "missing_alpaca_account", nil
-	}
 
 	return true, "", nil
 }
@@ -689,9 +702,9 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 		"status", order.Status)
 
 	analytics.TrackEvent(ctx, userID.String(), analytics.EventInvestmentOrderPlaced, map[string]any{
-		"symbol":     symbol,
-		"amount":     amount.InexactFloat64(),
-		"order_id":   order.ID,
+		"symbol":       symbol,
+		"amount":       amount.InexactFloat64(),
+		"order_id":     order.ID,
 		"order_status": order.Status,
 	})
 

@@ -36,7 +36,6 @@ type DiditWebhookProcessor interface {
 type ProviderRetryProcessor interface {
 	RetryBridgeSync(ctx context.Context, payload []byte) error
 	RetryBridgeDiditSync(ctx context.Context, payload []byte) error
-	RetryAlpacaSync(ctx context.Context, payload []byte) error
 }
 
 // Config controls KYC sync worker behavior.
@@ -188,10 +187,6 @@ func (w *Worker) processJob(ctx context.Context, job *entities.KYCSyncJob) {
 		case "bridge_didit":
 			if w.providerRetryProc != nil {
 				err = w.providerRetryProc.RetryBridgeDiditSync(ctx, job.Payload)
-			}
-		case "alpaca":
-			if w.providerRetryProc != nil {
-				err = w.providerRetryProc.RetryAlpacaSync(ctx, job.Payload)
 			}
 		default:
 			err = w.dispatchWebhookJob(ctx, job)

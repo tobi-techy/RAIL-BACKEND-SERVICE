@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"go.uber.org/zap"
 )
 
@@ -85,8 +85,8 @@ func TestPortfolioAnalyticsService_TakeSnapshot(t *testing.T) {
 	snapshotRepo := &mockSnapshotRepo{}
 	positionRepo := &mockPositionProvider{
 		positions: []*entities.InvestmentPosition{
-			{UserID: userID, Symbol: "AAPL", MarketValue: decimal.NewFromInt(1000), CostBasis: decimal.NewFromInt(800), LastdayPrice: decimal.NewFromInt(95), Qty: decimal.NewFromInt(10)},
-			{UserID: userID, Symbol: "GOOGL", MarketValue: decimal.NewFromInt(2000), CostBasis: decimal.NewFromInt(1800), LastdayPrice: decimal.NewFromInt(190), Qty: decimal.NewFromInt(10)},
+			{UserID: userID, Symbol: "AAPL", MarketValue: decimal.NewFromInt(1000), CostBasis: decimal.NewFromInt(800), LastdayPrice: decimal.NewFromInt(95), QTY: decimal.NewFromInt(10)},
+			{UserID: userID, Symbol: "GOOGL", MarketValue: decimal.NewFromInt(2000), CostBasis: decimal.NewFromInt(1800), LastdayPrice: decimal.NewFromInt(190), QTY: decimal.NewFromInt(10)},
 		},
 	}
 	accountRepo := &mockAccountProvider{
@@ -208,8 +208,8 @@ func TestPortfolioAnalyticsService_GetDashboard(t *testing.T) {
 	}
 	positionRepo := &mockPositionProvider{
 		positions: []*entities.InvestmentPosition{
-			{UserID: userID, Symbol: "AAPL", MarketValue: decimal.NewFromInt(5000), CostBasis: decimal.NewFromInt(4500), LastdayPrice: decimal.NewFromInt(95), Qty: decimal.NewFromInt(50)},
-			{UserID: userID, Symbol: "GOOGL", MarketValue: decimal.NewFromInt(5000), CostBasis: decimal.NewFromInt(4800), LastdayPrice: decimal.NewFromInt(95), Qty: decimal.NewFromInt(50)},
+			{UserID: userID, Symbol: "AAPL", MarketValue: decimal.NewFromInt(5000), CostBasis: decimal.NewFromInt(4500), LastdayPrice: decimal.NewFromInt(95), QTY: decimal.NewFromInt(50)},
+			{UserID: userID, Symbol: "GOOGL", MarketValue: decimal.NewFromInt(5000), CostBasis: decimal.NewFromInt(4800), LastdayPrice: decimal.NewFromInt(95), QTY: decimal.NewFromInt(50)},
 		},
 	}
 	accountRepo := &mockAccountProvider{

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -25,19 +25,22 @@ type PositionProvider interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.InvestmentPosition, error)
 }
 
-// AccountProvider interface for getting account data
+// AccountProvider interface for getting account data. Optional — may be nil
+// when brokerage account data is unavailable (e.g. after Alpaca removal).
 type AccountProvider interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*entities.AlpacaAccount, error)
 }
 
 // PortfolioAnalyticsService handles performance and risk calculations
 type PortfolioAnalyticsService struct {
-	snapshotRepo    SnapshotRepository
-	positionRepo    PositionProvider
-	accountRepo     AccountProvider
-	logger          *zap.Logger
+	snapshotRepo SnapshotRepository
+	positionRepo PositionProvider
+	accountRepo  AccountProvider
+	logger       *zap.Logger
 }
 
+// NewPortfolioAnalyticsService constructs the analytics service. accountRepo
+// may be nil (cash/buying-power fields degrade to zero).
 func NewPortfolioAnalyticsService(
 	snapshotRepo SnapshotRepository,
 	positionRepo PositionProvider,
@@ -54,9 +57,15 @@ func NewPortfolioAnalyticsService(
 
 // TakeSnapshot captures current portfolio state
 func (s *PortfolioAnalyticsService) TakeSnapshot(ctx context.Context, userID uuid.UUID) error {
-	account, err := s.accountRepo.GetByUserID(ctx, userID)
-	if err != nil || account == nil {
-		return err
+	var cash decimal.Decimal
+	if s.accountRepo != nil {
+		account, err := s.accountRepo.GetByUserID(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if account != nil {
+			cash = account.Cash
+		}
 	}
 
 	positions, err := s.positionRepo.GetByUserID(ctx, userID)
@@ -68,10 +77,10 @@ func (s *PortfolioAnalyticsService) TakeSnapshot(ctx context.Context, userID uui
 	for _, pos := range positions {
 		investedValue = investedValue.Add(pos.MarketValue)
 		costBasis = costBasis.Add(pos.CostBasis)
-		dayGainLoss = dayGainLoss.Add(pos.MarketValue.Sub(pos.Qty.Mul(pos.LastdayPrice)))
+		dayGainLoss = dayGainLoss.Add(pos.MarketValue.Sub(pos.QTY.Mul(pos.LastdayPrice)))
 	}
 
-	totalValue := account.Cash.Add(investedValue)
+	totalValue := cash.Add(investedValue)
 	totalGainLoss := investedValue.Sub(costBasis)
 	var totalGainLossPct, dayGainLossPct decimal.Decimal
 	if costBasis.GreaterThan(decimal.Zero) {
@@ -85,7 +94,7 @@ func (s *PortfolioAnalyticsService) TakeSnapshot(ctx context.Context, userID uui
 		ID:               uuid.New(),
 		UserID:           userID,
 		TotalValue:       totalValue,
-		CashValue:        account.Cash,
+		CashValue:        cash,
 		InvestedValue:    investedValue,
 		TotalCostBasis:   costBasis,
 		TotalGainLoss:    totalGainLoss,
@@ -442,10 +451,16 @@ func (s *PortfolioAnalyticsService) GetDashboard(ctx context.Context, userID uui
 		GeneratedAt: time.Now(),
 	}
 
-	// Get account and positions for summary
-	account, err := s.accountRepo.GetByUserID(ctx, userID)
-	if err != nil {
-		s.logger.Warn("Failed to get account for dashboard", zap.Error(err))
+	// Cash/buying-power come from the brokerage account provider when present.
+	var cashBalance decimal.Decimal
+	if s.accountRepo != nil {
+		account, err := s.accountRepo.GetByUserID(ctx, userID)
+		if err != nil {
+			s.logger.Warn("Failed to get account for dashboard", zap.Error(err))
+		}
+		if account != nil {
+			cashBalance = account.Cash
+		}
 	}
 
 	positions, err := s.positionRepo.GetByUserID(ctx, userID)
@@ -458,12 +473,7 @@ func (s *PortfolioAnalyticsService) GetDashboard(ctx context.Context, userID uui
 	for _, pos := range positions {
 		investedValue = investedValue.Add(pos.MarketValue)
 		costBasis = costBasis.Add(pos.CostBasis)
-		dayGainLoss = dayGainLoss.Add(pos.MarketValue.Sub(pos.Qty.Mul(pos.LastdayPrice)))
-	}
-
-	var cashBalance decimal.Decimal
-	if account != nil {
-		cashBalance = account.Cash
+		dayGainLoss = dayGainLoss.Add(pos.MarketValue.Sub(pos.QTY.Mul(pos.LastdayPrice)))
 	}
 
 	totalValue := cashBalance.Add(investedValue)
