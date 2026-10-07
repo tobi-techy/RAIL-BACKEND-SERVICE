@@ -73,6 +73,13 @@ func (w *Worker) run(ctx context.Context) {
 				w.logger.Info("bridge_govid_repair: repair skipped",
 					zap.String("user_id", id.String()),
 					zap.String("reason", err.Error()))
+			} else if errors.Is(err, kycservice.ErrBridgeCustomerTerminal) {
+				// Terminal Bridge rejection (e.g. deleted customer). The service
+				// already marked the submission non-retryable, so this user will
+				// not be selected again — info level, no retry storm to warn about.
+				w.logger.Info("bridge_govid_repair: repair stopped, terminal bridge rejection",
+					zap.String("user_id", id.String()),
+					zap.String("reason", err.Error()))
 			} else {
 				w.logger.Warn("bridge_govid_repair: repair failed",
 					zap.String("user_id", id.String()), zap.Error(err))
