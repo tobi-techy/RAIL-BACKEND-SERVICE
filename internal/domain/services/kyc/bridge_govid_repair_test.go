@@ -134,7 +134,10 @@ func newRepairFixture(bridgeErr error, seedMarker map[string]any) (*Service, uui
 }
 
 func repairMarker(sub *entities.KYCSubmission) map[string]any {
-	marker, _ := sub.VerificationData["bridge_govid_repair"].(map[string]any)
+	marker, ok := sub.VerificationData["bridge_govid_repair"].(map[string]any)
+	if !ok {
+		return nil
+	}
 	return marker
 }
 
