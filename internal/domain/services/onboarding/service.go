@@ -38,7 +38,6 @@ type Service struct {
 	emailService        EmailService
 	auditService        AuditService
 	bridgeAdapter       BridgeAdapter
-	alpacaAdapter       AlpacaAdapter
 	allocationService   AllocationService
 	umbraProvisioner    UmbraWalletProvisioner
 	p2pService          P2PService
@@ -101,10 +100,6 @@ type BridgeAdapter interface {
 	UpdateCustomer(ctx context.Context, customerID string, req *bridge.UpdateCustomerRequest) (*bridge.Customer, error)
 }
 
-type AlpacaAdapter interface {
-	CreateAccount(ctx context.Context, req *entities.AlpacaCreateAccountRequest) (*entities.AlpacaAccountResponse, error)
-}
-
 // AllocationService interface for enabling 70/30 allocation mode
 type AllocationService interface {
 	EnableMode(ctx context.Context, userID uuid.UUID, ratios entities.AllocationRatios) error
@@ -134,7 +129,6 @@ func NewService(
 	emailService EmailService,
 	auditService AuditService,
 	bridgeAdapter BridgeAdapter,
-	alpacaAdapter AlpacaAdapter,
 	allocationService AllocationService,
 	logger *zap.Logger,
 	defaultWalletChains []entities.WalletChain,
@@ -149,7 +143,6 @@ func NewService(
 		emailService:        emailService,
 		auditService:        auditService,
 		bridgeAdapter:       bridgeAdapter,
-		alpacaAdapter:       alpacaAdapter,
 		allocationService:   allocationService,
 		logger:              logger,
 		defaultWalletChains: normalizedChains,

@@ -9,11 +9,10 @@ import (
 	"github.com/rail-service/rail_service/pkg/logger"
 )
 
-// RegisterAdvancedFeaturesRoutes registers analytics, market data, and automation routes
+// RegisterAdvancedFeaturesRoutes registers analytics, scheduled-investment, and rebalancing routes
 func RegisterAdvancedFeaturesRoutes(
 	router *gin.RouterGroup,
 	analyticsHandlers *handlers.AnalyticsHandlers,
-	marketHandlers *handlers.MarketHandlers,
 	scheduledInvestmentHandlers *handlers.ScheduledInvestmentHandlers,
 	rebalancingHandlers *handlers.RebalancingHandlers,
 	financialSnapshotHandler *handlers.FinancialSnapshotHandler,
@@ -33,29 +32,6 @@ func RegisterAdvancedFeaturesRoutes(
 		analytics.GET("/history", analyticsHandlers.GetPortfolioHistory)
 		analytics.POST("/snapshot", analyticsHandlers.TakeSnapshot)
 		analytics.GET("/financial-snapshot", financialSnapshotHandler.GetFinancialSnapshot)
-	}
-
-	// Market data routes (mixed auth)
-	market := router.Group("/market")
-	{
-		// Public endpoints — cached at Cloudflare edge (30s for quotes, 60s for bars)
-		market.GET("/status", middleware.PublicCache(60), marketHandlers.GetMarketStatus)
-		market.GET("/quote/:symbol", middleware.PublicCache(30), marketHandlers.GetQuote)
-		market.GET("/quotes", middleware.PublicCache(30), marketHandlers.GetQuotes)
-		market.GET("/bars/:symbol", middleware.PublicCache(60), marketHandlers.GetBars)
-		market.GET("/explore", middleware.PublicCache(30), marketHandlers.GetExplore)
-		market.GET("/instruments/:symbol", middleware.PublicCache(30), marketHandlers.GetInstrument)
-		market.GET("/filters", middleware.PublicCache(300), marketHandlers.GetFilterMetadata)
-		market.GET("/news", middleware.PublicCache(60), marketHandlers.GetNews)
-
-		// Authenticated endpoints for alerts
-		alerts := market.Group("/alerts")
-		alerts.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
-		{
-			alerts.POST("", marketHandlers.CreateAlert)
-			alerts.GET("", marketHandlers.GetAlerts)
-			alerts.DELETE("/:id", marketHandlers.DeleteAlert)
-		}
 	}
 
 	// Scheduled investments routes (authenticated)
@@ -84,6 +60,28 @@ func RegisterAdvancedFeaturesRoutes(
 		rebalancing.GET("/configs/:id/plan", rebalancingHandlers.GenerateRebalancingPlan)
 		rebalancing.POST("/configs/:id/execute", rebalancingHandlers.ExecuteRebalancing)
 		rebalancing.GET("/configs/:id/drift", rebalancingHandlers.CheckDrift)
+	}
+}
+
+// RegisterFinancialSnapshotRoute registers the ledger-backed financial-snapshot
+// endpoint on its own. It is independent of the Alpaca-backed analytics stack,
+// so it must stay reachable while GetAnalyticsHandlers returns nil pending a
+// Glider/Solana re-source.
+func RegisterFinancialSnapshotRoute(
+	router *gin.RouterGroup,
+	financialSnapshotHandler *handlers.FinancialSnapshotHandler,
+	cfg *config.Config,
+	log *logger.Logger,
+	sessionValidator middleware.SessionValidator,
+	tokenBlacklist *auth.TokenBlacklist,
+) {
+	if financialSnapshotHandler == nil {
+		return
+	}
+	analytics := router.Group("/analytics")
+	analytics.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
+	{
+		analytics.GET("/financial-snapshot", financialSnapshotHandler.GetFinancialSnapshot)
 	}
 }
 

@@ -16,10 +16,9 @@ import (
 
 // CreateDepositRequest represents a unified deposit creation request
 type CreateDepositRequest struct {
-	Type            string `json:"type" binding:"required,oneof=crypto fiat"` // "crypto" or "fiat"
-	Chain           string `json:"chain,omitempty"`                           // required for crypto
-	Currency        string `json:"currency,omitempty"`                        // stablecoin: USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
-	AlpacaAccountID string `json:"alpaca_account_id,omitempty"`               // required for fiat
+	Type     string `json:"type" binding:"required,oneof=crypto fiat"` // "crypto" or "fiat"
+	Chain    string `json:"chain,omitempty"`                           // required for crypto
+	Currency string `json:"currency,omitempty"`                        // stablecoin: USDC, USDT, EURC, PYUSD, USDG (defaults to USDC)
 }
 
 // CreateDepositResponse represents the unified deposit creation response
@@ -115,13 +114,6 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 		})
 
 	case "fiat":
-		if strings.TrimSpace(req.AlpacaAccountID) == "" {
-			c.JSON(http.StatusBadRequest, entities.ErrorResponse{
-				Code:    "INVALID_REQUEST",
-				Message: "alpaca_account_id is required for fiat deposits",
-			})
-			return
-		}
 		if h.userProfileProvider == nil {
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "CONFIG_ERROR", Message: "User profile service not configured"})
 			return
@@ -139,14 +131,9 @@ func (h *WalletFundingHandlers) CreateDeposit(c *gin.Context) {
 		// Create or retrieve virtual account for fiat deposits
 		resp, err := h.fundingService.CreateVirtualAccount(ctx, &entities.CreateVirtualAccountRequest{
 			UserID:           userUUID,
-			AlpacaAccountID:  strings.TrimSpace(req.AlpacaAccountID),
 			BridgeCustomerID: strings.TrimSpace(*profile.BridgeCustomerID),
 		})
 		if err != nil {
-			if strings.Contains(err.Error(), "does not belong to authenticated user") {
-				c.JSON(http.StatusForbidden, entities.ErrorResponse{Code: "ALPACA_ACCOUNT_FORBIDDEN", Message: "Alpaca account does not belong to authenticated user"})
-				return
-			}
 			h.logger.Error("Failed to create fiat deposit", "error", err, "user_id", userUUID)
 			c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DEPOSIT_ERROR", Message: "Failed to initiate fiat deposit"})
 			return

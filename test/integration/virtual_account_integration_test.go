@@ -57,22 +57,18 @@ func (suite *VirtualAccountIntegrationTestSuite) mockAuth() gin.HandlerFunc {
 
 func (suite *VirtualAccountIntegrationTestSuite) TestCreateVirtualAccount_ValidRequest() {
 	bridgeCustomerID := "bridge-customer-123"
-	alpacaAccountID := "test-alpaca-123"
 	walletFundingHandlers := handlers.NewWalletFundingHandlers(nil, suite.fundingService, nil, nil, suite.logger)
 	walletFundingHandlers.SetUserProfileProvider(fakeUserProfileProvider{
 		profile: &entities.UserProfile{
 			ID:               uuid.New(),
 			BridgeCustomerID: &bridgeCustomerID,
-			AlpacaAccountID:  &alpacaAccountID,
 		},
 	})
 	router := gin.New()
 	router.POST("/api/v1/funding/virtual-account", suite.mockAuth(), walletFundingHandlers.CreateVirtualAccount)
 
 	// Prepare request
-	req := entities.CreateVirtualAccountRequest{
-		AlpacaAccountID: "test-alpaca-123",
-	}
+	req := entities.CreateVirtualAccountRequest{}
 
 	jsonData, err := json.Marshal(req)
 	suite.NoError(err)
@@ -155,7 +151,6 @@ func TestVirtualAccountRepository_DatabaseOperations(t *testing.T) {
 		ID:               uuid.New(),
 		UserID:           uuid.New(),
 		BridgeCustomerID: "due-test-123",
-		AlpacaAccountID:  "alpaca-test-123",
 		AccountNumber:    "1234567890",
 		RoutingNumber:    "021000021",
 		Status:           entities.VirtualAccountStatusActive,
@@ -174,7 +169,7 @@ func TestVirtualAccountRepository_DatabaseOperations(t *testing.T) {
 	// assert.Equal(t, virtualAccount.ID, retrieved.ID)
 
 	// Test exists check
-	// exists, err := repo.ExistsByUserAndAlpacaAccount(ctx, virtualAccount.UserID, virtualAccount.AlpacaAccountID)
+	// exists, err := repo.ExistsByUserAndBridgeAccount(ctx, virtualAccount.UserID, virtualAccount.BridgeAccountID)
 	// assert.NoError(t, err)
 	// assert.True(t, exists)
 

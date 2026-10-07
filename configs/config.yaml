@@ -252,20 +252,6 @@ verification:
   max_attempts: 3
   rate_limit_per_hour: 3
 
-alpaca:
-  client_id: ""
-  secret_key: ""
-  base_url: "https://broker-api.sandbox.alpaca.markets"
-  data_base_url: "https://data.sandbox.alpaca.markets"
-  environment: "sandbox"
-  timeout: 30
-  auth_method: "oauth2"  # oauth2 or legacy
-  # Webhook signature verification secret (generate with: openssl rand -base64 32)
-  webhook_secret: ""
-  # Firm/omnibus account ID used as the source for JNLC cash journals into user accounts.
-  # Find this in your Alpaca Broker dashboard under Accounts → Firm Account.
-  firm_account_no: ""
-
 bridge:
   api_key: ""
   base_url: "https://api.sandbox.bridge.xyz"

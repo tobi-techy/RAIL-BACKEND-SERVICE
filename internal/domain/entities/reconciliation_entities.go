@@ -13,7 +13,6 @@ type ReconciliationCheckType string
 const (
 	ReconciliationCheckLedgerConsistency ReconciliationCheckType = "ledger_consistency"
 	ReconciliationCheckCircleBalance     ReconciliationCheckType = "circle_balance"
-	ReconciliationCheckAlpacaBalance     ReconciliationCheckType = "alpaca_balance"
 	ReconciliationCheckDeposits          ReconciliationCheckType = "deposits"
 	ReconciliationCheckConversionJobs    ReconciliationCheckType = "conversion_jobs"
 	ReconciliationCheckWithdrawals       ReconciliationCheckType = "withdrawals"
@@ -42,34 +41,34 @@ const (
 
 // ReconciliationReport represents a complete reconciliation run
 type ReconciliationReport struct {
-	ID             uuid.UUID            `json:"id"`
-	RunType        string               `json:"run_type"` // hourly, daily
-	Status         ReconciliationStatus `json:"status"`
-	StartedAt      time.Time            `json:"started_at"`
-	CompletedAt    *time.Time           `json:"completed_at,omitempty"`
-	TotalChecks    int                  `json:"total_checks"`
-	PassedChecks   int                  `json:"passed_checks"`
-	FailedChecks   int                  `json:"failed_checks"`
-	ExceptionsCount int                 `json:"exceptions_count"`
-	ErrorMessage   string               `json:"error_message,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
-	CreatedAt      time.Time            `json:"created_at"`
+	ID              uuid.UUID              `json:"id"`
+	RunType         string                 `json:"run_type"` // hourly, daily
+	Status          ReconciliationStatus   `json:"status"`
+	StartedAt       time.Time              `json:"started_at"`
+	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
+	TotalChecks     int                    `json:"total_checks"`
+	PassedChecks    int                    `json:"passed_checks"`
+	FailedChecks    int                    `json:"failed_checks"`
+	ExceptionsCount int                    `json:"exceptions_count"`
+	ErrorMessage    string                 `json:"error_message,omitempty"`
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	CreatedAt       time.Time              `json:"created_at"`
 }
 
 // ReconciliationCheck represents a single check within a reconciliation run
 type ReconciliationCheck struct {
-	ID               uuid.UUID               `json:"id"`
-	ReportID         uuid.UUID               `json:"report_id"`
-	CheckType        ReconciliationCheckType `json:"check_type"`
-	Status           ReconciliationStatus    `json:"status"`
-	ExpectedValue    decimal.Decimal         `json:"expected_value"`
-	ActualValue      decimal.Decimal         `json:"actual_value"`
-	Difference       decimal.Decimal         `json:"difference"`
-	Passed           bool                    `json:"passed"`
-	ErrorMessage     string                  `json:"error_message,omitempty"`
-	ExecutionTimeMs  int64                   `json:"execution_time_ms"`
-	Metadata         map[string]interface{}  `json:"metadata,omitempty"`
-	CreatedAt        time.Time               `json:"created_at"`
+	ID              uuid.UUID               `json:"id"`
+	ReportID        uuid.UUID               `json:"report_id"`
+	CheckType       ReconciliationCheckType `json:"check_type"`
+	Status          ReconciliationStatus    `json:"status"`
+	ExpectedValue   decimal.Decimal         `json:"expected_value"`
+	ActualValue     decimal.Decimal         `json:"actual_value"`
+	Difference      decimal.Decimal         `json:"difference"`
+	Passed          bool                    `json:"passed"`
+	ErrorMessage    string                  `json:"error_message,omitempty"`
+	ExecutionTimeMs int64                   `json:"execution_time_ms"`
+	Metadata        map[string]interface{}  `json:"metadata,omitempty"`
+	CreatedAt       time.Time               `json:"created_at"`
 }
 
 // ReconciliationException represents a discrepancy found during reconciliation

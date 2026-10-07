@@ -30,7 +30,6 @@ type Config struct {
 	SMS              SMSConfig              `mapstructure:"sms"`
 	Notification     NotificationConfig     `mapstructure:"notification"`
 	Verification     VerificationConfig     `mapstructure:"verification"`
-	Alpaca           AlpacaConfig           `mapstructure:"alpaca"`
 	Bridge           BridgeConfig           `mapstructure:"bridge"`
 	Blend            BlendConfig            `mapstructure:"blend"`
 	Grid             GridConfig             `mapstructure:"grid"`
@@ -643,7 +642,6 @@ type SecurityConfig struct {
 // WebhookSignatureSecretsConfig holds per-provider webhook signing secrets
 type WebhookSignatureSecretsConfig struct {
 	Bridge string `mapstructure:"bridge"`
-	Alpaca string `mapstructure:"alpaca"`
 }
 
 // DeviceBindingConfig for device-bound JWT tokens
@@ -879,22 +877,6 @@ type WorkerConfig struct {
 	// workers (Redis SET NX). HTTP stays up on every replica. Default on in
 	// production so min-replicas > 1 does not double money crons.
 	LeaderElection bool `mapstructure:"leader_election"`
-}
-
-// AlpacaConfig contains brokerage API configuration
-type AlpacaConfig struct {
-	ClientID      string `mapstructure:"client_id"`
-	SecretKey     string `mapstructure:"secret_key"`
-	BaseURL       string `mapstructure:"base_url"`
-	DataBaseURL   string `mapstructure:"data_base_url"`   // Market data API base URL
-	DataAPIKey    string `mapstructure:"data_api_key"`    // Separate key for market data
-	DataAPISecret string `mapstructure:"data_api_secret"` // Separate secret for market data
-	DataFeed      string `mapstructure:"data_feed"`       // Preferred market data feed (iex, sip, otc)
-	Environment   string `mapstructure:"environment"`     // sandbox or production
-	Timeout       int    `mapstructure:"timeout"`         // Request timeout in seconds
-	FirmAccountNo string `mapstructure:"firm_account_no"` // Firm account for instant funding
-	WebhookSecret string `mapstructure:"webhook_secret"`  // Secret for verifying Alpaca webhooks
-	TaxonomyFile  string `mapstructure:"taxonomy_file"`   // Path to market taxonomy YAML (default: configs/market_taxonomy.yaml)
 }
 
 // ReconciliationConfig contains reconciliation service configuration
@@ -1406,14 +1388,6 @@ func setDefaults() {
 	viper.SetDefault("zerog.compute.funding.min_balance", 10.0)
 	viper.SetDefault("zerog.compute.funding.topup_amount", 50.0)
 	viper.SetDefault("zerog.compute.funding.max_account_limit", 1000.0)
-
-	// Alpaca defaults
-	viper.SetDefault("alpaca.environment", "sandbox")
-	viper.SetDefault("alpaca.base_url", "https://broker-api.sandbox.alpaca.markets")
-	viper.SetDefault("alpaca.data_base_url", "https://data.sandbox.alpaca.markets")
-	viper.SetDefault("alpaca.data_feed", "iex")
-	viper.SetDefault("alpaca.timeout", 30)
-	viper.SetDefault("alpaca.taxonomy_file", "configs/market_taxonomy.yaml")
 
 	// Bridge defaults
 	viper.SetDefault("bridge.environment", "production")
@@ -2001,45 +1975,6 @@ func overrideFromEnv() error {
 	}
 	if zeroGProviderID := os.Getenv("ZEROG_COMPUTE_PROVIDER_ID"); zeroGProviderID != "" {
 		viper.Set("zerog.compute.provider_id", zeroGProviderID)
-	}
-
-	// Alpaca
-	if alpacaAPIKey := os.Getenv("ALPACA_API_KEY"); alpacaAPIKey != "" {
-		viper.Set("alpaca.client_id", alpacaAPIKey)
-	} else if apcaAPIKeyID := os.Getenv("APCA_API_KEY_ID"); apcaAPIKeyID != "" {
-		viper.Set("alpaca.client_id", apcaAPIKeyID)
-	}
-	if alpacaAPISecret := os.Getenv("ALPACA_API_SECRET"); alpacaAPISecret != "" {
-		viper.Set("alpaca.secret_key", alpacaAPISecret)
-	} else if apcaAPISecretKey := os.Getenv("APCA_API_SECRET_KEY"); apcaAPISecretKey != "" {
-		viper.Set("alpaca.secret_key", apcaAPISecretKey)
-	}
-	if alpacaDataAPIKey := os.Getenv("ALPACA_DATA_API_KEY"); alpacaDataAPIKey != "" {
-		viper.Set("alpaca.data_api_key", alpacaDataAPIKey)
-	} else if alpacaDataKey := os.Getenv("ALPACA_DATA_KEY"); alpacaDataKey != "" {
-		viper.Set("alpaca.data_api_key", alpacaDataKey)
-	}
-	if alpacaDataAPISecret := os.Getenv("ALPACA_DATA_API_SECRET"); alpacaDataAPISecret != "" {
-		viper.Set("alpaca.data_api_secret", alpacaDataAPISecret)
-	} else if alpacaDataSecret := os.Getenv("ALPACA_DATA_SECRET"); alpacaDataSecret != "" {
-		viper.Set("alpaca.data_api_secret", alpacaDataSecret)
-	} else if alpacaDataAPISecretKey := os.Getenv("ALPACA_DATA_API_SECRET_KEY"); alpacaDataAPISecretKey != "" {
-		viper.Set("alpaca.data_api_secret", alpacaDataAPISecretKey)
-	}
-	if alpacaBaseURL := os.Getenv("ALPACA_BASE_URL"); alpacaBaseURL != "" {
-		viper.Set("alpaca.base_url", alpacaBaseURL)
-	}
-	if alpacaDataBaseURL := os.Getenv("ALPACA_DATA_BASE_URL"); alpacaDataBaseURL != "" {
-		viper.Set("alpaca.data_base_url", alpacaDataBaseURL)
-	}
-	if alpacaDataFeed := os.Getenv("ALPACA_DATA_FEED"); alpacaDataFeed != "" {
-		viper.Set("alpaca.data_feed", alpacaDataFeed)
-	}
-	if alpacaEnvironment := os.Getenv("ALPACA_ENVIRONMENT"); alpacaEnvironment != "" {
-		viper.Set("alpaca.environment", alpacaEnvironment)
-	}
-	if alpacaWebhookSecret := os.Getenv("ALPACA_WEBHOOK_SECRET"); alpacaWebhookSecret != "" {
-		viper.Set("alpaca.webhook_secret", alpacaWebhookSecret)
 	}
 
 	// Bridge API

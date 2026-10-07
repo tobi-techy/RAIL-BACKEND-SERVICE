@@ -5,59 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/circuitbreaker"
 	"go.uber.org/zap"
 )
-
-// AlpacaClient wraps Alpaca client with circuit breaker
-type AlpacaClient struct {
-	client *alpaca.Client
-	cb     *circuitbreaker.CircuitBreaker
-	logger *zap.Logger
-}
-
-// NewAlpacaClient creates a new Alpaca client with circuit breaker
-func NewAlpacaClient(client *alpaca.Client, logger *zap.Logger) *AlpacaClient {
-	cb := circuitbreaker.New(circuitbreaker.Config{
-		MaxRequests:      10,
-		Interval:         time.Minute,
-		Timeout:          time.Second * 30,
-		FailureThreshold: 5,
-		SuccessThreshold: 3,
-		OnStateChange: func(from, to circuitbreaker.State) {
-			logger.Info("Alpaca circuit breaker state changed",
-				zap.String("from", from.String()),
-				zap.String("to", to.String()),
-			)
-		},
-	})
-
-	return &AlpacaClient{
-		client: client,
-		cb:     cb,
-		logger: logger,
-	}
-}
-
-// GetAccount with circuit breaker protection
-func (a *AlpacaClient) GetAccount(ctx context.Context, accountID string) (interface{}, error) {
-	var result interface{}
-	var err error
-
-	cbErr := a.cb.Call(func() error {
-		result, err = a.client.GetAccount(ctx, accountID)
-		return err
-	})
-
-	if cbErr != nil {
-		a.logger.Error("Circuit breaker prevented Alpaca API call", zap.Error(cbErr))
-		return nil, fmt.Errorf("circuit breaker open: %w", cbErr)
-	}
-
-	return result, err
-}
 
 // BridgeClient wraps Bridge client with circuit breaker
 type BridgeClient struct {

@@ -41,7 +41,7 @@ func (h *InternalHandlers) authenticate(c *gin.Context) bool {
 }
 
 // userLookupColumns is the fixed column list for user lookups.
-const userLookupQuery = `SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, alpaca_account_id, bridge_customer_id, created_at, updated_at FROM users WHERE `
+const userLookupQuery = `SELECT id, email, first_name, last_name, kyc_status, bridge_kyc_status, is_active, bridge_customer_id, created_at, updated_at FROM users WHERE `
 
 // LookupUser handles GET /internal/users/lookup and GET /admin/users/lookup.
 func (h *InternalHandlers) LookupUser(c *gin.Context) {

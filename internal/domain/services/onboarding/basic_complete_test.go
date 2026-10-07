@@ -98,7 +98,6 @@ func newBasicCompleteService(user *entities.UserProfile, audit *basicCompleteAud
 		audit,
 		nil,
 		nil,
-		nil,
 		zap.NewNop(),
 		nil,
 	), userRepo

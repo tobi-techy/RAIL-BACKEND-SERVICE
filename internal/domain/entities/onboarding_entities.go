@@ -130,7 +130,6 @@ type UserProfile struct {
 	KYCApprovedAt      *time.Time       `json:"kyc_approved_at" db:"kyc_approved_at"`
 	KYCRejectionReason *string          `json:"kyc_rejection_reason" db:"kyc_rejection_reason"`
 	BridgeCustomerID   *string          `json:"bridge_customer_id" db:"bridge_customer_id"`
-	AlpacaAccountID    *string          `json:"alpaca_account_id" db:"alpaca_account_id"`
 	GraphPersonID      *string          `json:"graph_person_id,omitempty" db:"graph_person_id"`
 	KYCTier            int              `json:"kyc_tier" db:"kyc_tier"`
 	BVNVerifiedAt      *time.Time       `json:"bvn_verified_at,omitempty" db:"bvn_verified_at"`
@@ -423,7 +422,6 @@ type OnboardingCompleteResponse struct {
 	BridgeCustomerID string    `json:"bridgeCustomerId"`
 	Message          string    `json:"message"`
 	NextSteps        []string  `json:"nextSteps"`
-	// NOTE: AlpacaAccountID removed - created later in KYC flow
 }
 
 // OnboardingProgressResponse represents the user's onboarding progress

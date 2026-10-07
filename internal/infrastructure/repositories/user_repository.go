@@ -76,7 +76,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
-	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id,
 	               graph_person_id, COALESCE(kyc_tier, 1) AS kyc_tier, bvn_verified_at, bvn_last4,
 	               nin_verified_at, nin_last4,
 	               is_active, COALESCE(withdrawals_frozen, false) AS withdrawals_frozen, created_at, updated_at
@@ -85,7 +85,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 	var graphPersonID, bvnLast4 sql.NullString
@@ -117,7 +117,6 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 		&kycApprovedAt,
 		&kycRejectionReason,
 		&bridgeCustomerID,
-		&alpacaAccountID,
 		&graphPersonID,
 		&kycTier,
 		&bvnVerifiedAt,
@@ -180,9 +179,6 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.U
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
 	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
-	}
 	if graphPersonID.Valid {
 		user.GraphPersonID = &graphPersonID.String
 	}
@@ -213,7 +209,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
-	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id,
 	               is_active, created_at, updated_at
 	        FROM users 
 	        WHERE LOWER(email) = LOWER($1)
@@ -222,7 +218,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -249,7 +245,6 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 		&kycApprovedAt,
 		&kycRejectionReason,
 		&bridgeCustomerID,
-		&alpacaAccountID,
 		&user.IsActive,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -305,9 +300,6 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*entitie
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
 	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
-	}
 
 	return user, nil
 }
@@ -318,14 +310,14 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
-	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id,
 	               is_active, created_at, updated_at
 	        FROM users 
 	        WHERE auth_provider_id = $1`
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -352,7 +344,6 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 		&kycApprovedAt,
 		&kycRejectionReason,
 		&bridgeCustomerID,
-		&alpacaAccountID,
 		&user.IsActive,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -408,9 +399,6 @@ func (r *UserRepository) GetByAuthProviderID(ctx context.Context, authProviderID
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
 	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
-	}
 
 	return user, nil
 }
@@ -421,7 +409,7 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 	        SELECT id, email, phone, country, address_street, address_city, address_state, address_postal_code, address_country, first_name, last_name, date_of_birth,
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref, kyc_submitted_at,
-	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id, alpaca_account_id,
+	               kyc_approved_at, kyc_rejection_reason, bridge_customer_id,
 	               COALESCE(kyc_tier, 1) AS kyc_tier, bvn_verified_at, nin_verified_at,
 	               is_active, created_at, updated_at
 	        FROM users 
@@ -429,7 +417,7 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 
 	user := &entities.UserProfile{}
 	var kycSubmittedAt, kycApprovedAt sql.NullTime
-	var kycProviderRef, kycRejectionReason, bridgeCustomerIDVal, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var kycProviderRef, kycRejectionReason, bridgeCustomerIDVal, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 	var kycTier sql.NullInt64
@@ -458,7 +446,6 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 		&kycApprovedAt,
 		&kycRejectionReason,
 		&bridgeCustomerIDVal,
-		&alpacaAccountID,
 		&kycTier,
 		&bvnVerifiedAt,
 		&ninVerifiedAt,
@@ -528,9 +515,6 @@ func (r *UserRepository) GetByBridgeCustomerID(ctx context.Context, bridgeCustom
 	if bridgeCustomerIDVal.Valid {
 		user.BridgeCustomerID = &bridgeCustomerIDVal.String
 	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
-	}
 
 	return user, nil
 }
@@ -545,7 +529,7 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 			phone_verified = $15, onboarding_status = $16, kyc_status = $17,
 			kyc_provider_ref = $18, kyc_submitted_at = $19,
 			kyc_approved_at = $20, kyc_rejection_reason = $21,
-			bridge_customer_id = $22, alpaca_account_id = $23, updated_at = $24
+			bridge_customer_id = $22, updated_at = $23
 		WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -571,7 +555,6 @@ func (r *UserRepository) Update(ctx context.Context, user *entities.UserProfile)
 		user.KYCApprovedAt,
 		user.KYCRejectionReason,
 		user.BridgeCustomerID,
-		user.AlpacaAccountID,
 		time.Now(),
 	)
 
@@ -1041,14 +1024,14 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 			       email_verified, phone_verified, onboarding_status, kyc_status,
 			       kyc_provider_ref, kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
 			       role, is_active, last_login_at, created_at, updated_at,
-			       bridge_customer_id, alpaca_account_id, bridge_kyc_status, bridge_kyc_link,
+			       bridge_customer_id, bridge_kyc_status, bridge_kyc_link,
 			       COALESCE(kyc_tier, 1) AS kyc_tier
 			FROM users 
 			WHERE id = $1 AND is_active = true`
 
 	user := &entities.User{}
 	var kycSubmittedAt, kycApprovedAt, lastLoginAt sql.NullTime
-	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, bridgeKYCStatus, bridgeKYCLink, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, bridgeKYCStatus, bridgeKYCLink, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
@@ -1078,7 +1061,6 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 		&user.CreatedAt,
 		&user.UpdatedAt,
 		&bridgeCustomerID,
-		&alpacaAccountID,
 		&bridgeKYCStatus,
 		&bridgeKYCLink,
 		&user.KYCTier,
@@ -1135,9 +1117,6 @@ func (r *UserRepository) GetUserEntityByID(ctx context.Context, id uuid.UUID) (*
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
 	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
-	}
 	if bridgeKYCStatus.Valid {
 		user.BridgeKYCStatus = &bridgeKYCStatus.String
 	}
@@ -1175,13 +1154,12 @@ func (r *UserRepository) UpdateUserEntity(ctx context.Context, user *entities.Us
 				kyc_approved_at = $17,
 				kyc_rejection_reason = $18,
 				bridge_customer_id = $19,
-				alpaca_account_id = $20,
-				bridge_kyc_status = $21,
-				bridge_kyc_link = $22,
-				role = $23,
-				is_active = $24,
-				last_login_at = $25,
-				updated_at = $26
+				bridge_kyc_status = $20,
+				bridge_kyc_link = $21,
+				role = $22,
+				is_active = $23,
+				last_login_at = $24,
+				updated_at = $25
 			WHERE id = $1`
 
 	_, err := r.db.ExecContext(ctx, query,
@@ -1204,7 +1182,6 @@ func (r *UserRepository) UpdateUserEntity(ctx context.Context, user *entities.Us
 		user.KYCApprovedAt,
 		user.KYCRejectionReason,
 		user.BridgeCustomerID,
-		user.AlpacaAccountID,
 		user.BridgeKYCStatus,
 		user.BridgeKYCLink,
 		user.Role,
@@ -1347,7 +1324,6 @@ func (r *UserRepository) AnonymizeUser(ctx context.Context, userID uuid.UUID) er
 			kyc_provider_ref = NULL,
 			bridge_customer_id = NULL,
 			bridge_kyc_link = NULL,
-			alpaca_account_id = NULL,
 			is_active = false,
 			anonymized_at = $2,
 			updated_at = $2
@@ -1374,8 +1350,6 @@ func (r *UserRepository) HardDelete(ctx context.Context, userID uuid.UUID) error
 		`DELETE FROM ledger_accounts WHERE user_id = $1`,
 		`DELETE FROM withdrawals WHERE user_id = $1`,
 		`DELETE FROM bridge_transactions WHERE user_id = $1`,
-		`DELETE FROM investment_positions WHERE user_id = $1`,
-		`DELETE FROM investment_orders WHERE user_id = $1`,
 	}
 	for _, q := range dependents {
 		if _, err := r.db.ExecContext(ctx, q, userID); err != nil {
@@ -1701,14 +1675,14 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref,
 	               kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
-	               bridge_customer_id, alpaca_account_id,
+	               bridge_customer_id,
 	               is_active, created_at, updated_at
 	        FROM users 
 	        WHERE phone = $1 AND is_active = true`
 
 	user := &entities.UserProfile{}
 	var kycApprovedAt, kycSubmittedAt sql.NullTime
-	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -1735,7 +1709,6 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 		&kycApprovedAt,
 		&kycRejectionReason,
 		&bridgeCustomerID,
-		&alpacaAccountID,
 		&user.IsActive,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -1791,9 +1764,6 @@ func (r *UserRepository) GetByPhone(ctx context.Context, phone string) (*entitie
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
 	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
-	}
 
 	return user, nil
 }
@@ -1805,14 +1775,14 @@ func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*ent
 	               auth_provider_id, email_verified, phone_verified,
 	               onboarding_status, kyc_status, kyc_provider_ref,
 	               kyc_submitted_at, kyc_approved_at, kyc_rejection_reason,
-	               bridge_customer_id, alpaca_account_id,
+	               bridge_customer_id,
 	               is_active, created_at, updated_at
 	        FROM users 
 	        WHERE rail_tag = $1 AND is_active = true`
 
 	user := &entities.UserProfile{}
 	var kycApprovedAt, kycSubmittedAt sql.NullTime
-	var kycRejectionReason, kycProviderRef, bridgeCustomerID, alpacaAccountID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry, railTagVal sql.NullString
+	var kycRejectionReason, kycProviderRef, bridgeCustomerID, country, addressStreet, addressCity, addressState, addressPostalCode, addressCountry, railTagVal sql.NullString
 	var firstName, lastName sql.NullString
 	var dateOfBirth sql.NullTime
 
@@ -1840,7 +1810,6 @@ func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*ent
 		&kycApprovedAt,
 		&kycRejectionReason,
 		&bridgeCustomerID,
-		&alpacaAccountID,
 		&user.IsActive,
 		&user.CreatedAt,
 		&user.UpdatedAt,
@@ -1898,9 +1867,6 @@ func (r *UserRepository) GetByRailTag(ctx context.Context, railTag string) (*ent
 	}
 	if bridgeCustomerID.Valid {
 		user.BridgeCustomerID = &bridgeCustomerID.String
-	}
-	if alpacaAccountID.Valid {
-		user.AlpacaAccountID = &alpacaAccountID.String
 	}
 
 	return user, nil

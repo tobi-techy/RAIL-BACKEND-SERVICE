@@ -1,7 +1,6 @@
 package webhooks
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,6 +21,11 @@ type UnifiedFundingWebhookHandler struct {
 	logger        *zap.Logger
 	mu            sync.RWMutex
 }
+
+// AlpacaWebhookHandlers is a retained no-op type — the Alpaca webhook handler
+// was removed with the provider. Kept as a nil-safe placeholder so the unified
+// handler's call site compiles without a positional-parameter reorder.
+type AlpacaWebhookHandlers struct{}
 
 // NewUnifiedFundingWebhookHandler creates a unified webhook handler
 func NewUnifiedFundingWebhookHandler(
@@ -47,9 +51,7 @@ func (h *UnifiedFundingWebhookHandler) SetWebhookSecret(source, secret string) {
 			h.bridgeHandler.webhookSecret = secret
 		}
 	case string(WebhookSourceAlpaca):
-		if h.alpacaHandler != nil {
-			h.alpacaHandler.webhookSecret = secret
-		}
+		// Alpaca provider removed — no-op
 	}
 }
 
@@ -96,7 +98,9 @@ func (h *UnifiedFundingWebhookHandler) HandleFundingWebhook(c *gin.Context) {
 	case WebhookSourceBridge:
 		h.routeToBridge(c, rawBody)
 	case WebhookSourceAlpaca:
-		h.routeToAlpaca(c, rawBody)
+		// Alpaca provider removed — these webhooks are no longer supported.
+		h.logger.Warn("Received Alpaca webhook — provider has been removed")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "alpaca_provider_removed"})
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported source"})
 	}
@@ -110,17 +114,12 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 		switch strings.ToLower(sourceHeader) {
 		case "bridge":
 			return WebhookSourceBridge
-		case "alpaca":
-			return WebhookSourceAlpaca
 		}
 	}
 
 	// Check provider-specific headers
 	if c.GetHeader("X-Bridge-Signature") != "" || c.GetHeader("Bridge-Signature") != "" {
 		return WebhookSourceBridge
-	}
-	if c.GetHeader("X-Alpaca-Signature") != "" || c.GetHeader("Alpaca-Signature") != "" {
-		return WebhookSourceAlpaca
 	}
 
 	// Try to detect from payload structure
@@ -129,10 +128,6 @@ func (h *UnifiedFundingWebhookHandler) detectSource(c *gin.Context, body []byte)
 		// Bridge webhooks have event_category
 		if _, ok := payload["event_category"]; ok {
 			return WebhookSourceBridge
-		}
-		// Alpaca webhooks have event field
-		if _, ok := payload["event"]; ok {
-			return WebhookSourceAlpaca
 		}
 	}
 
@@ -156,15 +151,6 @@ func (h *UnifiedFundingWebhookHandler) verifySignature(c *gin.Context, source We
 			signature = c.GetHeader("Bridge-Signature")
 		}
 		return h.bridgeHandler.verifySignature(signature, body)
-	case WebhookSourceAlpaca:
-		if h.alpacaHandler == nil {
-			return false
-		}
-		signature := c.GetHeader("X-Alpaca-Signature")
-		if signature == "" {
-			signature = c.GetHeader("Alpaca-Signature")
-		}
-		return h.alpacaHandler.verifySignature(signature, body)
 	default:
 		return false
 	}
@@ -287,35 +273,10 @@ func (h *UnifiedFundingWebhookHandler) processBridgeCustomerEvent(c *gin.Context
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
-// routeToAlpaca routes to Alpaca webhook handler
+// routeToAlpaca routes to Alpaca webhook handler.
+// The Alpaca provider has been removed; this is a retained no-op for
+// compile-time compatibility with the routing switch above.
 func (h *UnifiedFundingWebhookHandler) routeToAlpaca(c *gin.Context, body []byte) {
-	if h.alpacaHandler == nil {
-		h.logger.Warn("Alpaca handler not configured")
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "alpaca_handler_not_configured"})
-		return
-	}
-
-	var payload map[string]interface{}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		h.logger.Error("Failed to parse Alpaca payload", zap.Error(err))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
-		return
-	}
-
-	eventType, _ := payload["event"].(string)
-	h.logger.Info("Processing Alpaca webhook", zap.String("event", eventType))
-
-	// Route based on event type
-	// Restore request body because downstream handlers expect to read it.
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-	switch {
-	case strings.HasPrefix(eventType, "trade"):
-		h.alpacaHandler.HandleTradeUpdate(c)
-	case strings.HasPrefix(eventType, "account"):
-		h.alpacaHandler.HandleAccountUpdate(c)
-	case strings.HasPrefix(eventType, "transfer"):
-		h.alpacaHandler.HandleTransferUpdate(c)
-	default:
-		c.JSON(http.StatusOK, gin.H{"status": "ignored"})
-	}
+	h.logger.Warn("Alpaca webhook routing is a no-op — provider removed")
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "alpaca_provider_removed"})
 }

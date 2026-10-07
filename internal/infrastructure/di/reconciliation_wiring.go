@@ -2,14 +2,12 @@ package di
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/reconciliation"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	commonmetrics "github.com/rail-service/rail_service/pkg/common/metrics"
@@ -23,7 +21,6 @@ func (c *Container) initializeReconciliationService() error {
 	reconciliationConfig := &reconciliation.Config{
 		AutoCorrectLowSeverity: true,
 		ToleranceCircle:        decimal.NewFromFloat(10.0),
-		ToleranceAlpaca:        decimal.NewFromFloat(100.0),
 		EnableAlerting:         true,
 		AlertWebhookURL:        c.Config.Reconciliation.AlertWebhookURL,
 	}
@@ -41,11 +38,6 @@ func (c *Container) initializeReconciliationService() error {
 			bridgeAdapter: c.BridgeAdapter,
 			walletRepo:    c.WalletRepo,
 			userRepo:      c.UserRepo,
-		},
-		&alpacaClientAdapter{
-			client:  c.AlpacaClient,
-			service: c.AlpacaService,
-			db:      c.DB,
 		},
 		c.Logger,
 		metricsService,
@@ -103,53 +95,6 @@ func (a *bridgeBalanceAdapter) GetTotalUSDCBalance(ctx context.Context) (decimal
 		}
 	}
 	return total, nil
-}
-
-type alpacaClientAdapter struct {
-	client  *alpaca.Client
-	service *alpaca.Service
-	db      *sql.DB
-}
-
-func (a *alpacaClientAdapter) GetTotalBuyingPower(ctx context.Context) (decimal.Decimal, error) {
-	// Query all users from database who have Alpaca accounts
-	query := `
-		SELECT alpaca_account_id 
-		FROM users 
-		WHERE alpaca_account_id IS NOT NULL AND alpaca_account_id != '' AND is_active = true
-	`
-
-	rows, err := a.db.QueryContext(ctx, query)
-	if err != nil {
-		return decimal.Zero, fmt.Errorf("failed to query users with Alpaca accounts: %w", err)
-	}
-	defer rows.Close()
-
-	var accountIDs []string
-	for rows.Next() {
-		var accountID string
-		if err := rows.Scan(&accountID); err != nil {
-			continue
-		}
-		accountIDs = append(accountIDs, accountID)
-	}
-
-	// Aggregate buying power from all accounts
-	totalBuyingPower := decimal.Zero
-	for _, accountID := range accountIDs {
-		account, err := a.service.GetAccount(ctx, accountID)
-		if err != nil {
-			// Log error but continue with other accounts
-			continue
-		}
-
-		// Add buying power (already decimal.Decimal)
-		if !account.BuyingPower.IsZero() {
-			totalBuyingPower = totalBuyingPower.Add(account.BuyingPower)
-		}
-	}
-
-	return totalBuyingPower, nil
 }
 
 // Real metrics service using Prometheus metrics from pkg/common/metrics

@@ -3,9 +3,7 @@
 package services
 
 import (
-	"github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	"github.com/rail-service/rail_service/internal/domain/services/balance"
-	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/domain/services/notification"
 	"github.com/rail-service/rail_service/internal/domain/services/offramp"
@@ -19,7 +17,7 @@ import (
 
 // Withdrawal types
 type (
-	WithdrawalService             = withdrawal.WithdrawalService
+	WithdrawalService = withdrawal.WithdrawalService
 )
 
 // Notification types
@@ -43,27 +41,17 @@ type UserChecker = transaction.UserChecker
 
 // Investing types
 type (
-	BasketExecutor   = investing.BasketExecutor
 	PortfolioService = investing.PortfolioService
 )
 
-// Alpaca types
-type BrokerageOnboardingService = alpaca.BrokerageOnboardingService
-
-// Funding types
-type InstantFundingService = funding.InstantFundingService
-
 // Re-export constructors
 var (
-	NewWithdrawalService          = withdrawal.NewWithdrawalService
-	NewNotificationService        = notification.NewNotificationService
-	NewVerificationService        = verification.NewVerificationService
-	NewBalanceService             = balance.NewBalanceService
-	NewOnboardingJobService       = onboarding.NewOnboardingJobService
-	NewOffRampService             = offramp.NewOffRampService
-	NewTransactionControlService  = transaction.NewTransactionControlService
-	NewBasketExecutor             = investing.NewBasketExecutor
-	NewPortfolioService           = investing.NewPortfolioService
-	NewBrokerageOnboardingService = alpaca.NewBrokerageOnboardingService
-	NewInstantFundingService      = funding.NewInstantFundingService
+	NewWithdrawalService         = withdrawal.NewWithdrawalService
+	NewNotificationService       = notification.NewNotificationService
+	NewVerificationService       = verification.NewVerificationService
+	NewBalanceService            = balance.NewBalanceService
+	NewOnboardingJobService      = onboarding.NewOnboardingJobService
+	NewOffRampService            = offramp.NewOffRampService
+	NewTransactionControlService = transaction.NewTransactionControlService
+	NewPortfolioService          = investing.NewPortfolioService
 )

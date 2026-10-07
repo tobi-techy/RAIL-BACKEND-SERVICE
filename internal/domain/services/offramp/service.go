@@ -10,7 +10,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/repositories"
 	"github.com/rail-service/rail_service/internal/domain/services/balance"
 	"github.com/rail-service/rail_service/internal/domain/services/notification"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/pkg/logger"
 	"github.com/rail-service/rail_service/pkg/metrics"
@@ -22,7 +21,6 @@ import (
 // OffRampService handles off-ramp operations via Bridge
 type OffRampService struct {
 	bridgeAdapter      *bridge.Adapter
-	alpacaAdapter      *alpaca.FundingAdapter
 	depositRepo        repositories.DepositRepository
 	virtualAccountRepo repositories.VirtualAccountRepository
 	balanceService     *balance.BalanceService
@@ -34,7 +32,6 @@ type OffRampService struct {
 // NewOffRampService creates a new off-ramp service
 func NewOffRampService(
 	bridgeAdapter *bridge.Adapter,
-	alpacaAdapter *alpaca.FundingAdapter,
 	depositRepo repositories.DepositRepository,
 	virtualAccountRepo repositories.VirtualAccountRepository,
 	balanceService *balance.BalanceService,
@@ -53,7 +50,6 @@ func NewOffRampService(
 
 	return &OffRampService{
 		bridgeAdapter:      bridgeAdapter,
-		alpacaAdapter:      alpacaAdapter,
 		depositRepo:        depositRepo,
 		virtualAccountRepo: virtualAccountRepo,
 		balanceService:     balanceService,
@@ -179,73 +175,13 @@ func (s *OffRampService) HandleTransferCompleted(ctx context.Context, transferID
 		return fmt.Errorf("failed to update deposit: %w", err)
 	}
 
-	// Fund Alpaca account
-	if err := s.fundAlpacaAccount(ctx, deposit, deposit.Amount); err != nil {
-		s.logger.Error("Failed to fund Alpaca account", "deposit_id", deposit.ID.String(), "error", err)
-		return fmt.Errorf("alpaca funding failed: %w", err)
+	// Brokerage funding used to happen here through Alpaca. With Alpaca removed
+	// the off-ramp completes once the transfer settles; brokerage funding moves
+	// to the Glider/Solana sleeve path.
+	s.logger.Info("Off-ramp completed", "deposit_id", deposit.ID.String(), "amount", deposit.Amount.String())
+	if err := s.notificationSvc.NotifyOffRampSuccess(ctx, deposit.UserID, deposit.Amount.String()); err != nil {
+		s.logger.Warn("Failed to send off-ramp success notification", "deposit_id", deposit.ID.String(), "error", err)
 	}
-
-	return nil
-}
-
-// fundAlpacaAccount funds the Alpaca brokerage account
-func (s *OffRampService) fundAlpacaAccount(ctx context.Context, deposit *entities.Deposit, amount decimal.Decimal) error {
-	s.logger.Info("Funding Alpaca account", "deposit_id", deposit.ID.String(), "amount", amount.String())
-
-	virtualAccount, err := s.virtualAccountRepo.GetByID(ctx, *deposit.VirtualAccountID)
-	if err != nil {
-		return fmt.Errorf("failed to get virtual account: %w", err)
-	}
-
-	retryConfig := retry.RetryConfig{
-		MaxAttempts: 3,
-		BaseDelay:   1 * time.Second,
-		MaxDelay:    10 * time.Second,
-		Multiplier:  2.0,
-	}
-
-	var fundingResp *entities.AlpacaInstantFundingResponse
-	retryFunc := func() error {
-		req := &entities.AlpacaInstantFundingRequest{
-			AccountNo:       virtualAccount.AlpacaAccountID,
-			SourceAccountNo: "SI",
-			Amount:          amount,
-		}
-		resp, err := s.alpacaAdapter.InitiateInstantFunding(ctx, req)
-		if err != nil {
-			return err
-		}
-		fundingResp = resp
-		return nil
-	}
-
-	isRetryable := func(err error) bool {
-		return err != nil
-	}
-
-	if err := retry.WithExponentialBackoff(ctx, retryConfig, retryFunc, isRetryable); err != nil {
-		return fmt.Errorf("alpaca funding failed: %w", err)
-	}
-
-	now := time.Now()
-	fundingTxID := fundingResp.ID
-	deposit.AlpacaFundingTxID = &fundingTxID
-	deposit.AlpacaFundedAt = &now
-	deposit.Status = "broker_funded"
-
-	if err := s.depositRepo.Update(ctx, deposit); err != nil {
-		return fmt.Errorf("failed to update deposit: %w", err)
-	}
-
-	if err := s.balanceService.UpdateBuyingPower(ctx, deposit.UserID, amount); err != nil {
-		s.logger.Error("Failed to update buying power", "deposit_id", deposit.ID.String(), "error", err)
-	}
-
-	_ = s.notificationSvc.NotifyOffRampSuccess(ctx, deposit.UserID, amount.String())
-
-	s.logger.Info("Alpaca account funded successfully",
-		"deposit_id", deposit.ID.String(),
-		"account_id", virtualAccount.AlpacaAccountID)
 
 	return nil
 }

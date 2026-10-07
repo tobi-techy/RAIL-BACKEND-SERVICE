@@ -8,11 +8,11 @@ import (
 // BusinessMetrics contains all business-specific metrics
 type BusinessMetrics struct {
 	// Order metrics
-	OrdersCreated     *prometheus.CounterVec
-	OrdersFilled      *prometheus.CounterVec
-	OrdersFailed      *prometheus.CounterVec
-	OrderValue        *prometheus.HistogramVec
-	OrderDuration     *prometheus.HistogramVec
+	OrdersCreated *prometheus.CounterVec
+	OrdersFilled  *prometheus.CounterVec
+	OrdersFailed  *prometheus.CounterVec
+	OrderValue    *prometheus.HistogramVec
+	OrderDuration *prometheus.HistogramVec
 
 	// Deposit metrics
 	DepositsInitiated *prometheus.CounterVec
@@ -39,8 +39,6 @@ type BusinessMetrics struct {
 	AverageBalance prometheus.Gauge
 
 	// External API metrics
-	AlpacaAPILatency *prometheus.HistogramVec
-	AlpacaAPIErrors  *prometheus.CounterVec
 	// Legacy Circle metrics (deprecated; Bridge is primary)
 	CircleAPILatency *prometheus.HistogramVec
 	CircleAPIErrors  *prometheus.CounterVec
@@ -134,7 +132,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 			},
 			[]string{"asset_type"},
 		),
-		
+
 		// Deposit metrics
 		DepositsInitiated: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -173,7 +171,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 			},
 			[]string{"chain"},
 		),
-		
+
 		// Withdrawal metrics
 		WithdrawalsInitiated: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -212,7 +210,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 			},
 			[]string{"chain"},
 		),
-		
+
 		// User metrics
 		UsersRegistered: promauto.NewCounter(
 			prometheus.CounterOpts{
@@ -238,7 +236,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 				Help: "Number of active users",
 			},
 		),
-		
+
 		// Balance metrics
 		TotalBalance: promauto.NewGauge(
 			prometheus.GaugeOpts{
@@ -252,23 +250,8 @@ func NewBusinessMetrics() *BusinessMetrics {
 				Help: "Average balance per user in USD",
 			},
 		),
-		
+
 		// External API metrics
-		AlpacaAPILatency: promauto.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "stack_alpaca_api_latency_seconds",
-				Help:    "Alpaca API request latency",
-				Buckets: prometheus.DefBuckets,
-			},
-			[]string{"endpoint", "method"},
-		),
-		AlpacaAPIErrors: promauto.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: "stack_alpaca_api_errors_total",
-				Help: "Total number of Alpaca API errors",
-			},
-			[]string{"endpoint", "method", "status_code"},
-		),
 		CircleAPILatency: promauto.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "stack_circle_api_latency_seconds",
@@ -284,7 +267,7 @@ func NewBusinessMetrics() *BusinessMetrics {
 			},
 			[]string{"endpoint", "method", "status_code"},
 		),
-		
+
 		// Basket metrics
 		BasketOrdersCreated: promauto.NewCounterVec(
 			prometheus.CounterOpts{

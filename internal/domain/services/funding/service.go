@@ -120,10 +120,8 @@ type Service struct {
 	managedWalletRepo   ManagedWalletRepository
 	virtualAccountRepo  VirtualAccountRepository
 	userRepo            UserRepository
-	alpacaAccountLookup AlpacaAccountLookup
 	bridgeWallets       BridgeDepositClient
 	bridgeVAService     *BridgeVirtualAccountService
-	alpacaAPI           AlpacaAdapter
 	ledgerIntegration   LedgerIntegration
 	limitsService       LimitsService
 	validationService   *ValidationService
@@ -228,29 +226,13 @@ type VirtualAccountRepository interface {
 	UpdateWithVersion(ctx context.Context, account *entities.VirtualAccount, oldUpdatedAt time.Time) error
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.VirtualAccount, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error)
-	GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error)
 	GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status entities.VirtualAccountStatus) error
-	ExistsByUserAndAlpacaAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (bool, error)
-}
-
-// AlpacaAdapter interface for Alpaca API integration
-type AlpacaAdapter interface {
-	GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
-	InitiateInstantFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error)
-	GetInstantFundingStatus(ctx context.Context, transferID string) (*entities.AlpacaInstantFundingResponse, error)
-	GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error)
-	CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error)
 }
 
 // UserRepository for looking up Bridge customer ID
 type UserRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*entities.UserProfile, error)
-}
-
-// AlpacaAccountLookup resolves persisted account ownership.
-type AlpacaAccountLookup interface {
-	GetByAlpacaID(ctx context.Context, alpacaAccountID string) (*entities.AlpacaAccount, error)
 }
 
 // NewService creates a new funding service
@@ -259,7 +241,6 @@ func NewService(
 	walletRepo WalletRepository,
 	managedWalletRepo ManagedWalletRepository,
 	virtualAccountRepo VirtualAccountRepository,
-	alpacaAPI AlpacaAdapter,
 	ledgerIntegration LedgerIntegration,
 	logger *logger.Logger,
 ) *Service {
@@ -268,7 +249,6 @@ func NewService(
 		walletRepo:         walletRepo,
 		managedWalletRepo:  managedWalletRepo,
 		virtualAccountRepo: virtualAccountRepo,
-		alpacaAPI:          alpacaAPI,
 		ledgerIntegration:  ledgerIntegration,
 		config:             DefaultFundingConfig(),
 		logger:             logger,
@@ -363,11 +343,6 @@ func (s *Service) GetTOSLink(ctx context.Context, bridgeCustomerID string) (stri
 		return "", fmt.Errorf("virtual account service not configured")
 	}
 	return s.bridgeVAService.GetTOSLink(ctx, bridgeCustomerID)
-}
-
-// SetAlpacaAccountLookup sets the alpaca account ownership lookup service (optional).
-func (s *Service) SetAlpacaAccountLookup(lookup AlpacaAccountLookup) {
-	s.alpacaAccountLookup = lookup
 }
 
 // SetAllocationService sets the allocation service for automatic 70/30 split (optional)
@@ -1202,62 +1177,10 @@ func (s *Service) CreateVirtualAccount(ctx context.Context, req *entities.Create
 	}, nil
 }
 
-// InitiateBrokerFunding initiates funding to Alpaca brokerage account after off-ramp completion
+// InitiateBrokerFunding initiated funding to Alpaca brokerage account after
+// off-ramp completion. The Alpaca provider has been removed — funding now
+// routes through the Glider/Solana sleeve, so this method is disabled and
+// returns an error if invoked.
 func (s *Service) InitiateBrokerFunding(ctx context.Context, depositID uuid.UUID, alpacaAccountID string, amount decimal.Decimal) error {
-	s.logger.Info("Initiating broker funding",
-		"deposit_id", depositID.String(),
-		"alpaca_account_id", alpacaAccountID,
-		"amount", amount.String())
-
-	// Verify Alpaca account is active
-	alpacaAccount, err := s.alpacaAPI.GetAccount(ctx, alpacaAccountID)
-	if err != nil {
-		s.logger.Error("Failed to get Alpaca account", "error", err, "alpaca_account_id", alpacaAccountID)
-		return fmt.Errorf("failed to get Alpaca account: %w", err)
-	}
-
-	if alpacaAccount.Status != entities.AlpacaAccountStatusActive {
-		s.logger.Error("Alpaca account not active",
-			"alpaca_account_id", alpacaAccountID,
-			"status", alpacaAccount.Status)
-		return fmt.Errorf("Alpaca account not active: %s", alpacaAccount.Status)
-	}
-
-	// Create instant funding transfer to extend buying power immediately
-	instantFundingReq := &entities.AlpacaInstantFundingRequest{
-		AccountNo:       alpacaAccount.AccountNumber,
-		SourceAccountNo: "SI", // Source account for instant funding
-		Amount:          amount,
-	}
-
-	instantFundingResp, err := s.alpacaAPI.InitiateInstantFunding(ctx, instantFundingReq)
-	if err != nil {
-		s.logger.Error("Failed to initiate instant funding",
-			"error", err,
-			"alpaca_account_id", alpacaAccountID,
-			"amount", amount.String())
-		return fmt.Errorf("failed to initiate instant funding: %w", err)
-	}
-
-	s.logger.Info("Instant funding initiated successfully",
-		"transfer_id", instantFundingResp.ID,
-		"status", instantFundingResp.Status,
-		"deadline", instantFundingResp.Deadline,
-		"alpaca_account_id", alpacaAccountID)
-
-	// Update deposit status to broker_funded
-	now := time.Now()
-	if err := s.depositRepo.UpdateStatus(ctx, depositID, "broker_funded", &now); err != nil {
-		s.logger.Error("Failed to update deposit status",
-			"error", err,
-			"deposit_id", depositID.String())
-		return fmt.Errorf("failed to update deposit status: %w", err)
-	}
-
-	s.logger.Info("Broker funding completed",
-		"deposit_id", depositID.String(),
-		"transfer_id", instantFundingResp.ID,
-		"alpaca_account_id", alpacaAccountID)
-
-	return nil
+	return fmt.Errorf("broker funding disabled: Alpaca provider has been removed; use the Glider/Solana sleeve")
 }

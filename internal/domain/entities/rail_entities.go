@@ -194,8 +194,6 @@ type Deposit struct {
 	OffRampTxID        *string          `json:"off_ramp_tx_id" db:"off_ramp_tx_id"`
 	OffRampInitiatedAt *time.Time       `json:"off_ramp_initiated_at" db:"off_ramp_initiated_at"`
 	OffRampCompletedAt *time.Time       `json:"off_ramp_completed_at" db:"off_ramp_completed_at"`
-	AlpacaFundingTxID  *string          `json:"alpaca_funding_tx_id" db:"alpaca_funding_tx_id"`
-	AlpacaFundedAt     *time.Time       `json:"alpaca_funded_at" db:"alpaca_funded_at"`
 	VirtualAccountID   *uuid.UUID       `json:"virtual_account_id" db:"virtual_account_id"`
 	CreatedAt          time.Time        `json:"created_at" db:"created_at"`
 }

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -30,15 +29,11 @@ import (
 	waitlisthandlers "github.com/rail-service/rail_service/internal/api/handlers/waitlist"
 	"github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/domain/services"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/session"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
-	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
-	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
@@ -201,13 +196,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	// a fresh HMAC-SHA256 request signature so a leaked static key alone cannot
 	// drive money-moving internal routes (TM-001). No-op until configured.
 	internal.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
-	// Miriam evaluation can run up to 5 minutes (per-handler WithTimeout);
-	// it must not be killed by the 10s group timeout above, so it lives on
-	// a sibling group with the same auth but no TimeoutMiddleware.
-	internalMiriam := router.Group("/internal")
-	internalMiriam.Use(middleware.RateLimit(5))
-	internalMiriam.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
-	internalMiriam.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
@@ -287,8 +275,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	}
 
 	// Internal knowledge ingestion — auth handled by group middleware
-	if container.GetKnowledgeService() != nil {
-		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
+	if container.KnowledgeService != nil {
+		knowledgeHandlers := handlers.NewKnowledgeHandlers(container.KnowledgeService, container.ZapLog)
 		internal.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
 	}
 
@@ -396,104 +384,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
 	})
 
-	// Internal Miriam evaluation trigger. Cloudflare Cron calls this endpoint;
-	// Rail keeps the financial execution, DB state, and audit trail in the backend.
-	if container.MiriamIntelligenceService != nil && container.UserRepo != nil {
-		internalMiriam.POST("/miriam/evaluate", func(c *gin.Context) {
-			reqCtx, reqCancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
-			defer reqCancel()
-
-			var req struct {
-				UserID    string `json:"user_id"`
-				EventType string `json:"event_type"`
-				Limit     int    `json:"limit"`
-			}
-			if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			eventType := normalizeMiriamInternalEvent(req.EventType)
-			limit := req.Limit
-			if limit <= 0 {
-				limit = container.Config.Workers.MiriamIntelligenceBatchSize
-			}
-			if limit <= 0 || limit > 500 {
-				limit = 500
-			}
-
-			var userIDs []uuid.UUID
-			if strings.TrimSpace(req.UserID) != "" {
-				userID, err := uuid.Parse(req.UserID)
-				if err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user_id"})
-					return
-				}
-				userIDs = []uuid.UUID{userID}
-			} else {
-				ids, err := container.UserRepo.ListMiriamWorkerUserIDs(reqCtx, limit)
-				if err != nil {
-					container.ZapLog.Error("internal miriam evaluation: list users failed", zap.Error(err))
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list Miriam users"})
-					return
-				}
-				userIDs = ids
-			}
-
-			var (
-				mu          sync.Mutex
-				evaluated   int
-				failed      int
-				failedUsers = make([]string, 0)
-				wg          sync.WaitGroup
-				sem         = make(chan struct{}, 10)
-			)
-
-			for _, uid := range userIDs {
-				if reqCtx.Err() != nil {
-					break
-				}
-				wg.Add(1)
-				sem <- struct{}{}
-				go func(userID uuid.UUID) {
-					defer wg.Done()
-					defer func() { <-sem }()
-					if reqCtx.Err() != nil {
-						return
-					}
-					evalCtx, cancel := context.WithTimeout(reqCtx, 10*time.Second)
-					var evalErr error
-					if container.MiriamIntelligenceOrchestrator != nil {
-						_, evalErr = container.MiriamIntelligenceOrchestrator.Evaluate(evalCtx, userID, eventType)
-					} else {
-						evalErr = container.MiriamIntelligenceService.EvaluateUser(evalCtx, userID, eventType)
-					}
-					cancel()
-					mu.Lock()
-					if evalErr != nil {
-						failed++
-						if len(failedUsers) < 20 {
-							failedUsers = append(failedUsers, userID.String())
-						}
-						container.ZapLog.Warn("internal miriam evaluation: user failed", zap.String("user_id", userID.String()), zap.Error(evalErr))
-					} else {
-						evaluated++
-					}
-					mu.Unlock()
-				}(uid)
-			}
-			wg.Wait()
-
-			c.JSON(http.StatusOK, gin.H{
-				"status":       "completed",
-				"event_type":   eventType,
-				"requested":    len(userIDs),
-				"evaluated":    evaluated,
-				"failed":       failed,
-				"failed_users": failedUsers,
-			})
-		})
-	}
-
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
@@ -594,13 +484,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.ZapLog,
 	)
 
-	// Initialize integration handlers (Alpaca only)
-	integrationHandlers := handlers.NewIntegrationHandlers(
-		container.AlpacaClient,
-		services.NewNotificationService(container.ZapLog),
-		container.Logger,
-	)
-
 	// Initialize Bridge KYC handlers for optimized KYC flow
 	bridgeKYCHandlers := handlers.NewBridgeKYCHandlers(
 		container.BridgeClient,
@@ -637,7 +520,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			kycUserRepoAdapter,
 			container.KYCSubmissionRepo,
 			container.BridgeAdapter,
-			alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
 			sumsubClient,
 			container.SumsubWebhookEventRepo,
 			container.KYCSyncJobRepo,
@@ -651,7 +533,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			kycUserRepoAdapter,
 			container.KYCSubmissionRepo,
 			container.BridgeAdapter,
-			alpacaadapter.NewAdapter(container.AlpacaClient, container.Logger),
 			sumsubClient,
 			container.SumsubWebhookEventRepo,
 			container.KYCSyncJobRepo,
@@ -1080,17 +961,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 				// Deposit address — available to all users with Circle wallets (no KYC required)
 				funding.POST("/deposit/address", walletFundingHandlers.CreateDepositAddress)
 
-				// Bridge KYC required: fiat virtual accounts and instant funding
+				// Bridge KYC required: fiat virtual accounts
 				fundingBridgeGated := funding.Group("/")
 				fundingBridgeGated.Use(middleware.RequireBridgeCapability(container.UserRepo, container.ZapLog))
 				{
 					fundingBridgeGated.POST("/virtual-account", walletFundingHandlers.CreateVirtualAccount)
 					fundingBridgeGated.GET("/virtual-accounts", walletFundingHandlers.GetVirtualAccounts)
-
-					if instantFundingHandlers := container.GetInstantFundingHandlers(); instantFundingHandlers != nil {
-						fundingBridgeGated.POST("/instant", instantFundingHandlers.RequestInstantFunding)
-						fundingBridgeGated.GET("/instant/status", instantFundingHandlers.GetInstantFundingStatus)
-					}
 				}
 
 				// Crypto-capable: ChainRails and PAJ (no KYC required, backend enforces limits)
@@ -1392,9 +1268,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 
 			// Investment routes
-			basketExecutor := container.InitializeBasketExecutor()
 			investingService := container.GetInvestingService()
-			if basketExecutor != nil && investingService != nil {
+			if investingService != nil {
 				// Curated baskets endpoints
 				baskets := protected.Group("/baskets")
 				{
@@ -1483,320 +1358,57 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			portfolio := protected.Group("/portfolio")
 			{
 				portfolio.GET("/overview", walletFundingHandlers.GetPortfolio)
-
-				// AI Financial Manager - Portfolio endpoints
-				if container.GetPortfolioDataProvider() != nil {
-					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
-						container.GetPortfolioDataProvider(),
-						container.GetActivityDataProvider(),
-						container.GetStreakRepository(),
-						container.GetContributionsRepository(),
-						container.Logger,
-					)
-					portfolio.GET("/weekly-stats", portfolioActivityHandlers.GetWeeklyStats)
-					portfolio.GET("/top-movers", portfolioActivityHandlers.GetTopMovers)
-					portfolio.GET("/performance", portfolioActivityHandlers.GetPerformance)
-				}
 			}
 
-			// Activity endpoints (AI Financial Manager)
-			if container.GetActivityDataProvider() != nil {
-				activity := protected.Group("/activity")
-				{
-					portfolioActivityHandlers := handlers.NewPortfolioActivityHandlers(
-						container.GetPortfolioDataProvider(),
-						container.GetActivityDataProvider(),
-						container.GetStreakRepository(),
-						container.GetContributionsRepository(),
-						container.Logger,
-					)
-					activity.GET("/contributions", portfolioActivityHandlers.GetContributions)
-					activity.GET("/streak", portfolioActivityHandlers.GetStreak)
-					activity.GET("/timeline", portfolioActivityHandlers.GetTimeline)
-				}
-			}
-
-			// AI Chat endpoints (AI Financial Manager)
-			if container.GetAIOrchestrator() != nil {
-				aiChatHandlers := handlers.NewAIChatHandlers(container.GetAIOrchestrator(), container.GetConversationService(), container.Logger)
-				var voiceHandler interface {
-					HandleSession(*gin.Context)
-					IssueSessionToken(*gin.Context)
-					CheckELHealth(*gin.Context)
-					IssueSignedURL(*gin.Context)
-					HandleToolExecution(*gin.Context)
-					PrepareVoiceAction(*gin.Context)
-					GetProactiveInsight(*gin.Context)
-					HandleServerTool(*gin.Context)
-				}
-				if container.Config.AI.ElevenLabs.APIKey != "" && container.Config.AI.ElevenLabs.AgentID != "" {
-					el := container.Config.AI.ElevenLabs
-					ttsCfg := &infraai.ELTTSConfig{
-						Stability:       el.Stability,
-						SimilarityBoost: el.SimilarityBoost,
-						Style:           el.Style,
-						UseSpeakerBoost: el.UseSpeakerBoost,
-					}
-					if el.VoiceID != "" {
-						ttsCfg.VoiceID = el.VoiceID
-					}
-					// Redis-backed voice session rate limiter (holds across replicas).
-					// 10 sessions/user/hour. Nil-safe: if Redis is unavailable the
-					// handler skips the check (fail-open).
-					var voiceSessionLimiter *aiservice.VoiceSessionRateLimiter
-					if container.RedisClient != nil {
-						voiceSessionLimiter = aiservice.NewVoiceSessionRateLimiter(container.RedisClient, 10, container.ZapLog)
-					}
-					voiceHandler = handlers.NewVoiceHandler(
-						el.APIKey,
-						el.AgentID,
-						container.Config.JWT.Secret,
-						el.WebhookSecret,
-						el.PidginVoiceID,
-						container.GetAIOrchestrator(),
-						container.GetUsageService(),
-						container.GetConversationService(),
-						voiceSessionLimiter,
-						container.Config.Server.AllowedOrigins,
-						container.ZapLog,
-						ttsCfg,
-					)
-				}
-				aiGroup := protected.Group("/ai")
-				{
-					aiGroup.POST("/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.Chat)
-					aiGroup.POST("/chat/stream", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), aiChatHandlers.ChatStream)
-					aiGroup.GET("/wrapped", middleware.AuthRateLimit(10), aiChatHandlers.GetWrapped)
-					aiGroup.GET("/quick-insight", middleware.AuthRateLimit(20), aiChatHandlers.QuickInsight)
-					aiGroup.GET("/financial-health", middleware.AuthRateLimit(20), aiChatHandlers.FinancialHealth)
-					aiGroup.GET("/financial-audit", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAudit)
-					aiGroup.GET("/cash-flow-forecast", middleware.AuthRateLimit(20), aiChatHandlers.CashFlowForecast)
-					aiGroup.GET("/financial-plan", middleware.AuthRateLimit(20), aiChatHandlers.FinancialPlan)
-					aiGroup.GET("/action-receipts", middleware.AuthRateLimit(20), aiChatHandlers.ActionReceipts)
-					aiGroup.GET("/financial-advice", middleware.AuthRateLimit(20), aiChatHandlers.FinancialAdvice)
-					aiGroup.GET("/financial-timeline", middleware.AuthRateLimit(20), aiChatHandlers.FinancialTimeline)
-					aiGroup.GET("/miriam-brief", middleware.AuthRateLimit(20), aiChatHandlers.MiriamBrief)
-					if container.MiriamIntelligenceService != nil {
-						miriamHandler := handlers.NewMiriamIntelligenceHandler(
-							container.MiriamIntelligenceService,
-							container.MiriamHealthScoreTracker,
-							container.MiriamPredictiveEngine,
-							container.MiriamMandateSuggestionEngine,
-							container.ZapLog,
-						)
-						miriam := aiGroup.Group("/miriam")
-						{
-							miriam.GET("/state", middleware.AuthRateLimit(20), miriamHandler.GetState)
-							miriam.POST("/state/refresh", middleware.AuthRateLimit(10), miriamHandler.RefreshState)
-							miriam.GET("/mandates", middleware.AuthRateLimit(20), miriamHandler.ListMandates)
-							miriam.POST("/mandates", middleware.AuthRateLimit(10), miriamHandler.CreateMandate)
-							miriam.PATCH("/mandates/:id/status", middleware.AuthRateLimit(10), miriamHandler.UpdateMandateStatus)
-							miriam.GET("/receipts", middleware.AuthRateLimit(20), miriamHandler.ListReceipts)
-							miriam.POST("/receipts/:id/feedback", middleware.AuthRateLimit(20), miriamHandler.RecordFeedback)
-							miriam.GET("/health-score", middleware.AuthRateLimit(20), miriamHandler.GetHealthScore)
-							miriam.GET("/health-score/trend", middleware.AuthRateLimit(20), miriamHandler.GetHealthScoreTrend)
-							miriam.GET("/predictions", middleware.AuthRateLimit(20), miriamHandler.GetPredictions)
-							miriam.GET("/suggestions", middleware.AuthRateLimit(20), miriamHandler.ListSuggestions)
-							miriam.POST("/suggestions/:id/accept", middleware.AuthRateLimit(10), miriamHandler.AcceptSuggestion)
-							miriam.POST("/suggestions/:id/dismiss", middleware.AuthRateLimit(10), miriamHandler.DismissSuggestion)
-						}
-					}
-					if container.MiriamPreferencesService != nil {
-						prefsHandler := handlers.NewMiriamPreferencesHandler(container.MiriamPreferencesService, container.ZapLog)
-						aiGroup.GET("/miriam/preferences", middleware.AuthRateLimit(20), prefsHandler.Get)
-						aiGroup.PUT("/miriam/preferences", middleware.AuthRateLimit(10), prefsHandler.Put)
-					}
-					aiGroup.GET("/suggestions", aiChatHandlers.GetSuggestedQuestions)
-					aiGroup.GET("/starters", middleware.AuthRateLimit(10), aiChatHandlers.GetConversationStarters)
-					aiGroup.GET("/proactive-opener", middleware.AuthRateLimit(10), aiChatHandlers.GetProactiveOpener)
-					aiGroup.POST("/nudge", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), aiChatHandlers.Nudge)
-					enhancedNudgeHandler := handlers.NewEnhancedNudgeHandler(container.GetAIOrchestrator(), container.ZapLog)
-					aiGroup.POST("/nudge/enhanced", middleware.AuthRateLimit(10), middleware.PerUserRateLimit(10), enhancedNudgeHandler.HandleEnhancedNudge)
-
-					if container.AutomationService != nil {
-						automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
-						automations := aiGroup.Group("/automations")
-						{
-							automations.POST("", automationHandler.CreateAutomation)
-							automations.GET("", automationHandler.ListAutomations)
-							automations.GET("/logs", automationHandler.GetAutomationLogs)
-							automations.GET("/:id", automationHandler.GetAutomation)
-							automations.PATCH("/:id", automationHandler.UpdateAutomation)
-							automations.DELETE("/:id", automationHandler.DeleteAutomation)
-						}
-					}
-
-					// Image analysis (receipt scanning) — uses Cencori gateway (OpenAI-compatible)
-					var imageHandler *handlers.ImageAnalysisHandler
-					if container.Config.AI.Cencori.APIKey != "" {
-						cencoriBase := "https://api.cencori.com/v1"
-						imageHandler = handlers.NewImageAnalysisHandlerWithVision(
-							container.Config.AI.Cencori.APIKey,
-							cencoriBase,
-							"gpt-4o",
-							container.GetAIOrchestrator(),
-							container.ReceiptRepo,
-							container.ZapLog,
-						)
-					}
-					if imageHandler != nil {
-						imageHandler.SetBudgetRepo(container.BudgetRepo)
-						imageHandler.SetSpendingRepo(container.LedgerSpendingRepo)
-						imageHandler.SetBankStatementRepo(container.BankStatementRepo)
-						if container.SupermemoryClient != nil {
-							imageHandler.SetMemoryStore(&receiptMemoryAdapter{client: container.SupermemoryClient})
-						}
-						if container.GetConversationService() != nil {
-							imageHandler.SetConversationPersister(container.GetConversationService())
-						}
-						aiGroup.POST("/chat/image", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(10), imageHandler.AnalyzeImage)
-						aiGroup.POST("/chat/images", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(3), imageHandler.BatchAnalyzeImages)
-						aiGroup.GET("/receipts", imageHandler.GetReceipts)
-						aiGroup.GET("/receipts/gallery", imageHandler.GetReceiptGallery)
-						aiGroup.PUT("/receipts/:id", imageHandler.UpdateReceipt)
-						aiGroup.DELETE("/receipts/:id", imageHandler.DeleteReceipt)
-
-						// Receipt split with friends
-						if container.P2PService != nil {
-							splitHandler := handlers.NewReceiptSplitHandler(container.ReceiptRepo, container.ReceiptSplitRepo, container.P2PService, container.ZapLog)
-							aiGroup.POST("/receipts/:id/split", splitHandler.SplitReceipt)
-						}
-
-						// Receipt split tracking (list, detail, reminders, mark paid)
-						if container.ReceiptSplitRepo != nil {
-							splitTrackingHandler := handlers.NewReceiptSplitTrackingHandler(container.ReceiptSplitRepo, container.ZapLog)
-							aiGroup.GET("/receipts/splits", splitTrackingHandler.ListSplits)
-							aiGroup.GET("/receipts/splits/:id", splitTrackingHandler.GetSplit)
-							aiGroup.POST("/receipts/splits/:id/remind", splitTrackingHandler.SendReminder)
-							aiGroup.POST("/receipts/splits/:id/participants/:pid/paid", splitTrackingHandler.MarkPaid)
-						}
-					}
-
-					// Miriam AI endpoints (available to all users)
-					{
-						premiumHandlers := handlers.NewPremiumAIHandlers(
-							container.GetAIOrchestrator(),
-							container.ZapLog,
-							container.GetConversationService(),
-						)
-						premiumHandlers.SetPasscodeValidator(container.GetPasscodeService())
-						aiGroup.GET("/report/weekly", middleware.AuthRateLimit(5), premiumHandlers.WeeklyReport)
-						aiGroup.POST("/simulate", middleware.AuthRateLimit(10), premiumHandlers.Simulate)
-						aiGroup.GET("/tax-summary", middleware.AuthRateLimit(5), premiumHandlers.TaxSummary)
-						aiGroup.GET("/operating-plan", middleware.AuthRateLimit(10), premiumHandlers.OperatingPlan)
-						aiGroup.POST("/operating-plan/actions", middleware.AuthRateLimit(10), premiumHandlers.StageOperatingPlanAction)
-						aiGroup.GET("/money-across-borders-report", middleware.AuthRateLimit(5), premiumHandlers.MoneyAcrossBordersReport)
-						aiGroup.POST("/challenge/generate", middleware.AuthRateLimit(10), premiumHandlers.GenerateChallenge)
-						aiGroup.GET("/goals/progress", middleware.AuthRateLimit(10), premiumHandlers.GoalProgress)
-					}
-
-					// Bank statement upload & processing
-					if container.BankStatementRepo != nil {
-						var progressReporter *statement.RedisProgressReporter
-						if container.RedisClient != nil {
-							progressReporter = statement.NewRedisProgressReporter(container.RedisClient.Client(), container.ZapLog)
-						}
-
-						stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, progressReporter, container.ZapLog)
-						aiGroup.POST("/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandler.Upload)
-						aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)
-						aiGroup.GET("/statements", middleware.AuthRateLimit(20), stmtHandler.List)
-						aiGroup.DELETE("/statement/:id", middleware.AuthRateLimit(10), stmtHandler.Delete)
-
-						// V2 statement pipeline: supports images, OCR, real-time progress
-						stmtHandlerV2 := handlers.NewStatementUploadHandlerV2(container.BankStatementRepo, container.JobQueueInstance, nil, progressReporter, container.ZapLog)
-						aiGroup.POST("/v2/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandlerV2.Upload)
-						aiGroup.GET("/v2/statement/:id/progress", middleware.AuthRateLimit(60), stmtHandlerV2.StreamProgress)
-						// V2 reuses V1 status/list/delete/transactions endpoints (same DB)
-						aiGroup.GET("/statement/:id/transactions", middleware.AuthRateLimit(20), stmtHandler.GetTransactions)
-					}
-
-					// Document intelligence (contract v1): unified upload/status/result.
-					// Wired only when the repo, queue, and R2 file store all exist;
-					// Upload degrades to 503 when storage is unconfigured.
-					if container.DocumentRepo != nil && container.JobQueueInstance != nil && container.DocumentFileStore != nil {
-						docHandler := handlers.NewDocumentHandler(container.DocumentRepo, container.JobQueueInstance, container.DocumentFileStore, container.ZapLog)
-						protected.POST("/documents/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), docHandler.Upload)
-						protected.GET("/documents/:id", middleware.AuthRateLimit(30), docHandler.GetStatus)
-						protected.GET("/documents/:id/result", middleware.AuthRateLimit(30), docHandler.GetResult)
-						protected.DELETE("/documents/:id", middleware.AuthRateLimit(10), docHandler.Delete)
-					}
-
-					// Voice session ticket issuance (protected by standard auth).
-					// WebSocket endpoint uses its own voice session token auth (no Bearer/CSRF).
-					if voiceHandler != nil {
-						aiGroup.POST("/voice/session-token", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSessionToken)
-						aiGroup.POST("/voice/signed-url", middleware.AuthRateLimit(60), middleware.PerUserRateLimit(60), voiceHandler.IssueSignedURL)
-						aiGroup.POST("/voice/execute-tool", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.HandleToolExecution)
-						aiGroup.POST("/voice/prepare-action", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), voiceHandler.PrepareVoiceAction)
-						aiGroup.GET("/voice/proactive-insight", middleware.PerUserRateLimit(30), voiceHandler.GetProactiveInsight)
-						v1.GET("/ai/voice/health", voiceHandler.CheckELHealth)
-						v1.GET("/ai/voice/session", voiceHandler.HandleSession)
-						// ElevenLabs server tool webhook (public, authenticated by webhook secret)
-						v1.POST("/ai/voice/server-tool/:tool_name", voiceHandler.HandleServerTool)
-					}
-
-					// Support agent (ElevenLabs)
-					if container.Config.AI.ElevenLabs.SupportAgentID != "" {
-						supportHandler := handlers.NewSupportHandler(
-							container.Config.AI.ElevenLabs.APIKey,
-							container.Config.AI.ElevenLabs.SupportAgentID,
-							container.ZapLog,
-						)
-						aiGroup.POST("/support/signed-url", middleware.AuthRateLimit(30), middleware.PerUserRateLimit(30), supportHandler.IssueSignedURL)
-					}
-				}
-
-				// Conversation endpoints. The "gate-on + nil-passcode" invariant
-				// is validated at application startup (Application.validateSecurityConfig),
-				// so the gate is guaranteed wired by the time we reach this route
-				// setup — no mid-route Fatal here. Step-up enforcement for fund-moving
-				// actions lives in the orchestrator core (AgentAdapter.ConfirmAction),
-				// not in the handler — so every caller is protected regardless of
-				// the HTTP entry point.
-				if container.GetConversationService() != nil {
-					convHandlers := handlers.NewConversationHandlers(
-						container.GetAIOrchestrator(),
-						container.GetConversationService(),
-						container.ZapLog,
-					)
-					convGroup := protected.Group("/ai/conversations")
-					{
-						convGroup.POST("", convHandlers.CreateConversation)
-						convGroup.GET("", convHandlers.ListConversations)
-						convGroup.GET("/:id", convHandlers.GetConversation)
-						convGroup.DELETE("/:id", convHandlers.DeleteConversation)
-						convGroup.POST("/:id/chat", middleware.AuthRateLimit(20), middleware.PerUserRateLimit(20), convHandlers.ChatInConversation)
-						convGroup.POST("/:id/confirm", convHandlers.ConfirmAction)
-						convGroup.POST("/:id/cancel", convHandlers.CancelAction)
-					}
-				}
-
-				// Usage tracking endpoint
-				if container.GetUsageService() != nil {
-					usageHandlers := handlers.NewUsageHandlers(container.GetUsageService(), container.ZapLog)
-					aiGroup.GET("/usage", usageHandlers.GetUsage)
-				}
-			}
-
-			// News endpoints (AI Financial Manager)
-			if container.GetNewsService() != nil {
-				newsHandlers := handlers.NewNewsHandlers(container.GetNewsService(), container.Logger)
-				news := protected.Group("/news")
-				{
-					news.GET("/feed", newsHandlers.GetFeed)
-					news.GET("/weekly", newsHandlers.GetWeeklyNews)
-					news.POST("/read", newsHandlers.MarkAsRead)
-					news.GET("/unread-count", newsHandlers.GetUnreadCount)
-					news.POST("/refresh", newsHandlers.RefreshNews)
-				}
-			}
-
-			// Alpaca Assets - Tradable stocks and ETFs (cached 5min — asset list rarely changes)
-			assets := protected.Group("/assets")
+			// AI-adjacent utility endpoints. Everything agentic now lives in the
+			// Python agent; Go keeps only automations, statement ingest and
+			// document intelligence.
+			aiGroup := protected.Group("/ai")
 			{
-				assets.GET("/", middleware.PublicCache(300), integrationHandlers.GetAssets)
-				assets.GET("/:symbol_or_id", middleware.PublicCache(300), integrationHandlers.GetAsset)
+				if container.AutomationService != nil {
+					automationHandler := handlers.NewAutomationHandler(container.AutomationService, container.ZapLog, container.GetPasscodeService())
+					automations := aiGroup.Group("/automations")
+					{
+						automations.POST("", automationHandler.CreateAutomation)
+						automations.GET("", automationHandler.ListAutomations)
+						automations.GET("/logs", automationHandler.GetAutomationLogs)
+						automations.GET("/:id", automationHandler.GetAutomation)
+						automations.PATCH("/:id", automationHandler.UpdateAutomation)
+						automations.DELETE("/:id", automationHandler.DeleteAutomation)
+					}
+				}
+
+				// Bank statement upload & processing
+				if container.BankStatementRepo != nil {
+					var progressReporter *statement.RedisProgressReporter
+					if container.RedisClient != nil {
+						progressReporter = statement.NewRedisProgressReporter(container.RedisClient.Client(), container.ZapLog)
+					}
+
+					stmtHandler := handlers.NewStatementUploadHandler(container.BankStatementRepo, container.JobQueueInstance, progressReporter, container.ZapLog)
+					aiGroup.POST("/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandler.Upload)
+					aiGroup.GET("/statement/:id/status", middleware.AuthRateLimit(30), stmtHandler.GetStatus)
+					aiGroup.GET("/statements", middleware.AuthRateLimit(20), stmtHandler.List)
+					aiGroup.DELETE("/statement/:id", middleware.AuthRateLimit(10), stmtHandler.Delete)
+
+					// V2 statement pipeline: supports images, OCR, real-time progress
+					stmtHandlerV2 := handlers.NewStatementUploadHandlerV2(container.BankStatementRepo, container.JobQueueInstance, nil, progressReporter, container.ZapLog)
+					aiGroup.POST("/v2/statement/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), stmtHandlerV2.Upload)
+					aiGroup.GET("/v2/statement/:id/progress", middleware.AuthRateLimit(60), stmtHandlerV2.StreamProgress)
+					// V2 reuses V1 status/list/delete/transactions endpoints (same DB)
+					aiGroup.GET("/statement/:id/transactions", middleware.AuthRateLimit(20), stmtHandler.GetTransactions)
+				}
+
+				// Document intelligence (contract v1): unified upload/status/result.
+				// Wired only when the repo, queue, and R2 file store all exist;
+				// Upload degrades to 503 when storage is unconfigured.
+				if container.DocumentRepo != nil && container.JobQueueInstance != nil && container.DocumentFileStore != nil {
+					docHandler := handlers.NewDocumentHandler(container.DocumentRepo, container.JobQueueInstance, container.DocumentFileStore, container.ZapLog)
+					protected.POST("/documents/upload", middleware.LargeBodyLimit(25*1024*1024), middleware.AuthRateLimit(5), docHandler.Upload)
+					protected.GET("/documents/:id", middleware.AuthRateLimit(30), docHandler.GetStatus)
+					protected.GET("/documents/:id/result", middleware.AuthRateLimit(30), docHandler.GetResult)
+					protected.DELETE("/documents/:id", middleware.AuthRateLimit(10), docHandler.Delete)
+				}
 			}
 
 			// Allocation routes - 70/30 Smart Allocation Mode (ON/OFF)
@@ -1885,8 +1497,8 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			admin.POST("/kyc/repair-bridge-govid", kycHTTPHandlers.RepairBridgeGovID)
 
 			// Knowledge base admin routes
-			if container.GetKnowledgeService() != nil {
-				knowledgeHandlers := handlers.NewKnowledgeHandlers(container.GetKnowledgeService(), container.ZapLog)
+			if container.KnowledgeService != nil {
+				knowledgeHandlers := handlers.NewKnowledgeHandlers(container.KnowledgeService, container.ZapLog)
 				admin.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
 			}
 
@@ -1973,7 +1585,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		webhookConfig.Environment = container.Config.Environment
 		webhookConfig.Secrets = map[string]string{
 			"bridge": container.Config.Bridge.WebhookSecret,
-			"alpaca": container.Config.Alpaca.WebhookSecret,
 		}
 
 		webhooks := v1.Group("/webhooks")
@@ -1985,16 +1596,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			))
 		}
 		// Hardened per-provider signature + timestamp verification
-		webhookSigSecrets := container.Config.Security.WebhookSignatureSecrets
-		if webhookSigSecrets.Bridge != "" || webhookSigSecrets.Alpaca != "" {
-			webhooks.Use(middleware.HardenedWebhookVerification(
-				middleware.WebhookProviderConfig{
-					BridgeSecret: webhookSigSecrets.Bridge,
-					AlpacaSecret: webhookSigSecrets.Alpaca,
-				},
-				container.ZapLog,
-			))
-		}
+		webhooks.Use(middleware.HardenedWebhookVerification(
+			middleware.WebhookProviderConfig{
+				BridgeSecret: container.Config.Security.WebhookSignatureSecrets.Bridge,
+			},
+			container.ZapLog,
+		))
 		{
 			webhooks.POST("/chain-deposit", walletFundingHandlers.ChainDepositWebhook)
 			webhooks.POST("/brokerage-fill", walletFundingHandlers.BrokerageFillWebhook)
@@ -2077,26 +1684,23 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 		}
 
-		// Register Alpaca investment routes
-		if container.GetInvestmentHandlers() != nil {
-			RegisterAlpacaRoutes(
-				v1,
-				container.GetInvestmentHandlers(),
-				container.GetAlpacaWebhookHandlers(),
-				container.Config,
-				container.Logger,
-				sessionValidator,
-				container.UserRepo,
-				container.TokenBlacklist,
-			)
-		}
+		// Ledger-backed financial snapshot for the delegated Python agent.
+		// Independent of the removed Alpaca analytics stack, so it is
+		// registered outside the nil analytics gate below.
+		RegisterFinancialSnapshotRoute(
+			v1,
+			container.GetFinancialSnapshotHandler(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+			container.TokenBlacklist,
+		)
 
-		// Register advanced features routes (analytics, market, scheduled investments, rebalancing)
+		// Register advanced features routes (analytics, scheduled investments, rebalancing)
 		if container.GetAnalyticsHandlers() != nil {
 			RegisterAdvancedFeaturesRoutes(
 				v1,
 				container.GetAnalyticsHandlers(),
-				container.GetMarketHandlers(),
 				container.GetScheduledInvestmentHandlers(),
 				container.GetRebalancingHandlers(),
 				container.GetFinancialSnapshotHandler(),
@@ -2255,13 +1859,4 @@ func createDistributedRateLimiter(container *di.Container) *ratelimit.Distribute
 func createRateLimitMiddleware(container *di.Container) gin.HandlerFunc {
 	distributedRL := createDistributedRateLimiter(container)
 	return distributedRL.Middleware()
-}
-
-func normalizeMiriamInternalEvent(eventType string) string {
-	switch strings.TrimSpace(eventType) {
-	case "idle_spend", "spending_spike", "bill_pressure", "income_lower_than_usual":
-		return strings.TrimSpace(eventType)
-	default:
-		return "worker_sweep"
-	}
 }
