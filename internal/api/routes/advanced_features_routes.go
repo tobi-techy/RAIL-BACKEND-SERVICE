@@ -63,6 +63,28 @@ func RegisterAdvancedFeaturesRoutes(
 	}
 }
 
+// RegisterFinancialSnapshotRoute registers the ledger-backed financial-snapshot
+// endpoint on its own. It is independent of the Alpaca-backed analytics stack,
+// so it must stay reachable while GetAnalyticsHandlers returns nil pending a
+// Glider/Solana re-source.
+func RegisterFinancialSnapshotRoute(
+	router *gin.RouterGroup,
+	financialSnapshotHandler *handlers.FinancialSnapshotHandler,
+	cfg *config.Config,
+	log *logger.Logger,
+	sessionValidator middleware.SessionValidator,
+	tokenBlacklist *auth.TokenBlacklist,
+) {
+	if financialSnapshotHandler == nil {
+		return
+	}
+	analytics := router.Group("/analytics")
+	analytics.Use(middleware.Authentication(cfg, log, sessionValidator, tokenBlacklist))
+	{
+		analytics.GET("/financial-snapshot", financialSnapshotHandler.GetFinancialSnapshot)
+	}
+}
+
 // RegisterRoundupRoutes registers round-up routes
 func RegisterRoundupRoutes(
 	router *gin.RouterGroup,

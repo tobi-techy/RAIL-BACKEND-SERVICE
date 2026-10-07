@@ -29,7 +29,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
+func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) {
 	// Initialize Round-up Service. The brokerage order placer that used to
 	// execute round-ups was removed with the Alpaca stack; roundup.Service
 	// tolerates a nil order placer (auto-invest execution is skipped).
@@ -44,13 +44,14 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	)
 
 	// Initialize Copy Trading Service. Order execution against the removed
-	// brokerage adapter is wired as nil; signal ingestion (FMP congressional
-	// disclosures) still powers conductor/draft listings.
+	// brokerage adapter is fail-closed (removedCopyTradingAdapter); signal
+	// ingestion (FMP congressional disclosures) still powers
+	// conductor/draft listings.
 	c.CopyTradingRepo = repositories.NewCopyTradingRepository(sqlxDB)
 	c.CopyTradingService = copytrading.NewService(
 		c.CopyTradingRepo,
 		&copyTradingBalanceAdapter{ledgerService: c.LedgerService, userID: uuid.Nil},
-		nil, // TradingAdapter — brokerage execution removed
+		&removedCopyTradingAdapter{},
 		c.ZapLog,
 	)
 	c.PublicTradesClient = publictrades.NewClient(publictrades.Config{APIKey: os.Getenv("FMP_API_KEY")}, c.ZapLog)
@@ -100,7 +101,23 @@ func (c *Container) initializeAdvancedFeatures(sqlxDB *sqlx.DB) error {
 	}
 
 	c.ZapLog.Info("Advanced features initialized")
-	return nil
+}
+
+// removedCopyTradingAdapter is a fail-closed stub for copytrading.TradingAdapter.
+// The Alpaca brokerage provider has been removed; until order execution is
+// migrated to the Glider/Solana sleeve, every trading call returns an error
+// rather than panicking on a nil interface. Callers already map these errors
+// to failed executions (executeCopyTrade) or skipped signals
+// (ensurePublicSignal), so pending signals fail cleanly instead of crashing
+// the worker process.
+type removedCopyTradingAdapter struct{}
+
+func (a *removedCopyTradingAdapter) PlaceOrder(ctx context.Context, userID uuid.UUID, symbol string, side string, quantity decimal.Decimal) (string, decimal.Decimal, error) {
+	return "", decimal.Zero, fmt.Errorf("trading adapter removed — order execution is not available")
+}
+
+func (a *removedCopyTradingAdapter) GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
+	return decimal.Zero, fmt.Errorf("trading adapter removed — market pricing is not available")
 }
 
 type automationCardControllerAdapter struct {

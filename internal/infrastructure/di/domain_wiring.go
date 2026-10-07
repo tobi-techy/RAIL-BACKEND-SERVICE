@@ -2232,10 +2232,8 @@ func (c *Container) initializeDomainServices() error {
 	c.AutoInvestService.SetPositionSyncer(nil)
 
 	// Wire station service (broker portfolio lookup left unset — Alpaca removed)
-	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
-	if err := c.initializeAdvancedFeatures(sqlxDB); err != nil {
-		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
-	}
+	// Initialize advanced features (round-ups, copy trading, card service)
+	c.initializeAdvancedFeatures(sqlxDB)
 
 	// Investing is always on. A missing Glider key or a rejected key stops
 	// startup so the API cannot advertise a money path that will not move funds.

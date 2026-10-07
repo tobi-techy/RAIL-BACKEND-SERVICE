@@ -240,9 +240,13 @@ func (c *Container) initializePlatformMessaging() {
 			// reply arrives in the same conversation turn.
 			if docCfg := c.Config.Document; docCfg.EnablePythonOCR && docCfg.OCRServiceURL != "" {
 				if ocrEngine := document.NewPythonOCRClient(docCfg.OCRServiceURL, c.ZapLog); ocrEngine != nil {
-					// Rule-based extraction only — the LLM enricher was removed
-					// with the in-Go AI cleanup.
+					// Same LLM enrichment as the async document worker: nil
+					// when no key is configured, which the pipeline treats
+					// as "skip enrichment".
 					var enricher document.Enricher
+					if cencoriKey := c.Config.AI.Cencori.APIKey; cencoriKey != "" {
+						enricher = document.NewLLMEnricher(cencoriKey, "", "gpt-4o-mini", c.ZapLog)
+					}
 					visionPipeline := document.NewPipeline(document.PipelineConfig{
 						OCR:              ocrEngine,
 						Enricher:         enricher,

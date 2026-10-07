@@ -26,6 +26,17 @@ import (
 
 var errInvestmentDependencyUnavailable = errors.New("investment dependency unavailable")
 
+// providerUnavailable maps the sentinel from a nil positions/orders/analytics
+// provider to an explicit 503. Genuine query failures keep their 500 mapping,
+// so "provider removed" never looks like "query failed".
+func providerUnavailable(c *gin.Context, err error, code, message string) bool {
+	if errors.Is(err, errInvestmentDependencyUnavailable) {
+		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{Code: code, Message: message})
+		return true
+	}
+	return false
+}
+
 const (
 	defaultInvestmentPageSize = 20
 	maxInvestmentPageSize     = 50
@@ -190,13 +201,20 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	}()
 	wg.Wait()
 
-	if errors.Is(balancesErr, errInvestmentDependencyUnavailable) || errors.Is(positionsErr, errInvestmentDependencyUnavailable) {
+	if errors.Is(balancesErr, errInvestmentDependencyUnavailable) {
 		h.logger.Error("Investment stash dependencies unavailable", zap.String("user_id", userID.String()))
 		c.JSON(http.StatusServiceUnavailable, entities.ErrorResponse{
 			Code:    "SERVICE_UNAVAILABLE",
 			Message: "Investment service temporarily unavailable",
 		})
 		return
+	}
+	// A missing positions provider degrades instead of failing: the dashboard
+	// still serves allocation- and ledger-backed figures with an empty
+	// positions list, and DataHealth marks the section "degraded" so clients
+	// can say "unavailable" instead of showing zeros as fact.
+	if errors.Is(positionsErr, errInvestmentDependencyUnavailable) {
+		h.logger.Warn("Investment positions provider unavailable — serving degraded dashboard", zap.String("user_id", userID.String()))
 	}
 
 	if balancesErr != nil {
@@ -241,6 +259,9 @@ func (h *InvestmentStashHandlers) GetInvestmentPositions(c *gin.Context) {
 
 	positions, err := h.getPositions(ctx, userID)
 	if err != nil {
+		if providerUnavailable(c, err, "POSITIONS_UNAVAILABLE", "Investment positions are currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment positions", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "POSITIONS_ERROR", Message: "Failed to retrieve investment positions"})
 		return
@@ -280,6 +301,9 @@ func (h *InvestmentStashHandlers) GetInvestmentDistribution(c *gin.Context) {
 
 	positions, err := h.getPositions(ctx, userID)
 	if err != nil {
+		if providerUnavailable(c, err, "DISTRIBUTION_UNAVAILABLE", "Investment distribution is currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment distribution", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "DISTRIBUTION_ERROR", Message: "Failed to retrieve investment distribution"})
 		return
@@ -351,6 +375,9 @@ func (h *InvestmentStashHandlers) GetInvestmentTransactions(c *gin.Context) {
 	locale := localeFromRequest(c)
 	response, err := h.fetchTradeTransactions(ctx, userID, limit, offset, sideFilter, statusFilter, locale)
 	if err != nil {
+		if providerUnavailable(c, err, "TRANSACTIONS_UNAVAILABLE", "Investment transactions are currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment transactions", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "TRANSACTIONS_ERROR", Message: "Failed to retrieve investment transactions"})
 		return
@@ -382,6 +409,9 @@ func (h *InvestmentStashHandlers) GetInvestmentPerformance(c *gin.Context) {
 	locale := localeFromRequest(c)
 	resp, err := h.buildPerformanceResponse(ctx, userID, period, locale)
 	if err != nil {
+		if providerUnavailable(c, err, "PERFORMANCE_UNAVAILABLE", "Investment performance is currently unavailable") {
+			return
+		}
 		h.logger.Error("Failed to load investment performance", zap.String("user_id", userID.String()), zap.Error(err))
 		c.JSON(http.StatusInternalServerError, entities.ErrorResponse{Code: "PERFORMANCE_ERROR", Message: "Failed to retrieve investment performance"})
 		return

@@ -1684,6 +1684,18 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 		}
 
+		// Ledger-backed financial snapshot for the delegated Python agent.
+		// Independent of the removed Alpaca analytics stack, so it is
+		// registered outside the nil analytics gate below.
+		RegisterFinancialSnapshotRoute(
+			v1,
+			container.GetFinancialSnapshotHandler(),
+			container.Config,
+			container.Logger,
+			sessionValidator,
+			container.TokenBlacklist,
+		)
+
 		// Register advanced features routes (analytics, scheduled investments, rebalancing)
 		if container.GetAnalyticsHandlers() != nil {
 			RegisterAdvancedFeaturesRoutes(

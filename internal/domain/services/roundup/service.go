@@ -323,6 +323,16 @@ func (s *Service) triggerAutoInvest(ctx context.Context, userID uuid.UUID) {
 		return
 	}
 
+	// Fail closed when there is no execution venue. The Alpaca brokerage was
+	// removed and round-ups have no order placer wired; without this guard the
+	// code below would mark pending round-ups Invested and grow TotalInvested
+	// while nothing was executed and no venue holds the funds.
+	if settings.AutoInvestSymbol != nil && s.orderPlacer == nil {
+		s.logger.Info("Skipping round-up auto-invest: no order venue configured",
+			zap.String("user_id", userID.String()))
+		return
+	}
+
 	investAmount := acc.PendingAmount
 
 	// Place order
