@@ -1595,10 +1595,9 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			))
 		}
 		// Hardened per-provider signature + timestamp verification
-		bridgeSecret := string(container.Config.Security.WebhookSignatureSecrets.Bridge)
 		webhooks.Use(middleware.HardenedWebhookVerification(
 			middleware.WebhookProviderConfig{
-				BridgeSecret: bridgeSecret,
+				BridgeSecret: container.Config.Security.WebhookSignatureSecrets.Bridge,
 			},
 			container.ZapLog,
 		))

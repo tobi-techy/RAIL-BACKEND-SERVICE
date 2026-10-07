@@ -179,7 +179,9 @@ func (s *OffRampService) HandleTransferCompleted(ctx context.Context, transferID
 	// the off-ramp completes once the transfer settles; brokerage funding moves
 	// to the Glider/Solana sleeve path.
 	s.logger.Info("Off-ramp completed", "deposit_id", deposit.ID.String(), "amount", deposit.Amount.String())
-	_ = s.notificationSvc.NotifyOffRampSuccess(ctx, deposit.UserID, deposit.Amount.String())
+	if err := s.notificationSvc.NotifyOffRampSuccess(ctx, deposit.UserID, deposit.Amount.String()); err != nil {
+		s.logger.Warn("Failed to send off-ramp success notification", "deposit_id", deposit.ID.String(), "error", err)
+	}
 
 	return nil
 }
