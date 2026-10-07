@@ -15,8 +15,6 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	activitysvc "github.com/rail-service/rail_service/internal/domain/services/activity"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	"github.com/rail-service/rail_service/internal/domain/services/automation"
 	"github.com/rail-service/rail_service/internal/domain/services/billpay"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
 	"github.com/rail-service/rail_service/internal/domain/services/integration"
@@ -26,7 +24,6 @@ import (
 	rampsvc "github.com/rail-service/rail_service/internal/domain/services/ramp"
 	"github.com/rail-service/rail_service/internal/domain/services/travel"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/airbills"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/brij"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
@@ -74,11 +71,6 @@ func (c *Container) initializeBridgeServices() {
 	c.ZapLog.Info("Bridge webhook handler initialized")
 }
 
-// GetInstantFundingHandlers returns the instant funding handlers
-func (c *Container) GetInstantFundingHandlers() *fundinghandlers.InstantFundingHandlers {
-	return c.InstantFundingHandlers
-}
-
 // GetP2PHandlers returns the P2P transfer handlers
 func (c *Container) GetP2PHandlers() *p2phandlers.Handlers {
 	return c.P2PHandlers
@@ -99,43 +91,17 @@ func (c *Container) GetUnifiedFundingWebhookHandler() *webhooks.UnifiedFundingWe
 	return c.UnifiedFundingWebhookHandler
 }
 
-func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
-	// Initialize repositories
-	c.InstantFundingRepo = repositories.NewInstantFundingRepository(sqlxDB)
-	c.UserAccountRepo = repositories.NewUserAccountRepository(sqlxDB)
+func (c *Container) initializeFundingProviders(sqlxDB *sqlx.DB) {
+	// Initialize security stores
 	c.WithdrawalSecurityStore = repositories.NewWithdrawalSecurityStore(sqlxDB)
 	c.DepositSecurityStore = repositories.NewDepositSecurityStore(sqlxDB)
-
-	// Initialize virtual account repo for instant funding
-	virtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
-
-	// Create Alpaca adapter for instant funding
-	alpacaAdapter := &InstantFundingAlpacaAdapterImpl{
-		service: c.AlpacaService,
-	}
-
-	// Initialize instant funding service
-	c.InstantFundingService = funding.NewInstantFundingService(
-		alpacaAdapter,
-		virtualAccountRepo,
-		c.InstantFundingRepo,
-		c.UserAccountRepo,
-		c.ZapLog,
-		c.Config.Alpaca.FirmAccountNo,
-	)
-
-	// Initialize handlers
-	c.InstantFundingHandlers = fundinghandlers.NewInstantFundingHandlers(
-		c.InstantFundingService,
-		c.ZapLog,
-	)
 
 	// Wire deposit security store to validation service
 	if c.FundingService != nil && c.FundingService.GetValidationService() != nil {
 		c.FundingService.GetValidationService().SetDepositSecurityStore(c.DepositSecurityStore)
 	}
 
-	c.ZapLog.Info("Instant funding services initialized")
+	c.ZapLog.Info("Funding providers initialized")
 
 	// --- ChainRails (cross-chain deposit funnel) ---
 	c.ZapLog.Info("ChainRails config",
@@ -272,19 +238,6 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		}
 		c.RampHandlers = fundinghandlers.NewRampHandlers(rampService, c.ZapLog)
 		c.ZapLog.Info("RampHub on/off ramp initialized (primary, Paj fallback)")
-
-		// Wire live FX rate from RampHub instead of the empty DB-backed repo.
-		// This ensures Miriam always quotes the current interbank rate.
-		getQuote := func(ctx context.Context, side string, fiatAmount, tokenAmount float64, currency string) (float64, error) {
-			q, err := rampService.GetBestQuote(ctx, side, fiatAmount, tokenAmount, currency)
-			if err != nil {
-				return 0, err
-			}
-			return q.Rate, nil
-		}
-		if c.AIOrchestrator != nil {
-			c.AIOrchestrator.SetCurrencyRateProvider(aiservice.NewRampHubRateProvider(getQuote))
-		}
 	} else if c.Config.RampHub.APIKey != "" {
 		c.ZapLog.Fatal("SECURITY: RampHub webhook_secret is required when RampHub API key is configured — refusing to start with unauthenticated webhooks")
 	} else {
@@ -385,9 +338,6 @@ func (c *Container) initializeInstantFundingServices(sqlxDB *sqlx.DB) {
 		c.BillPayHandlers = fundinghandlers.NewBillPayHandlers(billPayService, c.ZapLog)
 		if c.AutomationService != nil {
 			c.AutomationService.SetUtilityBillPayer(billPayService)
-		}
-		if c.AgentDeps != nil {
-			c.AgentDeps.Bills = buildBillsProvider(c)
 		}
 		if c.Config.Airbills.WebhookSecret == "" {
 			c.ZapLog.Warn("Airbills bill payments initialized without callbacks: set AIRBILLS_WEBHOOK_SECRET before fulfillment webhooks can be accepted")
@@ -519,73 +469,9 @@ func (a *PajDepositLedgerAdapter) CreditUSDCBalance(ctx context.Context, userID 
 	return err
 }
 
-// InstantFundingAlpacaAdapterImpl adapts alpaca.Service to funding.InstantFundingAlpacaAdapter
-type InstantFundingAlpacaAdapterImpl struct {
-	service *alpaca.Service
-}
-
-func (a *InstantFundingAlpacaAdapterImpl) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
-	return a.service.CreateJournal(ctx, req)
-}
-
 // GetInvestmentRulesRepo returns the investment rules repository.
 func (c *Container) GetInvestmentRulesRepo() *repositories.InvestmentRulesRepository {
 	return c.InvestmentRulesRepo
-}
-
-// rebalancingStrategyAdapter implements rebalancing_worker.StrategyProvider.
-// It returns the target allocations from the user's first active RebalancingConfig.
-type rebalancingStrategyAdapter struct {
-	configRepo *repositories.RebalancingConfigRepository
-}
-
-func (a *rebalancingStrategyAdapter) GetTargetAllocations(ctx context.Context, userID uuid.UUID) (map[string]decimal.Decimal, error) {
-	configs, err := a.configRepo.GetByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	for _, cfg := range configs {
-		if cfg.Status == entities.ScheduleStatusActive && len(cfg.TargetAllocations) > 0 {
-			return cfg.TargetAllocations, nil
-		}
-	}
-	return nil, fmt.Errorf("no active rebalancing config for user %s", userID)
-}
-
-// rebalancingOrderAdapter adapts orderPlacerAdapter to rebalancing_worker.OrderPlacer.
-type rebalancingOrderAdapter struct {
-	inner *orderPlacerAdapter
-}
-
-func (a *rebalancingOrderAdapter) PlaceMarketOrder(ctx context.Context, userID uuid.UUID, symbol string, amount decimal.Decimal) (*entities.AlpacaOrderResponse, error) {
-	order, err := a.inner.PlaceMarketOrder(ctx, userID, symbol, amount)
-	if err != nil {
-		return nil, err
-	}
-	if order.AlpacaOrderID == nil {
-		return nil, fmt.Errorf("order placed but no Alpaca order ID returned")
-	}
-	return &entities.AlpacaOrderResponse{ID: *order.AlpacaOrderID}, nil
-}
-
-// GetRebalancingWorkerDeps returns the dependencies needed to start the rebalancing worker.
-func (c *Container) GetRebalancingWorkerDeps() (
-	rulesRepo *repositories.InvestmentRulesRepository,
-	positionRepo *repositories.InvestmentPositionRepository,
-	strategyProvider *rebalancingStrategyAdapter,
-	orderPlacer *rebalancingOrderAdapter,
-) {
-	rulesRepo = c.InvestmentRulesRepo
-	positionRepo = c.InvestmentPositionRepo
-	strategyProvider = &rebalancingStrategyAdapter{configRepo: c.RebalancingConfigRepo}
-	orderPlacer = &rebalancingOrderAdapter{inner: &orderPlacerAdapter{
-		investingService: c.InvestingService,
-		accountService:   c.AlpacaAccountService,
-		alpacaClient:     c.AlpacaClient,
-		orderRepo:        c.InvestmentOrderRepo,
-		logger:           c.ZapLog,
-	}}
-	return
 }
 
 // SubscriptionBridgeTransferAdapter transfers subscription fees from user Bridge wallet to company wallet.
@@ -678,26 +564,4 @@ func (a *automationTransferAdapter) TransferBetweenStashes(ctx context.Context, 
 	return a.ledger.TransferStashToSpending(ctx, userID, amount, uuid.New().String())
 }
 
-// automationProviderAdapter adapts automation.Service to the AI orchestrator's AutomationProvider interface.
-type automationProviderAdapter struct {
-	svc *automation.Service
-}
-
-func (a *automationProviderAdapter) Create(ctx context.Context, userID uuid.UUID, req *aiservice.AutomationRequest) (*entities.MiriamAutomation, error) {
-	return a.svc.Create(ctx, userID, &automation.CreateAutomationRequest{
-		Name:              req.Name,
-		Description:       req.Description,
-		TriggerType:       req.TriggerType,
-		TriggerConfig:     req.TriggerConfig,
-		ActionType:        req.ActionType,
-		ActionConfig:      req.ActionConfig,
-		MaxTriggersPerDay: req.MaxTriggersPerDay,
-		CooldownMinutes:   req.CooldownMinutes,
-		SavingsGoalID:     req.SavingsGoalID,
-		ObligationID:      req.ObligationID,
-	})
-}
-
-func (a *automationProviderAdapter) List(ctx context.Context, userID uuid.UUID) ([]entities.MiriamAutomation, error) {
-	return a.svc.List(ctx, userID)
-}
+// automationTransferAdapter bridges the funds transferer to the automation service.

@@ -80,7 +80,7 @@ type StrategyProvider interface {
 	GetStrategy(ctx context.Context, userID uuid.UUID) (*strategy.StrategyResult, error)
 }
 
-// PortfolioSyncer triggers a live sync of positions from Alpaca.
+// PortfolioSyncer triggers a live sync of positions from the broker.
 type PortfolioSyncer interface {
 	SyncPositions(ctx context.Context, userID uuid.UUID) error
 }
@@ -146,10 +146,11 @@ func (h *InvestmentStashHandlers) GetInvestmentStash(c *gin.Context) {
 	var (
 		wg sync.WaitGroup
 
-		balances        *entities.AllocationBalances
-		autoInvest      *entities.AutoInvestSettings
-		positions       []*entities.InvestmentPosition
-		strategyResult  *strategy.StrategyResult
+		balances   *entities.AllocationBalances
+		autoInvest *entities.AutoInvestSettings
+		positions  []*entities.InvestmentPosition
+
+		strategyResult *strategy.StrategyResult
 
 		balancesErr   error
 		autoInvestErr error
@@ -548,10 +549,10 @@ func (h *InvestmentStashHandlers) getPositions(ctx context.Context, userID uuid.
 		return nil, err
 	}
 
-	// If no local positions, trigger a live sync from Alpaca then re-fetch.
+	// If no local positions, trigger a live sync then re-fetch.
 	if len(positions) == 0 && h.portfolioSyncer != nil {
 		if syncErr := h.portfolioSyncer.SyncPositions(ctx, userID); syncErr != nil {
-			h.logger.Warn("Failed to sync positions from Alpaca", zap.String("user_id", userID.String()), zap.Error(syncErr))
+			h.logger.Warn("Failed to sync positions", zap.String("user_id", userID.String()), zap.Error(syncErr))
 		} else {
 			positions, err = h.positionsRepo.GetByUserID(ctx, userID)
 			if err != nil {
@@ -755,38 +756,38 @@ func buildPositionViews(
 		if totalValue.GreaterThan(decimal.Zero) {
 			weight, _ = pos.MarketValue.Div(totalValue).Mul(decimal.NewFromInt(100)).Float64()
 		}
-
 		unrealizedPct, _ := pos.UnrealizedPLPC.Float64()
-		dayChange := pos.CurrentPrice.Sub(pos.LastdayPrice).Mul(pos.Qty)
-		dayChangePct, _ := pos.ChangeToday.Mul(decimal.NewFromInt(100)).Float64()
+		dayChange, _ := pos.ChangeToday.Float64()
+		dayChangePct := dayChange * 100
 
 		details = append(details, InvestmentPositionDetail{
-			ID:                   pos.ID.String(),
+			ID:                   "position",
 			Symbol:               pos.Symbol,
-			Name:                 pos.Symbol,
-			Quantity:             pos.Qty.String(),
-			AvgEntryPrice:        moneyValue(pos.AvgEntryPrice, locale),
+			Name:                 pos.Name,
+			Quantity:             "0",
+			AvgEntryPrice:        nil,
 			CurrentPrice:         moneyValue(pos.CurrentPrice, locale),
 			MarketValue:          moneyValue(pos.MarketValue, locale),
 			CostBasis:            moneyValue(pos.CostBasis, locale),
 			UnrealizedPnL:        moneyValue(pos.UnrealizedPL, locale),
 			UnrealizedPnLPercent: unrealizedPct,
 			PortfolioWeight:      weight,
+			DayChangePct:         dayChangePct,
 		})
 
 		legacy = append(legacy, PositionSummary{
-			ID:                pos.ID.String(),
+			ID:                "position",
 			Symbol:            pos.Symbol,
 			Name:              pos.Symbol,
 			Type:              "asset",
-			Quantity:          pos.Qty.String(),
+			Quantity:          "0",
 			CurrentPrice:      pos.CurrentPrice.String(),
 			MarketValue:       pos.MarketValue.String(),
 			CostBasis:         pos.CostBasis.String(),
-			AvgCost:           pos.AvgEntryPrice.String(),
+			AvgCost:           "0",
 			UnrealizedGain:    pos.UnrealizedPL.String(),
 			UnrealizedGainPct: unrealizedPct,
-			DayChange:         dayChange.StringFixed(2),
+			DayChange:         "0",
 			DayChangePct:      dayChangePct,
 			PortfolioWeight:   weight,
 		})
@@ -915,10 +916,7 @@ func parseSideFilter(side string) (*entities.AlpacaOrderSide, error) {
 
 func parseStatusFilter(status string) (*entities.AlpacaOrderStatus, error) {
 	switch status {
-	case "", "filled":
-		v := entities.AlpacaOrderStatusFilled
-		return &v, nil
-	case "all":
+	case "", "all":
 		return nil, nil
 	default:
 		return nil, errors.New("invalid status")

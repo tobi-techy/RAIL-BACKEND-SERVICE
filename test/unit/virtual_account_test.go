@@ -11,22 +11,19 @@ import (
 // TestVirtualAccountEntity tests the virtual account entity structure
 func TestVirtualAccountEntity(t *testing.T) {
 	userID := uuid.New()
-	alpacaAccountID := "alpaca-test-123"
 
 	virtualAccount := &entities.VirtualAccount{
-		ID:              uuid.New(),
-		UserID:          userID,
-		BridgeCustomerID:    "due-test-123",
-		AlpacaAccountID: alpacaAccountID,
-		AccountNumber:   "1234567890",
-		RoutingNumber:   "021000021",
-		Status:          entities.VirtualAccountStatusActive,
-		Currency:        "USD",
+		ID:               uuid.New(),
+		UserID:           userID,
+		BridgeCustomerID: "due-test-123",
+		AccountNumber:    "1234567890",
+		RoutingNumber:    "021000021",
+		Status:           entities.VirtualAccountStatusActive,
+		Currency:         "USD",
 	}
 
 	assert.NotNil(t, virtualAccount)
 	assert.Equal(t, userID, virtualAccount.UserID)
-	assert.Equal(t, alpacaAccountID, virtualAccount.AlpacaAccountID)
 	assert.Equal(t, entities.VirtualAccountStatusActive, virtualAccount.Status)
 	assert.Equal(t, "USD", virtualAccount.Currency)
 }
@@ -43,11 +40,11 @@ func TestVirtualAccountStatuses(t *testing.T) {
 func TestCreateVirtualAccountRequest(t *testing.T) {
 	userID := uuid.New()
 	req := &entities.CreateVirtualAccountRequest{
-		UserID:          userID,
-		AlpacaAccountID: "alpaca-123",
+		UserID:           userID,
+		BridgeCustomerID: "bridge-customer-123",
 	}
 
 	assert.NotNil(t, req)
 	assert.Equal(t, userID, req.UserID)
-	assert.Equal(t, "alpaca-123", req.AlpacaAccountID)
+	assert.Equal(t, "bridge-customer-123", req.BridgeCustomerID)
 }

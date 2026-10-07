@@ -129,18 +129,19 @@ type InvestmentDataHealth struct {
 
 // InvestmentPositionDetail represents a detailed holding row
 type InvestmentPositionDetail struct {
-	ID                   string     `json:"id"`
-	Symbol               string     `json:"symbol"`
-	Name                 string     `json:"name"`
-	Quantity             string     `json:"quantity"`
-	AvgEntryPrice        MoneyValue `json:"avg_entry_price"`
-	CurrentPrice         MoneyValue `json:"current_price"`
-	MarketValue          MoneyValue `json:"market_value"`
-	CostBasis            MoneyValue `json:"cost_basis"`
-	UnrealizedPnL        MoneyValue `json:"unrealized_pnl"`
-	UnrealizedPnLPercent float64    `json:"unrealized_pnl_percent"`
-	PortfolioWeight      float64    `json:"portfolio_weight"`
-	LogoURL              *string    `json:"logo_url,omitempty"`
+	ID                   string      `json:"id"`
+	Symbol               string      `json:"symbol"`
+	Name                 string      `json:"name"`
+	Quantity             string      `json:"quantity"`
+	AvgEntryPrice        *MoneyValue `json:"avg_entry_price"`
+	CurrentPrice         MoneyValue  `json:"current_price"`
+	MarketValue          MoneyValue  `json:"market_value"`
+	CostBasis            MoneyValue  `json:"cost_basis"`
+	UnrealizedPnL        MoneyValue  `json:"unrealized_pnl"`
+	UnrealizedPnLPercent float64     `json:"unrealized_pnl_percent"`
+	PortfolioWeight      float64     `json:"portfolio_weight"`
+	DayChangePct         float64     `json:"day_change_pct,omitempty"`
+	LogoURL              *string     `json:"logo_url,omitempty"`
 }
 
 // InvestmentPositionsResponse represents paginated positions detail response
@@ -212,8 +213,8 @@ type InvestmentRule struct {
 	Description     string  `json:"description"`
 	StockAllocation float64 `json:"stock_allocation"`
 	BondAllocation  float64 `json:"bond_allocation"`
-	RiskLevel       int     `json:"risk_level"`   // 1–5
-	RiskLabel       string  `json:"risk_label"`   // e.g. "High Growth"
+	RiskLevel       int     `json:"risk_level"` // 1–5
+	RiskLabel       string  `json:"risk_label"` // e.g. "High Growth"
 	AgeUsed         *int    `json:"age_used,omitempty"`
 }
 

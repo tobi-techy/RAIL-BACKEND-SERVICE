@@ -29,10 +29,10 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 			id, idempotency_key, correlation_id, user_id, virtual_account_id, amount, status,
 			tx_hash, chain, token, confirmed_at,
 			off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			created_at,
 			source_amount, source_currency
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
 		)
 	`
 
@@ -51,8 +51,6 @@ func (r *DepositRepository) Create(ctx context.Context, deposit *entities.Deposi
 		deposit.OffRampTxID,
 		deposit.OffRampInitiatedAt,
 		deposit.OffRampCompletedAt,
-		deposit.AlpacaFundingTxID,
-		deposit.AlpacaFundedAt,
 		deposit.CreatedAt,
 		deposit.SourceAmount,
 		deposit.SourceCurrency,
@@ -81,7 +79,7 @@ func (r *DepositRepository) GetByID(ctx context.Context, id uuid.UUID) (*entitie
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE id = $1
 	`
@@ -104,7 +102,7 @@ func (r *DepositRepository) GetByOffRampTxID(ctx context.Context, txID string) (
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE off_ramp_tx_id = $1
 	`
@@ -136,8 +134,6 @@ func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposi
 			off_ramp_tx_id = $10,
 			off_ramp_initiated_at = $11,
 			off_ramp_completed_at = $12,
-			alpaca_funding_tx_id = $13,
-			alpaca_funded_at = $14,
 			updated_at = NOW()
 		WHERE id = $1
 	`
@@ -155,8 +151,6 @@ func (r *DepositRepository) Update(ctx context.Context, deposit *entities.Deposi
 		deposit.OffRampTxID,
 		deposit.OffRampInitiatedAt,
 		deposit.OffRampCompletedAt,
-		deposit.AlpacaFundingTxID,
-		deposit.AlpacaFundedAt,
 	)
 
 	if err != nil {
@@ -172,7 +166,7 @@ func (r *DepositRepository) ListByUserID(ctx context.Context, userID uuid.UUID) 
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -193,7 +187,7 @@ func (r *DepositRepository) GetByUserID(ctx context.Context, userID uuid.UUID, l
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			   created_at,
 			   source_amount, source_currency, conversion_id
 		FROM deposits
 		WHERE user_id = $1
@@ -216,7 +210,7 @@ func (r *DepositRepository) GetByUserIDInRange(ctx context.Context, userID uuid.
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
 		ORDER BY created_at DESC
@@ -238,7 +232,7 @@ func (r *DepositRepository) GetByTxHash(ctx context.Context, txHash string) (*en
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE tx_hash = $1
 	`
@@ -262,7 +256,7 @@ func (r *DepositRepository) GetByIdempotencyKey(ctx context.Context, idempotency
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			   created_at,
 			   source_amount, source_currency, conversion_id
 		FROM deposits
 		WHERE idempotency_key = $1
@@ -289,7 +283,7 @@ func (r *DepositRepository) GetRecentByUserIDAndAmount(ctx context.Context, user
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE user_id = $1 AND amount = $2 AND created_at > $3
 		ORDER BY created_at DESC LIMIT 1
@@ -331,7 +325,7 @@ func (r *DepositRepository) GetLatestPendingNGNByUserID(ctx context.Context, use
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at,
+			   created_at,
 			   source_amount, source_currency, conversion_id
 		FROM deposits
 		WHERE user_id = $1 AND status = 'pending' AND source_currency = 'NGN'
@@ -419,7 +413,7 @@ func (r *DepositRepository) GetStuckDeposits(ctx context.Context, olderThan time
 		SELECT id, idempotency_key, COALESCE(correlation_id, '') as correlation_id, user_id, virtual_account_id, amount, status,
 			   tx_hash, chain, token, confirmed_at,
 			   off_ramp_tx_id, off_ramp_initiated_at, off_ramp_completed_at,
-			   alpaca_funding_tx_id, alpaca_funded_at, created_at
+			   created_at
 		FROM deposits
 		WHERE status IN ('pending_allocation', 'compensation_failed')
 		  AND created_at < $1

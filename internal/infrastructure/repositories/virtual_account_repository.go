@@ -26,7 +26,7 @@ func NewVirtualAccountRepository(db *sqlx.DB) *VirtualAccountRepository {
 // COALESCE on nullable/text columns so scans into non-pointer fields are safe.
 const vaColumns = `
 	id, user_id, COALESCE(provider, 'bridge') as provider,
-	bridge_customer_id, alpaca_account_id, bridge_account_id,
+	bridge_customer_id, bridge_account_id,
 	graph_person_id, graph_account_id,
 	account_number, routing_number, COALESCE(bank_code, '') as bank_code,
 	COALESCE(bank_name, '') as bank_name,
@@ -43,13 +43,13 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 	}
 	query := `
 		INSERT INTO virtual_accounts (
-			id, user_id, provider, bridge_customer_id, alpaca_account_id, bridge_account_id,
+			id, user_id, provider, bridge_customer_id, bridge_account_id,
 			graph_person_id, graph_account_id,
 			account_number, routing_number, bank_code, bank_name, beneficiary_name,
 			bank_address, beneficiary_address, payment_rails,
 			status, currency, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
 		)
 	`
 
@@ -58,7 +58,6 @@ func (r *VirtualAccountRepository) Create(ctx context.Context, account *entities
 		account.UserID,
 		account.Provider,
 		account.BridgeCustomerID,
-		account.AlpacaAccountID,
 		account.BridgeAccountID,
 		account.GraphPersonID,
 		account.GraphAccountID,
@@ -133,25 +132,23 @@ func (r *VirtualAccountRepository) Update(ctx context.Context, account *entities
 	query := `
 		UPDATE virtual_accounts
 		SET bridge_customer_id = $2,
-			alpaca_account_id = $3,
-			bridge_account_id = $4,
-			graph_person_id = $5,
-			graph_account_id = $6,
-			account_number = $7,
-			routing_number = $8,
-			bank_code = $9,
-			bank_name = $10,
-			beneficiary_name = $11,
-			status = $12,
-			currency = $13,
-			updated_at = $14
+			bridge_account_id = $3,
+			graph_person_id = $4,
+			graph_account_id = $5,
+			account_number = $6,
+			routing_number = $7,
+			bank_code = $8,
+			bank_name = $9,
+			beneficiary_name = $10,
+			status = $11,
+			currency = $12,
+			updated_at = $13
 		WHERE id = $1
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
 		account.ID,
 		account.BridgeCustomerID,
-		account.AlpacaAccountID,
 		account.BridgeAccountID,
 		account.GraphPersonID,
 		account.GraphAccountID,
@@ -179,25 +176,23 @@ func (r *VirtualAccountRepository) UpdateWithVersion(ctx context.Context, accoun
 	query := `
 		UPDATE virtual_accounts
 		SET bridge_customer_id = $2,
-			alpaca_account_id = $3,
-			bridge_account_id = $4,
-			graph_person_id = $5,
-			graph_account_id = $6,
-			account_number = $7,
-			routing_number = $8,
-			bank_code = $9,
-			bank_name = $10,
-			beneficiary_name = $11,
-			status = $12,
-			currency = $13,
+			bridge_account_id = $3,
+			graph_person_id = $4,
+			graph_account_id = $5,
+			account_number = $6,
+			routing_number = $7,
+			bank_code = $8,
+			bank_name = $9,
+			beneficiary_name = $10,
+			status = $11,
+			currency = $12,
 			updated_at = NOW()
-		WHERE id = $1 AND updated_at = $14
+		WHERE id = $1 AND updated_at = $13
 	`
 
 	result, err := r.db.ExecContext(ctx, query,
 		account.ID,
 		account.BridgeCustomerID,
-		account.AlpacaAccountID,
 		account.BridgeAccountID,
 		account.GraphPersonID,
 		account.GraphAccountID,
@@ -223,22 +218,6 @@ func (r *VirtualAccountRepository) UpdateWithVersion(ctx context.Context, accoun
 	return nil
 }
 
-// GetByAlpacaAccountID retrieves a virtual account by Alpaca account ID
-func (r *VirtualAccountRepository) GetByAlpacaAccountID(ctx context.Context, alpacaAccountID string) (*entities.VirtualAccount, error) {
-	query := `SELECT ` + vaColumns + ` FROM virtual_accounts WHERE alpaca_account_id = $1`
-
-	var account entities.VirtualAccount
-	err := r.db.GetContext(ctx, &account, query, alpacaAccountID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("virtual account not found")
-		}
-		return nil, fmt.Errorf("failed to get virtual account: %w", err)
-	}
-
-	return &account, nil
-}
-
 // UpdateStatus updates the status of a virtual account
 func (r *VirtualAccountRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.VirtualAccountStatus) error {
 	query := `
@@ -253,24 +232,6 @@ func (r *VirtualAccountRepository) UpdateStatus(ctx context.Context, id uuid.UUI
 	}
 
 	return nil
-}
-
-// ExistsByUserAndAlpacaAccount checks if a virtual account exists for a user and Alpaca account
-func (r *VirtualAccountRepository) ExistsByUserAndAlpacaAccount(ctx context.Context, userID uuid.UUID, alpacaAccountID string) (bool, error) {
-	query := `
-		SELECT EXISTS(
-			SELECT 1 FROM virtual_accounts
-			WHERE user_id = $1 AND alpaca_account_id = $2
-		)
-	`
-
-	var exists bool
-	err := r.db.GetContext(ctx, &exists, query, userID, alpacaAccountID)
-	if err != nil {
-		return false, fmt.Errorf("failed to check virtual account existence: %w", err)
-	}
-
-	return exists, nil
 }
 
 // GetByBridgeAccountID retrieves a virtual account by Bridge account ID

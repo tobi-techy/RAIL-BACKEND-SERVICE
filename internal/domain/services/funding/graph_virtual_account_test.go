@@ -81,9 +81,6 @@ func (r *fakeVARepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.Virtu
 func (r *fakeVARepo) GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.VirtualAccount, error) {
 	return nil, nil
 }
-func (r *fakeVARepo) GetByAlpacaAccountID(ctx context.Context, id string) (*entities.VirtualAccount, error) {
-	return nil, nil
-}
 func (r *fakeVARepo) GetActiveByUserIDAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*entities.VirtualAccount, error) {
 	return nil, nil
 }
@@ -97,9 +94,6 @@ func (r *fakeVARepo) GetProvisionedByUserIDAndCurrency(ctx context.Context, user
 }
 func (r *fakeVARepo) UpdateStatus(ctx context.Context, id uuid.UUID, status entities.VirtualAccountStatus) error {
 	return nil
-}
-func (r *fakeVARepo) ExistsByUserAndAlpacaAccount(ctx context.Context, userID uuid.UUID, id string) (bool, error) {
-	return false, nil
 }
 func (r *fakeVARepo) GetByGraphAccountID(ctx context.Context, graphAccountID string) (*entities.VirtualAccount, error) {
 	return r.byGraphID[graphAccountID], nil

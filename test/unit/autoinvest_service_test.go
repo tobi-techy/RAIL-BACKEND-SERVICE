@@ -116,12 +116,10 @@ type mockUserRepository struct {
 
 func newEligibleUserRepo() *mockUserRepository {
 	kycStatus := "active"
-	alpacaID := "test-alpaca-account"
 	return &mockUserRepository{
 		user: &entities.User{
 			IsActive:        true,
 			BridgeKYCStatus: &kycStatus,
-			AlpacaAccountID: &alpacaID,
 		},
 	}
 }

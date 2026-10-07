@@ -32,7 +32,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/kyc"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
-	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
@@ -55,7 +54,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
@@ -269,30 +267,22 @@ func (a *BridgeDepositAdapter) CreateLiquidationAddressForWallet(ctx context.Con
 	return la.ID, la.Address, nil
 }
 
-// AlpacaFundingAdapter adapts alpaca.FundingAdapter to funding.AlpacaAdapter interface
-type AlpacaFundingAdapter struct {
-	adapter *alpaca.FundingAdapter
-	client  *alpaca.Client
+// removedBrokerageAdapter is a fail-closed stub for investing.BrokerageAdapter.
+// The Alpaca brokerage provider has been removed; until order execution is
+// migrated to the Glider/Solana sleeve, every brokerage call returns an error
+// rather than silently succeeding.
+type removedBrokerageAdapter struct{}
+
+func (a *removedBrokerageAdapter) PlaceOrder(ctx context.Context, userID, basketID uuid.UUID, side entities.OrderSide, amount decimal.Decimal) (*investing.BrokerageOrderResponse, error) {
+	return nil, fmt.Errorf("brokerage provider removed — order placement is not available")
 }
 
-func (a *AlpacaFundingAdapter) GetAccount(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
-	return a.client.GetAccount(ctx, accountID)
+func (a *removedBrokerageAdapter) GetOrderStatus(ctx context.Context, brokerageRef string) (*investing.BrokerageOrderStatus, error) {
+	return nil, fmt.Errorf("brokerage provider removed — order status is not available")
 }
 
-func (a *AlpacaFundingAdapter) InitiateInstantFunding(ctx context.Context, req *entities.AlpacaInstantFundingRequest) (*entities.AlpacaInstantFundingResponse, error) {
-	return a.adapter.InitiateInstantFunding(ctx, req)
-}
-
-func (a *AlpacaFundingAdapter) GetInstantFundingStatus(ctx context.Context, transferID string) (*entities.AlpacaInstantFundingResponse, error) {
-	return a.adapter.GetInstantFundingStatus(ctx, transferID)
-}
-
-func (a *AlpacaFundingAdapter) GetAccountBalance(ctx context.Context, accountID string) (*entities.AlpacaAccountResponse, error) {
-	return a.adapter.GetAccountBalance(ctx, accountID)
-}
-
-func (a *AlpacaFundingAdapter) CreateJournal(ctx context.Context, req *entities.AlpacaJournalRequest) (*entities.AlpacaJournalResponse, error) {
-	return a.adapter.CreateJournal(ctx, req)
+func (a *removedBrokerageAdapter) CancelOrder(ctx context.Context, brokerageRef string) error {
+	return fmt.Errorf("brokerage provider removed — order cancellation is not available")
 }
 
 // LedgerIntegrationAdapter adapts integration.LedgerIntegration to funding.LedgerIntegration interface
@@ -1428,10 +1418,7 @@ func (c *Container) initializeDomainServices() error {
 		walletServiceConfig,
 	)
 
-	// Initialize Alpaca adapter
-	alpacaAdapter := alpaca.NewAdapter(c.AlpacaClient, c.Logger)
-
-	// Initialize Bridge onboarding adapter
+	// Initialize Bridge onboarding adapter (no Alpaca — onboarding removed)
 	bridgeOnboardingAdapter := &BridgeOnboardingAdapter{adapter: c.BridgeAdapter}
 
 	// Initialize onboarding service (depends on wallet service)
@@ -1444,7 +1431,6 @@ func (c *Container) initializeDomainServices() error {
 		c.EmailService,
 		c.AuditService,
 		bridgeOnboardingAdapter,
-		alpacaAdapter,
 		nil, // AllocationService - will be set after initialization
 		c.ZapLog,
 		append([]entities.WalletChain(nil), walletServiceConfig.SupportedChains...),
@@ -1504,9 +1490,6 @@ func (c *Container) initializeDomainServices() error {
 	sqlxDB := sqlx.NewDb(c.DB, "postgres")
 	virtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
 
-	// Initialize Alpaca funding adapter
-	alpacaFundingAdapter := alpaca.NewFundingAdapter(c.AlpacaClient, c.ZapLog)
-
 	// Initialize ledger service with outbox (writes events atomically in the
 	// same DB transaction for reliable downstream consumption).
 	ledgerOutbox := ledger.NewOutboxWriter(c.LedgerRepo)
@@ -1564,135 +1547,6 @@ func (c *Container) initializeDomainServices() error {
 		c.ZapLog,
 	)
 	c.LedgerService.SetStashRaidObserver(c.MoneyGuardService)
-	c.MiriamIntelligenceRepo = repositories.NewMiriamIntelligenceRepository(sqlxDB)
-	// All of Miriam's proactive output goes to iMessage only — no push. When the
-	// bridge dispatcher is wired it is the notifier; otherwise fall back to the
-	// in-app notification service (dev/no-bridge environments).
-	var miriamNotifier miriamservice.Notifier = c.NotificationService
-	if c.MiriamBridgeDispatcher != nil {
-		miriamNotifier = c.MiriamBridgeDispatcher
-	}
-	c.MiriamIntelligenceService = miriamservice.NewService(
-		c.MiriamIntelligenceRepo,
-		c.LedgerService, // BalanceProvider
-		moneyGuardSpendingSvc,
-		c.FinancialObligationService,
-		c.FinancialProfileRepo,
-		c.MoneyGuardService,
-		c.LedgerService, // TransferExecutor — same service, different interface
-		miriamNotifier,
-		c.ZapLog,
-	)
-
-	// Wire Miriam intelligence subsystem (unified brain).
-	contextSignalRepo := repositories.NewContextSignalRepository(sqlxDB)
-	decisionRepo := repositories.NewMiriamDecisionRepository(sqlxDB)
-	predictionRepo := repositories.NewMiriamPredictionRepository(sqlxDB)
-	nudgeRepo := repositories.NewProactiveNudgeRepository(sqlxDB)
-	healthRepo := repositories.NewHealthScoreRepository(sqlxDB)
-	suggestionRepo := repositories.NewMandateSuggestionRepository(sqlxDB)
-	transactionRepo := repositories.NewTransactionRepository(sqlxDB)
-	transactionProvider := repositories.NewTransactionProviderAdapter(transactionRepo)
-	notifPrefRepo := repositories.NewNotificationPreferenceRepository(sqlxDB)
-	notifDigestRepo := repositories.NewNotificationDigestRepository(sqlxDB)
-
-	c.MiriamSignalDetector = miriamservice.NewSignalDetector(
-		contextSignalRepo,
-		moneyGuardSpendingSvc,
-		c.FinancialObligationService,
-		c.LedgerService,
-		c.ZapLog,
-	)
-	c.MiriamPredictiveEngine = miriamservice.NewPredictiveEngine(
-		predictionRepo,
-		moneyGuardSpendingSvc,
-		c.FinancialObligationService,
-		c.LedgerService,
-		c.FinancialProfileRepo,
-		c.ZapLog,
-	)
-	c.MiriamDecisionEngine = miriamservice.NewDecisionEngine(
-		decisionRepo,
-		c.MiriamPredictiveEngine,
-		nil, // MemoryReader — deferred via SetMemory after memory service init
-		c.ZapLog,
-	)
-	c.MiriamProactiveNudgeEngine = miriamservice.NewProactiveNudgeEngine(
-		nudgeRepo,
-		c.MiriamPredictiveEngine,
-		c.LedgerService, // BalanceProvider
-		nil,             // MemoryReader — deferred via SetMemory after memory service init
-		miriamNotifier,
-		c.ZapLog,
-	)
-	if c.MiriamProactiveChatSender != nil {
-		c.MiriamProactiveNudgeEngine.SetChatSender(c.MiriamProactiveChatSender)
-	}
-	if c.MonoService != nil {
-		c.MiriamProactiveNudgeEngine.SetSubscriptionProvider(c.MonoService)
-	}
-	c.MiriamMandateSuggestionEngine = miriamservice.NewMandateSuggestionEngine(
-		suggestionRepo,
-		c.MiriamIntelligenceService, // MandateProvider
-		c.LedgerService,
-		moneyGuardSpendingSvc,
-		c.FinancialObligationService,
-		c.FinancialProfileRepo,
-		c.ZapLog,
-	)
-
-	c.MiriamObligationDetector = miriamservice.NewObligationAutoDetector(
-		transactionProvider,
-		c.FinancialObligationService,
-		c.LedgerService,
-		c.ZapLog,
-	)
-	c.MiriamNotificationDispatcher = miriamservice.NewNotificationDispatcher(
-		notifPrefRepo,
-		notifDigestRepo,
-		c.NotificationService,
-		c.ZapLog,
-	)
-	c.MiriamHealthScoreTracker = miriamservice.NewHealthScoreTracker(
-		healthRepo,
-		c.ZapLog,
-	)
-	c.MiriamOutcomeTracker = miriamservice.NewOutcomeTracker(
-		c.MiriamIntelligenceRepo,
-		moneyGuardSpendingSvc,
-		c.LedgerService,
-		c.FinancialObligationService,
-		c.ZapLog,
-	)
-	c.MiriamIntelligenceOrchestrator = miriamservice.NewIntelligenceOrchestrator(
-		c.MiriamIntelligenceService,
-		c.MiriamDecisionEngine,
-		c.MiriamProactiveNudgeEngine,
-		c.MiriamPredictiveEngine,
-		c.MiriamSignalDetector,
-		c.MiriamMandateSuggestionEngine,
-		c.MiriamObligationDetector,
-		c.MiriamNotificationDispatcher,
-		nil, // MemoryReader — deferred via SetMemory after memory service init
-		miriamNotifier,
-		c.MiriamHealthScoreTracker,
-		c.MiriamOutcomeTracker,
-		c.ZapLog,
-	)
-
-	// Self-review: Miriam grades her own recent actions and messaging, feeds the
-	// verdict back into the learning-bias (money) and nudge-cadence (messaging)
-	// levers, and records an audit trail. Money influence flows only through the
-	// existing learning-signal → decision-engine path.
-	c.MiriamSelfReviewEngine = miriamservice.NewSelfReviewEngine(
-		c.MiriamIntelligenceRepo,
-		nudgeRepo,
-		c.MiriamHealthScoreTracker,
-		miriamNotifier,
-		c.ZapLog,
-	)
-	c.MiriamIntelligenceOrchestrator.SetSelfReview(c.MiriamSelfReviewEngine)
-	c.MiriamProactiveNudgeEngine.SetCadenceReader(c.MiriamIntelligenceRepo)
 	// yield provider; per-user yield accrues in each user's Safe and is surfaced via
 	// the Blend overview endpoint rather than a shared exchange-rate distribution.
 	c.YieldService = yieldsvc.NewService(c.yieldRepo, c.LedgerService, c.ZapLog)
@@ -1739,9 +1593,8 @@ func (c *Container) initializeDomainServices() error {
 		false, // strictMode
 	)
 
-	// Initialize standalone Balance service with Alpaca adapter
-	alpacaBalanceAdapter := &AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient}
-	c.BalanceService = services.NewBalanceService(c.BalanceRepo, alpacaBalanceAdapter, c.Logger)
+	// Initialize standalone Balance service (Alpaca adapter removed)
+	c.BalanceService = services.NewBalanceService(c.BalanceRepo, c.Logger)
 
 	// Initialize funding service with ledger integration (Bridge replaces Circle)
 	ledgerAdapter := &LedgerIntegrationAdapter{integration: ledgerIntegration}
@@ -1750,13 +1603,9 @@ func (c *Container) initializeDomainServices() error {
 		simpleWalletRepo,
 		c.WalletRepo,
 		virtualAccountRepo,
-		&AlpacaFundingAdapter{adapter: alpacaFundingAdapter, client: c.AlpacaClient},
 		ledgerAdapter,
 		c.Logger,
 	)
-	if c.AlpacaAccountRepo != nil {
-		c.FundingService.SetAlpacaAccountLookup(c.AlpacaAccountRepo)
-	}
 	c.FundingService.SetBridgeDepositClient(&BridgeDepositAdapter{client: c.BridgeClient})
 	c.FundingService.SetUserRepo(c.UserRepo)
 
@@ -1969,7 +1818,8 @@ func (c *Container) initializeDomainServices() error {
 		c.DepositRepo,
 		c.ZapLog,
 	)
-	c.StationService.SetAlpacaAccountRepository(c.AlpacaAccountRepo)
+	// Broker portfolio value lookup is left unset — the Alpaca brokerage
+	// provider has been removed; the Glider sleeve reports holdings separately.
 	if c.FinancialObligationService != nil {
 		c.StationService.SetObligationProvider(&stationObligationAdapter{obligations: c.FinancialObligationService})
 	}
@@ -2031,34 +1881,14 @@ func (c *Container) initializeDomainServices() error {
 	orderRepo := repositories.NewOrderRepository(c.DB, c.ZapLog)
 	positionRepo := repositories.NewPositionRepository(c.DB, c.ZapLog)
 
-	// Initialize brokerage adapter with Alpaca service and required repositories
-	brokerageAdapter := adapters.NewBrokerageAdapter(
-		c.AlpacaClient,
-		basketRepo,
-		c.AlpacaAccountRepo,
-		c.ZapLog,
-	)
-	c.BrokerageAdapter = brokerageAdapter
+	// Initialize investing service with repositories. The Alpaca brokerage
+	// provider has been removed; a fail-closed adapter keeps order placement
+	// honest until execution is migrated to the Glider/Solana sleeve.
+	brokerageAdapter := &removedBrokerageAdapter{}
 
 	// Initialize notification service with persister for in-app notifications
 	c.NotificationService = services.NewNotificationService(c.ZapLog)
 	c.NotificationService.SetPersister(adapters.NewNotificationPersisterAdapter(c.NotificationRepo))
-
-	// Defer-wire Notifier into Miriam intelligence services (initialized before this point).
-	// iMessage-only: prefer the bridge dispatcher, fall back to in-app notifications.
-	var deferredMiriamNotifier miriamservice.Notifier = c.NotificationService
-	if c.MiriamBridgeDispatcher != nil {
-		deferredMiriamNotifier = c.MiriamBridgeDispatcher
-	}
-	if c.MiriamProactiveNudgeEngine != nil {
-		c.MiriamProactiveNudgeEngine.SetNotifier(deferredMiriamNotifier)
-	}
-	if c.MiriamIntelligenceOrchestrator != nil {
-		c.MiriamIntelligenceOrchestrator.SetNotifier(deferredMiriamNotifier)
-	}
-	if c.MiriamSelfReviewEngine != nil {
-		c.MiriamSelfReviewEngine.SetNotifier(deferredMiriamNotifier)
-	}
 
 	// Wire push notification service. OneSignal is the preferred delivery path
 	// when configured (PUSH_PROVIDER=onesignal + ONESIGNAL_* credentials);
@@ -2390,39 +2220,18 @@ func (c *Container) initializeDomainServices() error {
 		c.BridgeWebhookHandler.SetService(bridgeWebhookService)
 	}
 
-	// Initialize AI Financial Manager services
-	if err := c.initializeAIServices(sqlxDB, positionRepo, allocationRepo, basketRepo); err != nil {
-		c.ZapLog.Warn("AI services initialization failed, AI features disabled", zap.Error(err))
-	}
+	// Alpaca investment infrastructure removed — execution routes through the
+	// Glider/Solana sleeve now.
 
-	// Initialize Alpaca investment infrastructure
-	if err := c.initializeAlpacaInvestmentServices(sqlxDB); err != nil {
-		c.ZapLog.Warn("Alpaca investment services initialization failed", zap.Error(err))
-	}
+	// Auto-invest has no brokerage order placer post-Alpaca; set nil so the
+	// service degrades rather than executing stale Alpaca orders.
+	c.AutoInvestService.SetOrderPlacer(nil)
+	// Remove any Alpaca wiring that survived the provider switch
+	c.AutoInvestService.SetFundingBridge(nil)
+	c.AutoInvestService.SetAccountLookup(nil)
+	c.AutoInvestService.SetPositionSyncer(nil)
 
-	// Wire auto-invest service with OrderPlacer now that AlpacaAccountService is initialized
-	autoInvestOrderPlacer := &autoInvestOrderPlacerAdapter{
-		accountService: c.AlpacaAccountService,
-		alpacaClient:   c.AlpacaClient,
-		orderRepo:      c.InvestmentOrderRepo,
-		logger:         c.ZapLog,
-	}
-	c.AutoInvestService.SetOrderPlacer(autoInvestOrderPlacer)
-	if c.AlpacaFundingBridge != nil {
-		c.AutoInvestService.SetFundingBridge(c.AlpacaFundingBridge)
-	}
-	if c.AlpacaAccountRepo != nil {
-		c.AutoInvestService.SetAccountLookup(c.AlpacaAccountRepo)
-	}
-	if c.AlpacaPortfolioSync != nil {
-		c.AutoInvestService.SetPositionSyncer(c.AlpacaPortfolioSync)
-	}
-
-	// Wire station service with AlpacaAccountService now that it's initialized
-	if c.AlpacaAccountService != nil {
-		c.StationService.SetAlpacaAccountService(c.AlpacaAccountService)
-	}
-
+	// Wire station service (broker portfolio lookup left unset — Alpaca removed)
 	// Initialize advanced features (analytics, market data, scheduled investments, rebalancing)
 	if err := c.initializeAdvancedFeatures(sqlxDB); err != nil {
 		c.ZapLog.Warn("Advanced features initialization failed", zap.Error(err))
@@ -2447,21 +2256,17 @@ func (c *Container) initializeDomainServices() error {
 	}
 
 	// Initialize instant funding + ChainRails cross-chain deposit services
-	c.initializeInstantFundingServices(sqlxDB)
+	c.initializeFundingProviders(sqlxDB)
 
-	// Initialize unified funding webhook handler (Bridge + Alpaca).
-	alpacaWebhookHandler := c.GetAlpacaWebhookHandlers()
+	// Initialize unified funding webhook handler (Bridge).
 	c.UnifiedFundingWebhookHandler = webhooks.NewUnifiedFundingWebhookHandler(
 		c.BridgeWebhookHandler,
 		nil, // circleHandler removed
-		alpacaWebhookHandler,
+		nil, // alpacaHandler removed
 		c.ZapLog,
 	)
 	if bridgeSecret := strings.TrimSpace(c.Config.Bridge.WebhookSecret); bridgeSecret != "" {
 		c.UnifiedFundingWebhookHandler.SetWebhookSecret("bridge", bridgeSecret)
-	}
-	if alpacaSecret := strings.TrimSpace(c.Config.Alpaca.WebhookSecret); alpacaSecret != "" {
-		c.UnifiedFundingWebhookHandler.SetWebhookSecret("alpaca", alpacaSecret)
 	}
 
 	// Initialize account deletion service
@@ -2476,9 +2281,6 @@ func (c *Container) initializeDomainServices() error {
 	)
 
 	// Wire external provider cleanup for account deletion
-	if c.AlpacaAccountRepo != nil && c.AlpacaClient != nil {
-		c.AccountDeletionService.SetAlpacaClient(c.AlpacaAccountRepo, c.AlpacaClient)
-	}
 	deletionVirtualAccountRepo := repositories.NewVirtualAccountRepository(sqlxDB)
 	if c.BridgeClient != nil {
 		c.AccountDeletionService.SetBridgeClient(deletionVirtualAccountRepo, &deletionBridgeAdapter{client: c.BridgeClient})

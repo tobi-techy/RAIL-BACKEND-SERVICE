@@ -40,12 +40,10 @@ func (c *Container) initializePlatformMessaging() {
 			zap.Bool("jwt_secret_set", c.Config.JWT.Secret != ""),
 		)
 	}
-	// Python-agent delegation is the path that replaces the Go-native AI
-	// orchestrator for messaging. It must initialize even when no Cencori key
-	// is set (AIOrchestrator stays nil in that case). Require the python
-	// client to actually be wirable so we never stand up a processor whose
-	// orchestrator AND python client are both nil.
-	if c.Config.Platform.Enabled && (c.AIOrchestrator != nil || pythonReady) {
+	// MIRIAM (Python) is the only brain for texted chat. Require the Python
+	// client to actually be wirable so we never stand up a processor with no
+	// brain at all.
+	if c.Config.Platform.Enabled && pythonReady {
 		platformIdentityRepo := c.PlatformIdentityRepo
 		linkingSvc := platform.NewLinkingService(
 			platformIdentityRepo,
@@ -57,9 +55,8 @@ func (c *Container) initializePlatformMessaging() {
 			userResolver := platform.NewUserResolver(platformIdentityRepo)
 			respBuilder := platform.NewResponseBuilder()
 			platformOrchestrator := &orchestratorAdapter{
-				orchestrator: c.AIOrchestrator,
-				convRepo:     c.ConversationRepo,
-				logger:       c.ZapLog,
+				convRepo: c.ConversationRepo,
+				logger:   c.ZapLog,
 			}
 
 			// Python-agent delegation: MIRIAM's LLM brain owns messaging chat. Money
@@ -210,25 +207,15 @@ func (c *Container) initializePlatformMessaging() {
 			}
 
 			c.MiriamBridgeDispatcher = bridgeDispatcher
-			c.MiriamProactiveChatSender = bridgeDispatcher
 
 			if c.TravelService != nil {
 				c.TravelService.SetTicketMessenger(&travelMessengerAdapter{dispatcher: bridgeDispatcher})
 			}
 
-			// Voice notes (TTS out / STT in) via ElevenLabs, when configured.
+			// Voice notes (TTS out / STT in) are disabled in Go: the ElevenLabs
+			// provider was removed with the in-Go AI cleanup. Inbound voice notes
+			// still arrive as attachments and fall back to text handling.
 			var voiceTranscoder platform.VoiceTranscoder
-			if el := c.Config.AI.ElevenLabs; el.APIKey != "" && el.VoiceID != "" {
-				voiceTranscoder = &platformVoiceAdapter{rest: ai.NewElevenLabsREST(ai.ELVoiceConfig{
-					APIKey:          el.APIKey,
-					VoiceID:         el.VoiceID,
-					Stability:       el.Stability,
-					SimilarityBoost: el.SimilarityBoost,
-					Style:           el.Style,
-					UseSpeakerBoost: el.UseSpeakerBoost,
-				}, c.ZapLog)}
-				c.ZapLog.Info("Platform voice notes enabled (ElevenLabs)")
-			}
 
 			proc := platform.NewProcessor(userResolver, platformOrchestrator, respBuilder, linkingSvc, voiceTranscoder, sendFunc)
 			proc.SetLogger(c.ZapLog)
@@ -253,10 +240,9 @@ func (c *Container) initializePlatformMessaging() {
 			// reply arrives in the same conversation turn.
 			if docCfg := c.Config.Document; docCfg.EnablePythonOCR && docCfg.OCRServiceURL != "" {
 				if ocrEngine := document.NewPythonOCRClient(docCfg.OCRServiceURL, c.ZapLog); ocrEngine != nil {
+					// Rule-based extraction only — the LLM enricher was removed
+					// with the in-Go AI cleanup.
 					var enricher document.Enricher
-					if c.Config.AI.Cencori.APIKey != "" {
-						enricher = document.NewLLMEnricher(c.Config.AI.Cencori.APIKey, "", "gpt-4o-mini", c.ZapLog)
-					}
 					visionPipeline := document.NewPipeline(document.PipelineConfig{
 						OCR:              ocrEngine,
 						Enricher:         enricher,

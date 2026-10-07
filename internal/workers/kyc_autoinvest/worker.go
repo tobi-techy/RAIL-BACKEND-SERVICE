@@ -208,7 +208,6 @@ func (w *Worker) listCandidates(ctx context.Context, limit int) ([]investCandida
 			AND u.kyc_status = 'approved'
 			AND u.bridge_kyc_status = 'active'
 			AND u.is_active = true
-			AND u.alpaca_account_id IS NOT NULL
 		ORDER BY la.user_id, la.updated_at ASC
 		LIMIT $1
 	`

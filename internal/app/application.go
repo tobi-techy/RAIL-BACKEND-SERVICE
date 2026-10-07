@@ -3,7 +3,6 @@ package app
 import (
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -22,31 +21,23 @@ import (
 
 	"github.com/rail-service/rail_service/internal/api/routes"
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
 	documentsvc "github.com/rail-service/rail_service/internal/domain/services/document"
 	kycservice "github.com/rail-service/rail_service/internal/domain/services/kyc"
-	ledger_service "github.com/rail-service/rail_service/internal/domain/services/ledger"
-	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	statement "github.com/rail-service/rail_service/internal/domain/services/statement"
-	alpacaadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	bridgeadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	chainrails "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circleadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	diditadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/didit"
 	r2adapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/r2"
 	sumsubadapter "github.com/rail-service/rail_service/internal/infrastructure/adapters/sumsub"
-	infraai "github.com/rail-service/rail_service/internal/infrastructure/ai"
 	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/internal/infrastructure/config"
 	"github.com/rail-service/rail_service/internal/infrastructure/database"
 	"github.com/rail-service/rail_service/internal/infrastructure/di"
-	"github.com/rail-service/rail_service/internal/infrastructure/miriamevents"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
-	ai_insights "github.com/rail-service/rail_service/internal/workers/ai_insights"
 	airbills_recovery "github.com/rail-service/rail_service/internal/workers/airbills_recovery"
 	automation_worker "github.com/rail-service/rail_service/internal/workers/automation_worker"
-	autopilot_worker "github.com/rail-service/rail_service/internal/workers/autopilot_worker"
 	balance_reconciliation "github.com/rail-service/rail_service/internal/workers/balance_reconciliation"
 	bridge_govid_repair "github.com/rail-service/rail_service/internal/workers/bridge_govid_repair"
 	copy_trading_worker "github.com/rail-service/rail_service/internal/workers/copy_trading_worker"
@@ -63,9 +54,6 @@ import (
 	"github.com/rail-service/rail_service/internal/workers/kyc_sync"
 	ledger_maintenance "github.com/rail-service/rail_service/internal/workers/ledger_maintenance"
 	ledger_outbox_publisher "github.com/rail-service/rail_service/internal/workers/ledger_outbox_publisher"
-	memory_worker "github.com/rail-service/rail_service/internal/workers/memory_worker"
-	miriam_event_worker "github.com/rail-service/rail_service/internal/workers/miriam_event_worker"
-	miriam_worker "github.com/rail-service/rail_service/internal/workers/miriam_worker"
 	opportunity_sync "github.com/rail-service/rail_service/internal/workers/opportunity_sync"
 	paj_offramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_offramp_recovery"
 	paj_onramp_recovery "github.com/rail-service/rail_service/internal/workers/paj_onramp_recovery"
@@ -74,8 +62,6 @@ import (
 	public_trades_worker "github.com/rail-service/rail_service/internal/workers/public_trades_worker"
 	ramphub_offramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_offramp_recovery"
 	ramphub_onramp_recovery "github.com/rail-service/rail_service/internal/workers/ramphub_onramp_recovery"
-	rebalancing_worker "github.com/rail-service/rail_service/internal/workers/rebalancing_worker"
-	scheduled_investment_worker "github.com/rail-service/rail_service/internal/workers/scheduled_investment_worker"
 	statement_processor "github.com/rail-service/rail_service/internal/workers/statement_processor"
 	subscription_billing "github.com/rail-service/rail_service/internal/workers/subscription_billing"
 	travel_recovery "github.com/rail-service/rail_service/internal/workers/travel_recovery"
@@ -99,7 +85,6 @@ type Application struct {
 	// Workers
 	scheduler                    *walletprovisioning.Scheduler
 	webhookManager               *funding_webhook.Manager
-	scheduledInvestmentWorker    *scheduled_investment_worker.Worker
 	copyTradingWorker            *copy_trading_worker.Worker
 	publicTradesWorker           *public_trades_worker.Worker
 	portfolioSnapshotWorker      *portfolio_snapshot_worker.Worker
@@ -113,7 +98,6 @@ type Application struct {
 	travelRecoveryWorker         *travel_recovery.Worker
 	withdrawalRecoveryWorker     *withdrawal_recovery.Worker
 	kycAutoInvestWorker          *kyc_autoinvest.Worker
-	rebalancingWorker            *rebalancing_worker.Worker
 	investmentSyncWorker         *investment_sync.Worker
 	kycSyncWorker                *kyc_sync.Worker
 	balanceReconciliationWorker  *balance_reconciliation.Worker
@@ -121,19 +105,11 @@ type Application struct {
 	bridgeGovIDRepairCancel      context.CancelFunc
 	subscriptionBillingWorker    *subscription_billing.Worker
 	gameplayWorker               *gameplay_workers.Worker
-	aiInsightsWorker             *ai_insights.Worker
 	automationWorker             *automation_worker.Worker
-	memoryWorker                 *memory_worker.Worker
-	miriamWorker                 *miriam_worker.Worker
-	miriamWorkerCancel           context.CancelFunc
-	autopilotWorker              *autopilot_worker.Worker
-	autopilotCancel              context.CancelFunc
 	dailyPulseWorker             *daily_pulse.Worker
 	proactiveReacherWorker       *proactive_reacher.Worker
 	engagementWorker             *engagement_worker.Worker
 	ledgerOutboxPublisher        *ledger_outbox_publisher.Worker
-	miriamEventWorker            *miriam_event_worker.Worker
-	miriamEventWorkerCancel      context.CancelFunc
 	ledgerMaintenance            *ledger_maintenance.Worker
 	workerMu                     sync.Mutex
 	opportunitySyncWorker        *opportunity_sync.Worker
@@ -262,17 +238,6 @@ func (app *Application) initializeWorkers() error {
 			return fmt.Errorf("failed to start reconciliation scheduler: %w", err)
 		}
 		app.log.Info("Reconciliation scheduler started")
-	}
-
-	// Scheduled investment worker
-	if app.container.GetScheduledInvestmentService() != nil {
-		app.scheduledInvestmentWorker = scheduled_investment_worker.NewWorker(
-			app.container.GetScheduledInvestmentService(),
-			app.container.GetMarketDataService(),
-			app.log.Zap(),
-		)
-		go app.scheduledInvestmentWorker.Start(context.Background())
-		app.log.Info("Scheduled investment worker started")
 	}
 
 	// Copy trading signal worker — replicates conductor trades into drafter
@@ -431,20 +396,8 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("KYC auto-invest worker started")
 	}
 
-	// Rebalancing worker
-	rulesRepo, positionRepo, strategyProvider, orderPlacer := app.container.GetRebalancingWorkerDeps()
-	if rulesRepo != nil && positionRepo != nil {
-		app.rebalancingWorker = rebalancing_worker.NewWorker(
-			rulesRepo,
-			positionRepo,
-			strategyProvider,
-			orderPlacer,
-			nil, // notifier — optional
-			app.log.Zap(),
-		)
-		go app.rebalancingWorker.Start(context.Background())
-		app.log.Info("Rebalancing worker started")
-	}
+	// Rebalancing worker removed with the Alpaca brokerage provider. Portfolio
+	// convergence now runs through the Investment (Glider) sync worker below.
 	// Investment (Glider) sync worker: settles in-flight provider operations,
 	// reconciles positions and converges drifted portfolios.
 	if investmentSyncWorker := app.container.GetInvestmentSyncWorker(); investmentSyncWorker != nil {
@@ -504,77 +457,10 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Gameplay worker started (consolidated)")
 	}
 
-	if app.container.UserRepo != nil && app.container.LedgerSpendingRepo != nil && app.container.LedgerService != nil {
-		var pushSender ai_insights.PushSender
-		if app.container.SNSPushService != nil {
-			pushSender = app.container.SNSPushService
-		} else if app.container.ExpoPushService != nil {
-			pushSender = app.container.ExpoPushService
-		}
-
-		if pushSender != nil {
-			var cooldowns ai_insights.CooldownStore
-			if app.container.RedisClient != nil {
-				cooldowns = app.container.RedisClient.Client()
-			}
-			app.aiInsightsWorker = ai_insights.NewWorker(
-				app.container.UserRepo,
-				pushSender,
-				cooldowns,
-				app.container.LedgerSpendingRepo,
-				app.container.BudgetRepo,
-				app.container.LedgerService,
-				app.container.SubscriptionService,
-				app.log.Zap(),
-			)
-			go app.aiInsightsWorker.Start(context.Background())
-			app.log.Info("AI insights worker started")
-		}
-	}
-
-	// Start memory worker (transaction patterns, decay, summarization)
-	if app.container.MemoryService != nil && app.container.LedgerSpendingRepo != nil {
-		app.memoryWorker = memory_worker.NewWorker(
-			app.container.MemoryService,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerService,
-			app.log.Zap(),
-		)
-		go app.memoryWorker.Start(context.Background())
-		app.log.Info("Memory worker started")
-	}
-
 	if app.container.AutomationService != nil {
 		app.automationWorker = automation_worker.NewWorker(app.container.AutomationService, app.log.Zap())
 		go app.automationWorker.Start(context.Background())
 		app.log.Info("Miriam automation worker started")
-	}
-
-	if app.cfg.Workers.MiriamIntelligenceLocal && app.container.MiriamIntelligenceService != nil && app.container.UserRepo != nil {
-		if app.container.MiriamIntelligenceOrchestrator != nil {
-			app.miriamWorker = miriam_worker.NewWorkerWithIntelligence(
-				app.container.UserRepo,
-				app.container.MiriamIntelligenceService,
-				app.container.MiriamIntelligenceOrchestrator,
-				app.log.Zap(),
-			)
-			app.log.Info("Miriam intelligence worker started (unified brain)")
-		} else {
-			app.miriamWorker = miriam_worker.NewWorker(app.container.UserRepo, app.container.MiriamIntelligenceService, app.log.Zap())
-			app.log.Info("Miriam intelligence worker started (classic mode)")
-		}
-		// Adaptive loop: event-woken fast path + periodic full sweep. The event
-		// worker pokes Notify() when a money event arrives, so Miriam re-evaluates
-		// hot users within ~1 minute instead of waiting for the 15-min sweep.
-		if app.cfg.Workers.MiriamAdaptiveLoop {
-			app.miriamWorker.SetAdaptive(app.container.RedisClient, 0, 0)
-			app.log.Info("Miriam intelligence worker adaptive loop enabled")
-		}
-		miriamCtx, miriamCancel := context.WithCancel(context.Background())
-		app.miriamWorkerCancel = miriamCancel
-		go app.miriamWorker.Start(miriamCtx)
-	} else if !app.cfg.Workers.MiriamIntelligenceLocal {
-		app.log.Info("Miriam intelligence local worker disabled; expecting external scheduler")
 	}
 
 	// Miriam event-driven pipeline: ledger outbox publisher + event worker.
@@ -584,40 +470,8 @@ func (app *Application) initializeWorkers() error {
 		app.container.LedgerRepo,
 		app.log.Zap(),
 	)
-	// Wire Miriam's always-on event stream when enabled. The stream publishes
-	// money events from the ledger outbox; a separate worker consumes them and
-	// triggers a read-only evaluation within seconds.
-	var miriamEventStream *miriamevents.RedisStream
-	if app.cfg.Workers.MiriamEventDriven && app.container.RedisClient != nil {
-		miriamEventStream = miriamevents.NewRedisStreamWithLogger(app.container.RedisClient, "", app.log.Zap())
-		if miriamEventStream != nil {
-			app.ledgerOutboxPublisher.SetMiriamPublisher(miriamEventStream)
-			app.log.Info("Ledger outbox publisher wired to Miriam event stream")
-		}
-	}
 	go app.ledgerOutboxPublisher.Start(context.Background())
 	app.log.Info("Ledger outbox publisher started")
-
-	// Miriam event-driven worker: consumes money events and evaluates users.
-	// Read-only on money — EventMoneyEvent skips mandate execution.
-	if app.cfg.Workers.MiriamEventDriven && miriamEventStream != nil && app.container.MiriamIntelligenceOrchestrator != nil {
-		app.miriamEventWorker = miriam_event_worker.NewWorker(
-			miriamEventStream,
-			app.container.MiriamIntelligenceOrchestrator,
-			app.log.Zap(),
-		)
-		// If the adaptive loop is running, money events also flag the user as hot
-		// so the fast ticker re-evaluates them within ~1 minute.
-		if app.cfg.Workers.MiriamAdaptiveLoop && app.miriamWorker != nil {
-			app.miriamEventWorker.SetWakeup(app.miriamWorker)
-		}
-		eventCtx, eventCancel := context.WithCancel(context.Background())
-		app.miriamEventWorkerCancel = eventCancel
-		go app.miriamEventWorker.Start(eventCtx)
-		app.log.Info("Miriam event worker started")
-	} else if app.cfg.Workers.MiriamEventDriven {
-		app.log.Info("Miriam event worker not started — requires Redis + MiriamIntelligenceOrchestrator")
-	}
 
 	// Opportunity sync worker — ingests Superteam Earn listings and generates weekly picks
 	if app.container.OpportunityService != nil && app.container.UserRepo != nil {
@@ -674,15 +528,6 @@ func (app *Application) initializeWorkers() error {
 			pushSender,
 			app.log.Zap(),
 		)
-		if app.container.AIOrchestrator != nil {
-			app.dailyPulseWorker.SetBriefProvider(&dailyPulseBriefProvider{orchestrator: app.container.AIOrchestrator})
-		}
-		if app.container.AIProvider != nil {
-			app.dailyPulseWorker.SetNudger(daily_pulse.NewAINudger(app.container.AIProvider, app.log.Zap()))
-		}
-		if app.container.MiriamPreferencesService != nil {
-			app.dailyPulseWorker.SetPreferences(&dailyPulsePrefsAdapter{svc: app.container.MiriamPreferencesService})
-		}
 		go app.dailyPulseWorker.Start(context.Background())
 		app.log.Info("Miriam daily pulse worker started (iMessage-only)")
 	}
@@ -717,56 +562,6 @@ func (app *Application) initializeWorkers() error {
 			zap.String("python_agent", app.container.Config.PythonAgent.BaseURL))
 	} else if getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) {
 		app.log.Warn("Proactive reacher worker NOT started — requires Python agent delegation, bridge dispatcher, and platform identity repo")
-	}
-
-	// Anomaly engine — available whenever LedgerSpendingRepo is present (independent of autopilot gating).
-	var anomalyEngine *aiservice.AnomalyEngine
-	if app.container.LedgerSpendingRepo != nil {
-		anomalyEngine = aiservice.NewAnomalyEngine(
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.container.LedgerSpendingRepo,
-			app.log.Zap(),
-		)
-		if app.container.EvalHandler != nil {
-			app.container.EvalHandler.SetAnomalyEngine(anomalyEngine, app.container.AnomalyStore)
-		}
-	}
-
-	if app.container.UserRepo != nil && app.container.MemoryService != nil && app.container.LedgerService != nil && app.container.LedgerSpendingRepo != nil && app.container.BudgetRepo != nil && getBoolEnvOrDefault("AUTOPILOT_ENABLED", false) {
-		// iMessage-only: autopilot summaries/alerts go to iMessage via the bridge
-		// dispatcher. Money moves still execute even without a bridge, so we fall
-		// back to a no-op sender rather than skipping the worker.
-		var pushSender aiservice.MorningPushSender = noopPushSender{}
-		if app.container.MiriamBridgeDispatcher != nil {
-			pushSender = app.container.MiriamBridgeDispatcher
-		}
-		{
-			redisQueue := aiservice.NewRedisAutopilotQueue(app.container.RedisClient, app.log.Zap())
-			autopilotSvc := aiservice.NewAutopilotService(
-				&autopilotUserRepoAdapter{repo: app.container.UserRepo},
-				&autopilotControlLevelAdapter{svc: app.container.MemoryService},
-				redisQueue,
-				pushSender,
-				app.container.LedgerSpendingRepo,
-				app.container.LedgerService,
-				app.container.BudgetRepo,
-				&autopilotTransferAdapter{svc: app.container.LedgerService},
-				app.container.RedisClient,
-				app.log.Zap(),
-				anomalyEngine,
-				app.container.AnomalyStore,
-			)
-			app.autopilotWorker = autopilot_worker.NewWorker(autopilotSvc, app.log.Zap())
-			ctx, cancel := context.WithCancel(context.Background())
-			app.autopilotCancel = cancel
-			go app.autopilotWorker.Start(ctx)
-			if app.container.EvalHandler != nil {
-				app.container.EvalHandler.SetAutopilot(autopilotSvc)
-			}
-			app.log.Info("Miriam autopilot worker started")
-		}
 	}
 
 	if app.container.UserRepo != nil && app.container.ExpoPushService != nil {
@@ -981,7 +776,6 @@ func (app *Application) initializeKYCSyncWorker() error {
 		repositories.NewKYCUserRepositoryAdapter(app.container.UserRepo),
 		app.container.KYCSubmissionRepo,
 		app.container.BridgeAdapter,
-		alpacaadapter.NewAdapter(app.container.AlpacaClient, app.container.Logger),
 		sumsubClient,
 		app.container.SumsubWebhookEventRepo,
 		app.container.KYCSyncJobRepo,
@@ -1256,9 +1050,7 @@ func (app *Application) backfillVirtualAccountDetails() {
 func (app *Application) dropLegacyVirtualAccountConstraints() {
 	stmts := []string{
 		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_due_account_id_key`,
-		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_user_id_alpaca_account_id_key`,
 		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_account_number_key`,
-		`ALTER TABLE virtual_accounts ALTER COLUMN alpaca_account_id DROP NOT NULL`,
 		`ALTER TABLE virtual_accounts ALTER COLUMN account_number DROP NOT NULL`,
 	}
 	for _, stmt := range stmts {
@@ -1390,12 +1182,6 @@ func (app *Application) stopWorkers() {
 		}
 	}
 
-	// Stop scheduled investment worker
-	if app.scheduledInvestmentWorker != nil {
-		app.log.Info("Stopping scheduled investment worker...")
-		app.scheduledInvestmentWorker.Stop()
-	}
-
 	// Stop investment sync worker
 	if app.investmentSyncWorker != nil {
 		app.log.Info("Stopping investment sync worker...")
@@ -1484,18 +1270,6 @@ func (app *Application) stopWorkers() {
 	if app.depositAutoSweepWorker != nil {
 		app.depositAutoSweepWorker.Stop()
 	}
-	if app.miriamWorkerCancel != nil {
-		app.miriamWorkerCancel()
-	}
-	if app.miriamEventWorkerCancel != nil {
-		app.log.Info("Stopping Miriam event worker...")
-		app.miriamEventWorkerCancel()
-		app.miriamEventWorkerCancel = nil
-	}
-	if app.autopilotCancel != nil {
-		app.autopilotCancel()
-	}
-
 	app.stopRedisMonitor()
 }
 
@@ -1522,72 +1296,6 @@ func (allowAllReacherGuard) CanSendCategory(ctx context.Context, userID uuid.UUI
 	return true
 }
 
-// dailyPulsePrefsAdapter bridges PreferencesService → daily pulse worker.
-type dailyPulsePrefsAdapter struct {
-	svc *miriamservice.PreferencesService
-}
-
-func (a *dailyPulsePrefsAdapter) ShouldSendBriefing(ctx context.Context, userID uuid.UUID) bool {
-	if a == nil || a.svc == nil {
-		return true
-	}
-	p, err := a.svc.Get(ctx, userID)
-	if err != nil {
-		return true
-	}
-	return p.BriefingEnabled && p.AllowBriefings
-}
-
-func (a *dailyPulsePrefsAdapter) BriefingHourLocal(ctx context.Context, userID uuid.UUID) int {
-	if a == nil || a.svc == nil {
-		return 9
-	}
-	p, err := a.svc.Get(ctx, userID)
-	if err != nil {
-		return 9
-	}
-	return p.BriefingHour
-}
-
-func (a *dailyPulsePrefsAdapter) TimezoneOverride(ctx context.Context, userID uuid.UUID) string {
-	if a == nil || a.svc == nil {
-		return ""
-	}
-	p, err := a.svc.Get(ctx, userID)
-	if err != nil || p.Timezone == nil {
-		return ""
-	}
-	return *p.Timezone
-}
-
-type dailyPulseBriefProvider struct {
-	orchestrator aiservice.ChatEngine
-}
-
-func (p *dailyPulseBriefProvider) GetMiriamBrief(ctx context.Context, userID uuid.UUID, country string) (map[string]interface{}, error) {
-	result, err := p.orchestrator.ExecuteToolPublic(ctx, userID, infraai.ToolCall{
-		ID:   "daily-pulse-miriam-brief",
-		Name: aiservice.ToolGetMiriamBrief,
-		Arguments: map[string]interface{}{
-			"country": country,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Normalize typed internal slices into JSON-like maps for the worker package.
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return nil, err
-	}
-	var normalized map[string]interface{}
-	if err := json.Unmarshal(raw, &normalized); err != nil {
-		return nil, err
-	}
-	return normalized, nil
-}
-
 func (a *dailyPulseUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]struct {
 	ID      uuid.UUID
 	Country string
@@ -1607,53 +1315,6 @@ func (a *dailyPulseUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]st
 		}{ID: user.ID, Country: user.Country})
 	}
 	return out, nil
-}
-
-// --- Autopilot adapters ---
-
-type autopilotUserRepoAdapter struct {
-	repo *repositories.UserRepository
-}
-
-func (a *autopilotUserRepoAdapter) GetAllActiveUsers(ctx context.Context) ([]struct {
-	ID      uuid.UUID
-	Country string
-}, error) {
-	users, err := a.repo.GetAllActiveUsers(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]struct {
-		ID      uuid.UUID
-		Country string
-	}, 0, len(users))
-	for _, u := range users {
-		out = append(out, struct {
-			ID      uuid.UUID
-			Country string
-		}{ID: u.ID, Country: u.Country})
-	}
-	return out, nil
-}
-
-type autopilotControlLevelAdapter struct {
-	svc *aiservice.MemoryService
-}
-
-func (a *autopilotControlLevelAdapter) GetControlLevel(ctx context.Context, userID uuid.UUID) (string, error) {
-	return a.svc.GetControlLevel(ctx, userID)
-}
-
-type autopilotTransferAdapter struct {
-	svc *ledger_service.Service
-}
-
-func (a *autopilotTransferAdapter) TransferSpendToStash(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey string) error {
-	return a.svc.AutomationTransferSpendToStash(ctx, userID, amount, idempotencyKey, "autopilot")
-}
-
-func (a *autopilotTransferAdapter) GetSpendBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error) {
-	return a.svc.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
 }
 
 // WaitForShutdown waits for interrupt signal

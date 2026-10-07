@@ -11,7 +11,6 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers"
 	activityhandlers "github.com/rail-service/rail_service/internal/api/handlers/activity"
 	confirmationHandlers "github.com/rail-service/rail_service/internal/api/handlers/confirmation"
-	evalhandlers "github.com/rail-service/rail_service/internal/api/handlers/eval"
 	fundinghandlers "github.com/rail-service/rail_service/internal/api/handlers/funding"
 	opportunityhandlers "github.com/rail-service/rail_service/internal/api/handlers/opportunities"
 	p2phandlers "github.com/rail-service/rail_service/internal/api/handlers/p2p"
@@ -20,12 +19,7 @@ import (
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
-	aiservice "github.com/rail-service/rail_service/internal/domain/services/ai"
-	aicore "github.com/rail-service/rail_service/internal/domain/services/ai/core"
-	aimemory "github.com/rail-service/rail_service/internal/domain/services/ai/memory"
-	aitools "github.com/rail-service/rail_service/internal/domain/services/ai/tools"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
-	alpacaservice "github.com/rail-service/rail_service/internal/domain/services/alpaca"
 	analyticsservice "github.com/rail-service/rail_service/internal/domain/services/analytics"
 	"github.com/rail-service/rail_service/internal/domain/services/apikey"
 	"github.com/rail-service/rail_service/internal/domain/services/audit"
@@ -35,7 +29,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/card"
 	compliancesvc "github.com/rail-service/rail_service/internal/domain/services/compliance"
 	confirmationSvc "github.com/rail-service/rail_service/internal/domain/services/confirmation"
-	conversationsvc "github.com/rail-service/rail_service/internal/domain/services/conversation"
 	"github.com/rail-service/rail_service/internal/domain/services/copytrading"
 	"github.com/rail-service/rail_service/internal/domain/services/document"
 	"github.com/rail-service/rail_service/internal/domain/services/funding"
@@ -48,11 +41,8 @@ import (
 	knowledgesvc "github.com/rail-service/rail_service/internal/domain/services/knowledge"
 	"github.com/rail-service/rail_service/internal/domain/services/ledger"
 	"github.com/rail-service/rail_service/internal/domain/services/limits"
-	marketservice "github.com/rail-service/rail_service/internal/domain/services/market"
-	miriamservice "github.com/rail-service/rail_service/internal/domain/services/miriam"
 	moneyguardservice "github.com/rail-service/rail_service/internal/domain/services/moneyguard"
 	monosvc "github.com/rail-service/rail_service/internal/domain/services/mono"
-	newsservice "github.com/rail-service/rail_service/internal/domain/services/news"
 	obligationservice "github.com/rail-service/rail_service/internal/domain/services/obligation"
 	"github.com/rail-service/rail_service/internal/domain/services/onboarding"
 	opportunitysvc "github.com/rail-service/rail_service/internal/domain/services/opportunity"
@@ -80,7 +70,6 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/services/webauthn"
 	yieldsvc "github.com/rail-service/rail_service/internal/domain/services/yield"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters"
-	"github.com/rail-service/rail_service/internal/infrastructure/adapters/alpaca"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/blend"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/bridge"
 	"github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
@@ -95,7 +84,6 @@ import (
 	platform "github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	supermemoryclient "github.com/rail-service/rail_service/internal/infrastructure/supermemory"
-	"github.com/rail-service/rail_service/internal/infrastructure/vector"
 	investmentsync "github.com/rail-service/rail_service/internal/workers/investment_sync"
 	recon "github.com/rail-service/rail_service/internal/workers/reconciliation"
 	revenue_sweep "github.com/rail-service/rail_service/internal/workers/revenue_sweep"
@@ -148,8 +136,6 @@ type Container struct {
 	MonoRepo                  *repositories.MonoRepository
 
 	// External Services
-	AlpacaClient       *alpaca.Client
-	AlpacaService      *alpaca.Service
 	BridgeClient       *bridge.Client
 	BridgeAdapter      *bridge.Adapter
 	CircleAdapter      *circleadapter.Adapter
@@ -160,8 +146,6 @@ type Container struct {
 	AuditService       *adapters.AuditService
 	RedisClient        cache.RedisClient
 	SupermemoryClient  *supermemoryclient.Client
-	QdrantStore        *vector.QdrantStore
-	VectorizeStore     *vector.VectorizeStore
 
 	// Bridge Domain Adapters
 	BridgeKYCAdapter              *BridgeKYCAdapter
@@ -171,58 +155,45 @@ type Container struct {
 	BridgeCustomerStatusProcessor *webhooks.BridgeCustomerStatusProcessor
 
 	// Domain Services
-	OnboardingService              *onboarding.Service
-	OnboardingJobService           *services.OnboardingJobService
-	VerificationService            services.VerificationService
-	PasscodeService                *passcode.Service
-	SessionService                 *session.Service
-	TwoFAService                   *twofa.Service
-	APIKeyService                  *apikey.Service
-	WalletService                  *wallet.Service
-	FundingService                 *funding.Service
-	InvestingService               *investing.Service
-	BalanceService                 *services.BalanceService
-	LedgerService                  *ledger.Service
-	YieldService                   *yieldsvc.Service
-	yieldRepo                      *repositories.YieldRepository
-	ReconciliationService          *reconciliation.Service
-	ReconciliationScheduler        *reconciliation.Scheduler
-	StashReconciliation            *recon.Worker
-	RevenueSweepWorker             *revenue_sweep.Worker
-	BlendClient                    *blend.Client
-	BlendDepositRouter             *blend.DepositRouter
-	AllocationService              *allocation.Service
-	AutoInvestService              *autoinvest.Service
-	StrategyEngine                 *strategy.Engine
-	StationService                 *station.Service
-	GameplayXPService              *gameplay.XPService
-	GameplayStreakService          *gameplay.StreakService
-	GameplayChallengeService       *gameplay.ChallengeService
-	GameplayAchievementService     *gameplay.AchievementService
-	GameplayRepo                   *repositories.GameplayRepository
-	GameplayHooks                  *gameplay.Hooks
-	GameplayRingsService           *gameplay.RingsService
-	GameplayBoostService           *gameplay.BoostService
-	GameplayPointsService          *gameplay.PointsService
-	GameplayGraceDayService        *gameplay.GraceDayService
-	GameplayRecapService           *gameplay.RecapService
-	SubscriptionService            *subscriptionsvc.Service
-	FinancialObligationService     *obligationservice.Service
-	MoneyGuardService              *moneyguardservice.Service
-	MiriamIntelligenceService      *miriamservice.Service
-	MiriamIntelligenceOrchestrator *miriamservice.IntelligenceOrchestrator
-	MiriamSignalDetector           *miriamservice.SignalDetector
-	MiriamPredictiveEngine         *miriamservice.PredictiveEngine
-	MiriamDecisionEngine           *miriamservice.DecisionEngine
-	MiriamProactiveNudgeEngine     *miriamservice.ProactiveNudgeEngine
-	MiriamMandateSuggestionEngine  *miriamservice.MandateSuggestionEngine
-	MiriamHealthScoreTracker       *miriamservice.HealthScoreTracker
-	MiriamOutcomeTracker           *miriamservice.OutcomeTracker
-	MiriamSelfReviewEngine         *miriamservice.SelfReviewEngine
-	MiriamNotificationDispatcher   *miriamservice.NotificationDispatcher
-	MiriamObligationDetector       *miriamservice.ObligationAutoDetector
-	MiriamProactiveChatSender      miriamservice.ProactiveChatSender
-	MiriamBridgeDispatcher         *platform.BridgeDispatcher
+	OnboardingService          *onboarding.Service
+	OnboardingJobService       *services.OnboardingJobService
+	VerificationService        services.VerificationService
+	PasscodeService            *passcode.Service
+	SessionService             *session.Service
+	TwoFAService               *twofa.Service
+	APIKeyService              *apikey.Service
+	WalletService              *wallet.Service
+	FundingService             *funding.Service
+	InvestingService           *investing.Service
+	BalanceService             *services.BalanceService
+	LedgerService              *ledger.Service
+	YieldService               *yieldsvc.Service
+	yieldRepo                  *repositories.YieldRepository
+	ReconciliationService      *reconciliation.Service
+	ReconciliationScheduler    *reconciliation.Scheduler
+	StashReconciliation        *recon.Worker
+	RevenueSweepWorker         *revenue_sweep.Worker
+	BlendClient                *blend.Client
+	BlendDepositRouter         *blend.DepositRouter
+	AllocationService          *allocation.Service
+	AutoInvestService          *autoinvest.Service
+	StrategyEngine             *strategy.Engine
+	StationService             *station.Service
+	GameplayXPService          *gameplay.XPService
+	GameplayStreakService      *gameplay.StreakService
+	GameplayChallengeService   *gameplay.ChallengeService
+	GameplayAchievementService *gameplay.AchievementService
+	GameplayRepo               *repositories.GameplayRepository
+	GameplayHooks              *gameplay.Hooks
+	GameplayRingsService       *gameplay.RingsService
+	GameplayBoostService       *gameplay.BoostService
+	GameplayPointsService      *gameplay.PointsService
+	GameplayGraceDayService    *gameplay.GraceDayService
+	GameplayRecapService       *gameplay.RecapService
+	SubscriptionService        *subscriptionsvc.Service
+	FinancialObligationService *obligationservice.Service
+	MoneyGuardService          *moneyguardservice.Service
+	MiriamBridgeDispatcher     *platform.BridgeDispatcher
 	// PythonAgentClient is the LLM brain client for messaging channels. Also
 	// used by the proactive reacher worker; only set when Python delegation is
 	// enabled (see platform_wiring.go).
@@ -247,12 +218,7 @@ type Container struct {
 	// ProactiveCoordinator is the unified per-user daily-cap enforcer for
 	// all proactive workers (autopilot, ai_insights, daily_pulse,
 	// scheduled_notifications, goal_progress, spending_coach).
-	ProactiveCoordinator *platform.ProactiveCoordinator
-	// AICostGuard is the fast Redis-backed per-user daily/monthly AI cost
-	// ceiling. Injected into both the Cencori provider (provider-level check)
-	// and core.Agent.Dependencies (agent-level pre-check). nil disables the
-	// guard; Cencori will continue without ceiling enforcement.
-	AICostGuard               *ai.Guard
+	ProactiveCoordinator      *platform.ProactiveCoordinator
 	SocialAuthService         *socialauth.Service
 	WebAuthnService           *webauthn.Service
 	LimitsService             *limits.Service
@@ -261,67 +227,22 @@ type Container struct {
 	WithdrawalService         *services.WithdrawalService
 	StashLockService          *stashlock.Service
 
-	// AI Financial Manager Services
-	AIProvider               ai.AIProvider
-	AIOrchestrator           *aiservice.AgentAdapter
-	NewAgent                 *aicore.Agent
-	AgentDeps                *aicore.Dependencies
-	NewChatEngine            aiservice.ChatEngine
-	NewToolRegistry          *aitools.Registry
-	DiditClient              *didit.Client
-	ComplianceService        *compliancesvc.Service
-	AIRecommender            *aiservice.Recommender
-	NewsService              *newsservice.Service
-	PortfolioDataProvider    *aiservice.PortfolioDataProviderImpl
-	ActivityDataProvider     *aiservice.ActivityDataProviderImpl
-	ConversationRepo         *repositories.ConversationRepository
-	ConversationService      *conversationsvc.Service
-	UsageRepo                *repositories.AIUsageRepository
-	UsageService             *usagesvc.Service
-	EmbeddingsClient         Embedder
-	KnowledgeRepo            *repositories.KnowledgeRepository
-	KnowledgeService         *knowledgesvc.Service
-	MemoryService            *aiservice.MemoryService
-	WorkingMemoryStore       *aimemory.WorkingMemoryStore
-	EventStore               *aimemory.EventStore
-	MemoryMetrics            *aimemory.Metrics
-	MiriamIntelligenceRepo   *repositories.MiriamIntelligenceRepository
-	MiriamPreferencesRepo    *repositories.MiriamPreferencesRepository
-	MiriamPreferencesService *miriamservice.PreferencesService
-	AnomalyStore             aiservice.AnomalyStore
-	proactiveGuard           *platform.ProactiveGuard // set during platform init; prefs wired later
+	// Financial Manager Services
+	DiditClient       *didit.Client
+	ComplianceService *compliancesvc.Service
+	ConversationRepo  *repositories.ConversationRepository
+	UsageRepo         *repositories.AIUsageRepository
+	UsageService      *usagesvc.Service
+	EmbeddingsClient  Embedder
+	KnowledgeRepo     *repositories.KnowledgeRepository
+	KnowledgeService  *knowledgesvc.Service
+	proactiveGuard    *platform.ProactiveGuard // set during platform init; prefs wired later
 
 	// Additional Repositories
 	OnboardingJobRepo *repositories.OnboardingJobRepository
 
-	// Alpaca Investment Repositories
-	AlpacaAccountRepo        *repositories.AlpacaAccountRepository
-	InvestmentOrderRepo      *repositories.InvestmentOrderRepository
-	InvestmentPositionRepo   *repositories.InvestmentPositionRepository
-	AlpacaEventRepo          *repositories.AlpacaEventRepository
-	AlpacaInstantFundingRepo *repositories.AlpacaInstantFundingRepository
-
 	// Advanced Features Repositories
-	PortfolioSnapshotRepo   *repositories.PortfolioSnapshotRepository
-	ScheduledInvestmentRepo *repositories.ScheduledInvestmentRepository
-	RebalancingConfigRepo   *repositories.RebalancingConfigRepository
-	InvestmentRulesRepo     *repositories.InvestmentRulesRepository
-	MarketAlertRepo         *repositories.MarketAlertRepository
-
-	// Alpaca Investment Services
-	AlpacaAccountService *alpacaservice.AccountService
-	AlpacaFundingBridge  *alpacaservice.FundingBridge
-	AlpacaEventProcessor *alpacaservice.EventProcessor
-	AlpacaPortfolioSync  *alpacaservice.PortfolioSyncService
-
-	// Advanced Features Services
-	PortfolioAnalyticsService  *analyticsservice.PortfolioAnalyticsService
-	MarketDataService          *marketservice.MarketDataService
-	ScheduledInvestmentService *investing.ScheduledInvestmentService
-	RebalancingService         *investing.RebalancingService
-
-	// Brokerage Adapter
-	BrokerageAdapter *adapters.BrokerageAdapter
+	InvestmentRulesRepo *repositories.InvestmentRulesRepository
 
 	// Round-up Services
 	RoundupRepo    *repositories.RoundupRepository
@@ -401,11 +322,7 @@ type Container struct {
 	RiskScoringEngine   *ratelimit.RiskScoringEngine
 	AdaptiveRateLimiter *ratelimit.AdaptiveRateLimiter
 
-	// Instant Funding Services
-	InstantFundingRepo         *repositories.InstantFundingRepository
-	UserAccountRepo            *repositories.UserAccountRepository
-	InstantFundingService      *funding.InstantFundingService
-	InstantFundingHandlers     *fundinghandlers.InstantFundingHandlers
+	// Funding Provider Services
 	ChainRailsHandlers         *fundinghandlers.ChainRailsHandlers
 	ChainRailsClient           *chainrails.Client
 	DepositSweepRepo           *repositories.DepositSweepRepository
@@ -488,7 +405,6 @@ type Container struct {
 	PlatformHandler      *platformhandlers.PlatformHandler
 	platformProcessor    *platform.Processor
 	platformLinking      *platform.LinkingService
-	EvalHandler          *evalhandlers.Handler
 
 	// Live confirmation cards (Face ID money actions, one primitive for all actions)
 	ConfirmationService  *confirmationSvc.Service
@@ -544,22 +460,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	exchangeRateRepo := repositories.NewExchangeRateRepository(sqlxDB)
 	visaProofRepo := repositories.NewVisaProofRepository(sqlxDB)
 	receiptSplitRepo := repositories.NewReceiptSplitRepository(sqlxDB)
-
-	// Initialize external services
-	// Initialize Alpaca service
-	alpacaConfig := alpaca.Config{
-		ClientID:      cfg.Alpaca.ClientID,
-		SecretKey:     cfg.Alpaca.SecretKey,
-		BaseURL:       cfg.Alpaca.BaseURL,
-		DataBaseURL:   cfg.Alpaca.DataBaseURL,
-		DataAPIKey:    cfg.Alpaca.DataAPIKey,
-		DataAPISecret: cfg.Alpaca.DataAPISecret,
-		DataFeed:      cfg.Alpaca.DataFeed,
-		Environment:   cfg.Alpaca.Environment,
-		Timeout:       time.Duration(cfg.Alpaca.Timeout) * time.Second,
-	}
-	alpacaClient := alpaca.NewClient(alpacaConfig, zapLog)
-	alpacaService := alpaca.NewService(alpacaClient, zapLog)
 
 	// Initialize Bridge service
 	bridgeConfig := bridge.Config{
@@ -706,8 +606,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		NotificationRepo:          repositories.NewNotificationRepository(db),
 
 		// External Services
-		AlpacaClient:  alpacaClient,
-		AlpacaService: alpacaService,
 		BridgeClient:  bridgeClient,
 		BridgeAdapter: bridgeAdapter,
 		CircleAdapter: circleAdapter,
@@ -783,13 +681,6 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	}
 
 	// Miriam evaluation endpoint (terminal test harness). Gated + token-guarded.
-	if cfg.Eval.Enabled && container.AIOrchestrator != nil && cfg.Eval.Token != "" {
-		container.EvalHandler = evalhandlers.NewHandler(
-			container.AIOrchestrator, container.ConversationService, cfg.Eval.Token, zapLog,
-		)
-		zapLog.Warn("Miriam eval endpoint ENABLED — do not enable in production")
-	}
-
 	return container, nil
 }
 func (c *Container) initializeOpportunityService(sqlxDB *sqlx.DB) {
