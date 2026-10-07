@@ -78,8 +78,12 @@ type UserProvider interface {
 // BalanceProvider provides user balance information
 type BalanceProvider interface {
 	GetAvailableBalance(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
-	DeductBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error
-	AddBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error
+	// operationID identifies the business operation behind the move (draft,
+	// allocation change, refund). It must be stable across retries of that
+	// operation and distinct between operations: the ledger treats a repeated
+	// idempotency key as a no-op, so it must not be derived from user+amount.
+	DeductBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string, operationID string) error
+	AddBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string, operationID string) error
 }
 
 // TradingAdapter executes trades on the brokerage
@@ -213,8 +217,12 @@ func (s *Service) CreateDraft(ctx context.Context, drafterID uuid.UUID, req *ent
 		return nil, fmt.Errorf("insufficient balance: have %s, need %s", balance.String(), req.AllocatedCapital.String())
 	}
 
+	draftID := uuid.New()
+
 	// Deduct balance for allocation
-	err = s.balanceProvider.DeductBalance(ctx, drafterID, req.AllocatedCapital, fmt.Sprintf("Copy trading allocation to %s", conductor.DisplayName))
+	err = s.balanceProvider.DeductBalance(ctx, drafterID, req.AllocatedCapital,
+		fmt.Sprintf("Copy trading allocation to %s", conductor.DisplayName),
+		fmt.Sprintf("copytrading-draft:%s:reserve", draftID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to deduct balance: %w", err)
 	}
@@ -227,7 +235,7 @@ func (s *Service) CreateDraft(ctx context.Context, drafterID uuid.UUID, req *ent
 
 	now := time.Now().UTC()
 	draft := &entities.Draft{
-		ID:               uuid.New(),
+		ID:               draftID,
 		DrafterID:        drafterID,
 		ConductorID:      req.ConductorID,
 		Status:           entities.DraftStatusActive,
@@ -244,7 +252,8 @@ func (s *Service) CreateDraft(ctx context.Context, drafterID uuid.UUID, req *ent
 
 	if err := s.repo.CreateDraft(ctx, draft); err != nil {
 		// Refund on failure
-		_ = s.balanceProvider.AddBalance(ctx, drafterID, req.AllocatedCapital, "Refund: draft creation failed")
+		_ = s.balanceProvider.AddBalance(ctx, drafterID, req.AllocatedCapital, "Refund: draft creation failed",
+			fmt.Sprintf("copytrading-draft:%s:create-refund", draftID))
 		return nil, fmt.Errorf("failed to create draft: %w", err)
 	}
 
@@ -389,7 +398,8 @@ func (s *Service) UnlinkDraft(ctx context.Context, userID, draftID uuid.UUID) er
 
 	// Return current AUM to user's balance
 	if draft.CurrentAUM.GreaterThan(decimal.Zero) {
-		err = s.balanceProvider.AddBalance(ctx, userID, draft.CurrentAUM, "Copy trading unlink - funds returned")
+		err = s.balanceProvider.AddBalance(ctx, userID, draft.CurrentAUM, "Copy trading unlink - funds returned",
+			fmt.Sprintf("copytrading-draft:%s:unlink-refund", draftID))
 		if err != nil {
 			s.logger.Error("Failed to return funds on unlink", zap.Error(err))
 		}
@@ -448,12 +458,14 @@ func (s *Service) ResizeDraft(ctx context.Context, userID, draftID uuid.UUID, ne
 		if balance.LessThan(diff) {
 			return fmt.Errorf("insufficient balance")
 		}
-		if err := s.balanceProvider.DeductBalance(ctx, userID, diff, "Copy trading allocation increase"); err != nil {
+		if err := s.balanceProvider.DeductBalance(ctx, userID, diff, "Copy trading allocation increase",
+			fmt.Sprintf("copytrading-draft:%s:resize-up:%s->%s", draftID, draft.AllocatedCapital.String(), newCapital.String())); err != nil {
 			return fmt.Errorf("failed to deduct balance: %w", err)
 		}
 	} else if diff.LessThan(decimal.Zero) {
 		// Reducing capital - return funds
-		if err := s.balanceProvider.AddBalance(ctx, userID, diff.Abs(), "Copy trading allocation decrease"); err != nil {
+		if err := s.balanceProvider.AddBalance(ctx, userID, diff.Abs(), "Copy trading allocation decrease",
+			fmt.Sprintf("copytrading-draft:%s:resize-down:%s->%s", draftID, draft.AllocatedCapital.String(), newCapital.String())); err != nil {
 			return fmt.Errorf("failed to add balance: %w", err)
 		}
 	}

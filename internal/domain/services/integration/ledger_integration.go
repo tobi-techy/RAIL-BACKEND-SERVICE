@@ -234,22 +234,27 @@ func (i *LedgerIntegration) MoveFundsToFiatExposure(
 	return nil
 }
 
-// ReserveForInvestment reserves funds for investment
+// ReserveForInvestment reserves funds for investment. operationID must be
+// stable across retries of one business operation and distinct between
+// operations, so same-amount reserves are not collapsed into one no-op.
 func (i *LedgerIntegration) ReserveForInvestment(
 	ctx context.Context,
 	userID uuid.UUID,
 	amount decimal.Decimal,
+	operationID string,
 ) error {
-	return i.ledgerService.ReserveForInvestment(ctx, userID, amount)
+	return i.ledgerService.ReserveForInvestment(ctx, userID, amount, operationID)
 }
 
-// ReleaseReservation releases reserved funds
+// ReleaseReservation releases reserved funds. operationID follows the same
+// contract as ReserveForInvestment.
 func (i *LedgerIntegration) ReleaseReservation(
 	ctx context.Context,
 	userID uuid.UUID,
 	amount decimal.Decimal,
+	operationID string,
 ) error {
-	return i.ledgerService.ReleaseReservation(ctx, userID, amount)
+	return i.ledgerService.ReleaseReservation(ctx, userID, amount, operationID)
 }
 
 // ExecuteInvestment executes investment (moves from pending to fiat exposure)

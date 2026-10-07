@@ -450,6 +450,75 @@ func TestLedger_PendingTransactionLifecycle_DoubleCommit(t *testing.T) {
 	assert.True(t, decimal.NewFromInt(80).Equal(spendBal2), "after second commit: expected 80, got %s (double debit)", spendBal2)
 }
 
+// A row that a non-commit transition takes out of pending while a commit is in
+// flight must not be reported as a successful commit: the withdrawal path would
+// treat the money as applied while the rollback discards the balance updates,
+// leaving a silent ledger hole.
+func TestLedger_PendingTransaction_AConcurrentFailIsNotACommittedSuccess(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	userID := uniqueUserID()
+	t.Cleanup(func() { cleanupLedgerData(ctx, t, db, userID) })
+
+	spend := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeSpendingBalance, decimal.NewFromInt(100))
+	stash := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeStashBalance, decimal.Zero)
+
+	key := uniqueKey("commit-vs-fail")
+	desc := "commit races a fail"
+	req := &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		IdempotencyKey:  key,
+		Description:     &desc,
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spend.ID, EntryType: entities.EntryTypeCredit, Amount: decimal.NewFromInt(20), Currency: "USD"},
+			{AccountID: stash.ID, EntryType: entities.EntryTypeDebit, Amount: decimal.NewFromInt(20), Currency: "USD"},
+		},
+	}
+	require.NoError(t, svc.CreatePendingTransaction(ctx, req))
+
+	// Flip the row to failed on a separate connection without committing, so the
+	// committer still reads pending and then blocks on its conditional UPDATE.
+	// Committing the flip makes that UPDATE match zero rows.
+	flip, err := db.Beginx()
+	require.NoError(t, err)
+	defer flip.Rollback()
+
+	var txID uuid.UUID
+	require.NoError(t, flip.Get(&txID, `SELECT id FROM ledger_transactions WHERE idempotency_key = $1`, key))
+	_, err = flip.Exec(`UPDATE ledger_transactions SET status = 'failed' WHERE id = $1`, txID)
+	require.NoError(t, err)
+
+	commitErr := make(chan error, 1)
+	go func() { commitErr <- svc.CommitPendingTransaction(ctx, key) }()
+
+	require.Eventually(t, func() bool {
+		var waiting int
+		if err := db.Get(&waiting, `SELECT count(*) FROM pg_locks WHERE NOT granted`); err != nil {
+			return false
+		}
+		return waiting > 0
+	}, 10*time.Second, 20*time.Millisecond, "committer never blocked on the transaction row lock")
+
+	require.NoError(t, flip.Commit())
+
+	select {
+	case err := <-commitErr:
+		require.Error(t, err, "commit must not report success when a non-commit transition won the row")
+		assert.Contains(t, err.Error(), "cannot commit")
+	case <-time.After(10 * time.Second):
+		t.Fatal("CommitPendingTransaction did not return")
+	}
+
+	spendBal, err := svc.GetAccountBalance(ctx, userID, entities.AccountTypeSpendingBalance)
+	require.NoError(t, err)
+	assert.True(t, decimal.NewFromInt(100).Equal(spendBal), "spend balance must be untouched: after failed commit expected 100, got %s", spendBal)
+
+	var status string
+	require.NoError(t, db.Get(&status, `SELECT status FROM ledger_transactions WHERE id = $1`, txID))
+	assert.Equal(t, string(entities.TransactionStatusFailed), status)
+}
+
 // --- P1: Reversal ----------------------------------------------------------
 
 func TestLedger_ReverseTransaction(t *testing.T) {
@@ -582,7 +651,7 @@ func TestLedger_ReserveAndReleaseInvestment(t *testing.T) {
 	createAndSeed(ctx, t, svc, db, userID, entities.AccountTypePendingInvestment, decimal.Zero)
 
 	// Reserve $200
-	err := svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(200))
+	err := svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(200), "op-reserve-1")
 	require.NoError(t, err)
 
 	usdcBal, err := svc.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
@@ -594,7 +663,7 @@ func TestLedger_ReserveAndReleaseInvestment(t *testing.T) {
 	assert.True(t, decimal.NewFromInt(200).Equal(pendingBal), "pending after reserve: expected 200, got %s", pendingBal)
 
 	// Release $100
-	err = svc.ReleaseReservation(ctx, userID, decimal.NewFromInt(100))
+	err = svc.ReleaseReservation(ctx, userID, decimal.NewFromInt(100), "op-release-1")
 	require.NoError(t, err)
 
 	usdcBal, err = svc.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
@@ -616,9 +685,48 @@ func TestLedger_ReserveForInvestment_InsufficientBalance(t *testing.T) {
 	createAndSeed(ctx, t, svc, db, userID, entities.AccountTypePendingInvestment, decimal.Zero)
 
 	// Trying to reserve $200 with only $50 should fail
-	err := svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(200))
+	err := svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(200), "op-reserve-insufficient")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "insufficient balance")
+}
+
+// Two distinct same-amount reservations for one user must both move funds, and
+// a retry of either operation must stay idempotent (regression: the key used to
+// be derived from user+amount alone, so the second reserve silently no-opped).
+func TestLedger_ReserveDistinctOperationsBothApply(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	userID := uniqueUserID()
+	t.Cleanup(func() { cleanupLedgerData(ctx, t, db, userID) })
+
+	createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeUSDCBalance, decimal.NewFromInt(500))
+	createAndSeed(ctx, t, svc, db, userID, entities.AccountTypePendingInvestment, decimal.Zero)
+
+	require.NoError(t, svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(100), "op-a"))
+	require.NoError(t, svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(100), "op-b"))
+
+	usdcBal, err := svc.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	require.NoError(t, err)
+	assert.True(t, decimal.NewFromInt(300).Equal(usdcBal), "USDC after two reserves: expected 300, got %s", usdcBal)
+
+	pendingBal, err := svc.GetAccountBalance(ctx, userID, entities.AccountTypePendingInvestment)
+	require.NoError(t, err)
+	assert.True(t, decimal.NewFromInt(200).Equal(pendingBal), "pending after two reserves: expected 200, got %s", pendingBal)
+
+	// Retrying the first operation must not move funds again.
+	require.NoError(t, svc.ReserveForInvestment(ctx, userID, decimal.NewFromInt(100), "op-a"))
+	usdcBal, err = svc.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	require.NoError(t, err)
+	assert.True(t, decimal.NewFromInt(300).Equal(usdcBal), "USDC after retry: expected 300, got %s", usdcBal)
+
+	// Same contract on release.
+	require.NoError(t, svc.ReleaseReservation(ctx, userID, decimal.NewFromInt(50), "release-a"))
+	require.NoError(t, svc.ReleaseReservation(ctx, userID, decimal.NewFromInt(50), "release-b"))
+	require.NoError(t, svc.ReleaseReservation(ctx, userID, decimal.NewFromInt(50), "release-a"))
+
+	usdcBal, err = svc.GetAccountBalance(ctx, userID, entities.AccountTypeUSDCBalance)
+	require.NoError(t, err)
+	assert.True(t, decimal.NewFromInt(400).Equal(usdcBal), "USDC after two releases: expected 400, got %s", usdcBal)
 }
 
 // --- P2: Concurrency -------------------------------------------------------
@@ -1498,6 +1606,47 @@ func TestLedger_VelocityLimit_BlocksOnUserAccounts(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "velocity limit")
+}
+
+// The bucket key must be the Lagos civil calendar date: bucketing at UTC
+// midnight splits one Lagos business day across two velocity buckets.
+func TestLedger_VelocityBucketDateIsTheLagosCalendarDay(t *testing.T) {
+	db, svc := newLedgerService(t)
+	ctx := context.Background()
+	userID := uniqueUserID()
+	t.Cleanup(func() { cleanupLedgerData(ctx, t, db, userID) })
+
+	svc.SetVelocityConfig(&entities.VelocityConfig{
+		MaxDailyOutflow: decimal.NewFromInt(1000),
+		MaxDailyTxCount: 10,
+	})
+
+	spend := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeSpendingBalance, decimal.NewFromInt(100))
+	stash := createAndSeed(ctx, t, svc, db, userID, entities.AccountTypeStashBalance, decimal.Zero)
+
+	desc := "lagos day bucket"
+	_, err := svc.CreateTransaction(ctx, &entities.CreateTransactionRequest{
+		UserID:          &userID,
+		TransactionType: entities.TransactionTypeInternalTransfer,
+		IdempotencyKey:  uniqueKey("lagos-bucket"),
+		Description:     &desc,
+		InitiatedBy:     entities.InitiatedByUser.String(),
+		Entries: []entities.CreateEntryRequest{
+			{AccountID: spend.ID, EntryType: entities.EntryTypeCredit, Amount: decimal.NewFromInt(10), Currency: "USD"},
+			{AccountID: stash.ID, EntryType: entities.EntryTypeDebit, Amount: decimal.NewFromInt(10), Currency: "USD"},
+		},
+	})
+	require.NoError(t, err)
+
+	lagos, err := time.LoadLocation("Africa/Lagos")
+	require.NoError(t, err)
+	lagosNow := time.Now().In(lagos)
+	want := time.Date(lagosNow.Year(), lagosNow.Month(), lagosNow.Day(), 0, 0, 0, 0, time.UTC)
+
+	var bucketDate time.Time
+	require.NoError(t, db.Get(&bucketDate, `SELECT bucket_date FROM ledger_velocity_buckets WHERE account_id = $1`, spend.ID))
+	assert.True(t, want.Equal(bucketDate.In(time.UTC)),
+		"bucket_date: expected Lagos day %s, got %s", want.Format("2006-01-02"), bucketDate.In(time.UTC).Format("2006-01-02"))
 }
 
 func TestLedger_ReconcileDay_Accurate(t *testing.T) {

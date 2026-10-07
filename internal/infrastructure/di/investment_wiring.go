@@ -324,20 +324,20 @@ func (a *copyTradingBalanceAdapter) GetAvailableBalance(ctx context.Context, use
 	return balances.USDCBalance, nil
 }
 
-func (a *copyTradingBalanceAdapter) DeductBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
+func (a *copyTradingBalanceAdapter) DeductBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string, operationID string) error {
 	if a.ledgerService == nil {
 		return fmt.Errorf("ledger service not available")
 	}
 	// Reserve funds for copy trading allocation
-	return a.ledgerService.ReserveForInvestment(ctx, userID, amount)
+	return a.ledgerService.ReserveForInvestment(ctx, userID, amount, operationID)
 }
 
-func (a *copyTradingBalanceAdapter) AddBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string) error {
+func (a *copyTradingBalanceAdapter) AddBalance(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, description string, operationID string) error {
 	if a.ledgerService == nil {
 		return fmt.Errorf("ledger service not available")
 	}
 	// Release reserved funds back to user
-	return a.ledgerService.ReleaseReservation(ctx, userID, amount)
+	return a.ledgerService.ReleaseReservation(ctx, userID, amount, operationID)
 }
 
 // copyTradingTradingAdapter adapts Alpaca client for copy trading order execution
