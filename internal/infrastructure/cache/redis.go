@@ -86,6 +86,11 @@ func NewRedisClient(cfg *config.RedisConfig, logger *zap.Logger) (RedisClient, e
 
 	rdb := redis.NewClient(opts)
 
+	// The breaker must be attached before anything else uses the client (the
+	// startup ping below included) so every command — the wrapper's own calls
+	// and the raw client handed out by Client() — is covered.
+	rdb.AddHook(newRedisBreaker(logger))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

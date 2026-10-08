@@ -59,9 +59,13 @@ func RequirePasscodeSession(validator PasscodeSessionValidator, invalidateOnSucc
 					zap.Error(err),
 					zap.String("user_id", userID.String()))
 			}
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":      "PASSCODE_SESSION_INVALID",
-				"message":    "Passcode session is invalid or expired",
+			// Infrastructure failure, not a bad token. Answering 403 here told
+			// the client to re-prompt for a passcode that would fail the same
+			// way, which is how a Redis outage presented itself as "your passcode
+			// session is invalid" on the withdrawal path.
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"error":      "PASSCODE_SESSION_UNAVAILABLE",
+				"message":    "Passcode session could not be verified, please retry",
 				"request_id": c.GetString("request_id"),
 			})
 			c.Abort()

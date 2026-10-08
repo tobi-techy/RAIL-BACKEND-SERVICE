@@ -1158,8 +1158,8 @@ func setDefaults() {
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 50)     // Increased for concurrent requests
-	viper.SetDefault("database.max_idle_conns", 25)     // Keep more idle connections ready
+	viper.SetDefault("database.max_open_conns", 15)     // per replica; see configs/config.yaml
+	viper.SetDefault("database.max_idle_conns", 5)      // keep the idle set small so slots return to the server
 	viper.SetDefault("database.conn_max_lifetime", 300) // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)
@@ -1209,11 +1209,20 @@ func setDefaults() {
 	viper.SetDefault("security.lockout_duration", 900) // 15 minutes
 	viper.SetDefault("security.require_mfa", false)
 	viper.SetDefault("security.password_min_length", 8)
-	// Token-blacklist policy on Redis errors. Default STRICT (deny / 503) — the
-	// secure choice for a fintech. Active sessions still ride through brief Redis
-	// blips via the in-process negative cache; only cold tokens are denied during
-	// a Redis outage. Set AUTH_BLACKLIST_FAIL_OPEN=true to prioritize
-	// availability over revocation during an incident.
+	// Token-blacklist policy on Redis errors: fail open (true) or 503 (false).
+	//
+	// The default stays STRICT — deny when revocation cannot be checked, which is
+	// the right default for a fintech and keeps an environment that forgets this
+	// variable safe. Production deliberately opts out by setting
+	// AUTH_BLACKLIST_FAIL_OPEN=true: on 2026-10-08 an Upstash quota breach made
+	// every Redis call fail, and under strict denial every authenticated route
+	// answers 503 once a token falls out of the 60s local negative cache — an
+	// API-wide outage rather than a degraded one. That trade is only defensible
+	// because moving money additionally requires a single-use, passcode-verified
+	// step-up session, which does not use Redis.
+	//
+	// Setting this to true accepts a revocation lag of up to the token's
+	// remaining lifetime during a Redis outage.
 	viper.SetDefault("security.auth_blacklist_fail_open", false)
 	viper.BindEnv("security.auth_blacklist_fail_open", "AUTH_BLACKLIST_FAIL_OPEN")
 

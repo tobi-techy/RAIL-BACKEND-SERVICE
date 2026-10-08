@@ -113,6 +113,14 @@ func RunMigrations(databaseURL string) error {
 	}
 	defer db.Close()
 
+	// Migrations are a one-shot boot-time burst: every replica starts them at
+	// once on deploy, and golang-migrate is single-threaded per run. Capping the
+	// pool keeps a rolling deploy from spending the server's connection slots
+	// on migration clients that will be closed seconds later.
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(time.Minute)
+
 	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {
 		return fmt.Errorf("failed to create postgres driver: %w", err)

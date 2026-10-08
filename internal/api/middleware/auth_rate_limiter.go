@@ -228,15 +228,23 @@ func AuthRateLimit(requestsPerMinute int) gin.HandlerFunc {
 	return limiter.Limit()
 }
 
-// GetAuthRateLimiter returns the AuthRateLimiter for the given rate, or nil if not initialized.
+// GetAuthRateLimiter returns the AuthRateLimiter for the lowest configured rate,
+// or nil if none has been created.
+//
+// The lookup must be deterministic: reading the map directly returns a random
+// entry, so callers (and tests) observed a different limiter on each call and
+// the strictest rate was not the one anyone could inspect.
 func GetAuthRateLimiter() *AuthRateLimiter {
 	authRateLimiterMu.Lock()
 	defer authRateLimiterMu.Unlock()
-	// Return any limiter for backward compat; prefer lowest rate
-	for _, l := range authRateLimiters {
-		return l
+	var chosen *AuthRateLimiter
+	lowestRate := 0
+	for rate, l := range authRateLimiters {
+		if chosen == nil || rate < lowestRate {
+			chosen, lowestRate = l, rate
+		}
 	}
-	return nil
+	return chosen
 }
 
 // StopAuthRateLimiter stops all AuthRateLimiter cleanup goroutines.

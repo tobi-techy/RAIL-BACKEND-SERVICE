@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -18,6 +19,23 @@ import (
 const (
 	sessionCacheTTL    = 5 * time.Minute
 	sessionCachePrefix = "session:"
+
+	// sessionLocalCacheTTL is how long this process trusts a validated session
+	// without asking Redis or Postgres again. Session validation ran one Redis
+	// GET on every authenticated request, which is the single largest steady
+	// state consumer of the Redis quota; a short in-process cache removes that
+	// call for the common case (a client polling several endpoints in a row).
+	//
+	// The tradeoff is a revocation lag of up to this window on the replica that
+	// already cached the session. That is consistent with the token blacklist,
+	// which already trusts a "not revoked" answer for 60s in-process, and
+	// logout additionally blacklists the token.
+	sessionLocalCacheTTL = 30 * time.Second
+	sessionLocalCacheMax = 20000
+
+	// sessionLastUsedMinGap throttles the sessions.last_used_at write, which
+	// used to be one UPDATE per authenticated request.
+	sessionLastUsedMinGap = 5 * time.Minute
 )
 
 var (
@@ -36,6 +54,18 @@ type Service struct {
 	db     *sql.DB
 	redis  RedisClient
 	logger *zap.Logger
+
+	localMu    sync.RWMutex
+	localCache map[string]localSession
+
+	lastUsedMu sync.Mutex
+	lastUsed   map[uuid.UUID]time.Time
+}
+
+// localSession is one entry of the in-process validated-session cache.
+type localSession struct {
+	session *Session
+	expires time.Time
 }
 
 type Session struct {
@@ -55,9 +85,11 @@ type Session struct {
 
 func NewService(db *sql.DB, redis RedisClient, logger *zap.Logger) *Service {
 	return &Service{
-		db:     db,
-		redis:  redis,
-		logger: logger,
+		db:         db,
+		redis:      redis,
+		logger:     logger,
+		localCache: make(map[string]localSession),
+		lastUsed:   make(map[uuid.UUID]time.Time),
 	}
 }
 
@@ -99,6 +131,7 @@ func (s *Service) CreateSession(ctx context.Context, userID uuid.UUID, accessTok
 
 	// Cache the new session
 	s.cacheSession(ctx, tokenHash, session)
+	s.localPut(tokenHash, session)
 
 	return session, nil
 }
@@ -118,10 +151,18 @@ var ErrSessionNotFound = errors.New("session not found or expired")
 func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, error) {
 	tokenHash := s.hashToken(token)
 
+	// In-process fast path: a session validated moments ago on this replica does
+	// not need Redis or Postgres again.
+	if session := s.localGet(tokenHash); session != nil {
+		s.maybeUpdateLastUsed(session.ID)
+		return session, nil
+	}
+
 	// Try cache first (uses a short independent timeout so a slow Redis doesn't
 	// eat into the caller's deadline — a cache miss is just a miss, not an error).
 	if session := s.getSessionFromCache(ctx, tokenHash); session != nil {
-		go s.updateLastUsed(context.Background(), session.ID)
+		s.localPut(tokenHash, session)
+		s.maybeUpdateLastUsed(session.ID)
 		return session, nil
 	}
 
@@ -152,7 +193,8 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, 
 	// Re-populate cache for future requests (fire-and-forget; uses background ctx).
 	go s.cacheSession(context.Background(), tokenHash, session)
 
-	go s.updateLastUsed(context.Background(), session.ID)
+	s.localPut(tokenHash, session)
+	s.maybeUpdateLastUsed(session.ID)
 
 	return session, nil
 }
@@ -180,7 +222,7 @@ func (s *Service) ValidateSessionByRefreshToken(ctx context.Context, refreshToke
 		return nil, fmt.Errorf("failed to validate refresh session: %w", err)
 	}
 
-	go s.updateLastUsed(context.Background(), session.ID)
+	s.maybeUpdateLastUsed(session.ID)
 
 	return session, nil
 }
@@ -294,6 +336,7 @@ func (s *Service) RotateSessionTokensByRefreshToken(
 	now := time.Now()
 	session.LastUsedAt = &now
 	s.cacheSession(ctx, newAccessHash, session)
+	s.localPut(newAccessHash, session)
 
 	return session, nil
 }
@@ -443,10 +486,81 @@ func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Se
 }
 
 func (s *Service) invalidateSessionCache(ctx context.Context, tokenHash string) {
+	s.localDel(tokenHash)
 	if s.redis == nil {
 		return
 	}
 	if err := s.redis.Del(ctx, sessionCachePrefix+tokenHash).Err(); err != nil {
 		s.logger.Warn("failed to invalidate stale session cache entry", zap.Error(err))
 	}
+}
+
+// localGet returns a copy of the cached session, or nil on miss/expiry.
+func (s *Service) localGet(tokenHash string) *Session {
+	s.localMu.RLock()
+	entry, ok := s.localCache[tokenHash]
+	s.localMu.RUnlock()
+	if !ok || time.Now().After(entry.expires) {
+		return nil
+	}
+	if !entry.session.IsActive || entry.session.ExpiresAt.Before(time.Now()) {
+		s.localDel(tokenHash)
+		return nil
+	}
+	copied := *entry.session
+	return &copied
+}
+
+func (s *Service) localPut(tokenHash string, session *Session) {
+	if session == nil || tokenHash == "" {
+		return
+	}
+	copied := *session
+	s.localMu.Lock()
+	defer s.localMu.Unlock()
+	if len(s.localCache) >= sessionLocalCacheMax {
+		now := time.Now()
+		for k, entry := range s.localCache {
+			if now.After(entry.expires) {
+				delete(s.localCache, k)
+			}
+		}
+	}
+	s.localCache[tokenHash] = localSession{
+		session: &copied,
+		expires: time.Now().Add(sessionLocalCacheTTL),
+	}
+}
+
+func (s *Service) localDel(tokenHash string) {
+	s.localMu.Lock()
+	delete(s.localCache, tokenHash)
+	s.localMu.Unlock()
+}
+
+// maybeUpdateLastUsed writes sessions.last_used_at at most once per
+// sessionLastUsedMinGap. The write used to fire on every authenticated request,
+// which is a lot of Postgres traffic for a field nothing reads in real time.
+func (s *Service) maybeUpdateLastUsed(sessionID uuid.UUID) {
+	if sessionID == uuid.Nil {
+		return
+	}
+	now := time.Now()
+
+	s.lastUsedMu.Lock()
+	if last, ok := s.lastUsed[sessionID]; ok && now.Sub(last) < sessionLastUsedMinGap {
+		s.lastUsedMu.Unlock()
+		return
+	}
+	if len(s.lastUsed) >= sessionLocalCacheMax {
+		for id, at := range s.lastUsed {
+			if now.Sub(at) >= sessionLastUsedMinGap {
+				delete(s.lastUsed, id)
+			}
+		}
+	}
+	s.lastUsed[sessionID] = now
+	s.lastUsedMu.Unlock()
+
+	go s.updateLastUsed(context.Background(), sessionID)
 }

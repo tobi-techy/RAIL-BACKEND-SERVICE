@@ -1011,20 +1011,33 @@ func (app *Application) backfillVirtualAccountDetails() {
 		app.log.Error("backfill VA: query failed", "error", err)
 		return
 	}
-	defer rows.Close()
+
+	// Drain the result set and release the connection BEFORE the per-row Bridge
+	// calls below. Holding an open cursor across hundreds of network round-trips
+	// pins a pooled connection for the whole backfill, which at boot competes
+	// with the worker fleet for a slot.
+	type pendingVA struct{ id, customerID, bridgeAccountID string }
+	var pending []pendingVA
+	for rows.Next() {
+		var va pendingVA
+		if err := rows.Scan(&va.id, &va.customerID, &va.bridgeAccountID); err != nil {
+			continue
+		}
+		pending = append(pending, va)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		app.log.Warn("backfill VA: row iteration failed", "error", err)
+	}
 
 	var updated int
-	for rows.Next() {
-		var id, customerID, bridgeAccountID string
-		if err := rows.Scan(&id, &customerID, &bridgeAccountID); err != nil {
-			continue
-		}
-		va, err := app.container.BridgeClient.GetVirtualAccount(ctx, customerID, bridgeAccountID)
+	for _, va := range pending {
+		account, err := app.container.BridgeClient.GetVirtualAccount(ctx, va.customerID, va.bridgeAccountID)
 		if err != nil {
-			app.log.Warn("backfill VA: bridge fetch failed", "id", id, "error", err)
+			app.log.Warn("backfill VA: bridge fetch failed", "id", va.id, "error", err)
 			continue
 		}
-		sdi := va.SourceDepositInstructions
+		sdi := account.SourceDepositInstructions
 		_, err = app.container.DB.ExecContext(ctx, `
 			UPDATE virtual_accounts
 			SET bank_address = $1, beneficiary_address = $2, payment_rails = $3,
@@ -1034,9 +1047,9 @@ func (app *Application) backfillVirtualAccountDetails() {
 			    routing_number = COALESCE(NULLIF(routing_number, ''), $7)
 			WHERE id = $8
 		`, sdi.BankAddress, sdi.BankBeneficiaryAddress, pq.Array(sdi.PaymentRails),
-			sdi.BankName, sdi.BankBeneficiaryName, sdi.BankAccountNumber, sdi.BankRoutingNumber, id)
+			sdi.BankName, sdi.BankBeneficiaryName, sdi.BankAccountNumber, sdi.BankRoutingNumber, va.id)
 		if err != nil {
-			app.log.Warn("backfill VA: update failed", "id", id, "error", err)
+			app.log.Warn("backfill VA: update failed", "id", va.id, "error", err)
 			continue
 		}
 		updated++
@@ -1046,33 +1059,126 @@ func (app *Application) backfillVirtualAccountDetails() {
 	}
 }
 
+// Advisory lock keys for the boot-time DDL below. Replicas boot together on
+// every deploy, so these statements run concurrently unless serialized. The
+// numbers are arbitrary but must stay stable across releases.
+const (
+	legacyVAConstraintLockKey = 74813001
+	onboardingStatusLockKey   = 74813002
+)
+
+// onboardingStatusValues is the CHECK set the application writes.
+const onboardingStatusValues = `'started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'`
+
 // dropLegacyVirtualAccountConstraints removes old unique constraints that prevent multi-currency virtual accounts.
 func (app *Application) dropLegacyVirtualAccountConstraints() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	tx, err := app.container.DB.BeginTx(ctx, nil)
+	if err != nil {
+		app.log.Warn("Failed to drop legacy VA constraints", "error", err)
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, legacyVAConstraintLockKey); err != nil {
+		app.log.Warn("Failed to drop legacy VA constraints", "error", err)
+		return
+	}
+
 	stmts := []string{
 		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_due_account_id_key`,
 		`ALTER TABLE virtual_accounts DROP CONSTRAINT IF EXISTS virtual_accounts_account_number_key`,
 		`ALTER TABLE virtual_accounts ALTER COLUMN account_number DROP NOT NULL`,
 	}
 	for _, stmt := range stmts {
-		if _, err := app.container.DB.Exec(stmt); err != nil {
-			app.log.Warn("Failed to drop legacy VA constraint (may already be gone)", "error", err)
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			app.log.Warn("Failed to drop legacy VA constraints", "error", err, "stmt", stmt)
+			return
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		app.log.Warn("Failed to drop legacy VA constraints", "error", err)
+		return
 	}
 	app.log.Info("Legacy virtual_accounts constraints dropped")
 }
 
 // fixOnboardingStatusConstraint ensures basic_complete is allowed in the onboarding_status CHECK constraints.
 func (app *Application) fixOnboardingStatusConstraint() {
-	stmts := []string{
-		`ALTER TABLE users DROP CONSTRAINT IF EXISTS chk_onboarding_status`,
-		`ALTER TABLE users ADD CONSTRAINT chk_onboarding_status CHECK (onboarding_status IN ('started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'))`,
-		`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_onboarding_status_check`,
-		`ALTER TABLE users ADD CONSTRAINT users_onboarding_status_check CHECK (onboarding_status IN ('started', 'basic_complete', 'kyc_pending', 'kyc_approved', 'kyc_rejected', 'wallets_pending', 'completed'))`,
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	tx, err := app.container.DB.BeginTx(ctx, nil)
+	if err != nil {
+		app.log.Warn("fixOnboardingStatusConstraint failed", "error", err)
+		return
 	}
-	for _, stmt := range stmts {
-		if _, err := app.container.DB.Exec(stmt); err != nil {
-			app.log.Warn("fixOnboardingStatusConstraint failed", "error", err, "stmt", stmt)
+	defer tx.Rollback()
+
+	// Serialize replicas. Without this, one replica's ADD lands between the
+	// other's DROP and ADD, so the loser reports "constraint already exists"
+	// while the table is briefly left without a CHECK at all.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, onboardingStatusLockKey); err != nil {
+		app.log.Warn("fixOnboardingStatusConstraint failed", "error", err)
+		return
+	}
+
+	defs := map[string]string{}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT conname, pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid = 'users'::regclass
+		  AND contype = 'c'
+		  AND pg_get_constraintdef(oid) LIKE '%onboarding_status%'
+	`)
+	if err != nil {
+		app.log.Warn("fixOnboardingStatusConstraint failed", "error", err)
+		return
+	}
+	for rows.Next() {
+		var name, def string
+		if err := rows.Scan(&name, &def); err != nil {
+			app.log.Warn("fixOnboardingStatusConstraint failed", "error", err)
+			continue
 		}
+		defs[name] = def
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		app.log.Warn("fixOnboardingStatusConstraint failed", "error", err)
+		return
+	}
+
+	changed := false
+	for _, name := range []string{"chk_onboarding_status", "users_onboarding_status_check"} {
+		// Already correct: touching the table would take an ACCESS EXCLUSIVE
+		// lock on users on every boot for nothing.
+		if def, ok := defs[name]; ok && strings.Contains(def, "basic_complete") {
+			continue
+		}
+		if _, ok := defs[name]; ok {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE users DROP CONSTRAINT `+name); err != nil {
+				app.log.Warn("fixOnboardingStatusConstraint failed", "error", err, "constraint", name)
+				return
+			}
+		}
+		stmt := `ALTER TABLE users ADD CONSTRAINT ` + name + ` CHECK (onboarding_status IN (` + onboardingStatusValues + `))`
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			app.log.Warn("fixOnboardingStatusConstraint failed", "error", err, "stmt", stmt)
+			return
+		}
+		changed = true
+	}
+
+	if !changed {
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		app.log.Warn("fixOnboardingStatusConstraint failed", "error", err)
+		return
 	}
 	app.log.Info("Onboarding status constraint fixed")
 }

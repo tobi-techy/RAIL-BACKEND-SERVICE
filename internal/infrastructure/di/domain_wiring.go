@@ -1439,10 +1439,11 @@ func (c *Container) initializeDomainServices() error {
 	// Inject onboarding service back into wallet service to complete circular dependency
 	c.WalletService.SetOnboardingService(c.OnboardingService)
 
-	// Initialize passcode service for transaction security
+	// Initialize passcode service for transaction security. Step-up sessions are
+	// Postgres-backed so a Redis outage cannot block money movement.
 	c.PasscodeService = passcode.NewService(
 		c.UserRepo,
-		c.RedisClient,
+		repositories.NewPasscodeSessionRepository(c.DB, c.ZapLog),
 		c.ZapLog,
 	)
 

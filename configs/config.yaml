@@ -104,8 +104,14 @@ database:
   user: "postgres"
   password: ""
   ssl_mode: "disable"
-  max_open_conns: 25
-  max_idle_conns: 10
+  # Connection pool per replica. Size this as
+  #   (DB max_connections − reserved/other clients) / max_replicas,
+  # counting the extra replica a rolling deploy boots before the old one
+  # drains. A pool of 25 per replica across two replicas (plus the outgoing
+  # task) exhausted the server's slots at boot on 2026-10-08, so keep this
+  # modest and let excess demand queue rather than fail.
+  max_open_conns: 15
+  max_idle_conns: 5
   conn_max_lifetime: 300
   query_timeout: 30
   max_retries: 3

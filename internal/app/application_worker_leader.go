@@ -68,36 +68,85 @@ func (app *Application) stopRedisMonitor() {
 	}
 }
 
+// workerStartDecision is what a replica should do with the background worker
+// fleet after the leader lease has been probed.
+type workerStartDecision int
+
+const (
+	// startWorkerFleet: this process runs the ~30 background workers.
+	startWorkerFleet workerStartDecision = iota
+	// stayHTTPOnly: another replica (or nobody, yet) owns the fleet.
+	stayHTTPOnly
+)
+
+// decideWorkerStart is the single place that answers "should this process run
+// the background worker fleet?", given how the leader lease probe went.
+//
+// A missing Redis client means leader election is configured but Redis is not
+// wired at all (local dev, tests), so the process is the only one there is and
+// must run the fleet. A *failed* probe against a configured Redis is a
+// different thing entirely: it means we cannot tell whether another replica
+// already owns the fleet, and starting every cron on every replica is far worse
+// than starting none. Treating that error as "we are alone" is what turned one
+// Upstash quota breach into cluster-wide Postgres slot exhaustion — every
+// replica failed open, ran the full fleet, and the fleet stampeded the
+// connection pool on 2026-10-08.
+func decideWorkerStart(leaderElection, redisClientAvailable, won bool, acquireErr error) workerStartDecision {
+	if !leaderElection || !redisClientAvailable {
+		return startWorkerFleet
+	}
+	if acquireErr != nil {
+		return stayHTTPOnly
+	}
+	if won {
+		return startWorkerFleet
+	}
+	return stayHTTPOnly
+}
+
 func (app *Application) startWorkersOrElect() error {
 	if app.cfg == nil || !app.cfg.Workers.LeaderElection {
 		return app.initializeWorkers()
 	}
-	if app.container == nil || app.container.RedisClient == nil || app.container.RedisClient.Client() == nil {
+
+	redisAvailable := app.container != nil &&
+		app.container.RedisClient != nil &&
+		app.container.RedisClient.Client() != nil
+
+	if !redisAvailable {
 		app.log.Warn("worker leader election on but Redis is unavailable — starting workers on this process")
 		return app.initializeWorkers()
 	}
 
-	app.leaderLock = cache.NewLeaderLock(app.container.RedisClient.Client(), workerLeaderTTL)
 	ctx, cancel := context.WithCancel(context.Background())
 	app.leaderCancel = cancel
 
+	app.leaderLock = cache.NewLeaderLock(app.container.RedisClient.Client(), workerLeaderTTL)
+
 	won, err := app.leaderLock.TryAcquire(ctx)
-	if err != nil {
-		app.log.Warn("worker leader acquire failed — starting workers on this process", "error", err)
-		return app.initializeWorkers()
-	}
-	if won {
-		app.log.Info("acquired worker leadership — starting background workers")
-		if err := app.initializeWorkers(); err != nil {
-			app.leaderLock.Release(context.Background())
-			return err
+	if decideWorkerStart(true, redisAvailable, won, err) == stayHTTPOnly {
+		if err != nil {
+			// Redis is configured but refusing us (quota exceeded, suspended
+			// budget, pool timeout). Stay HTTP-only and let the retry loop below
+			// pick up leadership once Redis recovers; the Redis health monitor
+			// already alerts on this.
+			app.log.Error("worker leader acquire failed — staying HTTP-only until Redis recovers",
+				"error", err)
+		} else {
+			app.log.Info("another replica holds worker leadership — this process is HTTP-only")
 		}
-		app.workerMu.Lock()
-		app.workersStarted = true
-		app.workerMu.Unlock()
-	} else {
-		app.log.Info("another replica holds worker leadership — this process is HTTP-only")
+		go app.maintainWorkerLeadership(ctx)
+		return nil
 	}
+
+	app.log.Info("acquired worker leadership — starting background workers")
+	if err := app.initializeWorkers(); err != nil {
+		app.leaderLock.Release(context.Background())
+		return err
+	}
+	app.workerMu.Lock()
+	app.workersStarted = true
+	app.workerMu.Unlock()
 	go app.maintainWorkerLeadership(ctx)
 	return nil
 }

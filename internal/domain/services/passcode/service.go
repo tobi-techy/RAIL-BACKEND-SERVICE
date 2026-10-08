@@ -2,6 +2,8 @@ package passcode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,17 +14,15 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/domain/entities"
-	"github.com/rail-service/rail_service/internal/infrastructure/cache"
 	"github.com/rail-service/rail_service/pkg/crypto"
 )
 
 const (
-	defaultMaxAttempts     = 5
-	defaultLockDuration    = 15 * time.Minute
-	defaultSessionTTL      = 10 * time.Minute
-	passcodeMinLength      = 4
-	passcodeMaxLength      = 4
-	passcodeRedisNamespace = "passcode_session"
+	defaultMaxAttempts  = 5
+	defaultLockDuration = 15 * time.Minute
+	defaultSessionTTL   = 10 * time.Minute
+	passcodeMinLength   = 4
+	passcodeMaxLength   = 4
 )
 
 var (
@@ -38,7 +38,18 @@ var (
 	ErrPasscodeInvalidFormat = errors.New("passcode must be 4 digits")
 	// ErrPasscodeSameAsCurrent is returned when the new passcode matches the existing one
 	ErrPasscodeSameAsCurrent = errors.New("new passcode must be different from the current passcode")
+	// ErrPasscodeSessionStoreUnavailable is returned when no session store is configured
+	ErrPasscodeSessionStoreUnavailable = errors.New("passcode session store is not configured")
 )
+
+// SessionStore persists short-lived passcode step-up sessions. It is backed by
+// Postgres rather than Redis so that a Redis outage cannot block money movement.
+type SessionStore interface {
+	CreatePasscodeSession(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error
+	PasscodeSessionExists(ctx context.Context, userID uuid.UUID, tokenHash string, now time.Time) (bool, error)
+	DeletePasscodeSession(ctx context.Context, userID uuid.UUID, tokenHash string) error
+	DeleteExpiredPasscodeSessions(ctx context.Context, now time.Time) (int64, error)
+}
 
 // UserPasscodeRepository defines the data access required by the passcode service
 type UserPasscodeRepository interface {
@@ -52,7 +63,7 @@ type UserPasscodeRepository interface {
 // Service encapsulates passcode management logic
 type Service struct {
 	userRepo     UserPasscodeRepository
-	redis        cache.RedisClient
+	sessions     SessionStore
 	logger       *zap.Logger
 	maxAttempts  int
 	lockDuration time.Duration
@@ -62,12 +73,12 @@ type Service struct {
 // NewService constructs a new passcode service with defaults
 func NewService(
 	userRepo UserPasscodeRepository,
-	redis cache.RedisClient,
+	sessions SessionStore,
 	logger *zap.Logger,
 ) *Service {
 	return &Service{
 		userRepo:     userRepo,
-		redis:        redis,
+		sessions:     sessions,
 		logger:       logger,
 		maxAttempts:  defaultMaxAttempts,
 		lockDuration: defaultLockDuration,
@@ -275,8 +286,10 @@ func (s *Service) ValidateSession(ctx context.Context, userID uuid.UUID, token s
 	if token == "" {
 		return false, nil
 	}
-	key := s.sessionKey(userID, token)
-	exists, err := s.redis.Exists(ctx, key)
+	if s.sessions == nil {
+		return false, ErrPasscodeSessionStoreUnavailable
+	}
+	exists, err := s.sessions.PasscodeSessionExists(ctx, userID, hashPasscodeToken(token), time.Now())
 	if err != nil {
 		return false, fmt.Errorf("failed to validate passcode session: %w", err)
 	}
@@ -288,8 +301,10 @@ func (s *Service) InvalidateSession(ctx context.Context, userID uuid.UUID, token
 	if token == "" {
 		return nil
 	}
-	key := s.sessionKey(userID, token)
-	if err := s.redis.Del(ctx, key); err != nil {
+	if s.sessions == nil {
+		return ErrPasscodeSessionStoreUnavailable
+	}
+	if err := s.sessions.DeletePasscodeSession(ctx, userID, hashPasscodeToken(token)); err != nil {
 		return fmt.Errorf("failed to invalidate passcode session: %w", err)
 	}
 	return nil
@@ -313,6 +328,10 @@ func (s *Service) recordFailedAttempt(ctx context.Context, userID uuid.UUID, met
 }
 
 func (s *Service) createSession(ctx context.Context, userID uuid.UUID) (*entities.PasscodeSession, string, error) {
+	if s.sessions == nil {
+		return nil, "", ErrPasscodeSessionStoreUnavailable
+	}
+
 	token, err := crypto.GenerateSecureToken()
 	if err != nil {
 		return nil, "", err
@@ -325,16 +344,28 @@ func (s *Service) createSession(ctx context.Context, userID uuid.UUID) (*entitie
 		ExpiresAt: now.Add(s.sessionTTL),
 	}
 
-	key := s.sessionKey(userID, token)
-	if err := s.redis.Set(ctx, key, session, s.sessionTTL); err != nil {
+	if err := s.sessions.CreatePasscodeSession(ctx, userID, hashPasscodeToken(token), session.ExpiresAt); err != nil {
 		return nil, "", err
 	}
+
+	// Prune expired rows opportunistically; these are low-volume (one per
+	// step-up) so this keeps the table small without a dedicated cron.
+	go func() {
+		pruneCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := s.sessions.DeleteExpiredPasscodeSessions(pruneCtx, time.Now()); err != nil {
+			s.logger.Warn("Failed to prune expired passcode sessions", zap.Error(err))
+		}
+	}()
 
 	return session, token, nil
 }
 
-func (s *Service) sessionKey(userID uuid.UUID, token string) string {
-	return fmt.Sprintf("%s:%s:%s", passcodeRedisNamespace, userID.String(), token)
+// hashPasscodeToken stores only a digest of the step-up token, so a database
+// read cannot be replayed as a money-movement authorisation.
+func hashPasscodeToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Service) remainingAttempts(failed int) int {

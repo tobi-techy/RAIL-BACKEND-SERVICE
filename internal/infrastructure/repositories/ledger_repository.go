@@ -1444,7 +1444,7 @@ func (r *LedgerRepository) CountSystemAccountDeficits(ctx context.Context, maxDe
 		WHERE user_id IS NULL AND balance < $1
 	`
 	var count int
-	err := r.queryRowxContext(ctx, query).Scan(&count)
+	err := r.queryRowxContext(ctx, query, maxDeficit).Scan(&count)
 	return count, err
 }
 

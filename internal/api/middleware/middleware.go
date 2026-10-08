@@ -355,6 +355,9 @@ func SecurityHeaders() gin.HandlerFunc {
 
 // Authentication validates JWT tokens with session management
 func Authentication(cfg *config.Config, log *logger.Logger, sessionService SessionValidator, blacklist ...*auth.TokenBlacklist) gin.HandlerFunc {
+	// One limiter per middleware instance, so the whole fleet reports a Redis
+	// outage as "N requests could not be verified" rather than N ERROR lines.
+	blacklistFailureLog := newRepeatLogLimiter(time.Minute)
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		// Fallback: WebSocket clients pass token as query param (can't set headers)
@@ -417,18 +420,26 @@ func Authentication(cfg *config.Config, log *logger.Logger, sessionService Sessi
 				// Default is strict (deny). Set AUTH_BLACKLIST_FAIL_OPEN=true to
 				// prioritize availability over revocation during a Redis outage —
 				// active sessions ride through via the local negative cache either way.
+				reportable, suppressed := blacklistFailureLog.allow(time.Now())
 				if cfg.Security.AuthBlacklistFailOpen {
-					log.Warnw("Token blacklist check failed — failing open (Redis unavailable)",
-						"error", err,
-						"token_hash_prefix", func() string {
-							if len(tokenHash) >= 8 {
-								return tokenHash[:8]
-							}
-							return tokenHash
-						}(),
-						"security_mode", "degraded")
+					if reportable {
+						log.Warnw("Token blacklist check failed — failing open (Redis unavailable)",
+							"error", err,
+							"suppressed_since_last_log", suppressed,
+							"token_hash_prefix", func() string {
+								if len(tokenHash) >= 8 {
+									return tokenHash[:8]
+								}
+								return tokenHash
+							}(),
+							"security_mode", "degraded")
+					}
 				} else {
-					log.Errorw("Token blacklist check failed — rejecting request", "error", err)
+					if reportable {
+						log.Errorw("Token blacklist check failed — rejecting request",
+							"error", err,
+							"suppressed_since_last_log", suppressed)
+					}
 					c.JSON(http.StatusServiceUnavailable, gin.H{
 						"error":      "Security check unavailable",
 						"request_id": c.GetString("request_id"),

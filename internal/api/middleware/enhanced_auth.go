@@ -30,6 +30,7 @@ type EnhancedAuthConfig struct {
 
 // EnhancedAuthentication validates JWT tokens with blacklist checking
 func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, log *logger.Logger, sessionService SessionValidator) gin.HandlerFunc {
+	blacklistFailureLog := newRepeatLogLimiter(time.Minute)
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -73,7 +74,10 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 
 			isBlacklisted, err := blacklist.IsBlacklisted(c.Request.Context(), tokenHash)
 			if err != nil {
-				log.Errorw("Token blacklist check failed — rejecting request", "error", err)
+				if reportable, suppressed := blacklistFailureLog.allow(time.Now()); reportable {
+					log.Errorw("Token blacklist check failed — rejecting request",
+						"error", err, "suppressed_since_last_log", suppressed)
+				}
 				c.JSON(http.StatusServiceUnavailable, gin.H{
 					"error":      "SECURITY_CHECK_UNAVAILABLE",
 					"message":    "Security check unavailable, please retry",
@@ -96,7 +100,10 @@ func EnhancedAuthentication(cfg *config.Config, blacklist *auth.TokenBlacklist, 
 			if claims.IssuedAt != nil {
 				isUserBlacklisted, err := blacklist.IsUserBlacklisted(c.Request.Context(), claims.UserID.String(), claims.IssuedAt.Time)
 				if err != nil {
-					log.Errorw("User blacklist check failed — rejecting request", "error", err)
+					if reportable, suppressed := blacklistFailureLog.allow(time.Now()); reportable {
+						log.Errorw("User blacklist check failed — rejecting request",
+							"error", err, "suppressed_since_last_log", suppressed)
+					}
 					c.JSON(http.StatusServiceUnavailable, gin.H{
 						"error":      "SECURITY_CHECK_UNAVAILABLE",
 						"message":    "Security check unavailable, please retry",
