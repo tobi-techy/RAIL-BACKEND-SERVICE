@@ -69,11 +69,26 @@ func (w *Worker) run(ctx context.Context) {
 			return
 		}
 		if err := w.kycSvc.RepairBridgeGovID(ctx, id); err != nil {
-			if errors.Is(err, kycservice.ErrDiditGovIDDataMissing) {
+			switch {
+			case errors.Is(err, kycservice.ErrBridgeStopMarkerNotPersisted):
+				// The repair was classified as finished, but the marker that
+				// removes this user from the worker's query was not saved — the
+				// loop is still live, so this must be loud, not informational.
+				w.logger.Error("bridge_govid_repair: stop marker not persisted, user may be retried",
+					zap.String("user_id", id.String()),
+					zap.Error(err))
+			case errors.Is(err, kycservice.ErrDiditGovIDDataMissing):
 				w.logger.Info("bridge_govid_repair: repair skipped",
 					zap.String("user_id", id.String()),
 					zap.String("reason", err.Error()))
-			} else {
+			case errors.Is(err, kycservice.ErrBridgeCustomerTerminal):
+				// Terminal Bridge rejection (e.g. deleted customer). The service
+				// already marked the submission non-retryable, so this user will
+				// not be selected again — info level, no retry storm to warn about.
+				w.logger.Info("bridge_govid_repair: repair stopped, terminal bridge rejection",
+					zap.String("user_id", id.String()),
+					zap.String("reason", err.Error()))
+			default:
 				w.logger.Warn("bridge_govid_repair: repair failed",
 					zap.String("user_id", id.String()), zap.Error(err))
 			}

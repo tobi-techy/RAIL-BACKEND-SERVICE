@@ -61,9 +61,10 @@ type KYCSubmitResponse struct {
 
 // KYCProviderResult represents the result from a single provider.
 type KYCProviderResult struct {
-	Success bool   `json:"success"`
-	Status  string `json:"status"`          // Provider-specific status
-	Error   string `json:"error,omitempty"` // Error message if failed
+	Success      bool   `json:"success"`
+	Status       string `json:"status"`                  // Provider-specific status
+	Error        string `json:"error,omitempty"`         // Error message if failed
+	NonRetryable bool   `json:"non_retryable,omitempty"` // True when retrying the same request will never succeed (e.g. deleted customer)
 }
 
 // KYCStatusResponse for checking current KYC state.

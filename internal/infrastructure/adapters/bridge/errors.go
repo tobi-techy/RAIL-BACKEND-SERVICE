@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -65,6 +66,25 @@ func (e *ErrorResponse) IsCustomerAlreadyExists() bool {
 	}
 	return strings.Contains(code, "already_exists") ||
 		strings.Contains(code, "duplicate")
+}
+
+// IsTerminalError reports whether err is a Bridge client error that will not
+// succeed on retry with the same request: 4xx validation, not-found (e.g. a
+// deleted customer), conflict, or unprocessable responses. Callers running in
+// retry loops must treat terminal errors as give-up signals instead of
+// re-issuing the request on a schedule.
+// Rate limiting (429) and request timeouts (408) are NOT terminal — the same
+// request may succeed later.
+func IsTerminalError(err error) bool {
+	var errResp *ErrorResponse
+	if !errors.As(err, &errResp) {
+		return false
+	}
+	switch errResp.StatusCode {
+	case 408, 425, 429:
+		return false
+	}
+	return errResp.StatusCode >= 400 && errResp.StatusCode < 500
 }
 
 // GetErrorType returns a standardized error type string for the error
