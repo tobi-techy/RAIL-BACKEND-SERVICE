@@ -2013,6 +2013,13 @@ func (s *Service) CheckIntegrity(ctx context.Context, deficitThreshold ...decima
 		if txCount > 0 {
 			report.Errors = append(report.Errors,
 				fmt.Sprintf("%d transaction(s) with 0 entries", txCount))
+			// Name them: a count alone leaves nobody able to fix the rows.
+			if empty, listErr := s.ledgerRepo.ListTransactionsWithoutEntries(ctx, 10); listErr != nil {
+				report.Errors = append(report.Errors,
+					fmt.Sprintf("list transactions without entries: %s", listErr))
+			} else {
+				report.EmptyTransactions = empty
+			}
 		}
 	}
 
@@ -2133,20 +2140,21 @@ func (s *Service) VerifyHashChain(ctx context.Context, maxCheck int) ([]uuid.UUI
 
 // IntegrityReport contains the results of a ledger integrity verification.
 type IntegrityReport struct {
-	TotalDebits                decimal.Decimal `json:"total_debits"`
-	TotalCredits               decimal.Decimal `json:"total_credits"`
-	Balanced                   bool            `json:"balanced"`
-	NegativeBalanceAccounts    int             `json:"negative_balance_accounts"`
-	SystemAccountDeficits      int             `json:"system_account_deficits"`
-	OrphanedEntries            int             `json:"orphaned_entries"`
-	TransactionsWithoutEntries int             `json:"transactions_without_entries"`
-	LatestSnapshotDate         *time.Time      `json:"latest_snapshot_date,omitempty"`
-	UnpublishedOutboxCount     int             `json:"unpublished_outbox_count"`
-	OldestUnpublishedOutbox    *time.Time      `json:"oldest_unpublished_outbox,omitempty"`
-	HashChainBroken            int             `json:"hash_chain_broken"`
-	ReconciliationDate         *time.Time      `json:"reconciliation_date,omitempty"`
-	ReconciledAccounts         int             `json:"reconciled_accounts"`
-	ReconciliationFailures     int             `json:"reconciliation_failures"`
-	ReconciliationErrors       []string        `json:"reconciliation_errors,omitempty"`
-	Errors                     []string        `json:"errors,omitempty"`
+	TotalDebits                decimal.Decimal                       `json:"total_debits"`
+	TotalCredits               decimal.Decimal                       `json:"total_credits"`
+	Balanced                   bool                                  `json:"balanced"`
+	NegativeBalanceAccounts    int                                   `json:"negative_balance_accounts"`
+	SystemAccountDeficits      int                                   `json:"system_account_deficits"`
+	OrphanedEntries            int                                   `json:"orphaned_entries"`
+	TransactionsWithoutEntries int                                   `json:"transactions_without_entries"`
+	EmptyTransactions          []repositories.EmptyLedgerTransaction `json:"empty_transactions,omitempty"`
+	LatestSnapshotDate         *time.Time                            `json:"latest_snapshot_date,omitempty"`
+	UnpublishedOutboxCount     int                                   `json:"unpublished_outbox_count"`
+	OldestUnpublishedOutbox    *time.Time                            `json:"oldest_unpublished_outbox,omitempty"`
+	HashChainBroken            int                                   `json:"hash_chain_broken"`
+	ReconciliationDate         *time.Time                            `json:"reconciliation_date,omitempty"`
+	ReconciledAccounts         int                                   `json:"reconciled_accounts"`
+	ReconciliationFailures     int                                   `json:"reconciliation_failures"`
+	ReconciliationErrors       []string                              `json:"reconciliation_errors,omitempty"`
+	Errors                     []string                              `json:"errors,omitempty"`
 }

@@ -232,8 +232,7 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		zap.String("source", source.chain),
 		zap.String("dest", solDest))
 
-	s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-		fmt.Sprintf("circle-cr:%s:%d", tx.ID, intent.ID), order.ID)
+	s.recordBridgeTransferID(ctx, order.ID, fmt.Sprintf("circle-cr:%s:%d", tx.ID, intent.ID), tx.ID)
 
 	// Refund only the slippage buffer. Rail fee remains charged.
 	excess := totalHold.Sub(actualDebit)
@@ -819,8 +818,7 @@ func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.Offram
 		}
 		s.logger.Info("Circle SOL transfer to Paj initiated",
 			zap.String("circle_tx_id", tx.ID), zap.String("paj_order_id", order.ID))
-		s.db.ExecContext(ctx, `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`,
-			"circle:"+tx.ID, order.ID)
+		s.recordBridgeTransferID(ctx, order.ID, "circle:"+tx.ID, tx.ID)
 		// Refund only the slippage buffer. Rail fee remains charged.
 		if slippageRefund.IsPositive() && s.ledger != nil {
 			s.ledger.ReverseTransaction(ctx, userID, entities.AccountTypeSpendingBalance,
@@ -1373,5 +1371,34 @@ func mapPajStatus(pajStatus string) string {
 		return "failed"
 	default:
 		return "pending"
+	}
+}
+
+// recordBridgeTransferID stores the provider transfer reference for a PAJ
+// offramp order.
+//
+// When the provider returns no transaction id we cannot ever verify whether the
+// USDC reached PAJ, so the order is parked for manual review and the malformed
+// response is reported loudly. It still records the reference: the recovery
+// worker treats a NULL/empty bridge_transfer_id as "no transfer was started" and
+// reverses the hold, which would refund a user whose funds may already be in
+// flight. Writing a reference that can never resolve keeps those paths away
+// from the order, and the parked flag is what stops it being reported forever.
+func (s *Service) recordBridgeTransferID(ctx context.Context, orderID, transferRef, providerTxID string) {
+	query := `UPDATE paj_orders SET bridge_transfer_id = $1 WHERE paj_order_id = $2`
+	args := []interface{}{transferRef, orderID}
+
+	if providerTxID == "" {
+		s.logger.Error("Provider returned a transfer with no id — order parked for manual review",
+			zap.String("paj_order_id", orderID),
+			zap.String("transfer_ref", transferRef))
+		query = `UPDATE paj_orders SET bridge_transfer_id = $1, manual_review_flagged_at = NOW() WHERE paj_order_id = $2`
+	}
+
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		s.logger.Error("Failed to record PAJ offramp transfer reference",
+			zap.Error(err),
+			zap.String("paj_order_id", orderID),
+			zap.String("transfer_ref", transferRef))
 	}
 }

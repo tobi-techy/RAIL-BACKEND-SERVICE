@@ -1545,3 +1545,49 @@ func (r *LedgerRepository) CountTransactionsWithoutEntries(ctx context.Context) 
 	err := r.queryRowxContext(ctx, query).Scan(&count)
 	return count, err
 }
+
+// EmptyLedgerTransaction identifies a transaction row that carries no entries:
+// money movement recorded with nothing on either side of the double entry.
+type EmptyLedgerTransaction struct {
+	ID              uuid.UUID  `json:"id"`
+	TransactionType string     `json:"transaction_type"`
+	Status          string     `json:"status"`
+	ReferenceType   *string    `json:"reference_type,omitempty"`
+	ReferenceID     *uuid.UUID `json:"reference_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+// ListTransactionsWithoutEntries names up to limit transaction rows that have no
+// ledger entries, newest first. The integrity report already counts them; a bare
+// count is not actionable, so this is what lets it say which rows are broken.
+func (r *LedgerRepository) ListTransactionsWithoutEntries(ctx context.Context, limit int) ([]EmptyLedgerTransaction, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	query := `
+		SELECT lt.id, lt.transaction_type, lt.status, lt.reference_type, lt.reference_id, lt.created_at
+		FROM ledger_transactions lt
+		LEFT JOIN ledger_entries le ON le.transaction_id = lt.id
+		WHERE le.id IS NULL
+		ORDER BY lt.created_at DESC
+		LIMIT $1
+	`
+	rows, err := r.queryxContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list transactions without entries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []EmptyLedgerTransaction
+	for rows.Next() {
+		var t EmptyLedgerTransaction
+		if err := rows.Scan(&t.ID, &t.TransactionType, &t.Status, &t.ReferenceType, &t.ReferenceID, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan empty transaction: %w", err)
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate empty transactions: %w", err)
+	}
+	return out, nil
+}

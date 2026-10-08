@@ -138,6 +138,15 @@ func (s *Service) SetOrderPlacer(orderPlacer OrderPlacer) {
 	s.orderPlacer = orderPlacer
 }
 
+// HasOrderVenue reports whether an execution venue is wired. Auto-invest cannot
+// place orders without one, and TriggerAutoInvestment fails closed in that
+// state — so callers that would otherwise poll it on a schedule (the KYC
+// auto-invest worker) can stand down instead of re-scanning candidates that can
+// never be acted on.
+func (s *Service) HasOrderVenue() bool {
+	return s != nil && s.orderPlacer != nil
+}
+
 // SetStrategyEngine sets the strategy engine after initialization.
 func (s *Service) SetStrategyEngine(engine StrategyEngine) {
 	s.strategyEngine = engine

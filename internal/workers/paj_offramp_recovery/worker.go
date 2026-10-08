@@ -589,17 +589,31 @@ func (w *Worker) failExpiredOrders(ctx context.Context) {
 // past the hard timeout without reaching a terminal state. These are never
 // auto-reversed (funds may already be with PAJ) — they need webhook,
 // reconcile, or manual review.
+//
+// The escalation is recorded on the row, so each order is surfaced exactly once
+// instead of on every 2-minute pass. Without that, a permanently parked order
+// produced an ERROR line forever: ~18 of them re-logged every cycle on
+// 2026-10-08, which buried every other error in the log.
 func (w *Worker) flagStartedButStuck(ctx context.Context, hardAgeSeconds int) {
 	rows, err := w.db.QueryContext(ctx, `
-	SELECT paj_order_id, user_id, bridge_transfer_id
-	FROM paj_orders
-	WHERE order_type = 'offramp'
-	  AND status = 'pending'
-	  AND deposit_id IS NULL
-	  AND bridge_transfer_id IS NOT NULL
-	  AND bridge_transfer_id <> ''
-	  AND created_at < NOW() - make_interval(secs => $1)
-	LIMIT 20`, hardAgeSeconds)
+	WITH newly_flagged AS (
+		SELECT paj_order_id
+		FROM paj_orders
+		WHERE order_type = 'offramp'
+		  AND status = 'pending'
+		  AND deposit_id IS NULL
+		  AND bridge_transfer_id IS NOT NULL
+		  AND bridge_transfer_id <> ''
+		  AND manual_review_flagged_at IS NULL
+		  AND created_at < NOW() - make_interval(secs => $1)
+		ORDER BY created_at
+		LIMIT 20
+	)
+	UPDATE paj_orders o
+	SET manual_review_flagged_at = NOW()
+	FROM newly_flagged n
+	WHERE o.paj_order_id = n.paj_order_id
+	RETURNING o.paj_order_id, o.user_id, o.bridge_transfer_id`, hardAgeSeconds)
 	if err != nil {
 		w.logger.Error("paj offramp hard-timeout: escalation query failed", zap.Error(err))
 		return

@@ -1158,8 +1158,10 @@ func setDefaults() {
 	viper.SetDefault("database.name", "stack_service")
 	viper.SetDefault("database.user", "postgres")
 	viper.SetDefault("database.ssl_mode", "disable")
-	viper.SetDefault("database.max_open_conns", 15)     // per replica; see configs/config.yaml
-	viper.SetDefault("database.max_idle_conns", 5)      // keep the idle set small so slots return to the server
+	// Per replica, and multiplied by (replicas + 1) during a rolling deploy —
+	// see the sizing rule in configs/config.yaml.
+	viper.SetDefault("database.max_open_conns", 8)
+	viper.SetDefault("database.max_idle_conns", 2)
 	viper.SetDefault("database.conn_max_lifetime", 300) // 5 minutes - recycle connections more often
 	viper.SetDefault("database.query_timeout", 30)
 	viper.SetDefault("database.max_retries", 3)

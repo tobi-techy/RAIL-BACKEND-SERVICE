@@ -105,13 +105,16 @@ database:
   password: ""
   ssl_mode: "disable"
   # Connection pool per replica. Size this as
-  #   (DB max_connections − reserved/other clients) / max_replicas,
-  # counting the extra replica a rolling deploy boots before the old one
-  # drains. A pool of 25 per replica across two replicas (plus the outgoing
-  # task) exhausted the server's slots at boot on 2026-10-08, so keep this
-  # modest and let excess demand queue rather than fail.
-  max_open_conns: 15
-  max_idle_conns: 5
+  #   (DB max_connections − reserved/other clients) / (max_replicas + 1),
+  # where the +1 is the outgoing task a rolling deploy leaves draining while the
+  # new one boots. Both tasks are connected simultaneously, so the pool a single
+  # replica can afford is smaller than the naive "limit / replicas".
+  # 15 per replica across two replicas (45 with the draining task) still hit the
+  # server's slot limit at boot on 2026-10-08; 8 fits inside 3x8=24.
+  # Raise this once DATABASE_URL points at a connection pooler, which multiplexes
+  # them and makes the multiplication moot.
+  max_open_conns: 8
+  max_idle_conns: 2
   conn_max_lifetime: 300
   query_timeout: 30
   max_retries: 3

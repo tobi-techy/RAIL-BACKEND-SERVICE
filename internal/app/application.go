@@ -384,16 +384,25 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Withdrawal recovery worker started")
 	}
 
-	// KYC auto-invest worker
+	// KYC auto-invest worker. Without an execution venue (the Alpaca brokerage
+	// was removed) TriggerAutoInvestment fails closed, so every pass would
+	// re-select the same candidates and log a skip for each one — forever, every
+	// 30 seconds. Stand the worker down instead; the startup warning below is
+	// the signal that auto-invest is currently inert.
 	if app.container.DB != nil && app.container.GetAutoInvestService() != nil {
-		app.kycAutoInvestWorker = kyc_autoinvest.NewWorker(
-			app.container.DB,
-			app.container.GetAutoInvestService(),
-			app.log.Zap(),
-			kyc_autoinvest.DefaultConfig(),
-		)
-		go app.kycAutoInvestWorker.Start(context.Background())
-		app.log.Info("KYC auto-invest worker started")
+		autoInvestService := app.container.GetAutoInvestService()
+		if !autoInvestService.HasOrderVenue() {
+			app.log.Warn("KYC auto-invest worker not started: no order venue configured, auto-invest is inert")
+		} else {
+			app.kycAutoInvestWorker = kyc_autoinvest.NewWorker(
+				app.container.DB,
+				autoInvestService,
+				app.log.Zap(),
+				kyc_autoinvest.DefaultConfig(),
+			)
+			go app.kycAutoInvestWorker.Start(context.Background())
+			app.log.Info("KYC auto-invest worker started")
+		}
 	}
 
 	// Rebalancing worker removed with the Alpaca brokerage provider. Portfolio

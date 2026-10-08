@@ -78,7 +78,10 @@ func NewConnection(cfg config.DatabaseConfig, environment ...string) (*sql.DB, e
 			db.SetMaxOpenConns(maxOpen)
 			db.SetMaxIdleConns(maxIdle)
 			db.SetConnMaxLifetime(time.Duration(connLifetime) * time.Second)
-			db.SetConnMaxIdleTime(5 * time.Minute)
+			// Release idle connections quickly. During a rolling deploy the
+			// outgoing task holds its pool open while the new one boots, and the
+			// two together are what exhausts the server's connection slots.
+			db.SetConnMaxIdleTime(90 * time.Second)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
