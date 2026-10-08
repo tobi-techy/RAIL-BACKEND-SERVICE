@@ -270,3 +270,48 @@ func TestRepairBridgeGovIDStopMarkerFailureIsSurfaced(t *testing.T) {
 	require.ErrorIs(t, err, ErrBridgeCustomerTerminal, "classification is preserved for the worker")
 	require.Equal(t, 1, br.calls)
 }
+
+func TestRepairBridgeGovIDAttemptCountWriteFailureIsSurfaced(t *testing.T) {
+	// A discarded increment would let the worker retry off a stale count and
+	// never reach the cap, so the persistence error must not be swallowed.
+	svc, userID, _, br, subRepo := newRepairFixture(errors.New("connection reset"), nil)
+	subRepo.updateErr = errors.New("database is down")
+
+	err := svc.RepairBridgeGovID(context.Background(), userID)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to record bridge gov ID repair attempt 1")
+	require.Equal(t, 1, br.calls)
+}
+
+func TestProcessDiditApprovedSkipsPushWhenRepairMarkerIsTerminal(t *testing.T) {
+	// Didit re-delivers its approved webhook after a terminal Bridge rejection.
+	// Without the guard each replay would issue another PUT to a customer that
+	// Bridge has already deleted.
+	seed := map[string]any{
+		"status":        "failed",
+		"reason":        "terminal bridge rejection",
+		"non_retryable": true,
+		"attempts":      1,
+	}
+	svc, _, sub, br, _ := newRepairFixture(nil, seed)
+	sub.Status = entities.KYCStatusProcessing
+
+	payload := &entities.DiditWebhookPayload{WebhookType: "status.updated", Status: "approved"}
+	err := svc.processDiditApproved(context.Background(), sub, payload)
+
+	require.NoError(t, err)
+	require.Zero(t, br.calls, "a terminal marker must stop webhook replay from calling Bridge")
+	require.Equal(t, true, repairMarker(sub)["non_retryable"], "the stop marker must survive the replay")
+}
+
+func TestProcessDiditApprovedStillPushesWithoutTerminalMarker(t *testing.T) {
+	svc, _, sub, br, _ := newRepairFixture(nil, nil)
+	sub.Status = entities.KYCStatusProcessing
+
+	payload := &entities.DiditWebhookPayload{WebhookType: "status.updated", Status: "approved"}
+	err := svc.processDiditApproved(context.Background(), sub, payload)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, br.calls, "a healthy user must still reach Bridge")
+}

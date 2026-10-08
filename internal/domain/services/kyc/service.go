@@ -2747,7 +2747,15 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 	// Push gov ID to Bridge BEFORE marking approved, so retries can re-enter this method.
 	bridgeSuccess := false
 	if profile.BridgeCustomerID != nil && *profile.BridgeCustomerID != "" {
-		if result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission); !result.Success {
+		if bridgeGovIDRepairStopped(submission) {
+			// A previous repair recorded a terminal Bridge rejection (the customer
+			// was deleted, or Bridge rejected the payload). Didit re-delivers its
+			// approved webhook, which re-enters this method, so without this guard
+			// every replay would issue another doomed PUT. The admin repair
+			// endpoint calls RepairBridgeGovID directly and can still retry.
+			s.logger.Info("Skipping Bridge gov ID push - a previous repair recorded a terminal rejection",
+				zap.String("user_id", submission.UserID.String()))
+		} else if result := s.submitToBridgeFromDidit(ctx, *profile.BridgeCustomerID, submission); !result.Success {
 			s.logger.Warn("Failed to push gov ID to Bridge after Didit approval",
 				zap.String("user_id", submission.UserID.String()),
 				zap.String("error", result.Error),
@@ -3053,11 +3061,10 @@ func (s *Service) markBridgeGovIDRepair(ctx context.Context, submission *entitie
 func (s *Service) recordBridgeGovIDRepairFailure(ctx context.Context, submission *entities.KYCSubmission, step string, attempts int, cause string) error {
 	if attempts < maxBridgeGovIDRepairAttempts {
 		if err := s.markBridgeGovIDRepair(ctx, submission, "retryable_error", cause, false, attempts); err != nil {
-			s.logger.Warn("Failed to record Bridge gov ID repair attempt",
-				zap.String("user_id", submission.UserID.String()),
-				zap.String("step", step),
-				zap.Int("attempts", attempts),
-				zap.Error(err))
+			// The attempt count is the only thing bounding this loop, so an
+			// unsaved increment must not be discarded: the worker would retry
+			// off a stale count and could never reach the cap.
+			return fmt.Errorf("failed to record bridge gov ID repair attempt %d: %w", attempts, err)
 		}
 		return nil
 	}
@@ -3072,6 +3079,20 @@ func (s *Service) recordBridgeGovIDRepairFailure(ctx context.Context, submission
 		return fmt.Errorf("gave up on bridge gov ID repair (%s): %v: %w", step, err, ErrBridgeStopMarkerNotPersisted)
 	}
 	return nil
+}
+
+// bridgeGovIDRepairStopped reports whether a previous repair recorded a terminal
+// outcome, meaning an automatic Bridge push can never succeed.
+func bridgeGovIDRepairStopped(submission *entities.KYCSubmission) bool {
+	if submission == nil || submission.VerificationData == nil {
+		return false
+	}
+	marker, ok := submission.VerificationData["bridge_govid_repair"].(map[string]any)
+	if !ok {
+		return false
+	}
+	stopped, ok := marker["non_retryable"].(bool)
+	return ok && stopped
 }
 
 // bridgeGovIDRepairAttempts returns the number of automatic gov ID repair
@@ -3343,8 +3364,8 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 	if _, err := s.hydrateSubmissionFromDidit(ctx, submission, nil); err != nil {
 		// Count hydrate failures too: a sustained Didit outage used to leave the
 		// attempt count untouched, so the worker reselected the user forever.
-		if stopErr := s.recordBridgeGovIDRepairFailure(ctx, submission, "hydrate", bridgeGovIDRepairAttempts(submission)+1, err.Error()); stopErr != nil {
-			return stopErr
+		if recordErr := s.recordBridgeGovIDRepairFailure(ctx, submission, "hydrate", bridgeGovIDRepairAttempts(submission)+1, err.Error()); recordErr != nil {
+			return fmt.Errorf("failed to hydrate Didit session decision: %w: %w", err, recordErr)
 		}
 		return fmt.Errorf("failed to hydrate Didit session decision: %w", err)
 	}
@@ -3370,8 +3391,8 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 			}
 			return fmt.Errorf("%w: %s", ErrBridgeCustomerTerminal, result.Error)
 		}
-		if stopErr := s.recordBridgeGovIDRepairFailure(ctx, submission, "bridge", attempts, result.Error); stopErr != nil {
-			return stopErr
+		if recordErr := s.recordBridgeGovIDRepairFailure(ctx, submission, "bridge", attempts, result.Error); recordErr != nil {
+			return fmt.Errorf("bridge gov ID push failed: %s: %w", result.Error, recordErr)
 		}
 		return fmt.Errorf("bridge gov ID push failed: %s", result.Error)
 	}
