@@ -48,6 +48,10 @@ var (
 	ErrTaxIDDecryptionFailed  = errors.New("failed to decrypt stored tax_id - cannot proceed")
 	ErrDiditGovIDDataMissing  = errors.New("didit gov ID document data missing")
 	ErrBridgeCustomerTerminal = errors.New("bridge customer terminally rejected this update")
+	// ErrBridgeStopMarkerNotPersisted signals that the repair was classified as
+	// finished but the marker that stops the worker was not saved, so the retry
+	// loop is still live. It is always wrapped alongside the classifying error.
+	ErrBridgeStopMarkerNotPersisted = errors.New("bridge gov ID repair stop marker could not be persisted")
 
 	ErrSproutPhoneRequired  = errors.New("phone number is required")
 	ErrSproutInvalidDOB     = errors.New("invalid date_of_birth format")
@@ -2752,9 +2756,12 @@ func (s *Service) processDiditApproved(ctx context.Context, submission *entities
 				// Terminal Bridge rejection (e.g. deleted customer). Do NOT
 				// enqueue a retry job — it would fail until DLQ — and stop the
 				// gov ID repair worker from picking this user up on its schedule.
-				s.markBridgeGovIDRepair(ctx, submission,
+				if err := s.markBridgeGovIDRepair(ctx, submission,
 					"failed", "terminal bridge rejection, automatic repair stopped: "+result.Error,
-					true, bridgeGovIDRepairAttempts(submission))
+					true, bridgeGovIDRepairAttempts(submission)); err != nil {
+					s.logger.Error("Failed to persist terminal Bridge gov ID repair marker - the repair worker may retry this user",
+						zap.String("user_id", submission.UserID.String()), zap.Error(err))
+				}
 			} else if s.kycSyncJobRepo != nil {
 				// Enqueue retry job so the sync worker retries automatically.
 				retryPayload, _ := encodeProviderRetryPayload(submission.VerificationData, submission.UserID.String())
@@ -2993,7 +3000,15 @@ func hasDiditGovIDData(data map[string]any) bool {
 // guarantees a persistently failing customer can never be retried forever.
 const maxBridgeGovIDRepairAttempts = 144
 
-func (s *Service) markBridgeGovIDRepair(ctx context.Context, submission *entities.KYCSubmission, status, reason string, nonRetryable bool, attempts int) {
+// bridgeGovIDStopMarkerWrites bounds how many times the stop marker is written
+// before giving up. A stop marker is the only thing that prevents the worker's
+// next tick from calling Bridge again, so transient write failures are retried.
+const bridgeGovIDStopMarkerWrites = 3
+
+// markBridgeGovIDRepair records the repair outcome on the submission and
+// persists it. The worker's selection query reads this marker, so callers whose
+// marker ends an unbounded retry loop must not ignore the returned error.
+func (s *Service) markBridgeGovIDRepair(ctx context.Context, submission *entities.KYCSubmission, status, reason string, nonRetryable bool, attempts int) error {
 	if submission.VerificationData == nil {
 		submission.VerificationData = map[string]any{}
 	}
@@ -3004,12 +3019,59 @@ func (s *Service) markBridgeGovIDRepair(ctx context.Context, submission *entitie
 		"attempts":      attempts,
 		"updated_at":    time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {
-		s.logger.Warn("Failed to persist Bridge gov ID repair state",
-			zap.String("user_id", submission.UserID.String()),
-			zap.String("status", status),
-			zap.Error(err))
+
+	writes := 1
+	if nonRetryable {
+		writes = bridgeGovIDStopMarkerWrites
 	}
+	var err error
+	for i := 0; i < writes; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(i) * 500 * time.Millisecond):
+			}
+		}
+		if err = s.kycSubmissionRepo.Update(ctx, submission); err == nil {
+			return nil
+		}
+	}
+	s.logger.Error("Failed to persist Bridge gov ID repair state - the retry worker may select this user again",
+		zap.String("user_id", submission.UserID.String()),
+		zap.String("status", status),
+		zap.Bool("non_retryable", nonRetryable),
+		zap.Int("attempts", attempts),
+		zap.Error(err))
+	return fmt.Errorf("persist bridge gov ID repair state: %w", err)
+}
+
+// recordBridgeGovIDRepairFailure records a retryable repair failure, giving up
+// once the attempt cap is reached. The Didit hydrate step and the Bridge push
+// both funnel through here so neither can retry without bound. A non-nil return
+// means the stop marker could not be persisted, so the loop may continue.
+func (s *Service) recordBridgeGovIDRepairFailure(ctx context.Context, submission *entities.KYCSubmission, step string, attempts int, cause string) error {
+	if attempts < maxBridgeGovIDRepairAttempts {
+		if err := s.markBridgeGovIDRepair(ctx, submission, "retryable_error", cause, false, attempts); err != nil {
+			s.logger.Warn("Failed to record Bridge gov ID repair attempt",
+				zap.String("user_id", submission.UserID.String()),
+				zap.String("step", step),
+				zap.Int("attempts", attempts),
+				zap.Error(err))
+		}
+		return nil
+	}
+
+	reason := fmt.Sprintf("gave up after %d automatic %s attempts, manual re-trigger required: %s", attempts, step, cause)
+	s.logger.Error("Bridge gov ID repair giving up after repeated failures",
+		zap.String("user_id", submission.UserID.String()),
+		zap.String("step", step),
+		zap.Int("attempts", attempts),
+		zap.String("last_error", cause))
+	if err := s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true, attempts); err != nil {
+		return fmt.Errorf("gave up on bridge gov ID repair (%s): %v: %w", step, err, ErrBridgeStopMarkerNotPersisted)
+	}
+	return nil
 }
 
 // bridgeGovIDRepairAttempts returns the number of automatic gov ID repair
@@ -3225,6 +3287,25 @@ func (s *Service) ResyncBridge(ctx context.Context, userID uuid.UUID, taxID, tax
 	return nil
 }
 
+// latestRepairableDiditSubmission picks the newest Didit submission that is
+// approved or still processing — the one whose document data a repair should
+// resubmit to Bridge.
+func latestRepairableDiditSubmission(submissions []*entities.KYCSubmission) *entities.KYCSubmission {
+	var latest *entities.KYCSubmission
+	for _, sub := range submissions {
+		if sub.Provider != "didit" {
+			continue
+		}
+		if sub.Status != entities.KYCStatusApproved && sub.Status != entities.KYCStatusProcessing {
+			continue
+		}
+		if latest == nil || sub.CreatedAt.After(latest.CreatedAt) {
+			latest = sub
+		}
+	}
+	return latest
+}
+
 // RepairBridgeGovID fetches the Didit session decision for a user and pushes the
 // government ID (with verified_govid_at) to Bridge. Use for users whose Didit KYC
 // was approved but Bridge still shows "incomplete" due to missing gov ID.
@@ -3253,26 +3334,25 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 	if err != nil || len(submissions) == 0 {
 		return fmt.Errorf("no KYC submission found: %w", err)
 	}
-	var submission *entities.KYCSubmission
-	for _, sub := range submissions {
-		if sub.Provider == "didit" &&
-			(sub.Status == entities.KYCStatusApproved || sub.Status == entities.KYCStatusProcessing) &&
-			(submission == nil || sub.CreatedAt.After(submission.CreatedAt)) {
-			submission = sub
-		}
-	}
+	submission := latestRepairableDiditSubmission(submissions)
 	if submission == nil {
 		return fmt.Errorf("no approved Didit submission found for user")
 	}
 
 	// Hydrate document data from Didit session decision.
 	if _, err := s.hydrateSubmissionFromDidit(ctx, submission, nil); err != nil {
-		s.markBridgeGovIDRepair(ctx, submission, "retryable_error", err.Error(), false, bridgeGovIDRepairAttempts(submission))
+		// Count hydrate failures too: a sustained Didit outage used to leave the
+		// attempt count untouched, so the worker reselected the user forever.
+		if stopErr := s.recordBridgeGovIDRepairFailure(ctx, submission, "hydrate", bridgeGovIDRepairAttempts(submission)+1, err.Error()); stopErr != nil {
+			return stopErr
+		}
 		return fmt.Errorf("failed to hydrate Didit session decision: %w", err)
 	}
 	if !hasDiditGovIDData(submission.VerificationData) {
 		const reason = "no gov ID document data from Didit"
-		s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true, bridgeGovIDRepairAttempts(submission))
+		if err := s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true, bridgeGovIDRepairAttempts(submission)); err != nil {
+			return fmt.Errorf("%w: %s: %v: %w", ErrDiditGovIDDataMissing, reason, err, ErrBridgeStopMarkerNotPersisted)
+		}
 		return fmt.Errorf("%w: %s", ErrDiditGovIDDataMissing, reason)
 	}
 
@@ -3280,31 +3360,26 @@ func (s *Service) RepairBridgeGovID(ctx context.Context, userID uuid.UUID) error
 	if !result.Success {
 		s.clearSensitiveDiditData(submission)
 		attempts := bridgeGovIDRepairAttempts(submission) + 1
-		switch {
-		case result.NonRetryable:
+		if result.NonRetryable {
 			// Terminal Bridge rejection (deleted customer, validation failure…).
 			// Retrying the same PUT on a schedule will never succeed, so stop
 			// automatic retries. A manual admin repair can still re-attempt.
 			reason := "terminal bridge rejection, automatic repair stopped: " + result.Error
-			s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true, attempts)
+			if err := s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true, attempts); err != nil {
+				return fmt.Errorf("%w: %s: %v: %w", ErrBridgeCustomerTerminal, result.Error, err, ErrBridgeStopMarkerNotPersisted)
+			}
 			return fmt.Errorf("%w: %s", ErrBridgeCustomerTerminal, result.Error)
-		case attempts >= maxBridgeGovIDRepairAttempts:
-			// Chronically failing despite retries — give up automatically and
-			// escalate instead of hammering Bridge forever.
-			reason := fmt.Sprintf("gave up after %d automatic attempts, manual re-trigger required: %s", attempts, result.Error)
-			s.logger.Error("Bridge gov ID repair giving up after repeated failures",
-				zap.String("user_id", userID.String()),
-				zap.String("bridge_customer_id", *profile.BridgeCustomerID),
-				zap.Int("attempts", attempts),
-				zap.String("last_error", result.Error))
-			s.markBridgeGovIDRepair(ctx, submission, "failed", reason, true, attempts)
-			return fmt.Errorf("bridge gov ID push failed: %s", result.Error)
-		default:
-			s.markBridgeGovIDRepair(ctx, submission, "retryable_error", result.Error, false, attempts)
-			return fmt.Errorf("bridge gov ID push failed: %s", result.Error)
 		}
+		if stopErr := s.recordBridgeGovIDRepairFailure(ctx, submission, "bridge", attempts, result.Error); stopErr != nil {
+			return stopErr
+		}
+		return fmt.Errorf("bridge gov ID push failed: %s", result.Error)
 	}
-	s.markBridgeGovIDRepair(ctx, submission, "succeeded", "", false, 0)
+	if err := s.markBridgeGovIDRepair(ctx, submission, "succeeded", "", false, 0); err != nil {
+		s.logger.Warn("Failed to record successful Bridge gov ID repair",
+			zap.String("user_id", userID.String()),
+			zap.Error(err))
+	}
 
 	// Persist updated verification data.
 	if err := s.kycSubmissionRepo.Update(ctx, submission); err != nil {

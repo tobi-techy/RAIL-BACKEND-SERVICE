@@ -44,6 +44,7 @@ func (r *repairUserRepo) UpdateKYCTier(_ context.Context, _ uuid.UUID, tier int)
 type repairSubmissionRepo struct {
 	submissions []*entities.KYCSubmission
 	updated     []*entities.KYCSubmission
+	updateErr   error
 }
 
 func (r *repairSubmissionRepo) Create(_ context.Context, sub *entities.KYCSubmission) error {
@@ -65,6 +66,9 @@ func (r *repairSubmissionRepo) GetByUserID(_ context.Context, _ uuid.UUID) ([]*e
 }
 
 func (r *repairSubmissionRepo) Update(_ context.Context, sub *entities.KYCSubmission) error {
+	if r.updateErr != nil {
+		return r.updateErr
+	}
 	r.updated = append(r.updated, sub)
 	return nil
 }
@@ -99,7 +103,7 @@ func (a *repairDidit) GetSessionDecision(context.Context, string) (*didit.Sessio
 
 func (a *repairDidit) VerifyWebhookSignature([]byte, string, string) error { return nil }
 
-func newRepairFixture(bridgeErr error, seedMarker map[string]any) (*Service, uuid.UUID, *entities.KYCSubmission, *repairBridge) {
+func newRepairFixture(bridgeErr error, seedMarker map[string]any) (*Service, uuid.UUID, *entities.KYCSubmission, *repairBridge, *repairSubmissionRepo) {
 	userID := uuid.New()
 	sessionRef := "sess_repair_123"
 	customerID := "cust_repair_123"
@@ -130,7 +134,7 @@ func newRepairFixture(bridgeErr error, seedMarker map[string]any) (*Service, uui
 	}}
 
 	svc := NewService(userRepo, subRepo, br, nil, nil, nil, "", "", zap.NewNop(), diditAdapter)
-	return svc, userID, sub, br
+	return svc, userID, sub, br, subRepo
 }
 
 func repairMarker(sub *entities.KYCSubmission) map[string]any {
@@ -147,7 +151,7 @@ func TestRepairBridgeGovIDTerminalBridgeErrorStopsRetries(t *testing.T) {
 	// 10-minute worker never selects this user again.
 	terminalErr := fmt.Errorf("update customer failed: %w",
 		&bridge.ErrorResponse{StatusCode: 404, Code: "not_found", Message: "customer not found"})
-	svc, userID, sub, br := newRepairFixture(terminalErr, nil)
+	svc, userID, sub, br, _ := newRepairFixture(terminalErr, nil)
 
 	err := svc.RepairBridgeGovID(context.Background(), userID)
 
@@ -160,7 +164,7 @@ func TestRepairBridgeGovIDTerminalBridgeErrorStopsRetries(t *testing.T) {
 }
 
 func TestRepairBridgeGovIDRetryableErrorKeepsRetryingWithAttempts(t *testing.T) {
-	svc, userID, sub, br := newRepairFixture(errors.New("connection reset"), nil)
+	svc, userID, sub, br, _ := newRepairFixture(errors.New("connection reset"), nil)
 
 	err := svc.RepairBridgeGovID(context.Background(), userID)
 	require.Error(t, err)
@@ -183,7 +187,7 @@ func TestRepairBridgeGovIDGivesUpAfterMaxAttempts(t *testing.T) {
 		"non_retryable": false,
 		"attempts":      maxBridgeGovIDRepairAttempts - 1,
 	}
-	svc, userID, sub, br := newRepairFixture(errors.New("connection reset"), seed)
+	svc, userID, sub, br, _ := newRepairFixture(errors.New("connection reset"), seed)
 
 	err := svc.RepairBridgeGovID(context.Background(), userID)
 
@@ -203,7 +207,7 @@ func TestRepairBridgeGovIDSuccessResetsAttempts(t *testing.T) {
 		"non_retryable": false,
 		"attempts":      5,
 	}
-	svc, userID, sub, br := newRepairFixture(nil, seed)
+	svc, userID, sub, br, _ := newRepairFixture(nil, seed)
 
 	err := svc.RepairBridgeGovID(context.Background(), userID)
 
@@ -213,4 +217,56 @@ func TestRepairBridgeGovIDSuccessResetsAttempts(t *testing.T) {
 	require.Equal(t, "succeeded", marker["status"])
 	require.Equal(t, false, marker["non_retryable"])
 	require.Equal(t, 0, marker["attempts"])
+}
+
+func TestRepairBridgeGovIDHydrateFailureCountsAttempts(t *testing.T) {
+	// A sustained Didit outage used to write retryable_error with the attempt
+	// count unchanged, so the worker reselected the user on every tick forever.
+	svc, userID, sub, br, _ := newRepairFixture(nil, nil)
+	svc.diditAdapter = &repairDidit{err: errors.New("didit unavailable")}
+
+	err := svc.RepairBridgeGovID(context.Background(), userID)
+
+	require.Error(t, err)
+	require.Zero(t, br.calls, "hydrate failed, so Bridge must not have been called")
+	marker := repairMarker(sub)
+	require.Equal(t, "retryable_error", marker["status"])
+	require.Equal(t, 1, marker["attempts"])
+	require.Equal(t, false, marker["non_retryable"])
+}
+
+func TestRepairBridgeGovIDHydrateFailureGivesUpAtCap(t *testing.T) {
+	seed := map[string]any{
+		"status":        "retryable_error",
+		"reason":        "didit unavailable",
+		"non_retryable": false,
+		"attempts":      maxBridgeGovIDRepairAttempts - 1,
+	}
+	svc, userID, sub, br, _ := newRepairFixture(nil, seed)
+	svc.diditAdapter = &repairDidit{err: errors.New("didit unavailable")}
+
+	err := svc.RepairBridgeGovID(context.Background(), userID)
+
+	require.Error(t, err)
+	require.Zero(t, br.calls)
+	marker := repairMarker(sub)
+	require.Equal(t, "failed", marker["status"])
+	require.Equal(t, true, marker["non_retryable"], "hydrate failures must also stop the retry loop")
+	require.Equal(t, maxBridgeGovIDRepairAttempts, marker["attempts"])
+}
+
+func TestRepairBridgeGovIDStopMarkerFailureIsSurfaced(t *testing.T) {
+	// If the stop marker never reaches Postgres, FindApprovedNotActiveBridge
+	// keeps selecting the user, so the repair must not report a clean stop.
+	terminalErr := fmt.Errorf("update customer failed: %w",
+		&bridge.ErrorResponse{StatusCode: 404, Code: "not_found", Message: "customer not found"})
+	svc, userID, _, br, subRepo := newRepairFixture(terminalErr, nil)
+	subRepo.updateErr = errors.New("database is down")
+
+	err := svc.RepairBridgeGovID(context.Background(), userID)
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrBridgeStopMarkerNotPersisted)
+	require.ErrorIs(t, err, ErrBridgeCustomerTerminal, "classification is preserved for the worker")
+	require.Equal(t, 1, br.calls)
 }
