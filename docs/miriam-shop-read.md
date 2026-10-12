@@ -60,6 +60,24 @@ so nothing downstream may restate one.
       go run ./scripts/shop_read_smoke \
         -file ../MIRIAM/tests/fixtures/stock_book_mama_tobi.png -hint stock_book
 
+## Read live
+
+Every row below is the real Go client (`scripts/shop_read_smoke`) against the real
+reader on llmapi.ai, with the reply the owner would have seen. Latency is the
+whole round trip the smoke client measures; cost is the same page and the same
+tier measured by the eval harness (`eval/shop_read_eval.py --modes big`), which
+reports the provider's own token cost per read.
+
+| page | form | hint | latency | cost/read | what came back |
+| --- | --- | --- | --- | --- | --- |
+| Mama Tobi stock book | PNG | stock_book | 28.8s | $0.0138 | 7 items, computed ₦286,300 against the written ₦254,400, gap ₦31,900; one row does not add up (Dangote Spag); low stock Indomie 7 and Milo 400g 7; crossed-out 8 to 9; two notes |
+| Ledger v2 | PNG | stock_book | 12.0s | $0.0134 | 7 items, computed ₦248,000 against the written ₦236,000, gap ₦12,000; every row adds up; low stock Milo 400g 6 |
+| Ledger v2 | scanned PDF, no text layer | stock_book | 14.4s | $0.0184 | the same reply, figure for figure: the page is rasterised and read as an image |
+
+The scanned PDF costs more than its PNG because rasterising a full page spends
+more image tokens than the smaller photo does. Two pages and three forms is what
+has been read live; the page itself is a fixture, not a real trader's book.
+
 ## Known gaps
 
 - The photo trigger is the vision classifier, which needs OCR text to have any
@@ -67,4 +85,6 @@ so nothing downstream may restate one.
   receipt path's answer, so PDFs are the dependable case.
 - The bridge does not forward a caption typed with an attachment (`text: ""`), so
   a photo arrives at the reader without the owner's words.
-- One page has been read live. There is no golden set of real stock books yet.
+- Three forms of two fixture pages have been read live (see above). There is
+  still no golden set of real traders' stock books, which is where a handwriting
+  model has to earn its keep.
