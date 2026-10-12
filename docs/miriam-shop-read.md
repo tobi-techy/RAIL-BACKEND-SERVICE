@@ -1,0 +1,70 @@
+# Shop documents over iMessage (stock books, distributor invoices, delivery notes)
+
+A trader texts Miriam a photo of their own stock book, or a distributor's invoice
+or delivery note. Go recognises the page and hands it to the Python reader, which
+owns vision, model routing and the arithmetic checks. The reader's reply is sent
+back **verbatim**: every figure in it was checked against the page in plain code,
+so nothing downstream may restate one.
+
+## The path
+
+1. **The bridge** carries the attachment (photos and PDFs up to 12MB; voice notes
+   keep 4MB). Over the cap it posts an oversized notice instead of the bytes.
+2. **Go recognises the page.**
+   - *A photo*: the vision pass Go already runs for receipts also reports the
+     page's kind. `DocStockBook` / `DocDeliveryNote` take the shop path; receipts,
+     invoices and statements keep the path they had.
+   - *A PDF*: `document.ClassifyPDF` reads the file's own text layer
+     (`document.PDFText` — no rendering, no OCR, bounded, never errors). An
+     invoice or delivery note takes the shop path; a scan with no text layer
+     stays on the statement pipeline exactly as before.
+3. **Go claims the message id** (`platform:shopread:<platform>:<msg_id>` via Redis
+   `SetNX`, 15 min; the page's own sha256 when the bridge sent no id) so a
+   redelivery cannot read — and charge for — the same page twice.
+4. **A holding bubble goes out immediately**, then the read runs in a goroutine on
+   a fresh `context.Background()` with a 150s deadline. The inbound POST is
+   already answered, so the bridge's own timeout never applies to a read.
+5. **The answer lands in the same thread.** `flags: ["failed"]`, an empty reply, a
+   timeout, an error or a panic all become one retake line.
+
+## Fail-closed rules
+
+- No reader, no linked owner, an oversized page, a claim-store error, a timeout, a
+  reader failure or a panic → one retake line, nothing stored, no figures.
+- A shop page never reaches the guest brain: `handleShopDocument` returns before
+  the orchestrator, so no model can rephrase a number.
+- The reader's reply is what the owner sees. Go adds no figure of its own.
+- The owner's caption is passed through. An unlinked sender never reaches the
+  reader (there is no account to store the document against) and is onboarded
+  as before.
+
+## Settings
+
+- `SHOP_READ_TIMEOUT_S` (default 150) bounds one read. Reads use their own HTTP
+  client: the chat client's 60s timeout is far too short for a vision call.
+- The reader needs `PYTHON_AGENT_URL`, `JWT_SECRET` (the same short-lived
+  per-user token the chat path mints) and Redis for the claim store. Without
+  Redis an in-memory store covers a single replica only — the wiring logs that,
+  loudly, at startup.
+
+## Running it locally
+
+    # 1. the reader, with a process-local store so no Postgres is needed
+    cd MIRIAM
+    LLMAPI_API_KEY=... JWT_SECRET=<32+ chars> .venv/bin/python eval/shop_live_server.py
+
+    # 2. the real Go client against it
+    cd RAIL_BACKEND
+    PYTHON_AGENT_URL=http://127.0.0.1:8099 JWT_SECRET=<the same secret> \
+      SHOP_READ_USER_ID=<rail user uuid> \
+      go run ./scripts/shop_read_smoke \
+        -file ../MIRIAM/tests/fixtures/stock_book_mama_tobi.png -hint stock_book
+
+## Known gaps
+
+- The photo trigger is the vision classifier, which needs OCR text to have any
+  opinion. A handwritten page whose text the sidecar cannot read at all keeps the
+  receipt path's answer, so PDFs are the dependable case.
+- The bridge does not forward a caption typed with an attachment (`text: ""`), so
+  a photo arrives at the reader without the owner's words.
+- One page has been read live. There is no golden set of real stock books yet.
