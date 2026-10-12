@@ -158,6 +158,24 @@ func mustRaw(t *testing.T, msg InboundMessage) []byte {
 // shopTestPDF builds a one-page PDF whose text layer carries content, optionally
 // Flate-encoded — the difference between a PDF that travelled as a file and a
 // scan of one.
+// shopTestTextPDF writes a PDF whose text layer a reader can actually pull
+// words out of: "(line) Tj" operators, one per line. shopTestPDF above writes a
+// bare content stream, which is exactly the unclassifiable file the statement
+// path gets from a scanner.
+func shopTestTextPDF(lines ...string) []byte {
+	body := "BT /F1 12 Tf 40 700 Td 14 TL\n"
+	for _, l := range lines {
+		body += "(" + l + ") Tj T*\n"
+	}
+	body += "ET"
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+	fmt.Fprintf(&out, "4 0 obj\n<< /Length %d >>\nstream\n", len(body))
+	out.WriteString(body)
+	out.WriteString("\nendstream\nendobj\ntrailer\n<< >>\n%%EOF\n")
+	return out.Bytes()
+}
+
 func shopTestPDF(content string, compress bool) []byte {
 	stream := []byte("BT /F1 12 Tf 50 700 Td " + content + " ET")
 	filter := ""
@@ -440,28 +458,39 @@ func TestShopRead_PdfInvoiceGoesToTheReader(t *testing.T) {
 	}
 }
 
+// A PDF whose text layer says nothing — a scan — is offered to the reader
+// first, because such a file may be a distributor invoice rather than a
+// statement. It stays on the statement path when the reader cannot deliver it,
+// which is what this file got before the reader could look at it.
 func TestShopRead_ScannedStatementStaysOnTheStatementPath(t *testing.T) {
 	repo := newFakeRepo()
 	linkedIdentity(repo, "+15551234")
 	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
-	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "nope"}}
+	reader := &fakeShopReader{result: &ShopReadResult{DocType: "bank_statement"}}
 	p.SetShopReader(reader)
 	p.SetShopClaimStore(NewMemoryMessageClaimStore())
 	handler := &fakeStatementHandler{}
 	p.SetStatementAttachmentHandler(handler)
 
-	// A scan: no text layer at all, so Go has no opinion and the statement
-	// pipeline keeps the file, exactly as before.
+	// A scan: no text layer at all, so Go has no opinion.
 	scan := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\ntrailer\n<< >>\n%%EOF\n")
 	if err := p.Process(context.Background(), mustRaw(t, shopDocumentMessage("msg-10", "", scan))); err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	rec.waitFor(t, 1)
-	if reader.count() != 0 {
-		t.Fatal("a scanned statement must not be sent to the shop reader")
+	rec.waitFor(t, 2)
+	if reader.count() != 1 {
+		t.Fatalf("reader calls = %d, want the reader to get a look", reader.count())
 	}
+	if got := reader.last().DocHint; got != string(ShopKindUnknownImage) {
+		t.Fatalf("doc hint = %q, want %q", got, ShopKindUnknownImage)
+	}
+	// The reader claimed nothing from it, so the statement pipeline keeps the
+	// file, byte for byte, exactly as it did before the reader existed.
 	if handler.linkedCalls != 1 {
 		t.Fatalf("statement enqueue calls = %d, want 1", handler.linkedCalls)
+	}
+	if !bytes.Equal(handler.lastBytes, scan) {
+		t.Fatal("the statement path must keep the file's own bytes")
 	}
 }
 
@@ -655,5 +684,131 @@ func TestShopRead_APhotoTheVisionPassReadKeepsItsOwnPath(t *testing.T) {
 	msgs := rec.waitFor(t, 1)
 	if got := msgs[0].Text; got == shopHoldingText {
 		t.Fatalf("a receipt must not get a shop holding bubble")
+	}
+}
+
+// A PDF whose text layer says nothing used to fall straight to the statement
+// path, which answered "I can't scan statements from chat just yet" for a
+// distributor invoice the reader could read. A real Wigmore PDF off the owner's
+// phone did exactly that. The reader gets the first look now.
+func TestShopRead_APDFGoCannotClassifyGoesToTheReader(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText:  "Invoice from WIGMORE TRADING LTD, 5 lines, balance N30,000 due 17/10/2026.",
+		DocID:      "doc-pdf",
+		DocType:    "invoice",
+		Confidence: 1,
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	// A PDF with no text layer at all: nothing for Go to classify from.
+	msg := shopDocumentMessage("msg-pdf", "", shopTestPDF("", false))
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	msgs := rec.waitFor(t, 2)
+	if got := msgs[0].Text; got != shopHoldingText {
+		t.Fatalf("first message = %q, want the holding bubble", got)
+	}
+	if got := msgs[1].Text; !strings.Contains(got, "balance N30,000") {
+		t.Fatalf("reply = %q, want the reader's own text", got)
+	}
+	if reader.count() != 1 {
+		t.Fatalf("reader calls = %d, want 1", reader.count())
+	}
+	if got := reader.last().DocHint; got != string(ShopKindUnknownImage) {
+		t.Fatalf("doc hint = %q, want %q", got, ShopKindUnknownImage)
+	}
+	if got := reader.last().MIME; got != "application/pdf" {
+		t.Fatalf("mime = %q, want the PDF as it arrived", got)
+	}
+}
+
+// And when the reader looks and owns none of it, the owner hears the statement
+// path's own answer, byte for byte: an unreadable PDF is not worse off than it
+// was before the reader existed.
+func TestShopRead_ADeclinedUnreadablePDFFallsBackToTheStatementPath(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText: "",
+		DocType:   "bank_statement",
+		Flags:     []string{"not a shop document (bank_statement)"},
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	msg := shopDocumentMessage("msg-pdf-declined", "", shopTestPDF("", false))
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	msgs := rec.waitFor(t, 2)
+	want := "I can't scan statements from chat just yet. Please upload it in the RAIL app."
+	if got := msgs[1].Text; got != want {
+		t.Fatalf("declined PDF answered %q, want the statement path's own line", got)
+	}
+}
+
+// A readable statement keeps the statement path it always had: the new route is
+// only for files whose text layer says nothing.
+func TestShopRead_AReadableStatementPDFKeepsTheStatementPath(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "should never be asked"}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := shopDocumentMessage("msg-statement", "", shopTestTextPDF(
+		"Account Number 0123456",
+		"Statement Period 01/09/2026 - 30/09/2026",
+		"Opening Balance",
+		"Value Date",
+		"Closing Balance",
+	))
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	rec.waitFor(t, 1)
+	if reader.count() != 0 {
+		t.Fatalf("reader calls = %d, want 0 for a readable statement", reader.count())
+	}
+	if handler.linkedCalls != 1 {
+		t.Fatalf("statement enqueue calls = %d, want 1", handler.linkedCalls)
+	}
+}
+
+// A reader that errors on a PDF, rather than declining it, must not cost the
+// owner the statement path either.
+func TestShopRead_AFailedPDFReadFallsBackToTheStatementPath(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	reader := &fakeShopReader{err: errors.New("reader is down")}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := shopDocumentMessage("msg-pdf-failed", "", shopTestPDF("", false))
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	rec.waitFor(t, 2)
+	if handler.linkedCalls != 1 {
+		t.Fatalf("statement enqueue calls = %d, want the statement path to still get it", handler.linkedCalls)
 	}
 }

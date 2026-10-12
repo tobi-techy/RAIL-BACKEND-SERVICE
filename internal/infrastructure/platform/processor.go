@@ -558,16 +558,33 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		}
 		// A PDF can be a distributor invoice or a delivery note rather than a
 		// bank statement, and the statement parser would misread every line of
-		// one. Go reads the file's own text layer to tell them apart: a scanned
-		// statement carries no text and stays on the statement path untouched.
+		// one. Go reads the file's own text layer to tell them apart. A readable
+		// statement keeps the statement path untouched; a file whose text layer
+		// says nothing at all — a scan, or an exporter this reader cannot follow
+		// — is handed to the reader, which can rasterise the page and see it.
 		if p.shopEnabled() {
-			if kind := document.ClassifyPDF(attachment.Data); kind.IsShopDocument() || kind == document.DocInvoice {
+			kind := document.ClassifyPDF(attachment.Data)
+			switch {
+			case kind.IsShopDocument() || kind == document.DocInvoice:
 				shopDoc = &shopPage{
 					Kind:    ShopReadKind(kind),
 					FileB64: msg.DocumentB64,
 					MIME:    attachment.MIMEType,
 					Caption: strings.TrimSpace(msg.Text),
 				}
+			case kind == document.DocUnknown:
+				shopDoc = &shopPage{
+					Kind:              ShopKindUnknownImage,
+					FileB64:           msg.DocumentB64,
+					MIME:              attachment.MIMEType,
+					Caption:           strings.TrimSpace(msg.Text),
+					StatementFallback: &attachment,
+				}
+				p.logger.Info("PDF with no readable text layer handed to the reader",
+					zap.String("platform", string(msg.Platform)),
+					zap.String("msg_id", msg.MsgID),
+					zap.Int("bytes", len(attachment.Data)),
+				)
 			}
 		}
 		if shopDoc == nil {

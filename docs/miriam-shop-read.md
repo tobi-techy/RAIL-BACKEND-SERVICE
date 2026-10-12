@@ -16,8 +16,16 @@ so nothing downstream may restate one.
      invoices and statements keep the path they had.
    - *A PDF*: `document.ClassifyPDF` reads the file's own text layer
      (`document.PDFText` — no rendering, no OCR, bounded, never errors). An
-     invoice or delivery note takes the shop path; a scan with no text layer
-     stays on the statement pipeline exactly as before.
+     invoice or delivery note takes the shop path; a PDF that classifies as a
+     statement keeps the statement pipeline exactly as before.
+   - *A PDF whose text layer says nothing* — a scan, or an exporter this reader
+     cannot follow — is handed to the reader as an unknown page, the same way a
+     photo no vision pass could classify is. The reader can rasterise a page and
+     see it, so it gets the first look. If it declines, times out, errors or
+     panics, `shopCannotRead` hands the file to the statement path, which answers
+     byte for byte what that PDF got before the reader existed. An unclassifiable
+     PDF is therefore never worse off than it was, and a distributor invoice sent
+     as a PDF is read instead of declined as a statement.
 3. **Go claims the message id** (`platform:shopread:<platform>:<msg_id>` via Redis
    `SetNX`, 15 min; the page's own sha256 when the bridge sent no id) so a
    redelivery cannot read — and charge for — the same page twice.

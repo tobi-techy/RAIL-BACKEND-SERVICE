@@ -185,6 +185,11 @@ type shopPage struct {
 	// reader existed, and what it is answered with when the reader declines it.
 	// Empty means the ordinary fail-closed retake line.
 	FallbackText string
+	// StatementFallback carries the attachment a PDF arrived as, for the case
+	// where the reader declines it. A PDF nobody could classify is not a
+	// statement and not yet an invoice: the reader looks first, and if it owns
+	// none of the page, the statement path answers exactly as it always has.
+	StatementFallback *StatementAttachment
 }
 
 // shopKindHint validates a classification as a hint for the reader. Anything
@@ -254,7 +259,7 @@ func (p *Processor) handleShopDocument(ctx context.Context, msg InboundMessage, 
 	// thread is indistinguishable from a broken one.
 	p.noticeSender(ctx, msg, shopHoldingText)
 
-	p.readShopDocumentAsync(msg, resolved.UserID, page)
+	p.readShopDocumentAsync(msg, resolved, page)
 	return nil
 }
 
@@ -302,7 +307,8 @@ func shopClaimKey(msg InboundMessage, page *shopPage) string {
 // readShopDocumentAsync runs the read in the background. It deliberately does
 // not inherit the inbound request's context: the bridge's POST is already
 // answered, and that context dies the moment the handler returns.
-func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, page *shopPage) {
+func (p *Processor) readShopDocumentAsync(msg InboundMessage, resolved *ResolvedUser, page *shopPage) {
+	userID := resolved.UserID
 	caption := page.Caption
 	if runes := []rune(caption); len(runes) > maxShopCaptionRunes {
 		caption = string(runes[:maxShopCaptionRunes])
@@ -333,7 +339,8 @@ func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, 
 					zap.String("msg_id", msg.MsgID),
 					zap.Any("panic", r),
 				)
-				p.deliverShopReply(msg, shopUnreadableText)
+				// A fresh context: the read's own is being torn down here.
+				p.shopCannotRead(context.Background(), msg, resolved, page)
 			}
 		}()
 
@@ -348,7 +355,7 @@ func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, 
 				zap.String("msg_id", msg.MsgID),
 				zap.String("kind", string(page.Kind)),
 			)
-			p.deliverShopReply(msg, shopUnreadableText)
+			p.shopCannotRead(ctx, msg, resolved, page)
 			return
 		}
 
@@ -365,6 +372,10 @@ func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, 
 				zap.String("doc_type", result.DocType),
 				zap.Any("flags", result.Flags),
 			)
+			if page.StatementFallback != nil {
+				p.shopCannotRead(ctx, msg, resolved, page)
+				return
+			}
 			text = page.FallbackText
 		}
 		if result.Failed() {
@@ -374,13 +385,14 @@ func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, 
 				zap.Float64("confidence", result.Confidence),
 			)
 			if text == "" {
-				text = shopUnreadableText
+				p.shopCannotRead(ctx, msg, resolved, page)
+				return
 			}
 			p.deliverShopReply(msg, text)
 			return
 		}
 		if text == "" {
-			p.deliverShopReply(msg, shopUnreadableText)
+			p.shopCannotRead(ctx, msg, resolved, page)
 			return
 		}
 
@@ -394,6 +406,28 @@ func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, 
 		)
 		p.deliverShopReply(msg, text)
 	}()
+}
+
+// shopCannotRead answers a page the reader could not deliver on: a timeout, a
+// provider failure, a panic, or a reader that looked and wanted none of it.
+//
+// A PDF Go could not classify is not a statement and not yet an invoice. The
+// reader gets the first look, and when it cannot deliver, the statement path
+// answers exactly as it always has — so an unclassifiable PDF is never worse
+// off than it was before the reader existed. Anything else gets the retake line.
+func (p *Processor) shopCannotRead(ctx context.Context, msg InboundMessage, resolved *ResolvedUser, page *shopPage) {
+	if page.StatementFallback != nil {
+		p.logger.Info("PDF not delivered by the reader, falling back to the statement path",
+			zap.String("platform", string(msg.Platform)),
+			zap.String("user_id", msg.UserID),
+			zap.String("msg_id", msg.MsgID),
+		)
+		if err := p.handleLinkedStatement(ctx, msg, resolved, page.StatementFallback); err != nil {
+			p.logger.Warn("statement fallback failed", zap.Error(err))
+		}
+		return
+	}
+	p.deliverShopReply(msg, shopUnreadableText)
 }
 
 // deliverShopReply sends the finished answer back into the thread it came from.
