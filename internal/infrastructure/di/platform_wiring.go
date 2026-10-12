@@ -26,6 +26,11 @@ import (
 func (c *Container) initializePlatformMessaging() {
 	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
 	c.PlatformIdentityRepo = repositories.NewPlatformIdentityRepository(c.DB, c.ZapLog)
+	// The platform conversation repository was declared, passed to the Python
+	// delegate and the bridge dispatcher, and built nowhere: every texted turn
+	// from a linked user panicked on a nil db and answered 500. It is built
+	// here, where its only callers live.
+	c.ConversationRepo = repositories.NewConversationRepository(c.DB, c.ZapLog)
 
 	pythonReady := c.Config.PythonAgent.Enabled && c.Config.PythonAgent.BaseURL != "" &&
 		c.RedisClient != nil && c.Config.JWT.Secret != ""

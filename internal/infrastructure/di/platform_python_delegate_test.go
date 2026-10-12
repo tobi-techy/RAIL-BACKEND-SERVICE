@@ -362,3 +362,24 @@ func TestSettledChallengeThatRaisesAnotherStagesIt(t *testing.T) {
 		t.Fatalf("want the new challenge staged, got %q ok=%v", got, ok)
 	}
 }
+
+// The platform conversation repository was declared, passed to this adapter and
+// the bridge dispatcher, and constructed nowhere, so every texted turn from a
+// linked user panicked on a nil db and answered 500 — three bridge retries, then
+// the message was dropped. An unwired repository is a wiring error: it has to
+// come back as an error the caller can answer with, never as a panic.
+func TestPlatformDelegate_AnUnwiredConversationRepoIsAWiringError(t *testing.T) {
+	a := &orchestratorAdapter{}
+
+	if a.HasPendingPythonConfirm(
+		context.Background(), uuid.NewString(), uuid.NewString(), "thread-1", entities.PlatformIMessage,
+	) {
+		t.Fatal("an unwired conversation repo must never report a pending python confirm")
+	}
+
+	if _, err := a.handlePlatformMessagePython(
+		context.Background(), uuid.NewString(), uuid.NewString(), "hello", "thread-1", entities.PlatformIMessage,
+	); err == nil {
+		t.Fatal("handlePlatformMessagePython must fail closed when the conversation repo is unwired")
+	}
+}
