@@ -107,6 +107,11 @@ Two things bite on the first run: `configs/config.yaml` ships
 not have (so set `ENVIRONMENT=development`), and the email service needs
 `EMAIL_PROVIDER=log` outside production. The API listens on 8081, not 8080.
 
+    # 3. one page through the chain (harness in scripts/e2e/)
+    BRIDGE_HMAC_SECRET=<shared> E2E_DATABASE_URL=<the Go Postgres> \
+      python3 scripts/e2e/shop_inbound_local.py \
+        ../MIRIAM/tests/fixtures/wigmore_invoice_WGT-2610-0417.pdf
+
 What has been proven this way, with the reader on Postgres: a distributor PDF
 (Go classifies its own text layer, no OCR needed) goes bridge-shaped inbound →
 processor → holding bubble at 0.0s → reader on the big tier → checked reply at
