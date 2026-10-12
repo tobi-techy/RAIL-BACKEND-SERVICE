@@ -1,0 +1,532 @@
+package platform
+
+import (
+	"bytes"
+	"compress/zlib"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/document"
+)
+
+// fakeShopReader stands in for the Python reader: it records the request and
+// answers with a canned result, an error, or a panic.
+type fakeShopReader struct {
+	mu      sync.Mutex
+	calls   []ShopReadRequest
+	result  *ShopReadResult
+	err     error
+	panicOn bool
+}
+
+func (f *fakeShopReader) ReadShopDocument(_ context.Context, req ShopReadRequest) (*ShopReadResult, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, req)
+	f.mu.Unlock()
+	if f.panicOn {
+		panic("reader exploded")
+	}
+	return f.result, f.err
+}
+
+func (f *fakeShopReader) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeShopReader) last() ShopReadRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		return ShopReadRequest{}
+	}
+	return f.calls[len(f.calls)-1]
+}
+
+// fakeShopVision reports the page's kind without OCR.
+type fakeShopVision struct {
+	kind    document.DocType
+	summary string
+	err     error
+}
+
+func (f *fakeShopVision) Available() bool { return true }
+
+func (f *fakeShopVision) ReadImage(context.Context, []byte, string) (*AttachmentRead, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &AttachmentRead{Kind: f.kind, Summary: f.summary}, nil
+}
+
+// sentRecorder records outbound messages from both the request path and the
+// read's goroutine, so a test can wait for the asynchronous answer.
+type sentRecorder struct {
+	mu   sync.Mutex
+	msgs []*OutboundMessage
+}
+
+func (r *sentRecorder) send(_ context.Context, m *OutboundMessage) error {
+	r.mu.Lock()
+	r.msgs = append(r.msgs, m)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *sentRecorder) all() []*OutboundMessage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*OutboundMessage(nil), r.msgs...)
+}
+
+// waitFor waits until at least n messages have been sent.
+func (r *sentRecorder) waitFor(t *testing.T, n int) []*OutboundMessage {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := r.all(); len(got) >= n {
+			return got
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	got := r.all()
+	t.Fatalf("timed out waiting for %d messages, got %d: %v", n, len(got), texts(got))
+	return nil
+}
+
+func texts(msgs []*OutboundMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.Text)
+	}
+	return out
+}
+
+func shopTestProcessor(repo *fakeRepo, orch Orchestrator) (*Processor, *sentRecorder) {
+	rec := &sentRecorder{}
+	p := NewProcessor(NewUserResolver(repo), orch, NewResponseBuilder(), NewLinkingService(repo, 900), nil, rec.send)
+	return p, rec
+}
+
+// shopImageMessage is a photo from a linked trader, with a caption.
+func shopImageMessage(msgID, caption string) InboundMessage {
+	return InboundMessage{
+		Platform:  entities.PlatformIMessage,
+		UserID:    "+15551234",
+		ThreadID:  "thread-1",
+		MsgID:     msgID,
+		IsImage:   true,
+		ImageB64:  base64.StdEncoding.EncodeToString([]byte("pretend-jpeg-page")),
+		ImageMime: "image/jpeg",
+		Text:      caption,
+	}
+}
+
+func shopDocumentMessage(msgID, caption string, pdf []byte) InboundMessage {
+	return InboundMessage{
+		Platform:     entities.PlatformIMessage,
+		UserID:       "+15551234",
+		ThreadID:     "thread-1",
+		MsgID:        msgID,
+		IsDocument:   true,
+		DocumentB64:  base64.StdEncoding.EncodeToString(pdf),
+		DocumentMime: "application/pdf",
+		DocumentName: "invoice.pdf",
+		Text:         caption,
+	}
+}
+
+func mustRaw(t *testing.T, msg InboundMessage) []byte {
+	t.Helper()
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal inbound: %v", err)
+	}
+	return raw
+}
+
+// shopTestPDF builds a one-page PDF whose text layer carries content, optionally
+// Flate-encoded — the difference between a PDF that travelled as a file and a
+// scan of one.
+func shopTestPDF(content string, compress bool) []byte {
+	stream := []byte("BT /F1 12 Tf 50 700 Td " + content + " ET")
+	filter := ""
+	if compress {
+		var buf bytes.Buffer
+		zw := zlib.NewWriter(&buf)
+		_, _ = zw.Write(stream)
+		_ = zw.Close()
+		stream = buf.Bytes()
+		filter = " /Filter /FlateDecode"
+	}
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n")
+	fmt.Fprintf(&out, "4 0 obj\n<< /Length %d%s >>\nstream\n", len(stream), filter)
+	out.Write(stream)
+	out.WriteString("\nendstream\nendobj\ntrailer\n<< >>\n%%EOF\n")
+	return out.Bytes()
+}
+
+func TestShopRead_StockBookPhotoIsReadVerbatim(t *testing.T) {
+	repo := newFakeRepo()
+	identity := linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocStockBook, summary: "a handwritten shop record"})
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText:  "Mama Tobi: 7 rows read, N286,300 on hand. One Dangote row looks cancelled.",
+		DocID:      "doc-1",
+		DocType:    "stock_book",
+		Confidence: 0.91,
+		ModelPath:  []string{"read_big"},
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	msg := shopImageMessage("msg-1", "here is today's stock book")
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	got := rec.waitFor(t, 2)
+	if got[0].Text != shopHoldingText {
+		t.Fatalf("first bubble = %q, want the holding line", got[0].Text)
+	}
+	if got[1].Text != reader.result.ReplyText {
+		t.Fatalf("answer = %q, want the reader's own words", got[1].Text)
+	}
+	if got[1].ThreadID != "thread-1" {
+		t.Fatalf("answer went to thread %q, want the thread it came from", got[1].ThreadID)
+	}
+	// The figures are the reader's: the guest brain must not be asked at all.
+	if orch.lastMessage != "" {
+		t.Fatalf("orchestrator was handed %q; a shop read must not go through the model", orch.lastMessage)
+	}
+
+	if reader.count() != 1 {
+		t.Fatalf("reader calls = %d, want 1", reader.count())
+	}
+	req := reader.last()
+	if req.UserID != identity.UserID {
+		t.Fatalf("read ran for user %s, want the linked owner %s", req.UserID, identity.UserID)
+	}
+	if req.DocHint != "stock_book" {
+		t.Fatalf("doc hint = %q, want stock_book", req.DocHint)
+	}
+	if req.Caption != "here is today's stock book" {
+		t.Fatalf("caption = %q, want the owner's own words", req.Caption)
+	}
+	if req.FileB64 != msg.ImageB64 {
+		t.Fatal("the reader must get the photo exactly as it arrived")
+	}
+	if req.MessageID != "msg-1" {
+		t.Fatalf("message id = %q, want msg-1", req.MessageID)
+	}
+}
+
+func TestShopRead_ReceiptPhotoStaysOnTheReceiptPath(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocReceipt, summary: "Got it, Shoprite. Total comes to 12.00."})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "should never be sent"}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	if err := p.Process(context.Background(), mustRaw(t, shopImageMessage("msg-2", ""))); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if reader.count() != 0 {
+		t.Fatal("a receipt photo must not be read as a shop document")
+	}
+	if orch.lastMessage != "Got it, Shoprite. Total comes to 12.00." {
+		t.Fatalf("orchestrator saw %q, want the receipt summary", orch.lastMessage)
+	}
+	if len(rec.all()) == 0 {
+		t.Fatal("expected the receipt reply to be sent")
+	}
+}
+
+func TestShopRead_RedeliveryIsReadOnce(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocStockBook, summary: "a handwritten shop record"})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "7 rows read.", DocID: "doc-1", DocType: "stock_book"}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	raw := mustRaw(t, shopImageMessage("msg-3", ""))
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	rec.waitFor(t, 2)
+	// The bridge redelivers the same message (same msg_id) — the owner must not
+	// be charged for, or messaged with, a second read.
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatalf("redelivery Process: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	if reader.count() != 1 {
+		t.Fatalf("reader calls = %d, want exactly 1 for a redelivered message", reader.count())
+	}
+	if got := len(rec.all()); got != 2 {
+		t.Fatalf("sent %d messages, want the holding bubble and one answer: %v", got, texts(rec.all()))
+	}
+}
+
+func TestShopRead_FailureFailsClosedWithNoFigures(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocStockBook, summary: "a handwritten shop record"})
+	p.SetShopReader(&fakeShopReader{err: errors.New("connection refused")})
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	if err := p.Process(context.Background(), mustRaw(t, shopImageMessage("msg-4", ""))); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	got := rec.waitFor(t, 2)
+	if got[0].Text != shopHoldingText {
+		t.Fatalf("first bubble = %q", got[0].Text)
+	}
+	if got[1].Text != shopUnreadableText {
+		t.Fatalf("answer = %q, want the fail-closed retake line", got[1].Text)
+	}
+}
+
+func TestShopRead_PanicStillAnswersTheOwner(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocDeliveryNote, summary: "a delivery note"})
+	p.SetShopReader(&fakeShopReader{panicOn: true})
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	if err := p.Process(context.Background(), mustRaw(t, shopImageMessage("msg-5", ""))); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	got := rec.waitFor(t, 2)
+	if got[1].Text != shopUnreadableText {
+		t.Fatalf("answer = %q, want the fail-closed retake line after a panic", got[1].Text)
+	}
+}
+
+func TestShopRead_DeclinedPageKeepsTheReadersRetake(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocStockBook, summary: "a handwritten shop record"})
+	p.SetShopReader(&fakeShopReader{result: &ShopReadResult{
+		ReplyText: "I can't read the left-hand column clearly. Send it again flat?",
+		DocType:   "other",
+		Flags:     []string{"failed"},
+	}})
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	if err := p.Process(context.Background(), mustRaw(t, shopImageMessage("msg-6", ""))); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	got := rec.waitFor(t, 2)
+	if got[1].Text != "I can't read the left-hand column clearly. Send it again flat?" {
+		t.Fatalf("answer = %q, want the reader's own retake line", got[1].Text)
+	}
+}
+
+func TestShopRead_OversizedPageIsRefusedBeforeTheRead(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "nope"}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	resolved := &ResolvedUser{UserID: uuid.New(), Identity: &entities.PlatformIdentity{ID: uuid.New()}}
+	page := &shopPage{
+		Kind:    ShopKindStockBook,
+		FileB64: strings.Repeat("A", maxShopReadBase64Bytes+1),
+		MIME:    "image/jpeg",
+	}
+	if err := p.handleShopDocument(context.Background(), shopImageMessage("msg-7", ""), resolved, page); err != nil {
+		t.Fatalf("handleShopDocument: %v", err)
+	}
+	got := rec.waitFor(t, 1)
+	if got[0].Text != shopTooLargeText {
+		t.Fatalf("answer = %q, want the too-large refusal", got[0].Text)
+	}
+	if reader.count() != 0 {
+		t.Fatal("an oversized page must not cost a read")
+	}
+}
+
+func TestShopRead_UnlinkedSenderIsNotRead(t *testing.T) {
+	repo := newFakeRepo() // nobody linked
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	p.SetReceiptVision(&fakeShopVision{kind: document.DocStockBook, summary: "a handwritten shop record"})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "nope"}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	if err := p.Process(context.Background(), mustRaw(t, shopImageMessage("msg-8", ""))); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if reader.count() != 0 {
+		t.Fatal("an unlinked sender has no account to store a document against")
+	}
+	got := rec.waitFor(t, 1)
+	if !strings.Contains(got[0].Text, "link") {
+		t.Fatalf("answer = %q, want the link-your-account reply", got[0].Text)
+	}
+}
+
+func TestShopRead_PdfInvoiceGoesToTheReader(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	pdf := shopTestPDF(
+		"(WIGMORE NIGERIA LTD) Tj (Invoice Number WGT-2610-0417) Tj (Bill To Mama Tobi Stores) Tj (Due Date 17/10/2026) Tj",
+		true,
+	)
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText: "Wigmore: 6 cartons, total N180,000, N150,000 paid, N30,000 left.",
+		DocID:     "doc-2",
+		DocType:   "invoice",
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	msg := shopDocumentMessage("msg-9", "the distributor's invoice", pdf)
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	got := rec.waitFor(t, 2)
+	if got[1].Text != reader.result.ReplyText {
+		t.Fatalf("answer = %q, want the reader's read", got[1].Text)
+	}
+	if reader.count() != 1 {
+		t.Fatalf("reader calls = %d, want 1", reader.count())
+	}
+	req := reader.last()
+	if req.DocHint != "invoice" {
+		t.Fatalf("doc hint = %q, want invoice", req.DocHint)
+	}
+	if req.MIME != "application/pdf" {
+		t.Fatalf("mime = %q, want application/pdf", req.MIME)
+	}
+	if req.Caption != "the distributor's invoice" {
+		t.Fatalf("caption = %q", req.Caption)
+	}
+	if req.FileB64 != msg.DocumentB64 {
+		t.Fatal("the reader must get the PDF exactly as it arrived")
+	}
+	if orch.lastMessage != "" {
+		t.Fatalf("orchestrator was handed %q; a PDF invoice must not go through the model", orch.lastMessage)
+	}
+}
+
+func TestShopRead_ScannedStatementStaysOnTheStatementPath(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "nope"}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	// A scan: no text layer at all, so Go has no opinion and the statement
+	// pipeline keeps the file, exactly as before.
+	scan := []byte("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\ntrailer\n<< >>\n%%EOF\n")
+	if err := p.Process(context.Background(), mustRaw(t, shopDocumentMessage("msg-10", "", scan))); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	rec.waitFor(t, 1)
+	if reader.count() != 0 {
+		t.Fatal("a scanned statement must not be sent to the shop reader")
+	}
+	if handler.linkedCalls != 1 {
+		t.Fatalf("statement enqueue calls = %d, want 1", handler.linkedCalls)
+	}
+}
+
+func TestMemoryMessageClaimStore(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryMessageClaimStore()
+
+	first, err := store.SetNX(ctx, "k", 1, time.Minute)
+	if err != nil || !first {
+		t.Fatalf("first claim = (%v, %v), want (true, nil)", first, err)
+	}
+	second, err := store.SetNX(ctx, "k", 1, time.Minute)
+	if err != nil {
+		t.Fatalf("second claim errored: %v", err)
+	}
+	if second {
+		t.Fatal("the same key must not be claimable twice")
+	}
+	if _, err := store.SetNX(ctx, "  ", 1, time.Minute); err == nil {
+		t.Fatal("an empty key must be refused")
+	}
+
+	// An expired claim is available again, and the entry is dropped with it.
+	if _, err := store.SetNX(ctx, "short", 1, 5*time.Millisecond); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	again, err := store.SetNX(ctx, "short", 1, time.Minute)
+	if err != nil || !again {
+		t.Fatalf("expired claim = (%v, %v), want (true, nil)", again, err)
+	}
+}
+
+func TestShopKindHint(t *testing.T) {
+	cases := map[string]string{
+		"stock_book":     "stock_book",
+		"invoice":        "invoice",
+		"delivery_note":  "delivery_note",
+		"receipt":        "",
+		"unknown":        "",
+		"":               "",
+		"bank statement": "",
+	}
+	for in, want := range cases {
+		if got := shopKindHint(in); got != want {
+			t.Fatalf("shopKindHint(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestShopClaimKeyPrefersTheMessageID(t *testing.T) {
+	page := &shopPage{FileB64: "abc"}
+	withID := shopClaimKey(InboundMessage{Platform: entities.PlatformIMessage, MsgID: "m-1"}, page)
+	if !strings.Contains(withID, "m-1") {
+		t.Fatalf("claim key %q must carry the bridge message id", withID)
+	}
+	// No message id (older bridge): the page's own bytes still identify it, so
+	// the same photo is not read twice.
+	withoutID := shopClaimKey(InboundMessage{Platform: entities.PlatformIMessage}, page)
+	samePage := shopClaimKey(InboundMessage{Platform: entities.PlatformIMessage}, &shopPage{FileB64: "abc"})
+	otherPage := shopClaimKey(InboundMessage{Platform: entities.PlatformIMessage}, &shopPage{FileB64: "xyz"})
+	if withoutID != samePage {
+		t.Fatal("the same page bytes must claim the same key")
+	}
+	if withoutID == otherPage {
+		t.Fatal("different page bytes must claim different keys")
+	}
+}

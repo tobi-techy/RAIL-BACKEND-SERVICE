@@ -9,9 +9,11 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/document"
 	"go.uber.org/zap"
 )
 
@@ -294,6 +296,9 @@ type Processor struct {
 	babyStepsSeeder  BabyStepsSeeder
 	voice            VoiceTranscoder
 	vision           ReceiptVision
+	shop             ShopReader
+	shopClaims       MessageClaimStore
+	shopReadTimeout  time.Duration
 	statementHandler StatementAttachmentHandler
 	optOut           OptOutStore
 	emailBackfill    AccountReader
@@ -476,19 +481,39 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		msg.Text = transcript
 	}
 
+	// Which attachment the shop reader owns, if any. Filled in by the two
+	// branches below and acted on once the sender's account is known.
+	var shopDoc *shopPage
+
 	// OCR a receipt/photo attachment into a quick summary before anything else
 	// sees it. The summary becomes the message text so the resolver, onboarder,
-	// and orchestrator all handle it like a normal turn.
+	// and orchestrator all handle it like a normal turn. The same pass reports
+	// the page's kind, which is how a shop page is recognised without reading
+	// the same photo twice.
 	if msg.IsImage {
 		if !p.visionEnabled() {
 			return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
 		}
-		summary, err := p.summarizeImage(ctx, msg)
+		read, err := p.readImageAttachment(ctx, msg)
 		if err != nil {
 			log.Printf("image OCR failed for %s: %v", msg.UserID, err)
 			return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
 		}
-		if strings.TrimSpace(summary) == "" {
+		summary := strings.TrimSpace(read.Summary)
+		if read.Kind.IsShopDocument() && p.shopEnabled() {
+			// A stock book or a delivery note is read by the reader, never
+			// summarized here: its figures have to come back exactly as
+			// written, checked by code. Summary carries a plain description of
+			// the page, so a sender who turns out to be unlinked still gets an
+			// answered onboarding turn instead of an empty one.
+			shopDoc = &shopPage{
+				Kind:    ShopReadKind(read.Kind),
+				FileB64: msg.ImageB64,
+				MIME:    msg.ImageMime,
+				Caption: strings.TrimSpace(msg.Text),
+			}
+		}
+		if summary == "" && shopDoc == nil {
 			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
 		}
 		msg.Text = summary
@@ -500,7 +525,23 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		if err != nil {
 			return p.sendErrorMessage(ctx, msg, err.Error())
 		}
-		statementAttachment = &attachment
+		// A PDF can be a distributor invoice or a delivery note rather than a
+		// bank statement, and the statement parser would misread every line of
+		// one. Go reads the file's own text layer to tell them apart: a scanned
+		// statement carries no text and stays on the statement path untouched.
+		if p.shopEnabled() {
+			if kind := document.ClassifyPDF(attachment.Data); kind.IsShopDocument() || kind == document.DocInvoice {
+				shopDoc = &shopPage{
+					Kind:    ShopReadKind(kind),
+					FileB64: msg.DocumentB64,
+					MIME:    attachment.MIMEType,
+					Caption: strings.TrimSpace(msg.Text),
+				}
+			}
+		}
+		if shopDoc == nil {
+			statementAttachment = &attachment
+		}
 	}
 
 	resolved, err := p.resolveLinkedUser(ctx, msg)
@@ -525,6 +566,12 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	}
 
 	if resolved != nil {
+		// A shop page goes to the reader, never to the guest brain: its reply is
+		// checked arithmetic, and no model may restate a figure. Runs after
+		// resolution so the document is stored against a real owner.
+		if shopDoc != nil && p.shopEnabled() {
+			return p.handleShopDocument(ctx, msg, resolved, shopDoc)
+		}
 		if statementAttachment != nil {
 			return p.handleLinkedStatement(ctx, msg, resolved, statementAttachment)
 		}
@@ -1121,15 +1168,15 @@ func (p *Processor) transcribe(ctx context.Context, msg InboundMessage) (string,
 	return p.voice.Transcribe(ctx, audio, msg.AudioMime)
 }
 
-func (p *Processor) summarizeImage(ctx context.Context, msg InboundMessage) (string, error) {
+func (p *Processor) readImageAttachment(ctx context.Context, msg InboundMessage) (*AttachmentRead, error) {
 	image, err := base64.StdEncoding.DecodeString(msg.ImageB64)
 	if err != nil {
-		return "", fmt.Errorf("decode image: %w", err)
+		return nil, fmt.Errorf("decode image: %w", err)
 	}
 	if len(image) == 0 {
-		return "", fmt.Errorf("empty image")
+		return nil, fmt.Errorf("empty image")
 	}
-	return p.vision.SummarizeReceipt(ctx, image, msg.ImageMime)
+	return p.vision.ReadImage(ctx, image, msg.ImageMime)
 }
 
 func (p *Processor) synthesizeVoice(ctx context.Context, identity *entities.PlatformIdentity, threadID, text string) (*OutboundMessage, error) {

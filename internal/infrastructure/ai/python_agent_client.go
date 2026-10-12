@@ -112,6 +112,7 @@ type PythonAgentClient struct {
 	jwtTTL             time.Duration
 	railServiceKey     string
 	httpClient         *http.Client
+	shopHTTPClient     *http.Client
 	logger             *zap.Logger
 	notifyDebitEnabled bool
 }
@@ -126,6 +127,12 @@ type PythonAgentClientConfig struct {
 	// RailServiceKey is the shared X-Rail-Service-Key. Required for the
 	// guest-interview merge, which Python only accepts from Go.
 	RailServiceKey string
+	// ShopReadTimeout bounds one shop-document read (a stock book, a
+	// distributor invoice or a delivery note texted to Miriam). Those are
+	// vision reads over a whole page and take tens of seconds — far past
+	// Timeout above — so they get their own HTTP client. Zero means the
+	// default (150s).
+	ShopReadTimeout time.Duration
 }
 
 // NewPythonAgentClient builds a client for the Python agent.
@@ -137,12 +144,17 @@ func NewPythonAgentClient(cfg PythonAgentClientConfig, logger *zap.Logger) *Pyth
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
+	shopTimeout := cfg.ShopReadTimeout
+	if shopTimeout <= 0 {
+		shopTimeout = 150 * time.Second
+	}
 	return &PythonAgentClient{
 		baseURL:            strings.TrimRight(cfg.BaseURL, "/"),
 		jwtSecret:          cfg.JWTSecret,
 		jwtTTL:             cfg.JWTTTL,
 		railServiceKey:     cfg.RailServiceKey,
 		httpClient:         &http.Client{Timeout: timeout},
+		shopHTTPClient:     &http.Client{Timeout: shopTimeout},
 		logger:             logger,
 		notifyDebitEnabled: cfg.NotifyDebitEnabled,
 	}
