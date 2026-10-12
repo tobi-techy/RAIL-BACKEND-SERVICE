@@ -564,6 +564,15 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		// — is handed to the reader, which can rasterise the page and see it.
 		if p.shopEnabled() {
 			kind := document.ClassifyPDF(attachment.Data)
+			// What the file's own text layer said, on every PDF: the difference
+			// between a declined invoice and a readable statement is invisible
+			// from the outside otherwise.
+			p.logger.Info("PDF text layer classified",
+				zap.String("platform", string(msg.Platform)),
+				zap.String("msg_id", msg.MsgID),
+				zap.String("kind", string(kind)),
+				zap.Int("bytes", len(attachment.Data)),
+			)
 			switch {
 			case kind.IsShopDocument() || kind == document.DocInvoice:
 				shopDoc = &shopPage{
