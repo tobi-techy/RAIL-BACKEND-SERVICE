@@ -78,6 +78,43 @@ The scanned PDF costs more than its PNG because rasterising a full page spends
 more image tokens than the smaller photo does. Two pages and three forms is what
 has been read live; the page itself is a fixture, not a real trader's book.
 
+## Full stack without Docker
+
+The whole chain runs natively: no containers, no AMQP. Inbound is processed
+in-request (`HandleInbound` calls `processor.Process` directly; the platform
+package contains no AMQP code), so the broker is only needed by deployments that
+consume from a queue instead of HTTP.
+
+    # 1. Postgres + Redis natively, then the reader's own schema
+    createdb miriam_local
+    DATABASE_URL=postgresql+asyncpg://user@127.0.0.1:5432/miriam_local \
+      .venv/bin/python -m alembic upgrade head          # 003 = shop tables
+    DATABASE_URL=postgresql+asyncpg://user@127.0.0.1:5432/miriam_local \
+      JWT_SECRET=<32+ chars> LLMAPI_API_KEY=... ENVIRONMENT=development \
+      .venv/bin/uvicorn miriam_agent.api.main:app --port 8099
+
+    # 2. The Go backend, against the same Postgres
+    DATABASE_URL=postgres://user@127.0.0.1:5432/rail_sim?sslmode=disable \
+      REDIS_HOST=127.0.0.1 JWT_SECRET=<the same secret> \
+      ENVIRONMENT=development EMAIL_PROVIDER=log EMAIL_ENVIRONMENT=development \
+      PLATFORM_ENABLED=true PLATFORM_BRIDGE_HMAC_SECRET=<shared> \
+      PLATFORM_BRIDGE_BASE_URL=http://127.0.0.1:3100 \
+      PYTHON_AGENT_ENABLED=true PYTHON_AGENT_URL=http://127.0.0.1:8099 \
+      go run ./cmd
+
+Two things bite on the first run: `configs/config.yaml` ships
+`environment: production`, and production validation demands keys a laptop does
+not have (so set `ENVIRONMENT=development`), and the email service needs
+`EMAIL_PROVIDER=log` outside production. The API listens on 8081, not 8080.
+
+What has been proven this way, with the reader on Postgres: a distributor PDF
+(Go classifies its own text layer, no OCR needed) goes bridge-shaped inbound →
+processor → holding bubble at 0.0s → reader on the big tier → checked reply at
+34.1s → `BridgeDispatcher.SendChatMessage` → the bridge's `/send`. Two uploads of
+the same page store **one** `shop_documents` row (`find_by_sha`), and the row,
+its five invoice lines, its trust label and its model path are all readable in
+Postgres afterwards.
+
 ## Known gaps
 
 - The photo trigger is the vision classifier, which needs OCR text to have any
@@ -85,6 +122,16 @@ has been read live; the page itself is a fixture, not a real trader's book.
   receipt path's answer, so PDFs are the dependable case.
 - The bridge does not forward a caption typed with an attachment (`text: ""`), so
   a photo arrives at the reader without the owner's words.
+- A *photo* only reaches the reader when the receipt vision pass has already
+  decided the page is a stock book or delivery note, and that pass needs OCR. On
+  a machine without it, a photo of a stock book is answered as a receipt
+  question. The document path does not have this problem: Go reads a PDF's own
+  text layer by itself.
+- Document attachments are still capped at 4 MiB (`maxStatementAttachmentBytes`)
+  before the shop classification runs, so a 4 to 12 MiB distributor PDF is
+  answered as too large even though the bridge now carries 12 MiB. Raising it
+  changes what the statement path answers for those files, which is why it was
+  left alone.
 - Three forms of two fixture pages have been read live (see above). There is
   still no golden set of real traders' stock books, which is where a handwriting
   model has to earn its keep.

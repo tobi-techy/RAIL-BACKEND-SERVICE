@@ -23,9 +23,16 @@ const (
 	// may drift from server time. The effective replay window is 2× this value.
 	bridgeHMACMaxSkewSeconds = 300
 
-	// bridgeHMACMaxBody caps the body we will read for signing. Statement
-	// attachments are capped at 4 MiB decoded and base64-expand in JSON.
-	bridgeHMACMaxBody = 8 * 1024 * 1024
+	// MaxInboundBodyBytes caps the signed inbound body from the bridge. The
+	// bridge carries photos and PDFs up to 12 MiB; base64 expands a 12 MiB page
+	// to 16 MiB and the JSON envelope adds a little more, so this clears the
+	// largest page the bridge will send. The page's own size is bounded further
+	// down the shop path (maxShopReadBase64Bytes); this cap only decides whether
+	// the page reaches the processor at all.
+	MaxInboundBodyBytes = 20 << 20
+
+	// bridgeHMACMaxBody is the body the signature is computed over.
+	bridgeHMACMaxBody = MaxInboundBodyBytes
 
 	// maxNoncesInMemory caps the number of recent nonces tracked for replay
 	// protection. Emergency eviction removes oldest entries when exceeded.
@@ -159,7 +166,18 @@ func BridgeHMAC(secret string, logger *zap.Logger) gin.HandlerFunc {
 			return
 		}
 		if len(body) > bridgeHMACMaxBody {
-			abortBridgeHMAC(c, logger, "body exceeds maximum size")
+			// 413, not the 401 the other rejections use: a page the bridge was
+			// told it could carry must not look like a bad signature, or the
+			// size problem is hunted in the wrong place.
+			if logger != nil {
+				logger.Warn("bridge HMAC rejected",
+					zap.String("reason", "body exceeds maximum size"),
+					zap.Int("body_bytes", len(body)),
+					zap.Int("max_bytes", bridgeHMACMaxBody),
+					zap.String("path", c.Request.URL.Path),
+				)
+			}
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "body exceeds maximum size"})
 			return
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))
