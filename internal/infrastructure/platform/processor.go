@@ -491,32 +491,63 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 	// the page's kind, which is how a shop page is recognised without reading
 	// the same photo twice.
 	if msg.IsImage {
-		if !p.visionEnabled() {
-			return p.sendErrorMessage(ctx, msg, "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you.")
-		}
-		read, err := p.readImageAttachment(ctx, msg)
-		if err != nil {
-			log.Printf("image OCR failed for %s: %v", msg.UserID, err)
-			return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
-		}
-		summary := strings.TrimSpace(read.Summary)
-		if read.Kind.IsShopDocument() && p.shopEnabled() {
-			// A stock book or a delivery note is read by the reader, never
-			// summarized here: its figures have to come back exactly as
-			// written, checked by code. Summary carries a plain description of
-			// the page, so a sender who turns out to be unlinked still gets an
-			// answered onboarding turn instead of an empty one.
-			shopDoc = &shopPage{
-				Kind:    ShopReadKind(read.Kind),
-				FileB64: msg.ImageB64,
-				MIME:    msg.ImageMime,
-				Caption: strings.TrimSpace(msg.Text),
+		// The answer this photo gets when nobody can read it: kept here so a
+		// reader that declines the page returns to it rather than inventing a
+		// new one.
+		unreadImageText := "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you."
+		// What the vision pass made of the page. Empty means it made nothing of
+		// it — no pass configured, or it looked and could not read a word.
+		summary := ""
+		if p.visionEnabled() {
+			read, err := p.readImageAttachment(ctx, msg)
+			if err != nil {
+				log.Printf("image OCR failed for %s: %v", msg.UserID, err)
+				return p.sendErrorMessage(ctx, msg, "I couldn't read that photo. Try a clearer, top-down shot with the total visible.")
 			}
+			summary = strings.TrimSpace(read.Summary)
+			if read.Kind.IsShopDocument() && p.shopEnabled() {
+				// A stock book or a delivery note is read by the reader, never
+				// summarized here: its figures have to come back exactly as
+				// written, checked by code. Summary carries a plain description
+				// of the page, so a sender who turns out to be unlinked still
+				// gets an answered onboarding turn instead of an empty one.
+				shopDoc = &shopPage{
+					Kind:    ShopReadKind(read.Kind),
+					FileB64: msg.ImageB64,
+					MIME:    msg.ImageMime,
+					Caption: strings.TrimSpace(msg.Text),
+				}
+			}
+			if summary == "" && shopDoc == nil {
+				unreadImageText = "I couldn't make out a receipt in that photo. Try a clearer shot?"
+			}
+			msg.Text = summary
 		}
-		if summary == "" && shopDoc == nil {
-			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
+
+		// Nobody here read a word of this page: either there is no vision pass
+		// to ask, or it looked and had no opinion. A handwritten book whose
+		// text no OCR could read lands here. The reader can see the page, so
+		// hand it over as an unknown image and let the reader decide — and if
+		// the reader declines, the owner gets exactly the answer above, which
+		// is what this photo got before the reader could look at it. A photo
+		// the vision pass *did* read keeps the path it always had.
+		if shopDoc == nil && summary == "" && p.shopEnabled() {
+			shopDoc = &shopPage{
+				Kind:         ShopKindUnknownImage,
+				FileB64:      msg.ImageB64,
+				MIME:         msg.ImageMime,
+				Caption:      strings.TrimSpace(msg.Text),
+				FallbackText: unreadImageText,
+			}
+			p.logger.Info("photo with no classification from Go handed to the reader",
+				zap.String("platform", string(msg.Platform)),
+				zap.String("msg_id", msg.MsgID),
+				zap.Bool("vision_available", p.visionEnabled()),
+			)
 		}
-		msg.Text = summary
+		if shopDoc == nil && summary == "" {
+			return p.sendErrorMessage(ctx, msg, unreadImageText)
+		}
 	}
 
 	var statementAttachment *StatementAttachment

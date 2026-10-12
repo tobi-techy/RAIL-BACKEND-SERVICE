@@ -66,6 +66,11 @@ const (
 	ShopKindStockBook    ShopReadKind = "stock_book"
 	ShopKindInvoice      ShopReadKind = "invoice"
 	ShopKindDeliveryNote ShopReadKind = "delivery_note"
+	// ShopKindUnknownImage is not a classification: it is Go saying it has none
+	// and the reader should decide. A handwritten book whose text no OCR pass
+	// could read arrives like this, and the reader answers with a kind of its
+	// own or declines without figures.
+	ShopKindUnknownImage ShopReadKind = "unknown_image"
 )
 
 // ShopReadRequest is one page handed to the reader on a linked owner's behalf.
@@ -176,6 +181,10 @@ type shopPage struct {
 	// Caption is what the owner typed with the page, kept from before the
 	// vision pass overwrites the turn's text with its own description.
 	Caption string
+	// FallbackText is what this photo would have been answered with before the
+	// reader existed, and what it is answered with when the reader declines it.
+	// Empty means the ordinary fail-closed retake line.
+	FallbackText string
 }
 
 // shopKindHint validates a classification as a hint for the reader. Anything
@@ -185,6 +194,10 @@ func shopKindHint(kind string) string {
 	switch ShopReadKind(strings.TrimSpace(kind)) {
 	case ShopKindStockBook, ShopKindInvoice, ShopKindDeliveryNote:
 		return strings.TrimSpace(kind)
+	case ShopKindUnknownImage:
+		// The one value that is not a claim about the page, so it is passed
+		// through as the request for the reader's own classification.
+		return string(ShopKindUnknownImage)
 	default:
 		return ""
 	}
@@ -340,6 +353,20 @@ func (p *Processor) readShopDocumentAsync(msg InboundMessage, userID uuid.UUID, 
 		}
 
 		text := strings.TrimSpace(result.ReplyText)
+		if text == "" && !result.Failed() {
+			// The reader answered and claimed nothing: it owns none of this
+			// page. For a photo Go could not classify, that means the answer
+			// this photo got before the reader could look at it — so the owner
+			// hears exactly that, not a read-failure line about a read that
+			// never happened.
+			p.logger.Info("shop read declined the page",
+				zap.String("user_id", msg.UserID),
+				zap.String("msg_id", msg.MsgID),
+				zap.String("doc_type", result.DocType),
+				zap.Any("flags", result.Flags),
+			)
+			text = page.FallbackText
+		}
 		if result.Failed() {
 			p.logger.Info("shop read declined the page",
 				zap.String("user_id", msg.UserID),

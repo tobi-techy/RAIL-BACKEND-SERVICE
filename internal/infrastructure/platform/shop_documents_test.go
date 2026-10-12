@@ -530,3 +530,130 @@ func TestShopClaimKeyPrefersTheMessageID(t *testing.T) {
 		t.Fatal("different page bytes must claim different keys")
 	}
 }
+
+// An unknown image: nobody in Go could say what the page is, so the reader is
+// asked to decide. Before this, a handwritten book whose text no OCR pass could
+// read was answered as if Miriam could not look at photos at all.
+func TestShopRead_APhotoNobodyCouldClassifyGoesToTheReaderAsUnknown(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	// No vision pass at all: the state a machine without OCR is in.
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText:  "Mama Tobi, 10/10: 7 items, gap N31,900.",
+		DocID:      "doc-9",
+		DocType:    "stock_book",
+		Confidence: 0.9,
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	msg := shopImageMessage("msg-unknown", "my book")
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	// The read runs off the request, so wait for its answer before asking what
+	// the reader was told.
+	msgs := rec.waitFor(t, 2)
+	if got := msgs[0].Text; got != shopHoldingText {
+		t.Fatalf("first message = %q, want the holding bubble", got)
+	}
+	if got := msgs[1].Text; !strings.Contains(got, "gap N31,900") {
+		t.Fatalf("reader reply = %q, want the reader's own text", got)
+	}
+	if reader.count() != 1 {
+		t.Fatalf("reader calls = %d, want 1: the photo must reach the reader", reader.count())
+	}
+	if got := reader.last().DocHint; got != string(ShopKindUnknownImage) {
+		t.Fatalf("doc hint = %q, want %q", got, ShopKindUnknownImage)
+	}
+	if got := reader.last().Caption; got != "my book" {
+		t.Fatalf("caption = %q, want the owner's words", got)
+	}
+}
+
+// The reader looked and said the page is not one of its kinds. The photo then
+// gets exactly the answer it got before the reader could look at it, never a
+// read-failure line about a read that did not happen.
+func TestShopRead_ADeclinedUnknownImageKeepsThePhotosOwnAnswer(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText: "",
+		DocType:   "receipt",
+		Flags:     []string{"not a shop document (receipt)"},
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	msg := shopImageMessage("msg-declined", "")
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	msgs := rec.waitFor(t, 2)
+	if got := msgs[1].Text; got != "I can't look at photos just yet, but tell me the merchant and total and I'll log or split it for you." {
+		t.Fatalf("declined photo answered %q, want the photo's own pre-reader answer", got)
+	}
+}
+
+// A read that failed is not a decline: the owner is told the read failed, and
+// never handed the receipt answer for a page the reader was willing to read.
+func TestShopRead_AFailedReadNeverUsesThePhotoFallback(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	reader := &fakeShopReader{result: &ShopReadResult{Flags: []string{"failed"}}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+
+	msg := shopImageMessage("msg-failed", "")
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	msgs := rec.waitFor(t, 2)
+	if got := msgs[1].Text; got != shopUnreadableText {
+		t.Fatalf("failed read answered %q, want the retake line", got)
+	}
+}
+
+// A photo the vision pass did read keeps the path it always had: Go's own
+// summary, the orchestrator, no reader and no second spend on the same image.
+func TestShopRead_APhotoTheVisionPassReadKeepsItsOwnPath(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, rec := shopTestProcessor(repo, orch)
+
+	p.SetReceiptVision(&fakeShopVision{
+		kind:    document.DocReceipt,
+		summary: "Coffee shop receipt, N2,300 on 10/10/2026",
+	})
+	reader := &fakeShopReader{result: &ShopReadResult{ReplyText: "should never be asked"}}
+	p.SetShopReader(reader)
+
+	msg := shopImageMessage("msg-receipt", "")
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+
+	if reader.count() != 0 {
+		t.Fatalf("reader calls = %d, want 0 for a receipt Go read itself", reader.count())
+	}
+	if orch.lastMessage == "" || !strings.Contains(orch.lastMessage, "Coffee shop receipt") {
+		t.Fatalf("orchestrator saw %q, want the vision summary", orch.lastMessage)
+	}
+	msgs := rec.waitFor(t, 1)
+	if got := msgs[0].Text; got == shopHoldingText {
+		t.Fatalf("a receipt must not get a shop holding bubble")
+	}
+}

@@ -14,7 +14,9 @@ bridge's /send at the other.
 
 Environment: GO_URL (default http://127.0.0.1:8081), BRIDGE_URL (default
 http://127.0.0.1:3100), E2E_DATABASE_URL, BRIDGE_HMAC_SECRET, E2E_HANDLE,
-E2E_MSG_ID. A PDF is sent as a document, anything else as a photo.
+E2E_MSG_ID, E2E_CAPTION (default "stock book"; set it empty to send a bare
+photo, which is what Go then has to ask the reader to classify). A PDF is sent
+as a document, anything else as a photo.
 """
 
 from __future__ import annotations
@@ -38,6 +40,10 @@ DB = os.getenv("E2E_DATABASE_URL", "postgres://postgres:postgres@localhost:5432/
 PLATFORM = os.getenv("E2E_PLATFORM", "imessage")
 HANDLE = os.getenv("E2E_HANDLE", "shop-e2e@rail.sim")
 MSG_ID = os.getenv("E2E_MSG_ID", f"shop-e2e-{int(time.time())}")
+# What the owner typed with the page. Empty is a bare photo, which is how a
+# handwritten book with no caption arrives — Go then has nothing to classify it
+# with and asks the reader to decide.
+CAPTION = os.getenv("E2E_CAPTION", "stock book")
 # One read is tens of seconds on the big tier; two messages means done.
 WAIT_SECONDS = int(os.getenv("E2E_WAIT_SECONDS", "150"))
 
@@ -127,7 +133,7 @@ def main() -> int:
         "thread_id": owner,
         "msg_id": MSG_ID,
         "turn_id": MSG_ID,
-        "text": "stock book",
+        "text": CAPTION,
     }
     if as_document:
         body.update(

@@ -118,20 +118,24 @@ processor → holding bubble at 0.0s → reader on the big tier → checked repl
 34.1s → `BridgeDispatcher.SendChatMessage` → the bridge's `/send`. Two uploads of
 the same page store **one** `shop_documents` row (`find_by_sha`), and the row,
 its five invoice lines, its trust label and its model path are all readable in
-Postgres afterwards.
+Postgres afterwards. A bare *photo* with no caption and no OCR pass at all
+(`E2E_CAPTION=""` in the same harness) reaches the reader as `unknown_image`,
+comes back as `stock_book` with `page classified by the reader: stock_book` in
+its stored flags at 42.2s, and when the reader instead declines the page the
+owner gets that photo's own pre-reader line, once more byte for byte.
 
 ## Known gaps
 
-- The photo trigger is the vision classifier, which needs OCR text to have any
-  opinion. A handwritten page whose text the sidecar cannot read at all keeps the
-  receipt path's answer, so PDFs are the dependable case.
+- A photo Go cannot classify is classified by the reader instead: Go hands the
+  page over as `unknown_image`, the reader spends one cheap call naming it, and
+  only the reader's own kinds are read. A page nobody can name — a receipt, a
+  landscape, a blank shot — is declined and answered with the exact line that
+  photo got before the reader existed. So a photo of a handwritten book is read
+  on a machine with no OCR at all, at the price of that one extra call; with OCR
+  the vision pass still classifies first, and the call is skipped. PDFs remain
+  the dependable case.
 - The bridge does not forward a caption typed with an attachment (`text: ""`), so
   a photo arrives at the reader without the owner's words.
-- A *photo* only reaches the reader when the receipt vision pass has already
-  decided the page is a stock book or delivery note, and that pass needs OCR. On
-  a machine without it, a photo of a stock book is answered as a receipt
-  question. The document path does not have this problem: Go reads a PDF's own
-  text layer by itself.
 - Document attachments are still capped at 4 MiB (`maxStatementAttachmentBytes`)
   before the shop classification runs, so a 4 to 12 MiB distributor PDF is
   answered as too large even though the bridge now carries 12 MiB. Raising it
