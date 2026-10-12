@@ -102,11 +102,17 @@ export interface PersistedInboundBuffer {
 }
 
 const REPLY_QUOTE_MAX_CHARS = 200;
-const MAX_STATEMENT_BYTES = 4 * 1024 * 1024;
-// Images and voice notes share the PDF statement cap. Without it they are
-// read() whole into memory and base64'd (+37%) into the POST body — one large
-// iMessage photo per turn was enough to spike bridge memory.
-const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
+// Attachments are read() whole into memory and base64'd (+37%) into the POST
+// body, so this is a memory bound, not a policy one. 12MB carries a phone photo
+// of a page (3-6MB, the shop reader's own case) or a statement PDF; the backend
+// downsizes before any model sees it. Voice notes keep their own smaller cap
+// below — they have nothing to gain from the extra room.
+export const MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024;
+const MAX_STATEMENT_BYTES = MAX_ATTACHMENT_BYTES;
+const MAX_MEDIA_BYTES = MAX_ATTACHMENT_BYTES;
+// A long voice note is buffered and base64'd twice on this path and transcribed
+// off-process; 4MB is minutes of speech.
+const MAX_VOICE_BYTES = 4 * 1024 * 1024;
 
 /**
  * Spectrum's Message carries `direction: "inbound" | "outbound"`. Poll votes,
@@ -741,7 +747,7 @@ export async function routeInboundContent(
     case "voice": {
       await debouncer.flush(ctx.threadID);
       const declared = (content as { size?: number }).size;
-      if (typeof declared === "number" && declared > MAX_MEDIA_BYTES) {
+      if (typeof declared === "number" && declared > MAX_VOICE_BYTES) {
         log.warn({ bytes: declared }, "oversized voice note (size metadata) — posting notice");
         await postToBackend(INBOUND_PATH, {
           ...basePayload(ctx, message.id),
@@ -755,7 +761,7 @@ export async function routeInboundContent(
       let audioB64: string;
       try {
         const buf = await content.read();
-        if (buf.byteLength > MAX_MEDIA_BYTES) {
+        if (buf.byteLength > MAX_VOICE_BYTES) {
           log.warn({ bytes: buf.byteLength }, "oversized voice note — posting notice");
           await postToBackend(INBOUND_PATH, {
             ...basePayload(ctx, message.id),
