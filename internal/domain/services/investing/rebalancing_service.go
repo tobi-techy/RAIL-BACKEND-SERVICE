@@ -297,11 +297,17 @@ func (s *RebalancingService) ExecuteRebalancingPlan(ctx context.Context, userID 
 	}
 
 	// Update last rebalanced timestamp
-	config, _ := s.configRepo.GetByID(ctx, plan.ConfigID, userID)
-	if config != nil {
+	config, err := s.configRepo.GetByID(ctx, plan.ConfigID, userID)
+	if err != nil {
+		s.logger.Warn("Failed to load rebalancing config for timestamp update",
+			zap.String("config_id", plan.ConfigID.String()), zap.Error(err))
+	} else if config != nil {
 		now := time.Now()
 		config.LastRebalancedAt = &now
-		_ = s.configRepo.Update(ctx, config)
+		if err := s.configRepo.Update(ctx, config); err != nil {
+			s.logger.Warn("Failed to record rebalanced timestamp",
+				zap.String("config_id", plan.ConfigID.String()), zap.Error(err))
+		}
 	}
 
 	s.logger.Info("Rebalancing executed",
@@ -326,7 +332,10 @@ func (s *RebalancingService) CheckDrift(ctx context.Context, userID uuid.UUID, c
 		}
 	}
 
-	config, _ := s.configRepo.GetByID(ctx, configID, userID)
+	config, err := s.configRepo.GetByID(ctx, configID, userID)
+	if err != nil {
+		return false, decimal.Zero, err
+	}
 	needsRebalance := config != nil && maxDrift.GreaterThan(config.ThresholdPct)
 
 	return needsRebalance, maxDrift, nil
