@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/authz"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
 	"github.com/shopspring/decimal"
@@ -21,11 +22,12 @@ type UserLookup interface {
 type Service struct {
 	repo   *repositories.SharedGoalRepository
 	users  UserLookup
+	authz  authz.Authorizer
 	logger *zap.Logger
 }
 
-func NewService(repo *repositories.SharedGoalRepository, users UserLookup, logger *zap.Logger) *Service {
-	return &Service{repo: repo, users: users, logger: logger}
+func NewService(repo *repositories.SharedGoalRepository, users UserLookup, guard authz.Authorizer, logger *zap.Logger) *Service {
+	return &Service{repo: repo, users: users, authz: guard, logger: logger}
 }
 
 // Create creates a new shared goal and adds the creator as a member.
@@ -76,8 +78,13 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, req *CreateGoalR
 	return goal, nil
 }
 
-// Get returns a goal with members.
-func (s *Service) Get(ctx context.Context, goalID uuid.UUID) (*entities.SharedGoal, error) {
+// Get returns a goal with members. The caller must be a member of the goal;
+// a non-member gets authz.ErrNotAuthorized (which handlers surface as 404) and
+// the goal is never loaded.
+func (s *Service) Get(ctx context.Context, actorID, goalID uuid.UUID) (*entities.SharedGoal, error) {
+	if err := s.authz.RequireMembership(ctx, actorID, authz.SubjectSharedGoal, goalID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetByID(ctx, goalID)
 }
 
@@ -93,10 +100,9 @@ func (s *Service) Contribute(ctx context.Context, userID, goalID uuid.UUID, req 
 		return nil, fmt.Errorf("invalid amount")
 	}
 
-	// Verify user is a member
-	_, err = s.repo.GetMember(ctx, goalID, userID)
-	if err != nil {
-		return nil, fmt.Errorf("not a member of this goal")
+	// Verify user is a member through the same seam every read uses.
+	if err := s.authz.RequireMembership(ctx, userID, authz.SubjectSharedGoal, goalID); err != nil {
+		return nil, err
 	}
 
 	contrib := &entities.SharedGoalContribution{
@@ -178,13 +184,21 @@ func (s *Service) GetPendingInvites(ctx context.Context, userID uuid.UUID) ([]en
 	return s.repo.GetPendingInvites(ctx, userID)
 }
 
-// GetContributions returns recent contributions for a goal.
-func (s *Service) GetContributions(ctx context.Context, goalID uuid.UUID, limit int) ([]entities.SharedGoalContribution, error) {
+// GetContributions returns recent contributions for a goal. The caller must be
+// a member; a non-member is refused before any row is read.
+func (s *Service) GetContributions(ctx context.Context, actorID, goalID uuid.UUID, limit int) ([]entities.SharedGoalContribution, error) {
+	if err := s.authz.RequireMembership(ctx, actorID, authz.SubjectSharedGoal, goalID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetContributions(ctx, goalID, limit)
 }
 
-// GetLeaderboard returns members ranked by contribution.
-func (s *Service) GetLeaderboard(ctx context.Context, goalID uuid.UUID) ([]entities.SharedGoalMember, error) {
+// GetLeaderboard returns members ranked by contribution. The caller must be a
+// member; a non-member is refused before any row is read.
+func (s *Service) GetLeaderboard(ctx context.Context, actorID, goalID uuid.UUID) ([]entities.SharedGoalMember, error) {
+	if err := s.authz.RequireMembership(ctx, actorID, authz.SubjectSharedGoal, goalID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetLeaderboard(ctx, goalID)
 }
 
@@ -196,13 +210,13 @@ func (s *Service) Leave(ctx context.Context, userID, goalID uuid.UUID) error {
 // --- Request types ---
 
 type CreateGoalRequest struct {
-	Name        string  `json:"name" binding:"required"`
-	Description *string `json:"description"`
-	TargetAmount string `json:"target_amount" binding:"required"`
-	Currency    string  `json:"currency"`
-	Deadline    *string `json:"deadline"`
-	Visibility  string  `json:"visibility"`
-	CoverEmoji  string  `json:"icon_name"`
+	Name         string  `json:"name" binding:"required"`
+	Description  *string `json:"description"`
+	TargetAmount string  `json:"target_amount" binding:"required"`
+	Currency     string  `json:"currency"`
+	Deadline     *string `json:"deadline"`
+	Visibility   string  `json:"visibility"`
+	CoverEmoji   string  `json:"icon_name"`
 }
 
 type ContributeRequest struct {

@@ -1498,7 +1498,7 @@ func (c *Container) initializeDomainServices() error {
 	c.FinancialObligationService = obligationservice.NewService(c.FinancialObligationRepo)
 	automationAdapter := &fundsTransfererAdapter{ledger: c.LedgerService, logger: c.ZapLog}
 	c.AutomationService = automation.NewService(c.AutomationRepo, automationAdapter, automationAdapter, c.ZapLog)
-	c.SharedGoalService = sharedgoal.NewService(c.SharedGoalRepo, &sharedGoalUserLookupAdapter{repo: c.UserRepo}, c.ZapLog)
+	c.SharedGoalService = sharedgoal.NewService(c.SharedGoalRepo, &sharedGoalUserLookupAdapter{repo: c.UserRepo}, c.AuthzGuard, c.ZapLog)
 
 	// Wire optional automation dependencies
 	if c.NotificationService != nil {
