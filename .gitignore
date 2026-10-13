@@ -35,8 +35,12 @@ go.work
 .env.bak
 *.env
 .env.temp
+.env.*
 !.env.example
 # CRITICAL: Never commit environment files with actual secrets
+
+# Agent session transcripts (contain prompts, tool output and pasted credentials)
+*-session.jsonl
 
 # Security sensitive files
 *.key
