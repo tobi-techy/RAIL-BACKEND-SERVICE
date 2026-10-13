@@ -18,13 +18,20 @@ import (
 func guestSourceAdapter(t *testing.T, seen *[]string) *pythonGuestCompleterAdapter {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
 		var body struct {
 			MessageSource string `json:"message_source"`
 		}
-		_ = json.Unmarshal(raw, &body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body is not json: %v", err)
+		}
 		*seen = append(*seen, body.MessageSource)
-		_, _ = w.Write([]byte(`{"response":"hi"}`))
+		if _, err := w.Write([]byte(`{"response":"hi"}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return &pythonGuestCompleterAdapter{
