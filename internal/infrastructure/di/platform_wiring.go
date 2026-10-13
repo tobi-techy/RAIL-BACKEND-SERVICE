@@ -228,6 +228,12 @@ func (c *Container) initializePlatformMessaging() {
 			}
 			// Enables the STOP/START handling in Process. The same store backs the
 			// outbound suppression above, so the two halves cannot drift apart.
+			// One provider message is one turn across restarts and replicas.
+			if dedupe := platform.NewInboundDeduper(c.RedisClient, c.ZapLog); dedupe != nil {
+				proc.SetInboundDeduper(dedupe)
+			} else {
+				c.ZapLog.Warn("inbound dedupe disabled: no redis client; replays past the bridge's 60s memory run twice")
+			}
 			proc.SetOptOutStore(optOutRepo)
 			// One-time ask for a real address on accounts still carrying the
 			// opaque placeholder from a phone-first chat signup.

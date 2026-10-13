@@ -104,3 +104,31 @@ func TestConfirmationTapCarriesNoMessage(t *testing.T) {
 		t.Fatalf("a tap has no text, so no source: %v", bodies[0])
 	}
 }
+
+func TestChatForwardsTheProviderMessageID(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		bodies = append(bodies, body)
+		_, _ = w.Write([]byte(`{"response":"ok"}`))
+	}))
+	defer srv.Close()
+	client := NewPythonAgentClient(PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "test-secret", JWTTTL: time.Minute}, zap.NewNop())
+
+	ctx := entities.WithInboundMessageID(context.Background(), "whatsapp:wamid.X1")
+	if _, err := client.Chat(ctx, uuid.New(), "a@b.c", "user", "c", "hello", entities.TextSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if bodies[0]["message_id"] != "whatsapp:wamid.X1" {
+		t.Fatalf("message_id = %v", bodies[0]["message_id"])
+	}
+
+	if _, err := client.Chat(context.Background(), uuid.New(), "a@b.c", "user", "c", "hello", entities.TextSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := bodies[1]["message_id"]; has {
+		t.Fatalf("no id in context, so none on the wire: %v", bodies[1])
+	}
+}

@@ -65,7 +65,10 @@ type PythonChatResponse struct {
 	Name           string                  `json:"name,omitempty"`
 	Messages       []string                `json:"messages,omitempty"`
 	Reaction       string                  `json:"reaction,omitempty"`
-	Share          *PythonChatShare        `json:"share,omitempty"`
+	// Duplicate means Python is still running this message's first delivery, so
+	// there is no reply to send from this one.
+	Duplicate bool             `json:"duplicate,omitempty"`
+	Share     *PythonChatShare `json:"share,omitempty"`
 }
 
 // PythonChatDocument is a linked statement scan forwarded from Go's durable
@@ -85,7 +88,10 @@ type pythonChatRequest struct {
 	Message string `json:"message"`
 	// MessageSource says whether Message was typed or generated. Python refuses
 	// to route generated text into the money path.
-	MessageSource  entities.TextSource `json:"message_source,omitempty"`
+	MessageSource entities.TextSource `json:"message_source,omitempty"`
+	// MessageID is the provider's id for the inbound message, platform-scoped.
+	// Python runs a given id once and answers a replay from its record.
+	MessageID      string              `json:"message_id,omitempty"`
 	ConversationID string              `json:"conversation_id"`
 	ConfirmID      string              `json:"confirm_id,omitempty"`
 	Yes            *bool               `json:"yes,omitempty"`
@@ -203,6 +209,7 @@ func (c *PythonAgentClient) Chat(ctx context.Context, userID uuid.UUID, email, r
 	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:        message,
 		MessageSource:  source,
+		MessageID:      entities.InboundMessageIDFromContext(ctx),
 		ConversationID: conversationID,
 	})
 }
