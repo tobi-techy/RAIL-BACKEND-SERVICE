@@ -88,7 +88,7 @@ type SharedGoalMember struct {
 	CreatedAt           time.Time       `json:"created_at" db:"created_at"`
 
 	// Joined
-	RailTag  string `json:"rail_tag,omitempty" db:"-"`
+	RailTag  string `json:"rail_tag,omitempty" db:"rail_tag"`
 	Username string `json:"username,omitempty" db:"-"`
 }
 

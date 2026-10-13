@@ -1,6 +1,7 @@
 package investing
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -8,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/authz"
 	"github.com/rail-service/rail_service/internal/domain/services/sharedgoal"
 )
 
@@ -63,15 +65,21 @@ func (h *SharedGoalHandler) ListGoals(c *gin.Context) {
 
 // GetGoal handles GET /v1/goals/shared/:id
 func (h *SharedGoalHandler) GetGoal(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.SendUnauthorized(c, "unauthorized")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid goal ID")
 		return
 	}
 
-	goal, err := h.service.Get(c.Request.Context(), id)
+	goal, err := h.service.Get(c.Request.Context(), userID, id)
 	if err != nil {
-		common.SendNotFound(c, common.ErrCodeNotFound, "Goal not found")
+		h.sendGoalReadError(c, err)
 		return
 	}
 
@@ -100,7 +108,7 @@ func (h *SharedGoalHandler) Contribute(c *gin.Context) {
 
 	contrib, err := h.service.Contribute(c.Request.Context(), userID, goalID, &req)
 	if err != nil {
-		common.SendInternalError(c, common.ErrCodeInternalError, err.Error())
+		h.sendGoalReadError(c, err)
 		return
 	}
 
@@ -188,15 +196,21 @@ func (h *SharedGoalHandler) RespondToInvite(c *gin.Context) {
 
 // GetLeaderboard handles GET /v1/goals/shared/:id/leaderboard
 func (h *SharedGoalHandler) GetLeaderboard(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.SendUnauthorized(c, "unauthorized")
+		return
+	}
+
 	goalID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid goal ID")
 		return
 	}
 
-	members, err := h.service.GetLeaderboard(c.Request.Context(), goalID)
+	members, err := h.service.GetLeaderboard(c.Request.Context(), userID, goalID)
 	if err != nil {
-		common.SendInternalError(c, common.ErrCodeInternalError, err.Error())
+		h.sendGoalReadError(c, err)
 		return
 	}
 
@@ -205,19 +219,36 @@ func (h *SharedGoalHandler) GetLeaderboard(c *gin.Context) {
 
 // GetContributions handles GET /v1/goals/shared/:id/contributions
 func (h *SharedGoalHandler) GetContributions(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.SendUnauthorized(c, "unauthorized")
+		return
+	}
+
 	goalID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.SendBadRequest(c, common.ErrCodeInvalidID, "Invalid goal ID")
 		return
 	}
 
-	contribs, err := h.service.GetContributions(c.Request.Context(), goalID, 50)
+	contribs, err := h.service.GetContributions(c.Request.Context(), userID, goalID, 50)
 	if err != nil {
-		common.SendInternalError(c, common.ErrCodeInternalError, err.Error())
+		h.sendGoalReadError(c, err)
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": contribs})
+}
+
+// sendGoalReadError maps a read/contribute failure to a response. A caller who
+// is not a member gets 404, never 403, so the API does not disclose that the
+// goal exists.
+func (h *SharedGoalHandler) sendGoalReadError(c *gin.Context, err error) {
+	if errors.Is(err, authz.ErrNotAuthorized) {
+		common.SendNotFound(c, common.ErrCodeNotFound, "Goal not found")
+		return
+	}
+	common.SendInternalError(c, common.ErrCodeInternalError, err.Error())
 }
 
 // LeaveGoal handles POST /v1/goals/shared/:id/leave

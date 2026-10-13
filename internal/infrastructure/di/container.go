@@ -17,6 +17,7 @@ import (
 	platformhandlers "github.com/rail-service/rail_service/internal/api/handlers/platform"
 	premiumhandlers "github.com/rail-service/rail_service/internal/api/handlers/premium"
 	"github.com/rail-service/rail_service/internal/api/handlers/webhooks"
+	"github.com/rail-service/rail_service/internal/domain/authz"
 	"github.com/rail-service/rail_service/internal/domain/services"
 	"github.com/rail-service/rail_service/internal/domain/services/account"
 	"github.com/rail-service/rail_service/internal/domain/services/allocation"
@@ -122,6 +123,7 @@ type Container struct {
 	FinancialObligationRepo   *repositories.FinancialObligationRepository
 	AutomationRepo            *repositories.AutomationRepository
 	SharedGoalRepo            *repositories.SharedGoalRepository
+	AuthzRepo                 *repositories.AuthzRepository
 	ContextSignalRepo         *repositories.ContextSignalRepository
 	LedgerSpendingRepo        *repositories.LedgerSpendingRepository
 	ConversionRepo            *repositories.ConversionRepository
@@ -202,6 +204,7 @@ type Container struct {
 	BillPayService      *billpay.Service
 	TravelService       *travel.Service
 	SharedGoalService   *sharedgoal.Service
+	AuthzGuard          *authz.Guard
 	GrowthMailService   *growthmail.Service
 	GrowthEngineService *growthengine.Service
 	NotificationService *services.NotificationService
@@ -439,6 +442,7 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 	financialObligationRepo := repositories.NewFinancialObligationRepository(sqlxDB)
 	automationRepo := repositories.NewAutomationRepository(sqlxDB)
 	sharedGoalRepo := repositories.NewSharedGoalRepository(sqlxDB)
+	authzRepo := repositories.NewAuthzRepository(sqlxDB)
 	ledgerSpendingRepo := repositories.NewLedgerSpendingRepository(sqlxDB)
 	conversionRepo := repositories.NewConversionRepository(sqlxDB)
 	balanceRepo := repositories.NewBalanceRepository(db, zapLog)
@@ -585,6 +589,8 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		FinancialObligationRepo:   financialObligationRepo,
 		AutomationRepo:            automationRepo,
 		SharedGoalRepo:            sharedGoalRepo,
+		AuthzRepo:                 authzRepo,
+		AuthzGuard:                authz.NewGuard(authzRepo),
 		LedgerSpendingRepo:        ledgerSpendingRepo,
 		ConversionRepo:            conversionRepo,
 		BalanceRepo:               balanceRepo,
