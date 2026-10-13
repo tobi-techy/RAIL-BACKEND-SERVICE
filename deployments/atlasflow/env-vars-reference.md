@@ -191,6 +191,10 @@ Create as AtlasFlow project `spectrum-bridge`, root `cmd/spectrum-bridge/`, port
 | `OUTBOUND_MAX_BUBBLES` | `3` | max message bubbles per backend turn (each counts toward the daily cap) |
 | `DELIVERY_DAILY_CAP` | `5000` | hard outbound/server/day cap (ban risk past it) |
 | `DELIVERY_NEW_CONVOS_PER_LINE` | `50` | new conversations/line/day |
+| `INBOUND_RATE_SENDER_BURST` | `15` | inbound messages one sender may send at once (a stock book is ~12 photos) before the bridge sheds the rest |
+| `INBOUND_RATE_SENDER_PER_MIN` | `10` | sustained inbound messages/minute per sender id (platform + provider sender id) |
+| `INBOUND_RATE_BRIDGE_BURST` | `60` | inbound burst across all senders on one bridge instance |
+| `INBOUND_RATE_BRIDGE_PER_MIN` | `80` | sustained inbound messages/minute per bridge instance; keep below the Go inbound limiter's 100/min |
 | `MIRIAM_TURN_SUPERSESSION` | `true` | inbound turn supersession gate 2 — drop a `/send` reply whose turn is no longer the thread's latest. Pairs with the backend's `PLATFORM_TURN_SUPERSESSION`; both gates fail open, and `false`/unset means no turn ids are minted. |
 | `TELEGRAM_BOT_TOKEN` | optional, enables Telegram | **SECRET** |
 | `WHATSAPP_ACCESS_TOKEN` | optional | **SECRET** |
