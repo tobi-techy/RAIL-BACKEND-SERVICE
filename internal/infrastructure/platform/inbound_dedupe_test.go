@@ -14,7 +14,7 @@ import (
 )
 
 func typedMessage(msgID, text string) []byte {
-	raw, _ := json.Marshal(InboundMessage{
+	raw, err := json.Marshal(InboundMessage{
 		Platform: entities.PlatformWhatsApp,
 		UserID:   "+2348000001",
 		ThreadID: "thread-1",
@@ -22,6 +22,9 @@ func typedMessage(msgID, text string) []byte {
 		MsgID:    msgID,
 		Text:     text,
 	})
+	if err != nil {
+		panic(err)
+	}
 	return raw
 }
 
@@ -181,8 +184,11 @@ func TestInboundDedupe_NoMessageIDMeansNoDedupe(t *testing.T) {
 	orch := &fakeOrchestrator{}
 	p, _ := replica(t, redis, orch, repo)
 
-	_ = p.Process(context.Background(), typedMessage("", "one"))
-	_ = p.Process(context.Background(), typedMessage("", "two"))
+	for _, text := range []string{"one", "two"} {
+		if err := p.Process(context.Background(), typedMessage("", text)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if len(orch.sources) != 2 {
 		t.Fatalf("messages without an id must both run, got %d", len(orch.sources))
 	}
@@ -196,9 +202,16 @@ func TestInboundDedupe_TheSameIDOnAnotherPlatformIsAnotherMessage(t *testing.T) 
 	orch := &fakeOrchestrator{}
 	p, _ := replica(t, redis, orch, repo)
 
-	_ = p.Process(context.Background(), typedMessage("shared-id", "hi"))
-	other, _ := json.Marshal(InboundMessage{Platform: entities.PlatformIMessage, UserID: "+15551234", ThreadID: "t", MsgID: "shared-id", Text: "hi"})
-	_ = p.Process(context.Background(), other)
+	if err := p.Process(context.Background(), typedMessage("shared-id", "hi")); err != nil {
+		t.Fatal(err)
+	}
+	other, err := json.Marshal(InboundMessage{Platform: entities.PlatformIMessage, UserID: "+15551234", ThreadID: "t", MsgID: "shared-id", Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Process(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
 	if len(orch.sources) != 2 {
 		t.Fatalf("platform must scope the key, got %d turns", len(orch.sources))
 	}

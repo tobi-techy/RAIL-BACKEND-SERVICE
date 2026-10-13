@@ -113,11 +113,18 @@ func TestConfirmationTapCarriesNoMessage(t *testing.T) {
 func TestChatForwardsTheProviderMessageID(t *testing.T) {
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
 		var body map[string]any
-		_ = json.Unmarshal(raw, &body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("body is not json: %v", err)
+		}
 		bodies = append(bodies, body)
-		_, _ = w.Write([]byte(`{"response":"ok"}`))
+		if _, err := w.Write([]byte(`{"response":"ok"}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 	client := NewPythonAgentClient(PythonAgentClientConfig{BaseURL: srv.URL, JWTSecret: "test-secret", JWTTTL: time.Minute}, zap.NewNop())
