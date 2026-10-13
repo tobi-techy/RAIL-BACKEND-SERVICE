@@ -71,7 +71,11 @@ func postInbound(t *testing.T, srv *httptest.Server, body string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Log(cerr)
+		}
+	}()
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		return 0, err
 	}
