@@ -16,7 +16,7 @@ type Backoff struct {
 func NewBackoff(policy Policy) *Backoff {
 	return &Backoff{
 		policy: policy,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:    rand.New(rand.NewSource(time.Now().UnixNano())), // #nosec G404 -- retry jitter, not a secret
 	}
 }
 
@@ -86,7 +86,7 @@ func AddJitter(duration time.Duration, jitterFactor float64) time.Duration {
 	
 	jitter := float64(duration) * jitterFactor
 	base := float64(duration) - jitter
-	random := rand.Float64() * 2 * jitter
+	random := rand.Float64() * 2 * jitter // #nosec G404 -- retry jitter, not a secret
 	
 	return time.Duration(base + random)
 }
@@ -96,7 +96,7 @@ func FullJitter(maxBackoff time.Duration) time.Duration {
 	if maxBackoff <= 0 {
 		return 0
 	}
-	return time.Duration(rand.Int63n(int64(maxBackoff)))
+	return time.Duration(rand.Int63n(int64(maxBackoff))) // #nosec G404 -- retry jitter, not a secret
 }
 
 // EqualJitter applies equal jitter (half base + half random)
@@ -105,7 +105,7 @@ func EqualJitter(baseBackoff time.Duration) time.Duration {
 		return 0
 	}
 	half := baseBackoff / 2
-	return half + time.Duration(rand.Int63n(int64(half)))
+	return half + time.Duration(rand.Int63n(int64(half))) // #nosec G404 -- retry jitter, not a secret
 }
 
 // DecorrelatedJitter applies decorrelated jitter (prevents thundering herd)
@@ -122,5 +122,5 @@ func DecorrelatedJitter(previousBackoff, baseBackoff, maxBackoff time.Duration) 
 		return time.Duration(min)
 	}
 	
-	return time.Duration(min + rand.Float64()*(max-min))
+	return time.Duration(min + rand.Float64()*(max-min)) // #nosec G404 -- retry jitter, not a secret
 }

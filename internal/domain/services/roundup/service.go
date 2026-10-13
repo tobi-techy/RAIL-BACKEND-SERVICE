@@ -202,7 +202,7 @@ func (s *Service) ProcessTransaction(ctx context.Context, req *ProcessTransactio
 
 	// Check if threshold reached for auto-invest
 	if settings.AutoInvestEnabled && acc.PendingAmount.GreaterThanOrEqual(settings.Threshold) {
-		go s.triggerAutoInvest(context.Background(), req.UserID)
+		go s.triggerAutoInvest(context.WithoutCancel(ctx), req.UserID)
 	}
 
 	// Trigger gameplay events
@@ -277,7 +277,7 @@ func roundupAdvisoryLockKey(userID uuid.UUID) int64 {
 	b := [16]byte(userID)
 	h.Write(b[:])
 	// Offset to avoid collision with withdrawal advisory locks
-	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) ^ 0x526F756E64757021 // "Roundup!"
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])&0x7FFFFFFFFFFFFFFF) ^ 0x526F756E64757021 // #nosec G115 -- masked to 63 bits above, so the conversion cannot overflow; "Roundup!"
 }
 
 // triggerAutoInvest triggers auto-investment when threshold is reached

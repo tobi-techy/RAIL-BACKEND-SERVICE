@@ -27,7 +27,7 @@ const (
 	AuditActionAccountUpdate    AuditAction = "account_update"
 	AuditActionAccountDelete    AuditAction = "account_delete"
 	AuditActionAPIKeyCreate     AuditAction = "api_key_create"
-	AuditActionAPIKeyRevoke     AuditAction = "api_key_revoke"
+	AuditActionAPIKeyRevoke     AuditAction = "api_key_revoke" // #nosec G101 -- audit action name
 	AuditActionPasswordChange   AuditAction = "password_change"
 	AuditActionMFAEnable        AuditAction = "mfa_enable"
 	AuditActionMFADisable       AuditAction = "mfa_disable"

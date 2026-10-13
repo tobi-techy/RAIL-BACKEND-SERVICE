@@ -119,7 +119,7 @@ func (s *Service) settleViaChainRails(ctx context.Context, userID uuid.UUID, wal
 
 	circleAmountDecimal := transferAmount
 	circleAmount := transferAmount.StringFixed(6)
-	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
+	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 && intent.AssetTokenDecimals <= entities.MaxTokenDecimals {
 		if totalMicro, okParse := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10); okParse {
 			circleAmountDecimal = decimal.NewFromBigInt(totalMicro, -int32(intent.AssetTokenDecimals))
 			circleAmount = circleAmountDecimal.StringFixed(int32(intent.AssetTokenDecimals))

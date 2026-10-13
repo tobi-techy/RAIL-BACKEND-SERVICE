@@ -636,7 +636,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 						"stack", string(debug.Stack()))
 				}
 			}()
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 			defer cancel()
 			if err := s.yieldRouter.RouteDepositYield(bgCtx, userID, depositID, routeAmount, routeMetadata); err != nil {
 				s.logger.Error("Failed to route deposit stash into yield provider; retry worker will continue",
@@ -659,7 +659,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 						"user_id", req.UserID, "panic", r)
 				}
 			}()
-			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 			defer cancel()
 
 			usdcMint := "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -682,7 +682,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			_ = s.notificationService.NotifyAllocationComplete(bgCtx, req.UserID,
 				spendingAmount.StringFixed(2), stashAmount.StringFixed(2),
@@ -717,7 +717,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 			}()
 
 			// Use detached context with timeout instead of request context
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 
 			if err := s.autoInvestService.TriggerAutoInvestment(bgCtx, autoinvest.TriggerRequest{
@@ -749,7 +749,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 							"stack", string(debug.Stack()))
 					}
 				}()
-				s.depositAutomation.EvaluateDepositReceived(context.Background(), depositUserID, depositAmount)
+				s.depositAutomation.EvaluateDepositReceived(context.WithoutCancel(ctx), depositUserID, depositAmount)
 			}()
 		}
 	}
@@ -773,7 +773,7 @@ func (s *Service) ProcessIncomingFunds(ctx context.Context, req *entities.Incomi
 							"stack", string(debug.Stack()))
 					}
 				}()
-				bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 				defer cancel()
 				s.vaultContributor.OnDepositAllocated(bgCtx, vaultUserID, vaultDepositID, vaultDepositAmount, vaultStashAmount)
 			}()

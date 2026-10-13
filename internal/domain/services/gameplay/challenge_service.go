@@ -151,7 +151,7 @@ func pickRandom(challenges []*entities.Challenge, n int) []*entities.Challenge {
 	if n >= len(challenges) {
 		return challenges
 	}
-	perm := rand.Perm(len(challenges))
+	perm := rand.Perm(len(challenges)) // #nosec G404 -- gameplay challenge order, not a secret
 	picked := make([]*entities.Challenge, n)
 	for i := 0; i < n; i++ {
 		picked[i] = challenges[perm[i]]

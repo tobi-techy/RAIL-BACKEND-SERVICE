@@ -447,8 +447,12 @@ func (c *Client) buildPaymentSignature(ctx context.Context, resp *http.Response,
 		}
 		instructions = append(instructions, priceIx)
 	}
+	amountLamports := ac.Amount.Int64()
+	if amountLamports <= 0 {
+		return "", fmt.Errorf("brij: transfer amount %d is not positive", amountLamports)
+	}
 	transferIx, err := token.NewTransferCheckedInstruction(
-		uint64(ac.Amount.Int64()),
+		uint64(amountLamports),
 		USDCDecimals,
 		srcATA,
 		mint,

@@ -179,7 +179,7 @@ func (c *HTTPClient) doRequest(ctx context.Context, method, path string, body in
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * 500 * time.Millisecond
-			jitter := time.Duration(mrand.Int63n(int64(backoff / 2)))
+			jitter := time.Duration(mrand.Int63n(int64(backoff / 2))) // #nosec G404 -- backoff jitter
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

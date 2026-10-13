@@ -147,7 +147,7 @@ func (s *Service) ScreenTransaction(ctx context.Context, userID uuid.UUID, refer
 				s.wg.Add(1)
 				go func() {
 					defer s.wg.Done()
-					bgCtx, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					bgCtx, bgCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 					defer bgCancel()
 					status, err := s.screenAndRecord(bgCtx, userID, referenceID, direction, amount, currency, userFullName)
 					if err != nil {

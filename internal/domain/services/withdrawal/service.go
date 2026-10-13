@@ -542,7 +542,7 @@ func (s *WithdrawalService) EmergencyStashToSpending(ctx context.Context, userID
 	if s.stashYieldRedeemer != nil && blendReserved {
 		total := total
 		go func() {
-			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
 			defer cancel()
 			if err := s.stashYieldRedeemer.RedeemStashYield(rctx, userID, total, redeemKey); err != nil {
 				s.logger.Error("emergency stash-to-spending: Blend redemption failed — failing pending ledger",
@@ -625,7 +625,7 @@ func advisoryLockKey(userID uuid.UUID) int64 {
 	h := fnv.New64a()
 	b := [16]byte(userID)
 	h.Write(b[:])
-	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]))
+	return int64(binary.BigEndian.Uint64(h.Sum(nil)[:8]) & 0x7FFFFFFFFFFFFFFF) // #nosec G115 -- masked to 63 bits above, so the conversion cannot overflow
 }
 
 // acquireAdvisoryLock acquires a PostgreSQL session-level advisory lock for the user.
@@ -1020,7 +1020,7 @@ func (s *WithdrawalService) submitApprovedCryptoWithdrawal(ctx context.Context, 
 		_ = s.notificationService.NotifyWithdrawalSubmitted(ctx, req.UserID, req.Amount.String())
 	}
 
-	go s.executeCryptoWithdrawalAsync(withdrawal, req)
+	go s.executeCryptoWithdrawalAsync(context.WithoutCancel(ctx), withdrawal, req)
 
 	s.logger.Info("Crypto withdrawal submitted for async processing",
 		"withdrawal_id", withdrawal.ID.String(),
@@ -1127,7 +1127,7 @@ func (s *WithdrawalService) ResumeComplianceApprovedWithdrawal(ctx context.Conte
 }
 
 // executeCryptoWithdrawalAsync runs the Bridge transfer and post-processing in the background.
-func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) {
+func (s *WithdrawalService) executeCryptoWithdrawalAsync(ctx context.Context, withdrawal *entities.Withdrawal, req *entities.InitiateCryptoWithdrawalRequest) { //nolint:gocyclo // 51 on main before this change; only the parameter list changed here
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
@@ -1139,7 +1139,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 			// Use failWithdrawal (not MarkFailed) so the ledger is properly
 			// handled: if Circle already confirmed, settle; if pending, fail it;
 			// if committed, reverse it. MarkFailed alone would orphan the ledger.
-			if failErr := s.failWithdrawal(context.Background(), withdrawal, fmt.Sprintf("internal panic: %v", r)); failErr != nil {
+			if failErr := s.failWithdrawal(context.WithoutCancel(ctx), withdrawal, fmt.Sprintf("internal panic: %v", r)); failErr != nil {
 				s.logger.Error("async: failed to mark withdrawal as failed after panic",
 					"error", failErr, "withdrawal_id", withdrawal.ID.String())
 			}
@@ -1161,7 +1161,7 @@ func (s *WithdrawalService) executeCryptoWithdrawalAsync(withdrawal *entities.Wi
 	// 8 minutes: yield redemption + transfer + the completion pollers below
 	// (ChainRails polls up to 5 minutes on its own) must all fit — a shorter
 	// parent deadline silently truncated polling and left rows in processing.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Minute)
 	defer cancel()
 
 	// Retry loop for yield redemption: when Blend sessions fail/cancel the worker
@@ -2610,6 +2610,9 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 	// Step 5: Fund the intent — use total_amount_in_asset_token (includes fees) converted to human-readable
 	if intent.TotalAmountInAssetToken == "" || intent.AssetTokenDecimals == 0 {
 		return nil, fmt.Errorf("chainrails did not return total amount — cannot determine funding amount")
+	}
+	if intent.AssetTokenDecimals < 0 || intent.AssetTokenDecimals > entities.MaxTokenDecimals {
+		return nil, fmt.Errorf("chainrails returned asset_token_decimals %d, outside the supported range", intent.AssetTokenDecimals)
 	}
 	totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
 	if !parseOk {

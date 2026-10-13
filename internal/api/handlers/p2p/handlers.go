@@ -102,7 +102,7 @@ func (h *Handlers) GetTransfers(c *gin.Context) {
 		}
 	}
 	if offsetStr := c.Query("offset"); offsetStr != "" {
-		if parsed, err := strconv.ParseUint(offsetStr, 10, 64); err == nil && parsed >= 0 {
+		if parsed, err := strconv.ParseUint(offsetStr, 10, 32); err == nil {
 			offset = int(parsed)
 		}
 	}

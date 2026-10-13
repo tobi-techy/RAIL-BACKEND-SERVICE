@@ -719,7 +719,7 @@ func (s *Service) placeSingleOrder(ctx context.Context, userID, stashID uuid.UUI
 
 	if s.notificationService != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			_ = s.notificationService.NotifyInvestmentComplete(bgCtx, userID, amount.StringFixed(2))
 		}()

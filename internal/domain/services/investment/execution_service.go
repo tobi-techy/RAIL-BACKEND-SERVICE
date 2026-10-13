@@ -802,6 +802,9 @@ func (s *Service) buildWithdrawAssets(
 			}
 			raw := holding.BalanceRaw
 			if raw == "" {
+				if holding.Decimals < 0 || holding.Decimals > entities.MaxTokenDecimals {
+					return nil, "", fmt.Errorf("%w: %s reports %d decimals", ErrValidationFailed, holding.Symbol, holding.Decimals)
+				}
 				raw = holding.Balance.Shift(int32(holding.Decimals)).Truncate(0).String()
 			}
 			assets = append(assets, entities.GliderWithdrawAsset{AssetID: holding.CAIP19, AmountRaw: raw})
@@ -834,6 +837,9 @@ func (s *Service) buildWithdrawAssets(
 	}
 	if holding == nil || holding.PriceUSD.LessThanOrEqual(decimal.Zero) {
 		return nil, "", fmt.Errorf("%w: no observed price for %s, so the amount cannot be converted", ErrValidationFailed, asset.Symbol)
+	}
+	if asset.Decimals < 0 || asset.Decimals > entities.MaxTokenDecimals {
+		return nil, "", fmt.Errorf("%w: %s reports %d decimals", ErrValidationFailed, asset.Symbol, asset.Decimals)
 	}
 	units := amountUSD.Div(holding.PriceUSD)
 	raw := units.Shift(int32(asset.Decimals)).Truncate(0)

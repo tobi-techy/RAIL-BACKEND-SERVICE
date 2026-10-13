@@ -19,7 +19,7 @@ func getEnvOrSkip(t *testing.T, key string) string {
 
 // generateTestEmail generates a unique test email
 func generateTestEmail() string {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng := rand.New(rand.NewSource(time.Now().UnixNano())) // #nosec G404 -- test-only unique email suffix
 	randomNum := rng.Intn(10000)
 	return fmt.Sprintf("test-%d-%d@example.com", time.Now().UnixNano(), randomNum)
 }

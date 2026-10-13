@@ -23,7 +23,7 @@ var jitterRng *mrand.Rand
 func init() {
 	var seed int64
 	binary.Read(rand.Reader, binary.BigEndian, &seed)
-	jitterRng = mrand.New(mrand.NewSource(seed))
+	jitterRng = mrand.New(mrand.NewSource(seed)) // #nosec G404 -- seed read from crypto/rand; this generator only jitters scoring
 }
 
 // jitter returns threshold * random factor in [0.85, 1.15], making thresholds

@@ -444,7 +444,7 @@ func (s *GraphVirtualAccountService) ProvisionNGNAccount(ctx context.Context, re
 	if s.livenessInitiator != nil {
 		userID := req.UserID
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 			if err := s.livenessInitiator.InitiateLiveness(bgCtx, userID); err != nil {
 				s.logger.Warn("Failed to initiate Tier 2 liveness check", "user_id", userID, "error", err)

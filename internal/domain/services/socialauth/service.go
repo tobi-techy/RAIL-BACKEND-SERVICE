@@ -27,7 +27,7 @@ import (
 
 const (
 	appleAuthURL      = "https://appleid.apple.com/auth/authorize"
-	appleTokenURL     = "https://appleid.apple.com/auth/token"
+	appleTokenURL     = "https://appleid.apple.com/auth/token" // #nosec G101 -- public Apple endpoint URL
 	appleKeysURL      = "https://appleid.apple.com/auth/keys"
 	appleIssuer       = "https://appleid.apple.com"
 	appleKeysCacheTTL = 24 * time.Hour

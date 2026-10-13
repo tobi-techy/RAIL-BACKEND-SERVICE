@@ -741,7 +741,7 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 	// Trigger 70/30 allocation split ASYNC — don't block balance visibility
 	if s.allocationService != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
 
 			txHashRef := txHash

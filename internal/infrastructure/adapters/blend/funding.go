@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	chainrailspkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/chainrails"
 	circlepkg "github.com/rail-service/rail_service/internal/infrastructure/adapters/circle"
 	"github.com/shopspring/decimal"
@@ -408,7 +409,7 @@ func (r *DepositRouter) baseChainRailsDestination(sourceChain, configured string
 // --- shared ChainRails / Circle helpers (blend-local copies) ---
 
 func chainRailsFundingAmount(intent *chainrailspkg.CreateIntentResponse, requested decimal.Decimal) (decimal.Decimal, error) {
-	if strings.TrimSpace(intent.TotalAmountInAssetToken) == "" || intent.AssetTokenDecimals <= 0 {
+	if strings.TrimSpace(intent.TotalAmountInAssetToken) == "" || intent.AssetTokenDecimals <= 0 || intent.AssetTokenDecimals > entities.MaxTokenDecimals {
 		return decimal.Zero, fmt.Errorf("blend: ChainRails intent %d did not return total funding amount", intent.ID)
 	}
 	totalUnits, ok := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)

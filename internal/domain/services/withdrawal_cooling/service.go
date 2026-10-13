@@ -75,7 +75,7 @@ func (s *Service) CheckWithdrawalCooling(ctx context.Context, userID uuid.UUID, 
 		s.logger.Warn("Failed to get investment rules, bypassing cooling",
 			zap.String("user_id", userID.String()),
 			zap.Error(err))
-		return &CoolingCheckResult{
+		return &CoolingCheckResult{ // #nosec G101 -- bypass reason string
 			RequiresCooling: false,
 			BypassReason:    "rules_unavailable",
 		}, nil

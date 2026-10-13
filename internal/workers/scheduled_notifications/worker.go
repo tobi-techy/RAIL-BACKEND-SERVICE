@@ -192,7 +192,7 @@ func (w *Worker) sendDailyEngagement(ctx context.Context) {
 	// Shuffle to avoid thundering-herd on the push API for large user bases.
 	shuffled := make([]repositories.NotificationUser, len(users))
 	copy(shuffled, users)
-	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] }) // #nosec G404 -- shuffles delivery order, not a secret
 
 	for _, u := range shuffled {
 		if err := w.pushSender.SendToUser(ctx, u.ID, msg.title, msg.body, data); err != nil {

@@ -1184,11 +1184,11 @@ func commaFormat(v decimal.Decimal) string {
 		return s
 	}
 	var b []byte
-	for i, c := range s {
+	for i := 0; i < len(s); i++ {
 		if i > 0 && (len(s)-i)%3 == 0 {
 			b = append(b, ',')
 		}
-		b = append(b, byte(c))
+		b = append(b, s[i])
 	}
 	return string(b)
 }

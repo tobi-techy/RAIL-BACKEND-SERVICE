@@ -438,7 +438,7 @@ func (s *Service) BasicCompleteOnboarding(ctx context.Context, req *entities.Bas
 	// Create Circle wallets for the user (async — don't block onboarding)
 	if s.walletService != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 			defer cancel()
 			// Retry wallet creation up to 3 times
 			var walletErr error
@@ -542,7 +542,7 @@ func (s *Service) ProvisionPhoneFirstUser(ctx context.Context, userID uuid.UUID,
 	// and KYC is not consulted.
 	if s.walletService != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 			defer cancel()
 			var walletErr error
 			for attempt := 0; attempt < 3; attempt++ {
@@ -901,7 +901,7 @@ func (s *Service) CompletePasscodeCreation(ctx context.Context, userID uuid.UUID
 	// Provision Umbra privacy wallet (async, non-blocking)
 	if s.umbraProvisioner != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 120*time.Second)
 			defer cancel()
 			if err := s.umbraProvisioner.ProvisionWallet(bgCtx, userID); err != nil {
 				s.logger.Error("Failed to provision Umbra wallet (non-fatal)",

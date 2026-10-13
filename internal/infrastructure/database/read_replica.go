@@ -56,7 +56,7 @@ func (rp *ReplicaPool) Replica() *sql.DB {
 		return rp.primary
 	}
 
-	idx := rand.Intn(len(rp.replicas))
+	idx := rand.Intn(len(rp.replicas)) // #nosec G404 -- load-balancing pick across replicas
 	return rp.replicas[idx]
 }
 

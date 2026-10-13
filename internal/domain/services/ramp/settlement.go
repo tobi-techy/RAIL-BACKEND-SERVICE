@@ -151,7 +151,7 @@ func (s *Service) executeCircleViaChainRails(ctx context.Context, userID uuid.UU
 
 	circleAmountDecimal := transferAmount
 	circleAmount := transferAmount.StringFixed(2)
-	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
+	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 && intent.AssetTokenDecimals <= entities.MaxTokenDecimals {
 		totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
 		if parseOk {
 			circleAmountDecimal = decimal.NewFromBigInt(totalMicro, -int32(intent.AssetTokenDecimals))
