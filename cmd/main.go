@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	adminhandlers "github.com/rail-service/rail_service/internal/api/handlers/admin"
 	"github.com/rail-service/rail_service/internal/app"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	investmentsvc "github.com/rail-service/rail_service/internal/domain/services/investment"
@@ -60,6 +61,12 @@ func main() {
 		case "--health-check":
 			if err := runHealthCheck(); err != nil {
 				fmt.Fprintf(os.Stderr, "Health check failed: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "mint-admin-token":
+			if err := runMintAdminToken(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "mint-admin-token failed: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -230,6 +237,51 @@ func runRecoverFunds(args []string) error {
 		DestAmount:   amount,
 		Confirm:      *confirm,
 	}, logger, os.Stdout)
+}
+
+// runMintAdminToken prints a short-lived dashboard admin access token for an
+// existing admin or super_admin. It is the offline replacement for the removed
+// email-only /dashboard/auth: it needs a shell that already holds the
+// deployment's database and JWT credentials, and it writes an audit line (no
+// token) to stderr.
+//
+//	rail_service mint-admin-token -email admin@example.com [-ttl 15m]
+func runMintAdminToken(args []string) error {
+	fs := flag.NewFlagSet("mint-admin-token", flag.ContinueOnError)
+	email := fs.String("email", "", "email of the existing admin or super_admin")
+	ttl := fs.Duration("ttl", adminhandlers.DefaultOfflineAdminTokenTTL, "token lifetime (max 1h)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(*email) == "" {
+		fs.Usage()
+		return fmt.Errorf("-email is required")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	db, err := database.NewConnection(cfg.Database, cfg.Environment)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	token, cred, expires, err := adminhandlers.MintOfflineAdminToken(ctx, adminhandlers.SQLAdminCredentialStore{DB: db}, cfg.JWT.Secret, *email, *ttl)
+	if err != nil {
+		return err
+	}
+	host, _ := os.Hostname()
+	osUser := os.Getenv("USER")
+	fmt.Fprintf(os.Stderr, "AUDIT offline admin token minted actor_id=%s role=%s expires_at=%s host=%s os_user=%s\n",
+		cred.ID, cred.Role, expires.UTC().Format(time.RFC3339), host, osUser)
+	fmt.Println(token)
+	return nil
 }
 
 // buildRecoveryClients constructs the Circle + ChainRails clients used by the recovery flow
