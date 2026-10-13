@@ -161,9 +161,12 @@ func (r *RebalancingConfigRepository) Create(ctx context.Context, config *entiti
 	return err
 }
 
-func (r *RebalancingConfigRepository) GetByID(ctx context.Context, id uuid.UUID) (*entities.RebalancingConfig, error) {
+// GetByID returns the caller's own config. The user_id predicate is part of
+// the statement, not only a preceding read, so a second user cannot load it
+// even if they obtain the id.
+func (r *RebalancingConfigRepository) GetByID(ctx context.Context, id, userID uuid.UUID) (*entities.RebalancingConfig, error) {
 	var config rebalancingConfigRow
-	err := r.db.GetContext(ctx, &config, `SELECT * FROM rebalancing_configs WHERE id = $1`, id)
+	err := r.db.GetContext(ctx, &config, `SELECT * FROM rebalancing_configs WHERE id = $1 AND user_id = $2`, id, userID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -186,16 +189,30 @@ func (r *RebalancingConfigRepository) GetByUserID(ctx context.Context, userID uu
 	return configs, nil
 }
 
+// Update writes only the caller's own config; user_id is part of the WHERE
+// clause so a mismatched owner updates nothing.
 func (r *RebalancingConfigRepository) Update(ctx context.Context, config *entities.RebalancingConfig) error {
 	allocJSON, _ := json.Marshal(config.TargetAllocations)
-	query := `UPDATE rebalancing_configs SET name = $2, target_allocations = $3, threshold_pct = $4, frequency = $5, last_rebalanced_at = $6, status = $7, updated_at = $8 WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, config.ID, config.Name, allocJSON, config.ThresholdPct, config.Frequency, config.LastRebalancedAt, config.Status, time.Now())
+	query := `UPDATE rebalancing_configs SET name = $2, target_allocations = $3, threshold_pct = $4, frequency = $5, last_rebalanced_at = $6, status = $7, updated_at = $8 WHERE id = $1 AND user_id = $9`
+	_, err := r.db.ExecContext(ctx, query, config.ID, config.Name, allocJSON, config.ThresholdPct, config.Frequency, config.LastRebalancedAt, config.Status, time.Now(), config.UserID)
 	return err
 }
 
-func (r *RebalancingConfigRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM rebalancing_configs WHERE id = $1`, id)
-	return err
+// Delete removes only the caller's own config and reports sql.ErrNoRows when no
+// row matches, so the caller can answer 404 instead of a false success.
+func (r *RebalancingConfigRepository) Delete(ctx context.Context, id, userID uuid.UUID) error {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM rebalancing_configs WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 type rebalancingConfigRow struct {

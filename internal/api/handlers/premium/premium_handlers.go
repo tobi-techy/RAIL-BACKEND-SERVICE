@@ -1,6 +1,7 @@
 package premium
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -229,6 +230,12 @@ func (h *Handlers) GetScamAlerts(c *gin.Context) {
 }
 
 func (h *Handlers) DismissScamAlert(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
 	alertIDStr := c.Param("alertId")
 	alertID, err := uuid.Parse(alertIDStr)
 	if err != nil {
@@ -236,7 +243,11 @@ func (h *Handlers) DismissScamAlert(c *gin.Context) {
 		return
 	}
 
-	if err := h.scamIntel.DismissAlert(c.Request.Context(), alertID); err != nil {
+	if err := h.scamIntel.DismissAlert(c.Request.Context(), userID, alertID); err != nil {
+		if errors.Is(err, premium.ErrScamAlertNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Alert not found"})
+			return
+		}
 		h.logger.Error("dismiss scam alert failed", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not dismiss alert"})
 		return

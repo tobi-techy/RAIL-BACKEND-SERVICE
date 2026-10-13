@@ -1,12 +1,14 @@
 package trading
 
 import (
-	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+
+	"github.com/rail-service/rail_service/internal/api/handlers/common"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/pkg/logger"
 )
@@ -93,20 +95,26 @@ func (h *RebalancingHandlers) GetRebalancingConfigs(c *gin.Context) {
 // GetRebalancingConfig returns a specific rebalancing configuration
 // GET /api/v1/rebalancing/configs/:id
 func (h *RebalancingHandlers) GetRebalancingConfig(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.RespondBadRequest(c, "Invalid ID")
 		return
 	}
 
-	config, err := h.service.GetConfig(c.Request.Context(), id)
+	config, err := h.service.GetConfig(c.Request.Context(), userID, id)
 	if err != nil {
+		if errors.Is(err, investing.ErrRebalancingConfigNotFound) {
+			common.RespondNotFound(c, "Config not found")
+			return
+		}
 		h.logger.Error("Failed to get rebalancing config", "error", err)
 		common.RespondInternalError(c, "Failed to get config")
-		return
-	}
-	if config == nil {
-		common.RespondNotFound(c, "Config not found")
 		return
 	}
 
@@ -116,6 +124,12 @@ func (h *RebalancingHandlers) GetRebalancingConfig(c *gin.Context) {
 // UpdateRebalancingConfig updates a rebalancing configuration
 // PATCH /api/v1/rebalancing/configs/:id
 func (h *RebalancingHandlers) UpdateRebalancingConfig(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.RespondBadRequest(c, "Invalid ID")
@@ -154,7 +168,11 @@ func (h *RebalancingHandlers) UpdateRebalancingConfig(c *gin.Context) {
 		thresholdPct = &t
 	}
 
-	if err := h.service.UpdateConfig(c.Request.Context(), id, allocations, thresholdPct); err != nil {
+	if err := h.service.UpdateConfig(c.Request.Context(), userID, id, allocations, thresholdPct); err != nil {
+		if errors.Is(err, investing.ErrRebalancingConfigNotFound) {
+			common.RespondNotFound(c, "Config not found")
+			return
+		}
 		h.logger.Error("Failed to update rebalancing config", "error", err)
 		common.RespondBadRequest(c, err.Error())
 		return
@@ -166,13 +184,23 @@ func (h *RebalancingHandlers) UpdateRebalancingConfig(c *gin.Context) {
 // DeleteRebalancingConfig deletes a rebalancing configuration
 // DELETE /api/v1/rebalancing/configs/:id
 func (h *RebalancingHandlers) DeleteRebalancingConfig(c *gin.Context) {
+	userID, err := common.GetUserID(c)
+	if err != nil {
+		common.RespondUnauthorized(c, "User not authenticated")
+		return
+	}
+
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.RespondBadRequest(c, "Invalid ID")
 		return
 	}
 
-	if err := h.service.DeleteConfig(c.Request.Context(), id); err != nil {
+	if err := h.service.DeleteConfig(c.Request.Context(), userID, id); err != nil {
+		if errors.Is(err, investing.ErrRebalancingConfigNotFound) {
+			common.RespondNotFound(c, "Config not found")
+			return
+		}
 		h.logger.Error("Failed to delete rebalancing config", "error", err)
 		common.RespondInternalError(c, "Failed to delete config")
 		return
@@ -198,6 +226,10 @@ func (h *RebalancingHandlers) GenerateRebalancingPlan(c *gin.Context) {
 
 	plan, err := h.service.GenerateRebalancingPlan(c.Request.Context(), userID, configID)
 	if err != nil {
+		if errors.Is(err, investing.ErrRebalancingConfigNotFound) {
+			common.RespondNotFound(c, "Config not found")
+			return
+		}
 		h.logger.Error("Failed to generate rebalancing plan", "error", err)
 		common.RespondBadRequest(c, err.Error())
 		return
@@ -224,6 +256,10 @@ func (h *RebalancingHandlers) ExecuteRebalancing(c *gin.Context) {
 	// Generate plan first
 	plan, err := h.service.GenerateRebalancingPlan(c.Request.Context(), userID, configID)
 	if err != nil {
+		if errors.Is(err, investing.ErrRebalancingConfigNotFound) {
+			common.RespondNotFound(c, "Config not found")
+			return
+		}
 		h.logger.Error("Failed to generate rebalancing plan", "error", err)
 		common.RespondBadRequest(c, err.Error())
 		return
@@ -261,6 +297,10 @@ func (h *RebalancingHandlers) CheckDrift(c *gin.Context) {
 
 	needsRebalance, maxDrift, err := h.service.CheckDrift(c.Request.Context(), userID, configID)
 	if err != nil {
+		if errors.Is(err, investing.ErrRebalancingConfigNotFound) {
+			common.RespondNotFound(c, "Config not found")
+			return
+		}
 		h.logger.Error("Failed to check drift", "error", err)
 		common.RespondBadRequest(c, err.Error())
 		return

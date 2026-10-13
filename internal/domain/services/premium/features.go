@@ -2,6 +2,8 @@ package premium
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -344,7 +346,7 @@ type ScamIntelligenceService struct {
 		GetRiskPatterns(ctx context.Context) ([]*entities.MerchantRiskPattern, error)
 		CreateAlert(ctx context.Context, alert *entities.UserScamAlert) error
 		GetActiveAlerts(ctx context.Context, userID uuid.UUID) ([]*entities.UserScamAlert, error)
-		DismissAlert(ctx context.Context, alertID uuid.UUID) error
+		DismissAlert(ctx context.Context, userID, alertID uuid.UUID) error
 	}
 	patterns []*entities.MerchantRiskPattern
 	mu       sync.RWMutex
@@ -355,7 +357,7 @@ func NewScamIntelligenceService(scamRepo interface {
 	GetRiskPatterns(ctx context.Context) ([]*entities.MerchantRiskPattern, error)
 	CreateAlert(ctx context.Context, alert *entities.UserScamAlert) error
 	GetActiveAlerts(ctx context.Context, userID uuid.UUID) ([]*entities.UserScamAlert, error)
-	DismissAlert(ctx context.Context, alertID uuid.UUID) error
+	DismissAlert(ctx context.Context, userID, alertID uuid.UUID) error
 }, logger *zap.Logger) *ScamIntelligenceService {
 	return &ScamIntelligenceService{scamRepo: scamRepo, logger: logger}
 }
@@ -434,8 +436,19 @@ func (s *ScamIntelligenceService) GetActiveAlerts(ctx context.Context, userID uu
 	return s.scamRepo.GetActiveAlerts(ctx, userID)
 }
 
-func (s *ScamIntelligenceService) DismissAlert(ctx context.Context, alertID uuid.UUID) error {
-	return s.scamRepo.DismissAlert(ctx, alertID)
+// ErrScamAlertNotFound is returned when an alert does not exist or does not
+// belong to the caller. Handlers map it to 404, never 403.
+var ErrScamAlertNotFound = errors.New("scam alert not found")
+
+// DismissAlert dismisses one of the caller's own alerts.
+func (s *ScamIntelligenceService) DismissAlert(ctx context.Context, userID, alertID uuid.UUID) error {
+	if err := s.scamRepo.DismissAlert(ctx, userID, alertID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrScamAlertNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 // ============================================================================

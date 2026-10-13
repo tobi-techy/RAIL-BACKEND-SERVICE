@@ -2,6 +2,8 @@ package investing
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,13 +13,18 @@ import (
 	"go.uber.org/zap"
 )
 
+// ErrRebalancingConfigNotFound is returned when a config does not exist or does
+// not belong to the caller. Handlers map it to 404, never 403, so the response
+// does not confirm that the object exists.
+var ErrRebalancingConfigNotFound = errors.New("rebalancing config not found")
+
 // RebalancingConfigRepository interface
 type RebalancingConfigRepository interface {
 	Create(ctx context.Context, config *entities.RebalancingConfig) error
-	GetByID(ctx context.Context, id uuid.UUID) (*entities.RebalancingConfig, error)
+	GetByID(ctx context.Context, id, userID uuid.UUID) (*entities.RebalancingConfig, error)
 	GetByUserID(ctx context.Context, userID uuid.UUID) ([]*entities.RebalancingConfig, error)
 	Update(ctx context.Context, config *entities.RebalancingConfig) error
-	Delete(ctx context.Context, id uuid.UUID) error
+	Delete(ctx context.Context, id, userID uuid.UUID) error
 }
 
 // PositionProvider interface for getting positions
@@ -98,19 +105,27 @@ func (s *RebalancingService) GetUserConfigs(ctx context.Context, userID uuid.UUI
 	return s.configRepo.GetByUserID(ctx, userID)
 }
 
-// GetConfig returns a specific rebalancing config
-func (s *RebalancingService) GetConfig(ctx context.Context, id uuid.UUID) (*entities.RebalancingConfig, error) {
-	return s.configRepo.GetByID(ctx, id)
+// GetConfig returns one of the caller's own rebalancing configs. A config that
+// belongs to someone else is reported as not found.
+func (s *RebalancingService) GetConfig(ctx context.Context, userID, id uuid.UUID) (*entities.RebalancingConfig, error) {
+	config, err := s.configRepo.GetByID(ctx, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, ErrRebalancingConfigNotFound
+	}
+	return config, nil
 }
 
-// UpdateConfig updates a rebalancing configuration
-func (s *RebalancingService) UpdateConfig(ctx context.Context, id uuid.UUID, allocations map[string]decimal.Decimal, thresholdPct *decimal.Decimal) error {
-	config, err := s.configRepo.GetByID(ctx, id)
+// UpdateConfig updates one of the caller's own rebalancing configurations.
+func (s *RebalancingService) UpdateConfig(ctx context.Context, userID, id uuid.UUID, allocations map[string]decimal.Decimal, thresholdPct *decimal.Decimal) error {
+	config, err := s.configRepo.GetByID(ctx, id, userID)
 	if err != nil {
 		return err
 	}
 	if config == nil {
-		return fmt.Errorf("config not found")
+		return ErrRebalancingConfigNotFound
 	}
 
 	if allocations != nil {
@@ -131,19 +146,25 @@ func (s *RebalancingService) UpdateConfig(ctx context.Context, id uuid.UUID, all
 	return s.configRepo.Update(ctx, config)
 }
 
-// DeleteConfig deletes a rebalancing configuration
-func (s *RebalancingService) DeleteConfig(ctx context.Context, id uuid.UUID) error {
-	return s.configRepo.Delete(ctx, id)
+// DeleteConfig deletes one of the caller's own rebalancing configurations.
+func (s *RebalancingService) DeleteConfig(ctx context.Context, userID, id uuid.UUID) error {
+	if err := s.configRepo.Delete(ctx, id, userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrRebalancingConfigNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 // GenerateRebalancingPlan calculates trades needed to rebalance
 func (s *RebalancingService) GenerateRebalancingPlan(ctx context.Context, userID uuid.UUID, configID uuid.UUID) (*entities.RebalancingPlan, error) {
-	config, err := s.configRepo.GetByID(ctx, configID)
+	config, err := s.configRepo.GetByID(ctx, configID, userID)
 	if err != nil {
 		return nil, err
 	}
 	if config == nil {
-		return nil, fmt.Errorf("config not found")
+		return nil, ErrRebalancingConfigNotFound
 	}
 
 	positions, err := s.positionRepo.GetByUserID(ctx, userID)
@@ -276,7 +297,7 @@ func (s *RebalancingService) ExecuteRebalancingPlan(ctx context.Context, userID 
 	}
 
 	// Update last rebalanced timestamp
-	config, _ := s.configRepo.GetByID(ctx, plan.ConfigID)
+	config, _ := s.configRepo.GetByID(ctx, plan.ConfigID, userID)
 	if config != nil {
 		now := time.Now()
 		config.LastRebalancedAt = &now
@@ -305,7 +326,7 @@ func (s *RebalancingService) CheckDrift(ctx context.Context, userID uuid.UUID, c
 		}
 	}
 
-	config, _ := s.configRepo.GetByID(ctx, configID)
+	config, _ := s.configRepo.GetByID(ctx, configID, userID)
 	needsRebalance := config != nil && maxDrift.GreaterThan(config.ThresholdPct)
 
 	return needsRebalance, maxDrift, nil
