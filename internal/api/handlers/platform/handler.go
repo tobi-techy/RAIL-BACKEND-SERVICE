@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -52,6 +53,9 @@ type PlatformHandler struct {
 	bridgeAddress string
 	logger        *zap.Logger
 	chatLinks     *platform.ChatAccountLinker
+	// photoTurnTimeout is how long a photo turn may run before its response
+	// cannot be written; see allowSlowPhotoResponse.
+	photoTurnTimeout time.Duration
 }
 
 func NewPlatformHandlerWithLogger(ls *platform.LinkingService, bridgeAddress string, logger *zap.Logger) *PlatformHandler {
@@ -166,6 +170,37 @@ func (h *PlatformHandler) ListLinked(c *gin.Context) {
 	c.JSON(http.StatusOK, identities)
 }
 
+// defaultPhotoTurnTimeout bounds a photo turn's response when none is
+// configured. It sits above the bridge's photo timeout (90s by default).
+const defaultPhotoTurnTimeout = 100 * time.Second
+
+// SetPhotoTurnTimeout sets how long a photo turn may run before its response
+// can no longer be written. Zero or negative keeps the default.
+func (h *PlatformHandler) SetPhotoTurnTimeout(d time.Duration) {
+	h.photoTurnTimeout = d
+}
+
+// allowSlowPhotoResponse lifts the server's WriteTimeout (30s for every route)
+// for a photo, which is read (OCR, extraction) before it is answered. Without
+// this the bridge could wait out its longer photo timeout for a response the
+// server stopped being able to write at 30s, then retry and run the OCR again.
+// A failure to move the deadline leaves the server default in place.
+func (h *PlatformHandler) allowSlowPhotoResponse(c *gin.Context, body []byte) {
+	var head struct {
+		IsImage bool `json:"is_image"`
+	}
+	if json.Unmarshal(body, &head) != nil || !head.IsImage {
+		return
+	}
+	budget := h.photoTurnTimeout
+	if budget <= 0 {
+		budget = defaultPhotoTurnTimeout
+	}
+	if err := http.NewResponseController(c.Writer).SetWriteDeadline(time.Now().Add(budget)); err != nil && h.logger != nil {
+		h.logger.Warn("could not extend the write deadline for a photo turn", zap.Error(err))
+	}
+}
+
 // HandleInbound receives an inbound message from the bridge via HTTP POST
 // and feeds it to the processor. HMAC-authenticated via middleware.
 func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.HandlerFunc {
@@ -183,6 +218,7 @@ func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.Handl
 			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 			return
 		}
+		h.allowSlowPhotoResponse(c, body)
 		if err := processor.Process(c.Request.Context(), body); err != nil {
 			// Every failure here is answered 500, because the bridge retries
 			// 5xx. Log which of the two it was: a retryable (transient) failure

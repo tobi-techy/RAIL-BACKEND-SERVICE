@@ -28,6 +28,7 @@ import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
 import { PollWatcher, resolveIMessageClients } from "./poll-watcher";
 import { isProviderDailyCap, PROVIDER_CAP_HOLD_MS } from "./send-hold";
+import { fetchWithBudget, maxAttemptsFor } from "./backend-timeout";
 
 const config = loadConfig();
 const log = getLogger();
@@ -315,7 +316,10 @@ function makeHMACHeaders(payload: string): Record<string, string> {
 // has no redelivery guarantee, so the user's text just vanished. We now retry
 // with backoff before giving up. 4xx (except 429) are permanent failures —
 // e.g. HMAC mismatches — and fail immediately.
-const BACKEND_MAX_ATTEMPTS = 3;
+const timeouts = {
+  textMs: config.RAIL_BACKEND_TEXT_TIMEOUT_MS,
+  photoMs: config.RAIL_BACKEND_PHOTO_TIMEOUT_MS,
+};
 const BACKEND_RETRY_DELAY_MS = 1500;
 const BACKEND_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
@@ -327,7 +331,7 @@ class BackendPostError extends Error {
   }
 }
 
-async function postToBackendOnce(path: string, body: unknown, attempt: number, timeoutMs: number): Promise<void> {
+async function postToBackendOnce(path: string, body: unknown, attempt: number): Promise<void> {
   const url = `${config.RAIL_BACKEND_URL}${path}`;
   // The attempt counter travels inside the signed body, not a header, so the
   // backend can trust it. It tells the backend whether a redelivery is still
@@ -344,15 +348,19 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number, t
 
   let resp: Response;
   try {
-    resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...hmacHeaders,
+    resp = await fetchWithBudget(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...hmacHeaders,
+        },
+        body: payload,
       },
-      body: payload,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+      body,
+      timeouts,
+    );
   } catch {
     throw new BackendPostError(path);
   }
@@ -362,30 +370,6 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number, t
     log.error({ url, status: resp.status, body: text.slice(0, 200) }, "backend POST failed");
     throw new BackendPostError(path, resp.status);
   }
-}
-
-function backendTimeoutMs(body: unknown): number {
-  // A statement PDF is read before the reply is sent. Text stays on the short
-  // timeout. 150s covers extraction plus one model pass plus Miriam's answer.
-  if (body && typeof body === "object" && !Array.isArray(body)) {
-    const doc = body as { is_document?: boolean };
-    if (doc.is_document) return 150_000;
-  }
-  // Must stay above the backend's whole-turn budget (which bounds the guest
-  // onboarding turn), or we hang up on a turn it is about to answer.
-  return config.RAIL_BACKEND_TEXT_TIMEOUT_MS;
-}
-
-// Document scans are idempotent-unsafe to blindly retry: each attempt mints a
-// fresh ScanGuest + Offer nonce set. Timeouts (status undefined) get ONE
-// retry; fast failures keep the normal budget. Worst case is ~300s of holding
-// the turn, not ~450s+.
-function maxAttemptsFor(body: unknown): number {
-  if (body && typeof body === "object" && !Array.isArray(body)) {
-    const doc = body as { is_document?: boolean };
-    if (doc.is_document) return Math.min(BACKEND_MAX_ATTEMPTS, 2);
-  }
-  return BACKEND_MAX_ATTEMPTS;
 }
 
 async function postToBackend(path: string, body: unknown): Promise<void> {
@@ -401,11 +385,10 @@ async function postToBackend(path: string, body: unknown): Promise<void> {
   ) {
     turns.tagInbound(body as InboundPayload);
   }
-  const timeoutMs = backendTimeoutMs(body);
   const maxAttempts = maxAttemptsFor(body);
   for (let attempt = 1; ; attempt++) {
     try {
-      await postToBackendOnce(path, body, attempt, timeoutMs);
+      await postToBackendOnce(path, body, attempt);
       return;
     } catch (err) {
       const status = err instanceof BackendPostError ? err.status : undefined;

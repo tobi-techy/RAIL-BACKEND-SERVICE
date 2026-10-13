@@ -942,6 +942,12 @@ type PlatformConfig struct {
 	// values at or below the guest brain's 6s default have no effect.
 	// Env: PLATFORM_GUEST_TURN_TIMEOUT_SECONDS.
 	GuestTurnTimeoutSeconds int `mapstructure:"guest_turn_timeout_seconds"`
+	// PhotoTurnTimeoutSeconds is how long a photo's inbound request may run
+	// before the server can no longer write its response. A photo is OCR'd and
+	// extracted before it is answered, so the server's 30s write timeout is lifted
+	// for it. Keep it above the bridge's RAIL_BACKEND_PHOTO_TIMEOUT_MS (90s by
+	// default). Env: PLATFORM_PHOTO_TURN_TIMEOUT_SECONDS.
+	PhotoTurnTimeoutSeconds int `mapstructure:"photo_turn_timeout_seconds"`
 }
 
 // ConfirmationConfig drives the reusable live iMessage confirmation card
@@ -1526,6 +1532,7 @@ func setDefaults() {
 	// Registered so PLATFORM_TURN_SUPERSESSION actually binds: viper only
 	// unmarshals env vars for keys it already knows about.
 	viper.SetDefault("platform.turn_supersession", false)
+	viper.SetDefault("platform.photo_turn_timeout_seconds", 100)
 
 	// Live confirmation cards (Face ID money actions). The token secret gates
 	// everything: without it the service fails closed and no cards are staged.
