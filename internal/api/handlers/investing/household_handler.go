@@ -1,6 +1,7 @@
 package investing
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rail-service/rail_service/internal/api/handlers/common"
+	"github.com/rail-service/rail_service/internal/domain/authz"
 	p2pservice "github.com/rail-service/rail_service/internal/domain/services/p2p"
 )
 
@@ -18,11 +20,29 @@ import (
 type HouseholdHandler struct {
 	db         *sqlx.DB
 	p2pService *p2pservice.Service
+	authz      authz.Authorizer
 	logger     *zap.Logger
 }
 
-func NewHouseholdHandler(db *sqlx.DB, p2pService *p2pservice.Service, logger *zap.Logger) *HouseholdHandler {
-	return &HouseholdHandler{db: db, p2pService: p2pService, logger: logger}
+func NewHouseholdHandler(db *sqlx.DB, p2pService *p2pservice.Service, guard authz.Authorizer, logger *zap.Logger) *HouseholdHandler {
+	return &HouseholdHandler{db: db, p2pService: p2pService, authz: guard, logger: logger}
+}
+
+// requireGroupMember runs the shared membership seam for a household group.
+// A caller who is not a member gets 404, never 403, so the response does not
+// disclose that the group exists.
+func (h *HouseholdHandler) requireGroupMember(c *gin.Context, userID, groupID uuid.UUID) bool {
+	err := h.authz.RequireMembership(c.Request.Context(), userID, authz.SubjectHouseholdGroup, groupID)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, authz.ErrNotAuthorized) {
+		common.SendNotFound(c, common.ErrCodeNotFound, "Group not found")
+		return false
+	}
+	h.logger.Error("failed to check membership", zap.Error(err))
+	common.SendInternalError(c, common.ErrCodeInternalError, "Failed to verify membership")
+	return false
 }
 
 type createGroupRequest struct {
@@ -137,17 +157,8 @@ func (h *HouseholdHandler) ShareReceipt(c *gin.Context) {
 		return
 	}
 
-	// Verify membership
-	var isMember bool
-	if err := h.db.GetContext(c.Request.Context(), &isMember,
-		`SELECT EXISTS(SELECT 1 FROM household_members WHERE group_id=$1 AND user_id=$2)`,
-		groupID, userID); err != nil {
-		h.logger.Error("failed to check membership", zap.Error(err))
-		common.SendInternalError(c, common.ErrCodeInternalError, "Failed to verify membership")
-		return
-	}
-	if !isMember {
-		common.SendForbidden(c, "Not a member of this group")
+	// Verify membership through the shared seam.
+	if !h.requireGroupMember(c, userID, groupID) {
 		return
 	}
 
@@ -188,17 +199,8 @@ func (h *HouseholdHandler) GetSummary(c *gin.Context) {
 		return
 	}
 
-	// Verify membership
-	var isMember bool
-	if err := h.db.GetContext(c.Request.Context(), &isMember,
-		`SELECT EXISTS(SELECT 1 FROM household_members WHERE group_id=$1 AND user_id=$2)`,
-		groupID, userID); err != nil {
-		h.logger.Error("failed to check membership", zap.Error(err))
-		common.SendInternalError(c, common.ErrCodeInternalError, "Failed to verify membership")
-		return
-	}
-	if !isMember {
-		common.SendForbidden(c, "Not a member of this group")
+	// Verify membership through the shared seam.
+	if !h.requireGroupMember(c, userID, groupID) {
 		return
 	}
 

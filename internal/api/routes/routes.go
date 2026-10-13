@@ -1195,7 +1195,7 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// Household expense tracking
 			if container.P2PService != nil {
-				householdHandler := handlers.NewHouseholdHandler(sqlx.NewDb(container.DB, "postgres"), container.P2PService, container.ZapLog)
+				householdHandler := handlers.NewHouseholdHandler(sqlx.NewDb(container.DB, "postgres"), container.P2PService, container.AuthzGuard, container.ZapLog)
 				household := protected.Group("/household/groups")
 				{
 					household.POST("", householdHandler.CreateGroup)

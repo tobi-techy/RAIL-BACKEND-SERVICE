@@ -126,7 +126,7 @@ func (r *SharedGoalRepository) UpdateGoal(ctx context.Context, g *entities.Share
 
 func (r *SharedGoalRepository) GetLeaderboard(ctx context.Context, goalID uuid.UUID) ([]entities.SharedGoalMember, error) {
 	var members []entities.SharedGoalMember
-	err := r.db.SelectContext(ctx, &members, `SELECT m.*, u.rail_tag FROM shared_goal_members m LEFT JOIN users u ON u.id = m.user_id WHERE m.goal_id = $1 AND m.status = 'active' ORDER BY m.total_contributed DESC`, goalID)
+	err := r.db.SelectContext(ctx, &members, `SELECT m.*, COALESCE(u.rail_tag, '') AS rail_tag FROM shared_goal_members m LEFT JOIN users u ON u.id = m.user_id WHERE m.goal_id = $1 AND m.status = 'active' ORDER BY m.total_contributed DESC`, goalID)
 	return members, err
 }
 
