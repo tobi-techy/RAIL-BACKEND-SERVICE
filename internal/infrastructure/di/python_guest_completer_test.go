@@ -39,6 +39,9 @@ func servePythonChat(t *testing.T, respond *ai.PythonChatResponse) (*httptest.Se
 }
 
 func guestTurn(ctx context.Context, sender platform.GuestSender) context.Context {
+	if sender.Source == "" {
+		sender.Source = entities.TextSourceUser
+	}
 	return platform.ContextWithGuestSender(ctx, sender)
 }
 

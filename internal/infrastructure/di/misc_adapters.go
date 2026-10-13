@@ -72,10 +72,10 @@ type orchestratorAdapter struct {
 	userRepo     *repositories.UserRepository // for email + KYC-derived role
 }
 
-func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform, source entities.TextSource) (*platform.PlatformReply, error) {
 	// Python-agent delegation path: MIRIAM's LLM brain owns the conversation.
 	if a.pythonDelegated() {
-		return a.handlePlatformMessagePython(ctx, userID, platformIdentityID, message, threadID, plat)
+		return a.handlePlatformMessagePython(ctx, userID, platformIdentityID, message, threadID, plat, source)
 	}
 
 	// Fail closed, never sideways: texted chat only ever comes from MIRIAM

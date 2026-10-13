@@ -14,6 +14,9 @@ type GuestSender struct {
 	Platform entities.Platform
 	SenderID string
 	ThreadID string
+	// Source is where the turn's text came from; the completer forwards it so
+	// Python can refuse to treat generated text as an instruction.
+	Source entities.TextSource
 }
 
 type guestSenderCtxKey struct{}

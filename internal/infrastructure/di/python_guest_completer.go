@@ -92,7 +92,7 @@ func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemP
 		resp, err = a.python.ChatAsGuestPollVote(ctx, uid, guestUsername(uid), guestEmail(uid), "guest",
 			conversationID, text, vote.PollTitle)
 	} else {
-		resp, err = a.python.ChatAsGuest(ctx, uid, guestUsername(uid), guestEmail(uid), "guest", conversationID, text)
+		resp, err = a.python.ChatAsGuest(ctx, uid, guestUsername(uid), guestEmail(uid), "guest", conversationID, text, sender.Source)
 	}
 	if err != nil {
 		a.logger.Warn("python guest turn failed; no Go fallback — erroring so the turn is retried or requeued",
