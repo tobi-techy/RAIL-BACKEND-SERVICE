@@ -308,6 +308,7 @@ type Processor struct {
 	babyStepsSeeder  BabyStepsSeeder
 	voice            VoiceTranscoder
 	vision           ReceiptVision
+	dedupe           InboundDeduper
 	statementHandler StatementAttachmentHandler
 	optOut           OptOutStore
 	emailBackfill    AccountReader
@@ -341,6 +342,12 @@ func (p *Processor) SetLogger(l *zap.Logger) {
 		return
 	}
 	p.logger = l
+}
+
+// SetInboundDeduper makes inbound deliveries idempotent on the provider message
+// id. Nil leaves dedupe to the bridge's in-memory window.
+func (p *Processor) SetInboundDeduper(d InboundDeduper) {
+	p.dedupe = d
 }
 
 // SetReceiptVision enables receipt-photo understanding. When unset, images get
@@ -424,11 +431,51 @@ func turnIDFromContext(ctx context.Context) string {
 	return id
 }
 
+var errInboundInFlight = errors.New("inbound message is being handled by another delivery")
+
+// Process handles one inbound delivery. A message the provider already gave us
+// (same platform and message id) never gets a second turn, whether the first
+// finished on another replica or before a restart. A delivery that arrives while
+// the first is still running is answered with a retryable error rather than an
+// ack, and a turn that fails gives its claim back so the retry runs.
 func (p *Processor) Process(ctx context.Context, raw []byte) error {
+	var head struct {
+		Platform entities.Platform `json:"platform"`
+		MsgID    string            `json:"msg_id"`
+	}
+	key := ""
+	if p.dedupe != nil && json.Unmarshal(raw, &head) == nil {
+		key = inboundDedupeKey(head.Platform, head.MsgID)
+	}
+	if key == "" {
+		return p.process(ctx, raw)
+	}
+	switch p.dedupe.Claim(ctx, key) {
+	case AlreadyHandled:
+		p.logger.Info("duplicate inbound message acknowledged without a second turn",
+			zap.String("platform", string(head.Platform)), zap.String("msg_id", head.MsgID))
+		return nil
+	case InFlight:
+		// Not an ack: see InFlight. The bridge retries, and by then the first
+		// delivery has either finished (acknowledged above) or given the claim back.
+		return Retryable(errInboundInFlight)
+	}
+	if err := p.process(ctx, raw); err != nil {
+		p.dedupe.Release(ctx, key)
+		return err
+	}
+	p.dedupe.Done(ctx, key)
+	return nil
+}
+
+func (p *Processor) process(ctx context.Context, raw []byte) error {
 	var msg InboundMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		log.Printf("drop unparseable inbound message: %v", err)
 		return nil
+	}
+	if msg.MsgID != "" {
+		ctx = entities.WithInboundMessageID(ctx, string(msg.Platform)+":"+msg.MsgID)
 	}
 
 	// Turn supersession: record this conversation's newest inbound turn and
