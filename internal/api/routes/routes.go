@@ -280,59 +280,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		internal.POST("/knowledge/ingest", knowledgeHandlers.Ingest)
 	}
 
-	// Manual deposit credit — auth handled by group middleware
-	if container.FundingService != nil {
-		internal.POST("/deposit/credit", func(c *gin.Context) {
-			var req struct {
-				Address string `json:"address" binding:"required"`
-				Amount  string `json:"amount" binding:"required"`
-				TxHash  string `json:"tx_hash" binding:"required"`
-				Chain   string `json:"chain"`
-			}
-			if err := c.ShouldBindJSON(&req); err != nil {
-				c.JSON(400, gin.H{"error": err.Error()})
-				return
-			}
-
-			// Security: cap single deposit credits at $10,000 USD to limit blast radius of compromised keys
-			amt, err := decimal.NewFromString(req.Amount)
-			if err != nil || amt.LessThanOrEqual(decimal.Zero) {
-				c.JSON(400, gin.H{"error": "invalid amount"})
-				return
-			}
-			maxDeposit := decimal.NewFromInt(10000)
-			if amt.GreaterThan(maxDeposit) {
-				c.JSON(400, gin.H{"error": "amount exceeds maximum allowed deposit of 10000 USD"})
-				return
-			}
-
-			// Audit trail for internal deposit credits
-			container.Logger.Info("internal deposit credit requested",
-				zap.String("client_ip", c.ClientIP()),
-				zap.String("amount", req.Amount),
-				zap.String("address", req.Address),
-				zap.String("tx_hash", req.TxHash),
-			)
-			chain := strings.ToUpper(req.Chain)
-			if chain == "" {
-				chain = "BASE"
-			}
-			deposit := &entities.ChainDepositWebhook{
-				Chain:     entities.Chain(chain),
-				Address:   req.Address,
-				Token:     entities.StablecoinUSDC,
-				Amount:    req.Amount,
-				TxHash:    req.TxHash,
-				BlockTime: time.Now(),
-			}
-			if err := container.FundingService.ProcessChainDeposit(c.Request.Context(), deposit); err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(200, gin.H{"status": "credited"})
-		})
-	}
-
 	// Internal stash-to-spend transfer — bypasses stash lock, auth handled by group middleware
 	// Security: amount capped at $500, full audit trail with caller IP
 	internal.POST("/stash/transfer-to-spend", func(c *gin.Context) {
