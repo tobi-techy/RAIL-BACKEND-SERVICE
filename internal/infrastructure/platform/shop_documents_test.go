@@ -441,8 +441,10 @@ func TestShopRead_PdfInvoiceGoesToTheReader(t *testing.T) {
 		t.Fatalf("reader calls = %d, want 1", reader.count())
 	}
 	req := reader.last()
-	if req.DocHint != "invoice" {
-		t.Fatalf("doc hint = %q, want invoice", req.DocHint)
+	// Go's text layer is a first cut, not the verdict: the reader sees the page
+	// and classifies it itself.
+	if req.DocHint != string(ShopKindUnknownImage) {
+		t.Fatalf("doc hint = %q, want %q", req.DocHint, ShopKindUnknownImage)
 	}
 	if req.MIME != "application/pdf" {
 		t.Fatalf("mime = %q, want application/pdf", req.MIME)
@@ -810,5 +812,62 @@ func TestShopRead_AFailedPDFReadFallsBackToTheStatementPath(t *testing.T) {
 	rec.waitFor(t, 2)
 	if handler.linkedCalls != 1 {
 		t.Fatalf("statement enqueue calls = %d, want the statement path to still get it", handler.linkedCalls)
+	}
+}
+
+// The Wigmore invoice, in its own words. A keyword count calls it a delivery
+// note ("goods received", "received by") or a receipt ("subtotal", "total",
+// "qty", "thank you", "tel"), and either verdict would read an invoice with the
+// wrong rules. The reader sees the page, so the reader decides; the statement
+// path, which owns bank statements, must not see this file at all.
+func TestShopRead_AnInvoicePDFWithDeliveryNoteBoilerplateIsNotMisrouted(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	p, rec := shopTestProcessor(repo, &fakeOrchestrator{})
+
+	pdf := shopTestTextPDF(
+		"WIGMORE TRADING LTD",
+		"FMCG Distribution | 14 Ogunlana Drive, Surulere, Lagos",
+		"0803 412 7790 RC 1184522 | sales@wigmoretrading.ng",
+		"INVOICE",
+		"Invoice No: WGT/INV/2610-0417",
+		"Delivery Note: DN-2610-0388",
+		"BILL TO",
+		"Mama Tobi Stores",
+		"Item Qty Unit Price (N) Amount (N)",
+		"1 Indomie Instant Noodles 70g (ctn of 40) 10 ctn 9,200 92,000",
+		"Subtotal 182,600",
+		"Trade discount -2,600",
+		"TOTAL 180,000",
+		"Balance due 17/10/2026 30,000",
+		"Payment terms 7 days credit.",
+		"Goods received in good condition. Report shortages within 24 hours of delivery.",
+		"Received by (customer) For Wigmore Trading Ltd",
+		"Thank you for your business.",
+	)
+	reader := &fakeShopReader{result: &ShopReadResult{
+		ReplyText:  "Wigmore Trading Ltd: 5 lines, N180,000 due, N30,000 left.",
+		DocID:      "doc-fixture",
+		DocType:    "invoice",
+		Confidence: 1,
+	}}
+	p.SetShopReader(reader)
+	p.SetShopClaimStore(NewMemoryMessageClaimStore())
+	handler := &fakeStatementHandler{}
+	p.SetStatementAttachmentHandler(handler)
+
+	msg := shopDocumentMessage("msg-invoice-pdf", "", pdf)
+	if err := p.Process(context.Background(), mustRaw(t, msg)); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	rec.waitFor(t, 2)
+	if got := reader.count(); got != 1 {
+		t.Fatalf("reader calls = %d, want the reader to see this invoice", got)
+	}
+	if got := reader.last().DocHint; got != string(ShopKindUnknownImage) {
+		t.Fatalf("doc hint = %q, want %q so the reader classifies the page", got, ShopKindUnknownImage)
+	}
+	if handler.linkedCalls != 0 {
+		t.Fatal("an invoice must never reach the statement path")
 	}
 }

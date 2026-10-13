@@ -558,14 +558,18 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		}
 		// A PDF can be a distributor invoice or a delivery note rather than a
 		// bank statement, and the statement parser would misread every line of
-		// one. Go reads the file's own text layer to tell them apart. A readable
-		// statement keeps the statement path untouched; a file whose text layer
-		// says nothing at all — a scan, or an exporter this reader cannot follow
-		// — is handed to the reader, which can rasterise the page and see it.
+		// one. Go reads the file's own text layer, but only as a first cut: a
+		// keyword count is not a verdict. The Wigmore invoice carries money
+		// vocabulary on every line and closes with "Goods received in good
+		// condition" and "Received by", which is two delivery-note keywords and
+		// a receipt's worth of "subtotal"/"total"/"qty"/"thank you" — the same
+		// document, sent as a photo, is read as the invoice it is. So the reader
+		// gets the page and classifies it; Go only keeps a readable statement,
+		// which is not a shop document, on the statement path it always had.
 		if p.shopEnabled() {
 			kind := document.ClassifyPDF(attachment.Data)
 			// What the file's own text layer said, on every PDF: the difference
-			// between a declined invoice and a readable statement is invisible
+			// between a misrouted invoice and a readable statement is invisible
 			// from the outside otherwise.
 			p.logger.Info("PDF text layer classified",
 				zap.String("platform", string(msg.Platform)),
@@ -573,15 +577,7 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 				zap.String("kind", string(kind)),
 				zap.Int("bytes", len(attachment.Data)),
 			)
-			switch {
-			case kind.IsShopDocument() || kind == document.DocInvoice:
-				shopDoc = &shopPage{
-					Kind:    ShopReadKind(kind),
-					FileB64: msg.DocumentB64,
-					MIME:    attachment.MIMEType,
-					Caption: strings.TrimSpace(msg.Text),
-				}
-			case kind == document.DocUnknown:
+			if kind != document.DocBankStatement {
 				shopDoc = &shopPage{
 					Kind:              ShopKindUnknownImage,
 					FileB64:           msg.DocumentB64,
@@ -589,9 +585,10 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 					Caption:           strings.TrimSpace(msg.Text),
 					StatementFallback: &attachment,
 				}
-				p.logger.Info("PDF with no readable text layer handed to the reader",
+				p.logger.Info("PDF handed to the reader to classify",
 					zap.String("platform", string(msg.Platform)),
 					zap.String("msg_id", msg.MsgID),
+					zap.String("text_layer_kind", string(kind)),
 					zap.Int("bytes", len(attachment.Data)),
 				)
 			}
