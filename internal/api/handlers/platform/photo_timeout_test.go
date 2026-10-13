@@ -66,8 +66,10 @@ func postInbound(t *testing.T, srv *httptest.Server, body string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return 0, err
+	}
 	return resp.StatusCode, nil
 }
 
@@ -102,7 +104,10 @@ func inboundServerWithSlowText(t *testing.T) *httptest.Server {
 	router := gin.New()
 	router.POST("/inbound", func(c *gin.Context) {
 		h := NewPlatformHandlerWithLogger(nil, "", nil)
-		body, _ := io.ReadAll(c.Request.Body)
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
 		h.allowSlowPhotoResponse(c, body)
 		time.Sleep(600 * time.Millisecond)
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
