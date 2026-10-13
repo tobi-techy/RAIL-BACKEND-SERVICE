@@ -119,9 +119,21 @@ func (r *ScamRepository) GetActiveAlerts(ctx context.Context, userID uuid.UUID) 
 	return alerts, err
 }
 
-func (r *ScamRepository) DismissAlert(ctx context.Context, alertID uuid.UUID) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE user_scam_alerts SET dismissed = TRUE WHERE id = $1`, alertID)
-	return err
+// DismissAlert dismisses only the caller's own alert and reports sql.ErrNoRows
+// when no row matches, so the caller can answer 404 instead of a false success.
+func (r *ScamRepository) DismissAlert(ctx context.Context, userID, alertID uuid.UUID) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE user_scam_alerts SET dismissed = TRUE WHERE id = $1 AND user_id = $2`, alertID, userID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // ============================================================================

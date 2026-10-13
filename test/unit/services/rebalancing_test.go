@@ -2,6 +2,7 @@ package services_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/google/uuid"
@@ -22,9 +23,9 @@ func (m *mockRebalancingConfigRepo) Create(ctx context.Context, c *entities.Reba
 	return nil
 }
 
-func (m *mockRebalancingConfigRepo) GetByID(ctx context.Context, id uuid.UUID) (*entities.RebalancingConfig, error) {
+func (m *mockRebalancingConfigRepo) GetByID(ctx context.Context, id, userID uuid.UUID) (*entities.RebalancingConfig, error) {
 	for _, c := range m.configs {
-		if c.ID == id {
+		if c.ID == id && c.UserID == userID {
 			return c, nil
 		}
 	}
@@ -43,7 +44,7 @@ func (m *mockRebalancingConfigRepo) GetByUserID(ctx context.Context, userID uuid
 
 func (m *mockRebalancingConfigRepo) Update(ctx context.Context, c *entities.RebalancingConfig) error {
 	for i, existing := range m.configs {
-		if existing.ID == c.ID {
+		if existing.ID == c.ID && existing.UserID == c.UserID {
 			m.configs[i] = c
 			return nil
 		}
@@ -51,14 +52,14 @@ func (m *mockRebalancingConfigRepo) Update(ctx context.Context, c *entities.Reba
 	return nil
 }
 
-func (m *mockRebalancingConfigRepo) Delete(ctx context.Context, id uuid.UUID) error {
+func (m *mockRebalancingConfigRepo) Delete(ctx context.Context, id, userID uuid.UUID) error {
 	for i, c := range m.configs {
-		if c.ID == id {
+		if c.ID == id && c.UserID == userID {
 			m.configs = append(m.configs[:i], m.configs[i+1:]...)
 			return nil
 		}
 	}
-	return nil
+	return sql.ErrNoRows
 }
 
 type mockRebalancingPositionProvider struct {
