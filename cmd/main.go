@@ -268,7 +268,11 @@ func runMintAdminToken(args []string) error {
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
 	}
-	defer db.Close()
+	defer func() {
+		if cerr := db.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing database: %v\n", cerr)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -276,7 +280,10 @@ func runMintAdminToken(args []string) error {
 	if err != nil {
 		return err
 	}
-	host, _ := os.Hostname()
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
+	}
 	osUser := os.Getenv("USER")
 	fmt.Fprintf(os.Stderr, "AUDIT offline admin token minted actor_id=%s role=%s expires_at=%s host=%s os_user=%s\n",
 		cred.ID, cred.Role, expires.UTC().Format(time.RFC3339), host, osUser)

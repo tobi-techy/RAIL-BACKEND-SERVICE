@@ -76,7 +76,10 @@ func NewDashboardAuthHandler(store AdminCredentialStore, secondFactor SecondFact
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	dummy, _ := bcrypt.GenerateFromPassword([]byte("dashboard-auth-timing-equaliser"), 12)
+	dummy, err := bcrypt.GenerateFromPassword([]byte("dashboard-auth-timing-equaliser"), 12)
+	if err != nil {
+		logger.Error("dashboard auth: could not precompute the timing-equaliser hash", zap.Error(err))
+	}
 	return &DashboardAuthHandler{store: store, secondFact: secondFactor, tokens: tokens, logger: logger, dummyHash: dummy}
 }
 
@@ -87,7 +90,6 @@ type dashboardAuthRequest struct {
 }
 
 func (h *DashboardAuthHandler) Auth(c *gin.Context) {
-	ctx := c.Request.Context()
 	var req dashboardAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "email, password and totp_code are required"})
@@ -101,30 +103,8 @@ func (h *DashboardAuthHandler) Auth(c *gin.Context) {
 		return
 	}
 
-	cred, err := h.store.FindAdminByEmail(ctx, email)
-	if err != nil || cred == nil || cred.PasswordHash == "" {
-		_ = bcrypt.CompareHashAndPassword(h.dummyHash, []byte(req.Password))
-		h.refuse(c, email, "unknown_admin_or_no_password")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	if bcrypt.CompareHashAndPassword([]byte(cred.PasswordHash), []byte(req.Password)) != nil {
-		h.refuse(c, email, "bad_password")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	if !cred.IsActive || (cred.Role != "admin" && cred.Role != "super_admin") {
-		h.refuse(c, email, "inactive_or_not_admin")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-
-	ok, err := h.secondFact.Verify(ctx, cred.ID, strings.TrimSpace(req.TOTPCode))
-	if err != nil || !ok {
-		reason := "bad_second_factor"
-		if err != nil {
-			reason = "second_factor_unavailable_or_not_enrolled"
-		}
+	cred, reason := h.verifyCredentials(c, email, req)
+	if cred == nil {
 		h.refuse(c, email, reason)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
@@ -142,6 +122,33 @@ func (h *DashboardAuthHandler) Auth(c *gin.Context) {
 		zap.String("actor_role", cred.Role),
 		zap.Time("expires_at", pair.AccessExpiresAt))...)
 	c.JSON(http.StatusOK, gin.H{"token": pair.AccessToken, "role": cred.Role, "email": cred.Email})
+}
+
+// verifyCredentials returns the admin only when the password and the second
+// factor both check out; otherwise it returns nil and the audit reason.
+func (h *DashboardAuthHandler) verifyCredentials(c *gin.Context, email string, req dashboardAuthRequest) (*AdminCredential, string) {
+	ctx := c.Request.Context()
+	cred, err := h.store.FindAdminByEmail(ctx, email)
+	if err != nil || cred == nil || cred.PasswordHash == "" {
+		if bcrypt.CompareHashAndPassword(h.dummyHash, []byte(req.Password)) == nil {
+			return nil, "unknown_admin_dummy_hash_matched"
+		}
+		return nil, "unknown_admin_or_no_password"
+	}
+	if bcrypt.CompareHashAndPassword([]byte(cred.PasswordHash), []byte(req.Password)) != nil {
+		return nil, "bad_password"
+	}
+	if !cred.IsActive || (cred.Role != "admin" && cred.Role != "super_admin") {
+		return nil, "inactive_or_not_admin"
+	}
+	ok, err := h.secondFact.Verify(ctx, cred.ID, strings.TrimSpace(req.TOTPCode))
+	if err != nil {
+		return nil, "second_factor_unavailable_or_not_enrolled"
+	}
+	if !ok {
+		return nil, "bad_second_factor"
+	}
+	return cred, ""
 }
 
 func (h *DashboardAuthHandler) refuse(c *gin.Context, email, reason string) {

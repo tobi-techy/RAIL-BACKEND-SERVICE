@@ -103,7 +103,11 @@ func newDashboardRouter(t *testing.T, withTwoFA bool) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Logf("closing db: %v", err)
+		}
+	})
 
 	c := &di.Container{
 		Config: &config.Config{
@@ -132,10 +136,13 @@ func postDashboardAuth(router http.Handler, body string) *httptest.ResponseRecor
 }
 
 func dashboardToken(w *httptest.ResponseRecorder) string {
-	var body map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	token, _ := body["token"].(string)
-	return token
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		return ""
+	}
+	return body.Token
 }
 
 // An admin's email address alone used to return a signed admin JWT.

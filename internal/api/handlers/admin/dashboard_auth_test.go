@@ -90,8 +90,14 @@ func (r *rig) post(body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/auth", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "203.0.113.9:4444"
-	traceID, _ := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
-	spanID, _ := trace.SpanIDFromHex("0102030405060708")
+	traceID, err := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
+	if err != nil {
+		panic(err)
+	}
+	spanID, err := trace.SpanIDFromHex("0102030405060708")
+	if err != nil {
+		panic(err)
+	}
 	req = req.WithContext(trace.ContextWithSpanContext(req.Context(), trace.NewSpanContext(trace.SpanContextConfig{TraceID: traceID, SpanID: spanID})))
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -101,7 +107,9 @@ func (r *rig) post(body string) *httptest.ResponseRecorder {
 func assertNoToken(t *testing.T, w *httptest.ResponseRecorder) {
 	t.Helper()
 	var body map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
 	if _, ok := body["token"]; ok {
 		t.Fatalf("response carried a token: %s", w.Body.String())
 	}
@@ -134,7 +142,9 @@ func TestPasswordAndSecondFactorMintAndAudit(t *testing.T) {
 		t.Fatalf("status %d, body %s", w.Code, w.Body.String())
 	}
 	var body struct{ Token, Role string }
-	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
 	claims, err := auth.NewJWTService(testSecret, 900, 900, nil).ValidateEnhancedToken(body.Token)
 	if err != nil || claims.UserID != cred.ID || claims.Role != "super_admin" {
 		t.Fatalf("minted token does not validate as the admin: claims=%+v err=%v", claims, err)
