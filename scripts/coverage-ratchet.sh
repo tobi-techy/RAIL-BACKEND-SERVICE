@@ -40,6 +40,12 @@ fi
 FLOOR="$(tr -d '[:space:]' < "${FLOOR_FILE}")"
 
 if [[ "${2:-}" == "--update" ]]; then
+  if awk -v c="${CURRENT}" -v f="${FLOOR}" 'BEGIN { exit !(c + 0 < f + 0) }'; then
+    echo "refusing to lower the floor: coverage is ${CURRENT}%, the floor is ${FLOOR}%."
+    echo "The floor only rises. If coverage genuinely fell, that is the owner's call:"
+    echo "raise it in the pull request, do not write it here."
+    exit 1
+  fi
   printf '%s\n' "${CURRENT}" > "${FLOOR_FILE}"
   echo "coverage floor raised to ${CURRENT}% (target ${TARGET}%)"
   exit 0

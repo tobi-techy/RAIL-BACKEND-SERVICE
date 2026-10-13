@@ -117,6 +117,18 @@ func (s *Service) settleViaChainRails(ctx context.Context, userID uuid.UUID, wal
 		return
 	}
 
+	// The intent's total includes the bridge fee: if it is present but its scale
+	// is unsupported, funding with the bare transfer amount would underfund the
+	// intent while the bridge was recorded as initiated.
+	if intent.TotalAmountInAssetToken != "" && (intent.AssetTokenDecimals <= 0 || intent.AssetTokenDecimals > entities.MaxTokenDecimals) {
+		s.logger.Error("airbills settle: ChainRails returned unsupported asset token decimals — reversing hold",
+			zap.Int("asset_token_decimals", intent.AssetTokenDecimals), zap.String("airbills_id", airbillsID))
+		if err := s.reverseHold(ctx, userID, airbillsID, totalHold, railFee, "unsupported_asset_token_decimals"); err != nil {
+			s.logger.Error("airbills settle: failed to reverse hold after unsupported asset token decimals", zap.Error(err), zap.String("airbills_id", airbillsID))
+		}
+		return
+	}
+
 	circleAmountDecimal := transferAmount
 	circleAmount := transferAmount.StringFixed(6)
 	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 && intent.AssetTokenDecimals <= entities.MaxTokenDecimals {

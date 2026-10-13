@@ -88,13 +88,9 @@ func isWritable(path string) bool {
 		return false
 	}
 	name := f.Name()
-	if err := f.Close(); err != nil {
-		return false
-	}
-	if err := os.Remove(name); err != nil { // #nosec G703 -- name is the temp file this function just created under path
-		return false
-	}
-	return true
+	closeErr := f.Close()
+	removeErr := os.Remove(name) // #nosec G703 -- name is the temp file this function just created under path
+	return closeErr == nil && removeErr == nil
 }
 
 const (

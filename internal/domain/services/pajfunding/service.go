@@ -187,7 +187,18 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		return
 	}
 
-	// Step 2: Fund the intent via Circle (same-chain EVM transfer to intent address)
+	// Step 2: Fund the intent via Circle (same-chain EVM transfer to intent address).
+	// The intent's total includes the bridge fee: if it is present but its scale
+	// is unsupported, funding with the bare transfer amount would underfund the
+	// intent while the bridge was recorded as initiated.
+	if intent.TotalAmountInAssetToken != "" && (intent.AssetTokenDecimals <= 0 || intent.AssetTokenDecimals > entities.MaxTokenDecimals) {
+		s.logger.Error("ChainRails returned unsupported asset token decimals — reversing hold",
+			zap.Int("asset_token_decimals", intent.AssetTokenDecimals),
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "unsupported_asset_token_decimals")
+		return
+	}
+
 	circleAmountDecimal := transferAmount
 	circleAmount := transferAmount.StringFixed(2)
 	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 && intent.AssetTokenDecimals <= entities.MaxTokenDecimals {

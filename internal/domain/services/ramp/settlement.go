@@ -149,6 +149,19 @@ func (s *Service) executeCircleViaChainRails(ctx context.Context, userID uuid.UU
 		return
 	}
 
+	// The intent's total includes the bridge fee: if it is present but its scale
+	// is unsupported, funding with the bare transfer amount would underfund the
+	// intent while the bridge was recorded as initiated.
+	if intent.TotalAmountInAssetToken != "" && (intent.AssetTokenDecimals <= 0 || intent.AssetTokenDecimals > entities.MaxTokenDecimals) {
+		s.logger.Error("ChainRails RampHub returned unsupported asset token decimals — reversing hold",
+			zap.Int("asset_token_decimals", intent.AssetTokenDecimals),
+			zap.String("ramphub_tx_id", order.TransactionID))
+		if err := s.reverseHold(ctx, userID, order.TransactionID, totalHold, railFee, "unsupported_asset_token_decimals"); err != nil {
+			s.logger.Error("ramphub settle: failed to reverse hold after unsupported asset token decimals", zap.Error(err), zap.String("ramphub_tx_id", order.TransactionID))
+		}
+		return
+	}
+
 	circleAmountDecimal := transferAmount
 	circleAmount := transferAmount.StringFixed(2)
 	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 && intent.AssetTokenDecimals <= entities.MaxTokenDecimals {

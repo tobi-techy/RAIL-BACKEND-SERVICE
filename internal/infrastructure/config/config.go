@@ -1229,9 +1229,13 @@ func setDefaults() {
 	viper.SetDefault("security.auth_blacklist_fail_open", false)
 	viper.BindEnv("security.auth_blacklist_fail_open", "AUTH_BLACKLIST_FAIL_OPEN")
 	// Same treatment as the connection overrides above: AUTOMATIC_ENV does not
-	// survive Unmarshal for a key that is already set, and an empty value here
-	// means "derive the audit signing key from the encryption key".
-	viper.Set("security.audit_hmac_secret", os.Getenv("SECURITY_AUDIT_HMAC_SECRET"))
+	// survive Unmarshal for a key that is already set. Set only when the
+	// variable is non-empty, so an unset variable cannot mask a value configured
+	// in YAML; an unset key means "derive the audit signing key from the
+	// encryption key".
+	if auditSecret := os.Getenv("SECURITY_AUDIT_HMAC_SECRET"); auditSecret != "" {
+		viper.Set("security.audit_hmac_secret", auditSecret)
+	}
 
 	// Payment/webhook defaults
 	viper.SetDefault("payment.webhook_secret", "")
