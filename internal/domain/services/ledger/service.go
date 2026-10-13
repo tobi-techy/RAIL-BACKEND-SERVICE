@@ -1277,69 +1277,6 @@ func (s *Service) TransferStashToSpending(ctx context.Context, userID uuid.UUID,
 	return nil
 }
 
-// AdminTransferStashToSpending moves funds from stash to spending, bypassing the stash lock.
-// This is an admin-only operation with a distinct reference type for audit trail.
-func (s *Service) AdminTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, idempotencyKey, adminReason string) error {
-	if amount.IsZero() || amount.IsNegative() {
-		return fmt.Errorf("invalid transfer amount: %s", amount.String())
-	}
-	// SECURITY: Enforce cap at service level — defense in depth regardless of caller.
-	maxAdminTransfer := decimal.NewFromInt(500)
-	if amount.GreaterThan(maxAdminTransfer) {
-		return fmt.Errorf("admin transfer amount %s exceeds maximum of $500", amount.String())
-	}
-
-	spendAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeSpendingBalance)
-	if err != nil {
-		return fmt.Errorf("get spending account: %w", err)
-	}
-	stashAccount, err := s.GetOrCreateUserAccount(ctx, userID, entities.AccountTypeStashBalance)
-	if err != nil {
-		return fmt.Errorf("get stash account: %w", err)
-	}
-
-	reason := adminReason
-	if len(reason) > 255 {
-		reason = reason[:255]
-	}
-	desc := fmt.Sprintf("Admin stash-to-spend transfer: %s (reason: %s)", amount.String(), reason)
-	refType := "admin_stash_transfer"
-	txReq := &entities.CreateTransactionRequest{
-		UserID:          &userID,
-		TransactionType: entities.TransactionTypeInternalTransfer,
-		ReferenceType:   &refType,
-		IdempotencyKey:  idempotencyKey,
-		Description:     &desc,
-		InitiatedBy:     entities.InitiatedByAdmin.String(),
-		Reason:          &reason,
-		Entries: []entities.CreateEntryRequest{
-			{
-				AccountID:   stashAccount.ID,
-				EntryType:   entities.EntryTypeCredit,
-				Amount:      amount,
-				Currency:    "USD",
-				Description: &desc,
-			},
-			{
-				AccountID:   spendAccount.ID,
-				EntryType:   entities.EntryTypeDebit,
-				Amount:      amount,
-				Currency:    "USD",
-				Description: &desc,
-			},
-		},
-	}
-
-	s.logger.Warn("Admin stash-to-spend transfer (bypasses stash lock)",
-		"user_id", userID.String(),
-		"amount", amount.String(),
-		"reason", adminReason,
-	)
-
-	_, err = s.CreateTransaction(ctx, txReq)
-	return err
-}
-
 // EmergencyTransferStashToSpending moves funds from stash to spending with a fee
 // credited to the emergency withdrawal revenue account. Bypasses stash lock.
 func (s *Service) EmergencyTransferStashToSpending(ctx context.Context, userID uuid.UUID, amount, fee decimal.Decimal, idempotencyKey string) error {

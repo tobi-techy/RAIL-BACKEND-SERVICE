@@ -62,7 +62,6 @@ func TestInternalKeyRoutesRefuseSigningSecret(t *testing.T) {
 		{http.MethodGet, "/metrics"},
 		{http.MethodGet, "/internal/users/lookup?email=a@example.com"},
 		{http.MethodPost, "/internal/paj-orders/complete-stuck"},
-		{http.MethodPost, "/internal/stash/transfer-to-spend"},
 		{http.MethodDelete, "/internal/users/00000000-0000-0000-0000-000000000000"},
 	}
 	for _, tc := range cases {
@@ -75,5 +74,27 @@ func TestInternalKeyRoutesRefuseSigningSecret(t *testing.T) {
 				t.Fatalf("%s %s with the signing secret %v: status %d, want 401", tc.method, tc.path, headers, w.Code)
 			}
 		}
+	}
+}
+
+// /internal/stash/transfer-to-spend moved ledger funds for any caller-named
+// user_id on a bare key header. Nothing called it; the route is gone.
+func TestInternalStashTransferRouteIsGone(t *testing.T) {
+	c := newRouterContainer()
+	c.Config.Security.InternalAPIKey = testInternalKey
+	router := SetupRoutes(c)
+	for _, route := range router.Routes() {
+		if strings.Contains(route.Path, "transfer-to-spend") {
+			t.Fatalf("route %s %s must not be registered", route.Method, route.Path)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/internal/stash/transfer-to-spend",
+		strings.NewReader(`{"user_id":"00000000-0000-0000-0000-000000000001","amount":"10","reason":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testInternalKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status %d with the valid internal key, want 404", w.Code)
 	}
 }

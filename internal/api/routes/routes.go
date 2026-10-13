@@ -332,57 +332,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		})
 	}
 
-	// Internal stash-to-spend transfer — bypasses stash lock, auth handled by group middleware
-	// Security: amount capped at $500, full audit trail with caller IP
-	internal.POST("/stash/transfer-to-spend", func(c *gin.Context) {
-		var req struct {
-			UserID string `json:"user_id" binding:"required"`
-			Amount string `json:"amount" binding:"required"`
-			Reason string `json:"reason" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		userID, err := uuid.Parse(req.UserID)
-		if err != nil {
-			c.JSON(400, gin.H{"error": "invalid user_id"})
-			return
-		}
-		amt, err := decimal.NewFromString(req.Amount)
-		if err != nil || amt.LessThanOrEqual(decimal.Zero) {
-			c.JSON(400, gin.H{"error": "amount must be positive"})
-			return
-		}
-		maxTransfer := decimal.NewFromInt(500)
-		if amt.GreaterThan(maxTransfer) {
-			c.JSON(400, gin.H{"error": "amount exceeds maximum of $500"})
-			return
-		}
-
-		// Audit: log before execution with caller IP for forensics
-		container.ZapLog.Warn("internal stash-to-spend transfer REQUESTED",
-			zap.String("user_id", req.UserID),
-			zap.String("amount", req.Amount),
-			zap.String("reason", req.Reason),
-			zap.String("caller_ip", c.ClientIP()),
-			zap.String("user_agent", c.Request.UserAgent()),
-		)
-
-		idempotencyKey := fmt.Sprintf("admin_stash_xfer_%s_%d", userID.String(), time.Now().UnixNano())
-		if err := container.LedgerService.AdminTransferStashToSpending(c.Request.Context(), userID, amt, idempotencyKey, req.Reason); err != nil {
-			container.ZapLog.Error("internal stash-to-spend transfer FAILED", zap.String("user_id", req.UserID), zap.String("amount", req.Amount), zap.Error(err))
-			c.JSON(500, gin.H{"error": "transfer failed, check server logs"})
-			return
-		}
-		container.ZapLog.Warn("internal stash-to-spend transfer COMPLETED",
-			zap.String("user_id", req.UserID),
-			zap.String("amount", req.Amount),
-			zap.String("caller_ip", c.ClientIP()),
-		)
-		c.JSON(200, gin.H{"status": "completed", "user_id": req.UserID, "amount": req.Amount})
-	})
-
 	// Apple App Site Association — required for passkey Associated Domains
 	router.GET("/.well-known/apple-app-site-association", func(c *gin.Context) {
 		c.Header("Content-Type", "application/json")
