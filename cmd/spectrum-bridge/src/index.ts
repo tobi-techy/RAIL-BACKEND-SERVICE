@@ -28,6 +28,7 @@ import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
 import { PollWatcher, resolveIMessageClients } from "./poll-watcher";
 import { isProviderDailyCap, PROVIDER_CAP_HOLD_MS } from "./send-hold";
+import { InboundRateLimiter } from "./inbound-rate-limit";
 
 const config = loadConfig();
 const log = getLogger();
@@ -187,6 +188,13 @@ const MAX_DEDUP_IDS = 5_000;
 // supersession until the next message re-establishes the thread's turn.
 const MAX_TRACKED_TURNS = 10_000;
 const processedMessageIds = new Map<string, number>(); // msgId -> expiration
+
+const inboundLimiter = new InboundRateLimiter({
+  senderBurst: config.INBOUND_RATE_SENDER_BURST,
+  senderPerMinute: config.INBOUND_RATE_SENDER_PER_MIN,
+  bridgeBurst: config.INBOUND_RATE_BRIDGE_BURST,
+  bridgePerMinute: config.INBOUND_RATE_BRIDGE_PER_MIN,
+});
 
 // Periodically evict expired nonces and dedup ids.
 const sweeper = setInterval(() => {
@@ -795,6 +803,20 @@ async function handleInbound(space: Space, message: Message): Promise<void> {
   if (isOutboundEcho(message)) {
     reqLog.debug({ msg_id: message.id }, "skipping outbound-direction echo");
     return;
+  }
+
+  // Per-sender and per-bridge limits. Only content that earns a reply spends a
+  // token: read receipts, reactions and poll taps never start a model turn, and
+  // a confirmation tap must not be shed behind a burst of chatter. The dedupe
+  // reservation is released so the provider's redelivery is judged afresh.
+  if (expectsReply(content)) {
+    const decision = inboundLimiter.check(`${platform}:${senderId}`);
+    if (decision !== "ok") {
+      if (message.id) processedMessageIds.delete(message.id);
+      failures.record("inbound-rate-limit", message.id ?? threadID, { thread: threadID }, new Error(decision));
+      reqLog.warn({ msg_id: message.id, decision }, "inbound message shed by rate limit");
+      return;
+    }
   }
 
   // Keep the typing indicator alive for as long as backend processing takes.

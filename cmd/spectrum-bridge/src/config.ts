@@ -61,6 +61,18 @@ const envSchema = z.object({
   DELIVERY_DAILY_CAP: z.coerce.number().int().min(1).default(5000),
   DELIVERY_NEW_CONVOS_PER_LINE: z.coerce.number().int().min(1).default(50),
 
+  // Inbound rate limits (see inbound-rate-limit.ts), token buckets on the
+  // provider's sender id plus one for the whole bridge. A sender may burst
+  // INBOUND_RATE_SENDER_BURST messages (a shop photographing a stock book is
+  // ~12 pictures) and then sustains INBOUND_RATE_SENDER_PER_MIN, far above any
+  // human conversation. The bridge cap stays under the Go platform's own
+  // 100/min inbound limiter so the bridge sheds load instead of Go answering 429
+  // to a retry.
+  INBOUND_RATE_SENDER_BURST: z.coerce.number().int().min(1).default(15),
+  INBOUND_RATE_SENDER_PER_MIN: z.coerce.number().min(1).default(10),
+  INBOUND_RATE_BRIDGE_BURST: z.coerce.number().int().min(1).default(60),
+  INBOUND_RATE_BRIDGE_PER_MIN: z.coerce.number().min(1).default(80),
+
   // Inbound turn supersession: drop a reply whose inbound turn a newer message
   // has already superseded (docs/miriam-inbound-supersession.md). Off by
   // default. Accepts "1"/"true"/"yes"/"on" (case-insensitive). Must be paired
