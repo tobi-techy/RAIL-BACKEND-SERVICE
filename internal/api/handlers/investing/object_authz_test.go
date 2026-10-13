@@ -3,7 +3,6 @@ package investing
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -116,9 +115,9 @@ func withActor() gin.HandlerFunc {
 	}
 }
 
-func doRequest(t *testing.T, r http.Handler, method, path string, actor uuid.UUID) int {
+func doGet(t *testing.T, r http.Handler, path string, actor uuid.UUID) int {
 	t.Helper()
-	return doRequestBody(t, r, method, path, actor, nil)
+	return doRequestBody(t, r, http.MethodGet, path, actor, nil)
 }
 
 func doRequestBody(t *testing.T, r http.Handler, method, path string, actor uuid.UUID, body []byte) int {
@@ -174,10 +173,10 @@ func TestSharedGoalReadsRequireMembership(t *testing.T) {
 	}
 
 	for _, path := range paths {
-		if code := doRequest(t, r, http.MethodGet, path, member); code != http.StatusOK {
+		if code := doGet(t, r, path, member); code != http.StatusOK {
 			t.Errorf("%s: member got %d, want 200", path, code)
 		}
-		if code := doRequest(t, r, http.MethodGet, path, outsider); code != http.StatusNotFound {
+		if code := doGet(t, r, path, outsider); code != http.StatusNotFound {
 			t.Errorf("%s: non-member got %d, want 404", path, code)
 		}
 	}
@@ -224,12 +223,12 @@ func TestHouseholdReadsRequireMembership(t *testing.T) {
 
 	summary := "/v1/household/groups/" + groupID.String() + "/summary"
 	share := "/v1/household/groups/" + groupID.String() + "/receipts"
-	shareBody, _ := json.Marshal(map[string]string{"receipt_id": receiptID.String()})
+	shareBody := []byte(`{"receipt_id":"` + receiptID.String() + `"}`)
 
-	if code := doRequest(t, r, http.MethodGet, summary, member); code != http.StatusOK {
+	if code := doGet(t, r, summary, member); code != http.StatusOK {
 		t.Errorf("summary: member got %d, want 200", code)
 	}
-	if code := doRequest(t, r, http.MethodGet, summary, outsider); code != http.StatusNotFound {
+	if code := doGet(t, r, summary, outsider); code != http.StatusNotFound {
 		t.Errorf("summary: non-member got %d, want 404", code)
 	}
 	if code := doRequestBody(t, r, http.MethodPost, share, member, shareBody); code != http.StatusOK {
