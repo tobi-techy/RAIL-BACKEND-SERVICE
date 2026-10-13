@@ -156,11 +156,19 @@ func (s *GraphVirtualAccountService) SetInflowNotifier(n InflowNotifier) {
 // notifyNairaInflow reports a committed NGN credit to Miriam's ledger. Called
 // only after the ledger split has committed, and idempotent on the deposit's
 // idempotency key so a Graph webhook replay re-reports rather than double-counts.
-func (s *GraphVirtualAccountService) notifyNairaInflow(ctx context.Context, userID uuid.UUID, paymentID string, ngnAmount decimal.Decimal, sourceRaw string) error {
+//
+// transactionRef is Graph's transaction id for the credit (stored as the deposit's
+// TxHash, so a replay reports the same one). Graph's credit event carries no
+// sender, so Sender stays empty; the event's description is a free-text narration,
+// not a reference, and is never sent as one.
+func (s *GraphVirtualAccountService) notifyNairaInflow(ctx context.Context, userID uuid.UUID, paymentID string, ngnAmount decimal.Decimal, sourceRaw, transactionRef string) error {
 	if s.inflowNotifier == nil {
 		return nil
 	}
-	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, ngnAmount.String(), "NGN", sourceRaw)
+	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, ngnAmount.String(), "NGN", sourceRaw, entities.InflowIdentity{
+		Channel:   entities.InflowChannelGraph,
+		Reference: transactionRef,
+	})
 }
 
 // replayNairaInflow re-reports a NGN credit that was already processed, using the
@@ -176,7 +184,7 @@ func (s *GraphVirtualAccountService) replayNairaInflow(ctx context.Context, depo
 	if deposit.SourceCurrency == nil || !strings.EqualFold(*deposit.SourceCurrency, "NGN") {
 		return nil
 	}
-	if err := s.notifyNairaInflow(ctx, deposit.UserID, deposit.IdempotencyKey, *deposit.SourceAmount, "NGN virtual account credit "+deposit.TxHash); err != nil {
+	if err := s.notifyNairaInflow(ctx, deposit.UserID, deposit.IdempotencyKey, *deposit.SourceAmount, "NGN virtual account credit "+deposit.TxHash, deposit.TxHash); err != nil {
 		s.logger.Error("Failed to re-report the NGN deposit to the Python ledger",
 			"deposit_id", deposit.ID, "error", err)
 		return fmt.Errorf("re-report ngn deposit to the python ledger: %w", err)
@@ -791,7 +799,7 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 	// Report the committed credit to Miriam's ledger, so she can see the Naira she
 	// will be asked to spend from. Only after the split has committed, and
 	// idempotent on the deposit's idempotency key.
-	if err := s.notifyNairaInflow(ctx, userID, idempotencyKey, ngnAmount, "NGN virtual account credit "+txRef); err != nil {
+	if err := s.notifyNairaInflow(ctx, userID, idempotencyKey, ngnAmount, "NGN virtual account credit "+txRef, txRef); err != nil {
 		// The money is credited and split; this is not a failed deposit. Return the
 		// error so the webhook is retried, because a retry re-reports (idempotent)
 		// while swallowing it would leave Miriam's ledger quietly short of money

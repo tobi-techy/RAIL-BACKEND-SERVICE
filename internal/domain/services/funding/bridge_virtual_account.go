@@ -42,14 +42,20 @@ func (s *BridgeVirtualAccountService) SetInflowNotifier(n InflowNotifier) {
 // Only NGN is reported — the client skips other currencies because the
 // ledger is single-currency and a non-NGN amount would silently
 // misstate the balance.
-func notifyFiatInflow(ctx context.Context, notifier InflowNotifier, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw string) error {
+//
+// transactionRef is Bridge's deposit_id for the credit and is the only identity
+// Bridge reports: its deposit event carries no sender, so Sender stays empty.
+func notifyFiatInflow(ctx context.Context, notifier InflowNotifier, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw, transactionRef string) error {
 	if notifier == nil {
 		return nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(currency), "NGN") {
 		return nil
 	}
-	return notifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw)
+	return notifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw, entities.InflowIdentity{
+		Channel:   entities.InflowChannelBridge,
+		Reference: transactionRef,
+	})
 }
 
 // WalletProvider interface for getting user wallet addresses
@@ -520,7 +526,7 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 				// deposit itself short-circuits on the idempotency check, so
 				// this is the only path where a missed notify can recover.
 				if existing, _ := s.depositRepo.GetByIdempotencyKey(ctx, idempotencyKey); existing != nil {
-					if repErr := notifyFiatInflow(ctx, s.inflowNotifier, existing.UserID, existing.IdempotencyKey, *existing.SourceAmount, *existing.SourceCurrency, "fiat deposit "+existing.TxHash); repErr != nil {
+					if repErr := notifyFiatInflow(ctx, s.inflowNotifier, existing.UserID, existing.IdempotencyKey, *existing.SourceAmount, *existing.SourceCurrency, "fiat deposit "+existing.TxHash, existing.TxHash); repErr != nil {
 						return fmt.Errorf("replay fiat inflow: %w", repErr)
 					}
 				}
@@ -576,7 +582,7 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	// Report the committed NGN credit to Miriam's ledger, so Hands can see the
 	// money the user just received. Only called AFTER the ledger split committed;
 	// idempotent on the idempotency key, so a webhook retry re-reports safely.
-	if notifyErr := notifyFiatInflow(ctx, s.inflowNotifier, virtualAccount.UserID, idempotencyKey, sourceAmount, sourceCurrency, "fiat deposit "+transactionRef); notifyErr != nil {
+	if notifyErr := notifyFiatInflow(ctx, s.inflowNotifier, virtualAccount.UserID, idempotencyKey, sourceAmount, sourceCurrency, "fiat deposit "+transactionRef, transactionRef); notifyErr != nil {
 		s.logger.Error("Failed to report the fiat deposit to the Python ledger",
 			"user_id", virtualAccount.UserID,
 			"deposit_id", depositID,

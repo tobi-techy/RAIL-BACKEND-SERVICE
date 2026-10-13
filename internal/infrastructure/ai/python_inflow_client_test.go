@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"go.uber.org/zap"
 )
 
@@ -48,7 +49,7 @@ func TestNotifyInflowPostsTheCreditID(t *testing.T) {
 	c := clientFor(t, srv)
 
 	userID := uuid.New()
-	if err := c.NotifyInflow(context.Background(), userID, "graph-tx-1", "420000", "NGN", "ACME PAYROLL"); err != nil {
+	if err := c.NotifyInflow(context.Background(), userID, "graph-tx-1", "420000", "NGN", "ACME PAYROLL", entities.InflowIdentity{}); err != nil {
 		t.Fatalf("NotifyInflow: %v", err)
 	}
 
@@ -79,7 +80,7 @@ func TestNotifyInflowSkipsNonNGN(t *testing.T) {
 	c := clientFor(t, srv)
 
 	for _, currency := range []string{"USD", "USDC", "usd", "GBP"} {
-		if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "25", currency, "chain deposit"); err != nil {
+		if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "25", currency, "chain deposit", entities.InflowIdentity{}); err != nil {
 			t.Fatalf("a skipped credit must not error (%s): %v", currency, err)
 		}
 	}
@@ -100,7 +101,7 @@ func TestNotifyInflowRetriesA503(t *testing.T) {
 	})
 	c := clientFor(t, srv)
 
-	if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "420000", "NGN", "payroll"); err != nil {
+	if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "420000", "NGN", "payroll", entities.InflowIdentity{}); err != nil {
 		t.Fatalf("a retried 503 should end in success: %v", err)
 	}
 	if hits.Load() != 3 {
@@ -118,7 +119,7 @@ func TestNotifyInflowGivesUpOnAPersistent503(t *testing.T) {
 	})
 	c := clientFor(t, srv)
 
-	err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "420000", "NGN", "payroll")
+	err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "420000", "NGN", "payroll", entities.InflowIdentity{})
 	if err == nil {
 		t.Fatal("a persistent 503 must surface as an error so the caller retries")
 	}
@@ -136,7 +137,7 @@ func TestNotifyInflowDoesNotRetryA4xx(t *testing.T) {
 	})
 	c := clientFor(t, srv)
 
-	if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "420000", "NGN", "payroll"); err == nil {
+	if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "420000", "NGN", "payroll", entities.InflowIdentity{}); err == nil {
 		t.Fatal("a 4xx must surface as an error")
 	}
 	if hits.Load() != 1 {
@@ -151,10 +152,85 @@ func TestNotifyInflowNeedsAnIDAndAnAmount(t *testing.T) {
 	})
 	c := clientFor(t, srv)
 
-	if err := c.NotifyInflow(context.Background(), uuid.New(), "", "420000", "NGN", ""); err == nil {
+	if err := c.NotifyInflow(context.Background(), uuid.New(), "", "420000", "NGN", "", entities.InflowIdentity{}); err == nil {
 		t.Fatal("no payment id means no idempotency key")
 	}
-	if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "", "NGN", ""); err == nil {
+	if err := c.NotifyInflow(context.Background(), uuid.New(), "key-1", "", "NGN", "", entities.InflowIdentity{}); err == nil {
 		t.Fatal("no amount means nothing to record")
+	}
+}
+
+func captureInflowBody(t *testing.T, identity entities.InflowIdentity) []byte {
+	t.Helper()
+	var raw []byte
+	srv := inflowServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read inflow body: %v", err)
+		}
+		raw = body
+		w.WriteHeader(http.StatusOK)
+	})
+	c := clientFor(t, srv)
+	if err := c.NotifyInflow(context.Background(), uuid.New(), "idem-key-1", "420000", "NGN", "fiat deposit dep_123", identity); err != nil {
+		t.Fatalf("NotifyInflow: %v", err)
+	}
+	return raw
+}
+
+func TestNotifyInflowSendsTheProvidersReference(t *testing.T) {
+	raw := captureInflowBody(t, entities.InflowIdentity{
+		Channel:   entities.InflowChannelBridge,
+		Sender:    "ACME PAYROLL LTD",
+		Reference: "dep_123",
+	})
+
+	want := `{"payment_id":"idem-key-1","amount":"420000","source_raw":"fiat deposit dep_123","channel":"bridge","sender":"ACME PAYROLL LTD","reference":"dep_123"}`
+	if string(raw) != want {
+		t.Fatalf("body mismatch\n got: %s\nwant: %s", raw, want)
+	}
+}
+
+func TestNotifyInflowOmitsFieldsTheProviderDidNotSupply(t *testing.T) {
+	raw := captureInflowBody(t, entities.InflowIdentity{
+		Channel:   entities.InflowChannelGraph,
+		Reference: "tx_777",
+	})
+
+	want := `{"payment_id":"idem-key-1","amount":"420000","source_raw":"fiat deposit dep_123","channel":"graph","reference":"tx_777"}`
+	if string(raw) != want {
+		t.Fatalf("body mismatch\n got: %s\nwant: %s", raw, want)
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := fields["sender"]; ok {
+		t.Fatalf("sender must be absent when the provider gave none, got %v", fields["sender"])
+	}
+}
+
+func TestNotifyInflowWithoutAnIdentityIsByteIdenticalToTheOldBody(t *testing.T) {
+	raw := captureInflowBody(t, entities.InflowIdentity{})
+
+	want := `{"payment_id":"idem-key-1","amount":"420000","source_raw":"fiat deposit dep_123"}`
+	if string(raw) != want {
+		t.Fatalf("body mismatch\n got: %s\nwant: %s", raw, want)
+	}
+}
+
+func TestNotifyInflowNeverCopiesThePaymentIDIntoTheReference(t *testing.T) {
+	raw := captureInflowBody(t, entities.InflowIdentity{Channel: entities.InflowChannelP2P})
+
+	var got PythonInflow
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PaymentID != "idem-key-1" {
+		t.Fatalf("payment_id changed: %q", got.PaymentID)
+	}
+	if got.Reference != "" {
+		t.Fatalf("reference must stay empty when the provider gave none, got %q", got.Reference)
 	}
 }

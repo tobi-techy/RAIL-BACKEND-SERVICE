@@ -147,8 +147,12 @@ type Service struct {
 //
 // Implemented by *ai.PythonAgentClient, which skips non-NGN amounts because
 // Miriam's ledger is single-currency.
+//
+// identity carries the provider's own channel, sender and reference for the
+// credit. Callers fill it only from what the provider reported and leave a field
+// empty when the provider gave none.
 type InflowNotifier interface {
-	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error
+	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string, identity entities.InflowIdentity) error
 }
 
 // DebitNotifier tells the Python ledger that a previously-notified credit was
@@ -315,11 +319,11 @@ func (s *Service) SetDebitNotifier(n DebitNotifier) { s.debitNotifier = n }
 // does not exist yet would let her spend it. The delivery is idempotent on
 // paymentID, so re-reporting on a webhook retry is safe and is exactly how a
 // missed report recovers.
-func (s *Service) notifyInflow(ctx context.Context, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw string) error {
+func (s *Service) notifyInflow(ctx context.Context, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw string, identity entities.InflowIdentity) error {
 	if s.inflowNotifier == nil {
 		return nil
 	}
-	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw)
+	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw, identity)
 }
 
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
@@ -1065,7 +1069,10 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 	// normally skips — the notifier decides, so the rule lives in one place. It is
 	// wired anyway: this is the credit that will matter the day her ledger can
 	// hold more than one currency.
-	if err := s.notifyInflow(ctx, userID, idempotencyKey, usdAmount, string(token), "chain deposit "+string(webhook.Chain)); err != nil {
+	if err := s.notifyInflow(ctx, userID, idempotencyKey, usdAmount, string(token), "chain deposit "+string(webhook.Chain), entities.InflowIdentity{
+		Channel:   entities.InflowChannelChain,
+		Reference: webhook.TxHash,
+	}); err != nil {
 		// The money is already credited, so the deposit did not fail. Return the
 		// error anyway: the provider retries an idempotent webhook, and that retry
 		// is how a report that did not land gets another chance. Swallowing it

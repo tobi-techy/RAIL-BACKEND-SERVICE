@@ -117,7 +117,7 @@ type Service struct {
 // Go stays the money authority; this is a projection of a credit that has already
 // committed.
 type InflowNotifier interface {
-	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error
+	NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string, identity entities.InflowIdentity) error
 }
 
 // DebitNotifier tells the Python ledger that a previously-notified credit was
@@ -794,6 +794,12 @@ func (s *Service) completeClaim(ctx context.Context, transfer *entities.P2PTrans
 		if err := s.inflowNotifier.NotifyInflow(
 			ctx, claimerID, "p2p-claim-"+transfer.ID.String(),
 			transfer.Amount.String(), transfer.Currency, desc,
+			// A P2P claim moves between two Rail accounts, so there is no provider
+			// reference to report; the sender is the Rail account that sent it.
+			entities.InflowIdentity{
+				Channel: entities.InflowChannelP2P,
+				Sender:  transfer.SenderID.String(),
+			},
 		); err != nil {
 			// The money has already moved to the claimer, so the claim is not
 			// failed. Return the error so the caller can retry: a retry re-reports

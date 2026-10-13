@@ -444,10 +444,11 @@ type inflowCall struct {
 	amount    string
 	currency  string
 	sourceRaw string
+	identity  entities.InflowIdentity
 }
 
-func (r *recordingInflowNotifier) NotifyInflow(_ context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error {
-	r.calls = append(r.calls, inflowCall{userID, paymentID, amount, currency, sourceRaw})
+func (r *recordingInflowNotifier) NotifyInflow(_ context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string, identity entities.InflowIdentity) error {
+	r.calls = append(r.calls, inflowCall{userID, paymentID, amount, currency, sourceRaw, identity})
 	return r.err
 }
 
@@ -490,6 +491,13 @@ func TestP2PService_ClaimPending_ReportsTheCreditToMiriam(t *testing.T) {
 	assert.Equal(t, "p2p-claim-"+transferID.String(), call.paymentID)
 	assert.Equal(t, "5000", call.amount)
 	assert.Equal(t, "NGN", call.currency)
+	// A P2P claim has no provider reference, so none is sent: payment_id is the
+	// rail's idempotency key and must not stand in for one.
+	assert.Equal(t, entities.InflowIdentity{
+		Channel: entities.InflowChannelP2P,
+		Sender:  transfer.SenderID.String(),
+	}, call.identity)
+	assert.Empty(t, call.identity.Reference)
 }
 
 func TestP2PService_ClaimPending_WithoutANotifierStillClaims(t *testing.T) {
