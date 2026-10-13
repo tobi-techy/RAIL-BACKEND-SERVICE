@@ -127,7 +127,7 @@ func (s *Service) ProvisionWallet(ctx context.Context, userID uuid.UUID) (*repos
 	s.logger.Info("Umbra wallet provisioned",
 		"user_id", userID, "address", address, "network", s.network)
 
-	go s.registerAsync(userID, storedValue)
+	go s.registerAsync(context.WithoutCancel(ctx), userID, storedValue)
 
 	return wallet, nil
 }
@@ -197,14 +197,14 @@ func (s *Service) GetWallet(ctx context.Context, userID uuid.UUID) (*repositorie
 	return s.repo.GetByUserID(ctx, userID)
 }
 
-func (s *Service) registerAsync(userID uuid.UUID, storedValue string) {
+func (s *Service) registerAsync(ctx context.Context, userID uuid.UUID, storedValue string) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.logger.Error("Panic in Umbra registration", "user_id", userID, "panic", r)
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 120*time.Second)
 	defer cancel()
 
 	privKeyB64, err := s.decryptUserKey(userID, storedValue)

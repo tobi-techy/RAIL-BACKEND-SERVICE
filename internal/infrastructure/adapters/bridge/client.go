@@ -474,7 +474,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body, r
 
 		if attempt > 0 {
 			baseBackoff := time.Duration(1<<(attempt-1)) * time.Second
-			jitter := time.Duration(rand.Float64() * 0.5 * float64(baseBackoff))
+			jitter := time.Duration(rand.Float64() * 0.5 * float64(baseBackoff)) // #nosec G404 -- backoff jitter
 			backoff := baseBackoff/2 + jitter
 			select {
 			case <-reqCtx.Done():

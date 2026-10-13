@@ -27,7 +27,7 @@ const (
 	defaultBaseURL  = "https://api.portal.blend.money"
 	defaultTimeout  = 30 * time.Second
 	defaultRetries  = 3
-	headerAPIKey    = "X-API-Key"
+	headerAPIKey    = "X-API-Key" // #nosec G101 -- HTTP header name
 	headerRequestID = "X-Request-ID"
 
 	// BaseMainnetChainID is the EVM chain ID for Base.
@@ -696,7 +696,7 @@ func backoffDelay(attempt int) time.Duration {
 	if base > 8*time.Second {
 		base = 8 * time.Second
 	}
-	jitter := time.Duration(rand.Int63n(int64(base) / 4))
+	jitter := time.Duration(rand.Int63n(int64(base) / 4)) // #nosec G404 -- backoff jitter
 	return base + jitter
 }
 

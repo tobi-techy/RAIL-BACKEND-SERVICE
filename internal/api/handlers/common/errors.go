@@ -12,7 +12,7 @@ const (
 	// Authentication & Authorization errors
 	ErrCodeUnauthorized        = "UNAUTHORIZED"
 	ErrCodeForbidden           = "FORBIDDEN"
-	ErrCodeInvalidCredentials  = "INVALID_CREDENTIALS"
+	ErrCodeInvalidCredentials  = "INVALID_CREDENTIALS" // #nosec G101 -- API error code string
 	ErrCodeInvalidToken        = "INVALID_TOKEN"
 	ErrCodeTokenExpired        = "TOKEN_EXPIRED"
 	ErrCodeAccountInactive     = "ACCOUNT_INACTIVE"
@@ -61,7 +61,7 @@ const (
 	// Passcode errors
 	ErrCodePasscodeNotSet      = "PASSCODE_NOT_SET"
 	ErrCodePasscodeExists      = "PASSCODE_EXISTS"
-	ErrCodePasscodeMismatch    = "PASSCODE_MISMATCH"
+	ErrCodePasscodeMismatch    = "PASSCODE_MISMATCH" // #nosec G101 -- API error code string
 	ErrCodePasscodeLocked      = "PASSCODE_LOCKED"
 	ErrCodePasscodeInvalid     = "INVALID_PASSCODE_FORMAT"
 	ErrCodePasscodeUnchanged   = "PASSCODE_UNCHANGED"

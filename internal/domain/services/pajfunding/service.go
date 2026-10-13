@@ -187,10 +187,21 @@ func (s *Service) executeCircleViaCRToPaj(ctx context.Context, userID uuid.UUID,
 		return
 	}
 
-	// Step 2: Fund the intent via Circle (same-chain EVM transfer to intent address)
+	// Step 2: Fund the intent via Circle (same-chain EVM transfer to intent address).
+	// The intent's total includes the bridge fee: if it is present but its scale
+	// is unsupported, funding with the bare transfer amount would underfund the
+	// intent while the bridge was recorded as initiated.
+	if intent.TotalAmountInAssetToken != "" && (intent.AssetTokenDecimals <= 0 || intent.AssetTokenDecimals > entities.MaxTokenDecimals) {
+		s.logger.Error("ChainRails returned unsupported asset token decimals — reversing hold",
+			zap.Int("asset_token_decimals", intent.AssetTokenDecimals),
+			zap.String("paj_order_id", order.ID))
+		s.reverseHold(ctx, userID, order.ID, totalHold, railFee, "unsupported_asset_token_decimals")
+		return
+	}
+
 	circleAmountDecimal := transferAmount
 	circleAmount := transferAmount.StringFixed(2)
-	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 {
+	if intent.TotalAmountInAssetToken != "" && intent.AssetTokenDecimals > 0 && intent.AssetTokenDecimals <= entities.MaxTokenDecimals {
 		totalMicro, parseOk := new(big.Int).SetString(intent.TotalAmountInAssetToken, 10)
 		if parseOk {
 			circleAmountDecimal = decimal.NewFromBigInt(totalMicro, -int32(intent.AssetTokenDecimals))
@@ -751,7 +762,7 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 	// Execute transfer asynchronously — user gets immediate response.
 	// Circle is the primary wallet provider.
-	go s.executeCircleTransferToPaj(userID, order, totalHold, railFee)
+	go s.executeCircleTransferToPaj(context.WithoutCancel(ctx), userID, order, totalHold, railFee)
 
 	// Record usage against daily/monthly limits (in NGN for NGN withdrawals).
 	if s.limitsChecker != nil {
@@ -773,8 +784,8 @@ func (s *Service) CreateOfframpOrder(ctx context.Context, userID uuid.UUID, bank
 
 // executeCircleTransferToPaj sends USDC from the user's Circle wallet to Paj's deposit address.
 // For Solana wallets: direct transfer. For EVM wallets: bridges via ChainRails.
-func (s *Service) executeCircleTransferToPaj(userID uuid.UUID, order *paj.OfframpOrder, totalHold, railFee decimal.Decimal) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+func (s *Service) executeCircleTransferToPaj(ctx context.Context, userID uuid.UUID, order *paj.OfframpOrder, totalHold, railFee decimal.Decimal) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
 	defer cancel()
 
 	transferAmount, slippageRefund, calcErr := calculateOfframpTransferAmounts(order.Amount, totalHold, railFee)
@@ -1330,7 +1341,7 @@ func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (fun
 	b := [16]byte(userID)
 	h.Write(b[:])
 	// Use a different key space than withdrawal service (add offset)
-	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) + 1000000
+	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])&0x7FFFFFFFFFFFFFFF) + 1000000 // #nosec G115 -- masked to 63 bits above, so the conversion cannot overflow
 
 	conn, err := s.db.Conn(ctx)
 	if err != nil {

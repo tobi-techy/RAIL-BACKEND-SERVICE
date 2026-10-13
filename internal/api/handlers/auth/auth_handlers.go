@@ -48,7 +48,11 @@ func generateOTP(length int) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		otp[i] = '0' + byte(n.Int64())
+		digit := n.Int64()
+		if digit < 0 || digit > 9 {
+			return "", fmt.Errorf("otp digit out of range: %d", digit)
+		}
+		otp[i] = '0' + byte(digit)
 	}
 	return string(otp), nil
 }

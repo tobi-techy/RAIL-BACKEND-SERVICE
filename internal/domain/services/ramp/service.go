@@ -1675,7 +1675,7 @@ func (s *Service) acquireOfframpLock(ctx context.Context, userID uuid.UUID) (fun
 	h := fnv.New64a()
 	b := [16]byte(userID)
 	h.Write(b[:])
-	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])) + 2000000
+	key := int64(binary.BigEndian.Uint64(h.Sum(nil)[:8])&0x7FFFFFFFFFFFFFFF) + 2000000 // #nosec G115 -- masked to 63 bits above, so the conversion cannot overflow
 
 	conn, err := s.db.Conn(ctx)
 	if err != nil {

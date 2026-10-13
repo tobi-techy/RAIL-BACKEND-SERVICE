@@ -87,9 +87,10 @@ func isWritable(path string) bool {
 	if err != nil {
 		return false
 	}
-	f.Close()
-	os.Remove(f.Name())
-	return true
+	name := f.Name()
+	closeErr := f.Close()
+	removeErr := os.Remove(name) // #nosec G703 -- name is the temp file this function just created under path
+	return closeErr == nil && removeErr == nil
 }
 
 const (
@@ -222,7 +223,7 @@ var (
 	// Match text in parentheses: (some text)
 	parenTextRe = regexp.MustCompile(`\(([^)]*)\)`)
 	// Match TJ array: [(text) num (text) ...] TJ
-	tjArrayRe   = regexp.MustCompile(`\[([^\]]*)\]\s*TJ`)
+	tjArrayRe = regexp.MustCompile(`\[([^\]]*)\]\s*TJ`)
 	// Match Td operator for position: x y Td
 	tdRe = regexp.MustCompile(`([-\d.]+)\s+([-\d.]+)\s+Td`)
 	// Match Tm operator for position matrix — extract Ty and Tx
@@ -360,7 +361,8 @@ func extractTextFragments(raw string) []textFragment {
 
 // extractTJText parses the content of a TJ array (between the brackets).
 // TJ arrays contain alternating strings and positioning numbers:
-//   (Hello) -20 (World) 30 (!)
+//
+//	(Hello) -20 (World) 30 (!)
 func extractTJText(inner string) string {
 	var parts []string
 	// Find all parenthesized strings inside the TJ array

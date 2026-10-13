@@ -25,14 +25,18 @@ const (
 	WalletChainOptimism  WalletChain = "OP"
 
 	// Mainnet USDC Token Addresses
-	USDCTokenAddressSOL       = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	USDCTokenAddressETH       = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-	USDCTokenAddressMATIC     = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-	USDCTokenAddressCELO      = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"
-	USDCTokenAddressBase      = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-	USDCTokenAddressAvalanche = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
-	USDCTokenAddressArbitrum  = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-	USDCTokenAddressOptimism  = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+	USDCTokenAddressSOL       = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressETH       = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"   // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressMATIC     = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"   // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressCELO      = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"   // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressBase      = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"   // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressAvalanche = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"   // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressArbitrum  = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"   // #nosec G101 -- public mainnet USDC token address
+	USDCTokenAddressOptimism  = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"   // #nosec G101 -- public mainnet USDC token address
+
+	// MaxTokenDecimals bounds the token decimals any supported chain uses. Money
+	// paths scale amounts by 10^decimals, so a larger value is malformed input.
+	MaxTokenDecimals = 18
 )
 
 // GetUSDCTokenAddress returns the USDC token address for the chain
@@ -751,7 +755,7 @@ type CircleTransferRequest struct {
 	DestinationMemoType    string   `json:"destinationMemoType,omitempty"`
 	RefID                  string   `json:"refId,omitempty"`
 	Fee                    string   `json:"fee,omitempty"`
-	FeeLevel               string   `json:"feeLevel,omitempty"`     // LOW, MEDIUM, HIGH — Circle handles gas
+	FeeLevel               string   `json:"feeLevel,omitempty"` // LOW, MEDIUM, HIGH — Circle handles gas
 	Note                   string   `json:"note,omitempty"`
 	ReplaceTxByHash        string   `json:"replaceTxByHash,omitempty"`
 	SequenceID             string   `json:"sequenceId,omitempty"`

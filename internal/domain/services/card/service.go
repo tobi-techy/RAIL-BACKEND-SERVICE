@@ -605,7 +605,7 @@ func (s *Service) RecordTransaction(ctx context.Context, bridgeCardID, bridgeTra
 func (s *Service) afterCompletedCardTransaction(ctx context.Context, card *entities.BridgeCard, amount decimal.Decimal, bridgeTransID, merchantName, merchantCategory string) {
 	if s.notificationService != nil {
 		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			merchant := merchantName
 			if merchant == "" {
@@ -619,7 +619,7 @@ func (s *Service) afterCompletedCardTransaction(ctx context.Context, card *entit
 		case s.moneyGuardSem <- struct{}{}:
 			go func() {
 				defer func() { <-s.moneyGuardSem }()
-				bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 				defer cancel()
 				if _, err := s.moneyGuard.EvaluateCardTransaction(bgCtx, card.UserID, MoneyGuardTransactionInput{
 					Amount:    amount,

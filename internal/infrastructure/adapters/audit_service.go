@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -41,16 +42,42 @@ type AuditService struct {
 	secretKey string
 }
 
-// NewAuditService creates a new audit service
-func NewAuditService(db *sql.DB, logger *zap.Logger) *AuditService {
-	// In production, this should come from secure configuration
-	secretKey := "audit-hmac-secret-key-change-in-production"
-	
+// NewAuditService creates a new audit service. secretKey signs the audit
+// trail's integrity field and must come from configuration; when it is not
+// set, a domain-separated key derived from the provisioned encryption key is
+// used instead, so the trail is never signed with a key that lives in the
+// source tree.
+func NewAuditService(db *sql.DB, logger *zap.Logger, secretKey, encryptionKey string) *AuditService {
+	if secretKey == "" {
+		derived, err := DeriveAuditHMACSecret(encryptionKey)
+		if err != nil {
+			// Config validation rejects an empty encryption key before the
+			// container is built, so this is a wiring fault rather than a
+			// deployment state. Refusing to start beats signing audit records
+			// with a key nobody configured.
+			panic("audit service: " + err.Error())
+		}
+		secretKey = derived
+	}
 	return &AuditService{
 		db:        db,
 		logger:    logger,
 		secretKey: secretKey,
 	}
+}
+
+// DeriveAuditHMACSecret derives a stable audit signing key from the
+// application's configured encryption key. It is domain-separated, so the
+// audit key is not the encryption key itself and cannot be used to decrypt.
+func DeriveAuditHMACSecret(encryptionKey string) (string, error) {
+	if encryptionKey == "" {
+		return "", fmt.Errorf("no audit HMAC secret: set SECURITY_AUDIT_HMAC_SECRET or SECURITY_ENCRYPTION_KEY")
+	}
+	key, err := hkdf.Key(sha256.New, []byte(encryptionKey), nil, "rail-audit-hmac-v1", 32)
+	if err != nil {
+		return "", fmt.Errorf("derive audit HMAC secret: %w", err)
+	}
+	return hex.EncodeToString(key), nil
 }
 
 // LogOnboardingEvent logs an onboarding-related audit event
@@ -231,7 +258,7 @@ func (a *AuditService) VerifyLogIntegrity(log AuditLog) bool {
 		a.logger.Error("Failed to generate signature for verification", zap.Error(err))
 		return false
 	}
-	
+
 	return hmac.Equal([]byte(log.Signature), []byte(expectedSignature))
 }
 
@@ -396,7 +423,7 @@ func (a *AuditService) logEventWithNullableUser(
 
 	_, err = a.db.ExecContext(ctx, query,
 		auditID,
-		userID, // This can be nil
+		userID,                              // This can be nil
 		fmt.Sprintf("%s:%s", actor, action), // Combine actor and action
 		entity,
 		resourceID,

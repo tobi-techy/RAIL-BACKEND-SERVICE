@@ -252,7 +252,7 @@ func (s *Service) CreateOrder(ctx context.Context, userID uuid.UUID, req *entiti
 		}()
 		// Use a detached context — the HTTP request context will be cancelled
 		// once the handler returns, but the brokerage call must complete.
-		bgCtx := context.Background()
+		bgCtx := context.WithoutCancel(ctx)
 
 		brokerageResp, err := s.brokerageAPI.PlaceOrder(bgCtx, userID, req.BasketID, req.Side, amount)
 		if err != nil {

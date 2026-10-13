@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
@@ -77,7 +78,7 @@ func aggregateUnderlying(b *Balance) decimal.Decimal {
 	}
 	total := decimal.Zero
 	for _, pc := range b.PerChain {
-		if pc.TotalUnderlying == "" || pc.TotalUnderlyingDecimals <= 0 {
+		if pc.TotalUnderlying == "" || pc.TotalUnderlyingDecimals <= 0 || pc.TotalUnderlyingDecimals > entities.MaxTokenDecimals {
 			continue
 		}
 		if units, ok := parseBig(pc.TotalUnderlying); ok {

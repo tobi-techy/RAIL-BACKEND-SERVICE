@@ -26,14 +26,20 @@ func newPAJTestWorker(t *testing.T) (*Worker, *sql.DB, *observer.ObservedLogs) {
 	if err != nil {
 		t.Skipf("no Postgres available: %v", err)
 	}
+	// Registered before the first use so every exit path below (skip, fatal or
+	// normal) releases the admin connection; t.Cleanup also runs after
+	// t.Fatalf and t.Skipf.
+	t.Cleanup(func() {
+		if err := admin.Close(); err != nil {
+			t.Logf("close admin connection: %v", err)
+		}
+	})
 	if err := admin.Ping(); err != nil {
-		admin.Close()
 		t.Skipf("no Postgres available: %v", err)
 	}
 
 	schema := "paj_recovery_" + strings.NewReplacer(".", "", "-", "").Replace(time.Now().UTC().Format("20060102150405.000000000"))
 	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		admin.Close()
 		t.Fatalf("create schema: %v", err)
 	}
 
@@ -43,7 +49,6 @@ func newPAJTestWorker(t *testing.T) (*Worker, *sql.DB, *observer.ObservedLogs) {
 	}
 	db, err := sql.Open("postgres", dsn+sep+"search_path="+schema)
 	if err != nil {
-		admin.Close()
 		t.Fatalf("open schema-scoped pool: %v", err)
 	}
 	require.NoError(t, db.Ping())
@@ -62,9 +67,12 @@ func newPAJTestWorker(t *testing.T) (*Worker, *sql.DB, *observer.ObservedLogs) {
 	}
 
 	t.Cleanup(func() {
-		db.Close()
-		_, _ = admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`)
-		admin.Close()
+		if err := db.Close(); err != nil {
+			t.Logf("close test pool: %v", err)
+		}
+		if _, err := admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
 	})
 
 	core, logs := observer.New(zap.ErrorLevel)

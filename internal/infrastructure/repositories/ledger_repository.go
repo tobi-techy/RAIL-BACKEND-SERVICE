@@ -128,7 +128,10 @@ func txFromContext(ctx context.Context) *sqlx.Tx {
 	if ctx == nil {
 		return nil
 	}
-	tx, _ := ctx.Value(txContextKey).(*sqlx.Tx)
+	tx, ok := ctx.Value(txContextKey).(*sqlx.Tx)
+	if !ok {
+		return nil
+	}
 	return tx
 }
 
@@ -663,7 +666,7 @@ func (r *LedgerRepository) CreateEntry(ctx context.Context, entry *entities.Ledg
 }
 
 // GetEntriesByTransactionID retrieves all entries for a transaction
-func (r *LedgerRepository) GetEntriesByTransactionID(ctx context.Context, txID uuid.UUID) ([]*entities.LedgerEntry, error) {
+func (r *LedgerRepository) GetEntriesByTransactionID(ctx context.Context, txID uuid.UUID) (entries []*entities.LedgerEntry, err error) {
 	query := `
 		SELECT id, transaction_id, account_id, entry_type, amount, currency,
 		       description, metadata, created_at
@@ -676,9 +679,12 @@ func (r *LedgerRepository) GetEntriesByTransactionID(ctx context.Context, txID u
 	if err != nil {
 		return nil, fmt.Errorf("query entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	var entries []*entities.LedgerEntry
 	for rows.Next() {
 		var entry entities.LedgerEntry
 		var metadataJSON []byte
@@ -715,7 +721,7 @@ func (r *LedgerRepository) GetEntriesByTransactionID(ctx context.Context, txID u
 }
 
 // GetEntriesByAccountID retrieves all entries for an account
-func (r *LedgerRepository) GetEntriesByAccountID(ctx context.Context, accountID uuid.UUID, limit, offset int) ([]*entities.LedgerEntry, error) {
+func (r *LedgerRepository) GetEntriesByAccountID(ctx context.Context, accountID uuid.UUID, limit, offset int) (entries []*entities.LedgerEntry, err error) {
 	query := `
 		SELECT id, transaction_id, account_id, entry_type, amount, currency,
 		       description, metadata, created_at
@@ -729,9 +735,12 @@ func (r *LedgerRepository) GetEntriesByAccountID(ctx context.Context, accountID 
 	if err != nil {
 		return nil, fmt.Errorf("query entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	var entries []*entities.LedgerEntry
 	for rows.Next() {
 		var entry entities.LedgerEntry
 		var metadataJSON []byte
@@ -807,7 +816,7 @@ func (r *LedgerRepository) GetAccountBalanceForUpdate(ctx context.Context, accou
 }
 
 // GetUserBalances retrieves all balances for a user
-func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) (*entities.UserBalances, error) {
+func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID) (balances *entities.UserBalances, err error) {
 	query := `
 		SELECT account_type, balance, updated_at
 		FROM ledger_accounts
@@ -818,9 +827,13 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 	if err != nil {
 		return nil, fmt.Errorf("query user balances: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	balances := &entities.UserBalances{
+	balances = &entities.UserBalances{
 		UserID:            userID,
 		USDCBalance:       decimal.Zero,
 		SpendingBalance:   decimal.Zero,
@@ -871,7 +884,7 @@ func (r *LedgerRepository) GetUserBalances(ctx context.Context, userID uuid.UUID
 }
 
 // GetSystemBuffers retrieves all system buffer balances
-func (r *LedgerRepository) GetSystemBuffers(ctx context.Context) (*entities.SystemBuffers, error) {
+func (r *LedgerRepository) GetSystemBuffers(ctx context.Context) (buffers *entities.SystemBuffers, err error) {
 	query := `
 		SELECT account_type, balance, updated_at
 		FROM ledger_accounts
@@ -883,9 +896,13 @@ func (r *LedgerRepository) GetSystemBuffers(ctx context.Context) (*entities.Syst
 	if err != nil {
 		return nil, fmt.Errorf("query system buffers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	buffers := &entities.SystemBuffers{
+	buffers = &entities.SystemBuffers{
 		BufferUSDC:        decimal.Zero,
 		BufferFiat:        decimal.Zero,
 		BrokerOperational: decimal.Zero,
@@ -1161,7 +1178,7 @@ func (r *LedgerRepository) InsertOutboxRecord(ctx context.Context, eventType str
 // GetUnpublishedOutboxEvents returns unpublished outbox records without claiming.
 // Use for monitoring/debugging only. Production publishing must use
 // ClaimUnpublishedOutbox to avoid TOCTOU races between workers.
-func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxRecord, error) {
+func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit int) (records []OutboxRecord, err error) {
 	query := `
 		SELECT id, event_type, aggregate_id, aggregate_type, payload,
 		       retry_count, last_error, created_at, published_at, claimed_at
@@ -1174,9 +1191,12 @@ func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit
 	if err != nil {
 		return nil, fmt.Errorf("get unpublished outbox events: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	var records []OutboxRecord
 	for rows.Next() {
 		var rec OutboxRecord
 		if err := rows.Scan(&rec.ID, &rec.EventType, &rec.AggregateID, &rec.AggregateType, &rec.Payload,
@@ -1195,7 +1215,7 @@ func (r *LedgerRepository) GetUnpublishedOutboxEvents(ctx context.Context, limit
 // the lease expires instead of being permanently lost. Must be called within a
 // transaction. The caller marks events published via MarkOutboxPublished after
 // dispatch succeeds.
-func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize int, maxRetries int) ([]OutboxRecord, error) {
+func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize int, maxRetries int) (records []OutboxRecord, err error) {
 	if txFromContext(ctx) == nil {
 		return nil, fmt.Errorf("ClaimUnpublishedOutbox must be called within a transaction")
 	}
@@ -1221,9 +1241,12 @@ func (r *LedgerRepository) ClaimUnpublishedOutbox(ctx context.Context, batchSize
 	if err != nil {
 		return nil, fmt.Errorf("claim unpublished outbox: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	var records []OutboxRecord
 	for rows.Next() {
 		var rec OutboxRecord
 		if err := rows.Scan(&rec.ID, &rec.EventType, &rec.AggregateID, &rec.AggregateType, &rec.Payload,
@@ -1261,7 +1284,10 @@ func (r *LedgerRepository) DeletePublishedOutboxBefore(ctx context.Context, cuto
 	if err != nil {
 		return 0, fmt.Errorf("delete published outbox: %w", err)
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected: %w", err)
+	}
 	return n, nil
 }
 
@@ -1390,7 +1416,7 @@ func (r *LedgerRepository) GetAccountIDsBatch(ctx context.Context, afterID uuid.
 // Debit entries increase the balance (counted as positive), credit entries
 // decrease the balance (counted as negative). Only completed transactions
 // are included. Used by ReconcileDay to verify snapshot integrity.
-func (r *LedgerRepository) GetTransactionDeltaByAccount(ctx context.Context, start, end time.Time) (map[uuid.UUID]decimal.Decimal, error) {
+func (r *LedgerRepository) GetTransactionDeltaByAccount(ctx context.Context, start, end time.Time) (deltas map[uuid.UUID]decimal.Decimal, err error) {
 	query := `
 		SELECT le.account_id,
 		       SUM(CASE WHEN le.entry_type = 'debit' THEN le.amount ELSE -le.amount END) AS net_change
@@ -1404,9 +1430,13 @@ func (r *LedgerRepository) GetTransactionDeltaByAccount(ctx context.Context, sta
 	if err != nil {
 		return nil, fmt.Errorf("get transaction delta by account: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	deltas := make(map[uuid.UUID]decimal.Decimal)
+	deltas = make(map[uuid.UUID]decimal.Decimal)
 	for rows.Next() {
 		var accountID uuid.UUID
 		var netChange decimal.Decimal
@@ -1560,7 +1590,7 @@ type EmptyLedgerTransaction struct {
 // ListTransactionsWithoutEntries names up to limit transaction rows that have no
 // ledger entries, newest first. The integrity report already counts them; a bare
 // count is not actionable, so this is what lets it say which rows are broken.
-func (r *LedgerRepository) ListTransactionsWithoutEntries(ctx context.Context, limit int) ([]EmptyLedgerTransaction, error) {
+func (r *LedgerRepository) ListTransactionsWithoutEntries(ctx context.Context, limit int) (out []EmptyLedgerTransaction, err error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -1576,9 +1606,12 @@ func (r *LedgerRepository) ListTransactionsWithoutEntries(ctx context.Context, l
 	if err != nil {
 		return nil, fmt.Errorf("list transactions without entries: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("close rows: %w", cerr)
+		}
+	}()
 
-	var out []EmptyLedgerTransaction
 	for rows.Next() {
 		var t EmptyLedgerTransaction
 		if err := rows.Scan(&t.ID, &t.TransactionType, &t.Status, &t.ReferenceType, &t.ReferenceID, &t.CreatedAt); err != nil {

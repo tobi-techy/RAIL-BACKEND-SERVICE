@@ -351,7 +351,7 @@ func (s *Service) createSession(ctx context.Context, userID uuid.UUID) (*entitie
 	// Prune expired rows opportunistically; these are low-volume (one per
 	// step-up) so this keeps the table small without a dedicated cron.
 	go func() {
-		pruneCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pruneCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if _, err := s.sessions.DeleteExpiredPasscodeSessions(pruneCtx, time.Now()); err != nil {
 			s.logger.Warn("Failed to prune expired passcode sessions", zap.Error(err))

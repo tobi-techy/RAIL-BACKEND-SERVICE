@@ -13,14 +13,14 @@ import (
 
 // TLSConfig holds TLS configuration options
 type TLSConfig struct {
-	MinVersion       uint16
-	CertFile         string
-	KeyFile          string
-	CAFile           string // For mTLS client verification
-	ClientAuth       tls.ClientAuthType
-	PinnedCerts      []string // SHA256 fingerprints of pinned certificates
-	EnableHTTP2      bool
-	SessionTickets   bool
+	MinVersion          uint16
+	CertFile            string
+	KeyFile             string
+	CAFile              string // For mTLS client verification
+	ClientAuth          tls.ClientAuthType
+	PinnedCerts         []string // SHA256 fingerprints of pinned certificates
+	EnableHTTP2         bool
+	SessionTickets      bool
 	PreferServerCiphers bool
 }
 
@@ -106,9 +106,9 @@ func MTLSConfig(certFile, keyFile, caFile string) (*tls.Config, error) {
 
 // CertificatePinningTransport wraps http.Transport with certificate pinning
 type CertificatePinningTransport struct {
-	Transport      *http.Transport
-	PinnedCerts    map[string]bool // SHA256 fingerprints
-	AllowUnpinned  bool            // For development
+	Transport     *http.Transport
+	PinnedCerts   map[string]bool // SHA256 fingerprints
+	AllowUnpinned bool            // For development
 }
 
 // NewCertificatePinningTransport creates a transport with certificate pinning
@@ -118,41 +118,45 @@ func NewCertificatePinningTransport(pinnedFingerprints []string) *CertificatePin
 		pinned[fp] = true
 	}
 
-	transport := &http.Transport{
+	t := &CertificatePinningTransport{PinnedCerts: pinned}
+	t.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS13,
+			// VerifyConnection rather than VerifyPeerCertificate: the latter is
+			// not invoked on resumed TLS sessions, so a pin check placed there
+			// can be skipped by a resumed handshake (gosec G123).
+			VerifyConnection: t.verifyPinned,
 		},
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	}
 
-	return &CertificatePinningTransport{
-		Transport:   transport,
-		PinnedCerts: pinned,
+	return t
+}
+
+// verifyPinned runs on every completed handshake, resumed sessions included,
+// and fails the connection when no certificate in the verified chain is pinned.
+func (t *CertificatePinningTransport) verifyPinned(cs tls.ConnectionState) error {
+	if t.AllowUnpinned || len(t.PinnedCerts) == 0 {
+		return nil
 	}
+	for _, chain := range cs.VerifiedChains {
+		for _, cert := range chain {
+			if t.PinnedCerts[CertificateFingerprint(cert)] {
+				return nil // Certificate is pinned
+			}
+		}
+	}
+	return fmt.Errorf("certificate not pinned")
 }
 
 // RoundTrip implements http.RoundTripper with certificate pinning
 func (t *CertificatePinningTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Skip pinning for non-HTTPS or if no pins configured
-	if req.URL.Scheme != "https" || len(t.PinnedCerts) == 0 || t.AllowUnpinned {
-		return t.Transport.RoundTrip(req)
-	}
-
-	// Create custom TLS config with verification
-	t.Transport.TLSClientConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-		for _, chain := range verifiedChains {
-			for _, cert := range chain {
-				fingerprint := CertificateFingerprint(cert)
-				if t.PinnedCerts[fingerprint] {
-					return nil // Certificate is pinned
-				}
-			}
-		}
-		return fmt.Errorf("certificate not pinned")
-	}
-
+	// Pinning is enforced by the transport's VerifyConnection hook, which is
+	// installed once at construction so there is no per-request write to the
+	// shared TLS config. It is a no-op when no pins are configured, when
+	// AllowUnpinned is set, or for a non-TLS request.
 	return t.Transport.RoundTrip(req)
 }
 
@@ -208,7 +212,7 @@ func NewServiceToServiceClient(certFile, keyFile, caFile string) (*ServiceToServ
 
 // Do performs an HTTP request with mTLS
 func (c *ServiceToServiceClient) Do(req *http.Request) (*http.Response, error) {
-	return c.client.Do(req)
+	return c.client.Do(req) // #nosec G704 -- the URL comes from the caller of this mTLS client, not from request input
 }
 
 // MobileCertPinConfig returns certificate pinning configuration for mobile apps

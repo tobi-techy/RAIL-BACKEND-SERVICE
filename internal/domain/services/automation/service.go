@@ -351,7 +351,7 @@ func (s *Service) EvaluateScheduled(ctx context.Context) error {
 		if !s.shouldTrigger(ctx, &automation, now) {
 			continue
 		}
-		go s.execute(context.Background(), &automation)
+		go s.execute(context.WithoutCancel(ctx), &automation)
 	}
 	return nil
 }
@@ -369,7 +369,7 @@ func (s *Service) EvaluateBalanceThresholds(ctx context.Context, userID uuid.UUI
 		}
 		automation := a
 		if s.checkBalanceThreshold(ctx, &automation) {
-			go s.execute(context.Background(), &automation)
+			go s.execute(context.WithoutCancel(ctx), &automation)
 		}
 	}
 	return nil
@@ -384,7 +384,7 @@ func (s *Service) EvaluateAllBalanceThresholds(ctx context.Context) error {
 	for _, a := range automations {
 		automation := a
 		if s.checkBalanceThreshold(ctx, &automation) {
-			go s.execute(context.Background(), &automation)
+			go s.execute(context.WithoutCancel(ctx), &automation)
 		}
 	}
 	return nil
@@ -933,7 +933,7 @@ func (s *Service) EvaluateObligationDue(ctx context.Context) error {
 		}
 		if s.isObligationDueSoon(ctx, &a, now) {
 			automation := a
-			go s.execute(context.Background(), &automation)
+			go s.execute(context.WithoutCancel(ctx), &automation)
 		}
 	}
 	return nil
@@ -1197,7 +1197,7 @@ func (s *Service) EvaluateDepositReceived(ctx context.Context, userID uuid.UUID,
 			continue
 		}
 		automation := a
-		go s.execute(context.Background(), &automation)
+		go s.execute(context.WithoutCancel(ctx), &automation)
 	}
 }
 

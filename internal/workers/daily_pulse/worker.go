@@ -311,7 +311,7 @@ func (w *Worker) buildPulse(ctx context.Context, userID uuid.UUID, country strin
 	}
 
 	// Pick highest score, with random tiebreak for variety
-	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] }) // #nosec G404 -- tie-break for variety, not a secret
 	best := candidates[0]
 	for _, c := range candidates[1:] {
 		if c.score > best.score {

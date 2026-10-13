@@ -42,7 +42,7 @@ func (a *AdminAlertService) SendErrorAlert(ctx context.Context, payload withdraw
 			}
 		}()
 
-		sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
 
 		subject := fmt.Sprintf("[Rail Alert] %s failed", payload.Operation)

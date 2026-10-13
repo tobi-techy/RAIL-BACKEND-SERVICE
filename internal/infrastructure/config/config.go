@@ -603,6 +603,7 @@ type SecurityConfig struct {
 	CaptchaThreshold       int    `mapstructure:"captcha_threshold"`        // failed attempts before CAPTCHA
 	CaptchaSecretKey       string `mapstructure:"captcha_secret_key"`       // CAPTCHA provider secret key (e.g. reCAPTCHA)
 	SecretsProvider        string `mapstructure:"secrets_provider"`         // "env", "aws_secrets_manager"
+	AuditHMACSecret        string `mapstructure:"audit_hmac_secret"`        // key signing audit-trail integrity; derived from EncryptionKey when unset
 	AWSSecretsRegion       string `mapstructure:"aws_secrets_region"`       // AWS region for Secrets Manager
 	AWSSecretsPrefix       string `mapstructure:"aws_secrets_prefix"`       // prefix for secret names
 	SecretRotationDays     int    `mapstructure:"secret_rotation_days"`     // days between secret rotations
@@ -1227,6 +1228,14 @@ func setDefaults() {
 	// remaining lifetime during a Redis outage.
 	viper.SetDefault("security.auth_blacklist_fail_open", false)
 	viper.BindEnv("security.auth_blacklist_fail_open", "AUTH_BLACKLIST_FAIL_OPEN")
+	// Same treatment as the connection overrides above: AUTOMATIC_ENV does not
+	// survive Unmarshal for a key that is already set. Set only when the
+	// variable is non-empty, so an unset variable cannot mask a value configured
+	// in YAML; an unset key means "derive the audit signing key from the
+	// encryption key".
+	if auditSecret := os.Getenv("SECURITY_AUDIT_HMAC_SECRET"); auditSecret != "" {
+		viper.Set("security.audit_hmac_secret", auditSecret)
+	}
 
 	// Payment/webhook defaults
 	viper.SetDefault("payment.webhook_secret", "")

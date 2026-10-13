@@ -233,7 +233,7 @@ func (s *NotificationService) queueNotification(ctx context.Context, userID uuid
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			if err := s.pushSender.SendToUser(bgCtx, userID, title, body, data); err != nil {
 				s.logger.Error("Failed to send push notification",
@@ -251,7 +251,7 @@ func (s *NotificationService) queueNotification(ctx context.Context, userID uuid
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
 			email, err := s.userEmailLookup.GetEmailByUserID(bgCtx, userID)
 			if err != nil || email == "" {

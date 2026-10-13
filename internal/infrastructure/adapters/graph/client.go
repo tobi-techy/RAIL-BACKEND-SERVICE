@@ -181,7 +181,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, dest interfa
 		if attempt > 0 {
 			// Exponential backoff: 1s, 2s, 4s, ... with jitter to avoid thundering herd.
 			backoff := time.Duration(1<<(attempt-1)) * time.Second
-			jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
+			jitter := time.Duration(rand.Int63n(int64(backoff / 2))) // #nosec G404 -- backoff jitter
 			select {
 			case <-ctx.Done():
 				return ctx.Err()

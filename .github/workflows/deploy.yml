@@ -1,8 +1,14 @@
 name: Deploy to AWS
 
 on:
-  push:
-    branches: [staging, main]
+  # Manual only. Every push-triggered run has failed at "Configure AWS
+  # credentials (OIDC)" — sts:AssumeRoleWithWebIdentity is not authorized — since
+  # at least 2026-09-26, so this workflow has never built, pushed or deployed on a
+  # push; it only left a red check on every merge to main and staging. Fixing the
+  # OIDC trust for AWS_DEPLOY_ROLE_ARN, and the ECS-vs-AtlasFlow consolidation,
+  # are owner decisions. A human can still run this from the Actions tab and see
+  # the real failure.
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1

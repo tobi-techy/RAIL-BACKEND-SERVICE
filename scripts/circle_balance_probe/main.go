@@ -185,13 +185,13 @@ func balanceOfUSDC(ctx context.Context, rpcURL, token, holder string) (decimal.D
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("marshal rpc request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rpcURL, bytes.NewReader(reqBody)) // #nosec G704 -- rpcURL is an operator-supplied flag, not request input
 	if err != nil {
 		return decimal.Zero, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- sends the request built above to that same operator-supplied RPC URL
 	if err != nil {
 		return decimal.Zero, err
 	}

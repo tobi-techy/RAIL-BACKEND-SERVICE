@@ -86,7 +86,7 @@ const (
 	StepRegistration       OnboardingStepType = "registration"
 	StepEmailVerification  OnboardingStepType = "email_verification"
 	StepPhoneVerification  OnboardingStepType = "phone_verification"
-	StepPasscodeCreation   OnboardingStepType = "passcode_creation"
+	StepPasscodeCreation   OnboardingStepType = "passcode_creation" // #nosec G101 -- onboarding step name
 	StepKYCSubmission      OnboardingStepType = "kyc_submission"
 	StepKYCReview          OnboardingStepType = "kyc_review"
 	StepWalletCreation     OnboardingStepType = "wallet_creation"

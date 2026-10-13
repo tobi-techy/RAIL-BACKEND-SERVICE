@@ -26,7 +26,7 @@ func (c *Client) Track(ctx context.Context, userID, event string, props map[stri
 		return
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		if err := c.mp.Track(bgCtx, []*mixpanel.Event{
 			c.mp.NewEvent(event, userID, props),
@@ -42,7 +42,7 @@ func (c *Client) Identify(ctx context.Context, userID string, props map[string]a
 		return
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		if err := c.mp.PeopleSet(bgCtx, []*mixpanel.PeopleProperties{
 			mixpanel.NewPeopleProperties(userID, props),
@@ -58,7 +58,7 @@ func (c *Client) Increment(ctx context.Context, userID string, props map[string]
 		return
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		if err := c.mp.PeopleIncrement(bgCtx, userID, props); err != nil {
 			c.logger.Error("mixpanel increment failed", zap.String("user_id", userID), zap.Error(err))
@@ -99,7 +99,7 @@ func (c *Client) TrackRevenue(ctx context.Context, userID string, amount float64
 		return
 	}
 	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		txn := map[string]any{"$amount": amount}
 		for k, v := range props {

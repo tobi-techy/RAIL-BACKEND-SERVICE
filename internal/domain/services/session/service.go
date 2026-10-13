@@ -191,7 +191,7 @@ func (s *Service) ValidateSession(ctx context.Context, token string) (*Session, 
 	}
 
 	// Re-populate cache for future requests (fire-and-forget; uses background ctx).
-	go s.cacheSession(context.Background(), tokenHash, session)
+	go s.cacheSession(context.WithoutCancel(ctx), tokenHash, session)
 
 	s.localPut(tokenHash, session)
 	s.maybeUpdateLastUsed(session.ID)
@@ -450,7 +450,7 @@ func (s *Service) cacheSession(ctx context.Context, tokenHash string, session *S
 	// Use a fresh short timeout so Redis latency never bleeds into the parent
 	// context (request deadline). If ctx is already a background/WithoutCancel
 	// context this is a no-op overhead but always safe.
-	cacheCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 	defer cancel()
 	if err := s.redis.Set(cacheCtx, sessionCachePrefix+tokenHash, data, sessionCacheTTL).Err(); err != nil {
 		s.logger.Warn("Failed to cache session", zap.Error(err))
@@ -463,7 +463,7 @@ func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Se
 	if s.redis == nil {
 		return nil
 	}
-	cacheCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 200*time.Millisecond)
 	defer cancel()
 	data, err := s.redis.Get(cacheCtx, sessionCachePrefix+tokenHash).Bytes()
 	if err != nil {
@@ -476,7 +476,7 @@ func (s *Service) getSessionFromCache(ctx context.Context, tokenHash string) *Se
 	// Verify not expired
 	if session.ExpiresAt.Before(time.Now()) || !session.IsActive {
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 500*time.Millisecond)
 			defer cancel()
 			s.invalidateSessionCache(ctx, tokenHash)
 		}()

@@ -91,7 +91,7 @@ const (
 )
 
 // ErrorCodeMap maps error codes to human-readable messages
-var ErrorCodeMap = map[string]string{
+var ErrorCodeMap = map[string]string{ // #nosec G101 -- error-code message table, no credential
 	// General
 	CodeInternalError:   "An internal server error occurred",
 	CodeUnknownError:    "An unknown error occurred",

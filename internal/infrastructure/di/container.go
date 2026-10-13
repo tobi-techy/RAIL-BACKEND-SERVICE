@@ -554,7 +554,10 @@ func NewContainer(cfg *config.Config, db *sql.DB, log *logger.Logger) (*Containe
 		return nil, fmt.Errorf("failed to initialize Redis client: %w", err)
 	}
 
-	auditService := adapters.NewAuditService(db, zapLog)
+	// The audit trail's signing key comes from configuration; the service
+	// derives one from the provisioned encryption key when it is not set, so
+	// the trail is never signed with a key visible in the source tree.
+	auditService := adapters.NewAuditService(db, zapLog, cfg.Security.AuditHMACSecret, cfg.Security.EncryptionKey)
 
 	// Initialize cache invalidator
 	cacheInvalidator := cache.NewCacheInvalidator(redisClient, zapLog, cache.InvalidateImmediate)
