@@ -279,7 +279,7 @@ func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID
 //     poll; the tap comes back to ConfirmPlatformAction, which names the id.
 //
 // Go never holds the money path: it relays the id, and the ledger decides.
-func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform, source entities.TextSource) (*platform.PlatformReply, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		return nil, fmt.Errorf("parse user id: %w", err)
@@ -304,7 +304,7 @@ func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, u
 	// User profile for the minted token (email + KYC-derived role).
 	email, role := a.pythonTokenClaims(ctx, uid)
 
-	resp, err := a.python.Chat(ctx, uid, email, role, pyConv, message)
+	resp, err := a.python.Chat(ctx, uid, email, role, pyConv, message, source)
 	if err != nil {
 		a.logger.Warn("python agent chat failed",
 			zap.String("user_id", uid.String()),

@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/rail-service/rail_service/internal/domain/services/document"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -120,6 +122,7 @@ type fakeOrchestrator struct {
 	cancelCalls  int
 	lastConvID   string
 	lastMessage  string
+	sources      []entities.TextSource
 	reply        *PlatformReply // when set, HandlePlatformMessage returns it
 	// pendingAction drives HasPendingPlatformAction, which decides whether a bare
 	// "stop" is a staged-action cancel rather than a messaging opt-out.
@@ -129,7 +132,8 @@ type fakeOrchestrator struct {
 	onMessage func()
 }
 
-func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform) (*PlatformReply, error) {
+func (o *fakeOrchestrator) HandlePlatformMessage(_ context.Context, _, _, message, _ string, _ entities.Platform, source entities.TextSource) (*PlatformReply, error) {
+	o.sources = append(o.sources, source)
 	o.lastMessage = message
 	if o.onMessage != nil {
 		o.onMessage()
@@ -1294,5 +1298,148 @@ func TestProcessor_LinkedPollAlwaysCarriesWords(t *testing.T) {
 	}
 	if got.Text != "Send one over, or just say skip." {
 		t.Fatalf("poll must carry lead-in as Text, got %q", got.Text)
+	}
+}
+
+type fakeVision struct {
+	summary string
+	err     error
+}
+
+func (f *fakeVision) Available() bool { return true }
+func (f *fakeVision) SummarizeReceipt(context.Context, []byte, string) (string, error) {
+	return f.summary, f.err
+}
+
+func imageMessage() InboundMessage {
+	return InboundMessage{
+		Platform:  entities.PlatformIMessage,
+		UserID:    "+15551234",
+		ThreadID:  "space-1",
+		SpaceID:   "space-1",
+		MsgID:     "m-img",
+		IsImage:   true,
+		ImageB64:  base64.StdEncoding.EncodeToString([]byte("jpeg-bytes")),
+		ImageMime: "image/jpeg",
+	}
+}
+
+func TestProcess_EveryVisionOutcomeReachesTheAgentMarkedVision(t *testing.T) {
+	total := decimal.RequireFromString("4500")
+	receipt := formatReceiptSummary(&document.Result{Fields: &document.Fields{Merchant: "Shoprite", Total: &total, Currency: "NGN"}})
+	statement := "That looks like a bank statement. For a full breakdown, upload it in the app (Documents) and I'll categorize every transaction."
+	unreadable := "I couldn't make out a receipt in that photo. Try a clearer, top-down shot with the totals visible."
+
+	for name, summary := range map[string]string{"receipt": receipt, "statement": statement, "unreadable": unreadable} {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeRepo()
+			linkedIdentity(repo, "+15551234")
+			orch := &fakeOrchestrator{}
+			p, _, _ := newTestProcessor(repo, orch)
+			p.SetReceiptVision(&fakeVision{summary: summary})
+
+			raw, err := json.Marshal(imageMessage())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Process(context.Background(), raw); err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if orch.lastMessage != summary {
+				t.Fatalf("agent got %q, want the summary", orch.lastMessage)
+			}
+			if len(orch.sources) != 1 || orch.sources[0] != entities.TextSourceVision {
+				t.Fatalf("source = %v, want [vision]", orch.sources)
+			}
+		})
+	}
+}
+
+func TestProcess_ReceiptSummaryWithATotalContainsTheWordsThatOnceRoutedToMoney(t *testing.T) {
+	total := decimal.RequireFromString("4500")
+	got := formatReceiptSummary(&document.Result{Fields: &document.Fields{Total: &total, Currency: "NGN"}})
+	if !strings.Contains(got, "split") || !strings.Contains(got, "4500.00") {
+		t.Fatalf("the template this suite guards changed shape: %q", got)
+	}
+}
+
+func TestProcess_TypedAndVoiceTextAreMarkedAsTheirOwnSource(t *testing.T) {
+	cases := map[string]struct {
+		msg  func() InboundMessage
+		want entities.TextSource
+	}{
+		"typed": {func() InboundMessage {
+			return InboundMessage{Platform: entities.PlatformIMessage, UserID: "+15551234", ThreadID: "s", Text: "send 5k to Ada"}
+		}, entities.TextSourceUser},
+		"voice": {func() InboundMessage {
+			return InboundMessage{Platform: entities.PlatformIMessage, UserID: "+15551234", ThreadID: "s", IsVoice: true, AudioB64: base64.StdEncoding.EncodeToString([]byte("a")), AudioMime: "audio/mp4"}
+		}, entities.TextSourceVoice},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			repo := newFakeRepo()
+			linkedIdentity(repo, "+15551234")
+			orch := &fakeOrchestrator{}
+			p, _, _ := newTestProcessor(repo, orch)
+			p.voice = &fakeVoice{transcript: "send 5k to Ada"}
+			raw, _ := json.Marshal(tc.msg())
+			if err := p.Process(context.Background(), raw); err != nil {
+				t.Fatal(err)
+			}
+			if len(orch.sources) != 1 || orch.sources[0] != tc.want {
+				t.Fatalf("source = %v, want [%s]", orch.sources, tc.want)
+			}
+		})
+	}
+}
+
+func TestProcess_SenderCannotClaimTheirPhotoWasTyped(t *testing.T) {
+	repo := newFakeRepo()
+	linkedIdentity(repo, "+15551234")
+	orch := &fakeOrchestrator{}
+	p, _, _ := newTestProcessor(repo, orch)
+	p.SetReceiptVision(&fakeVision{summary: "Got it."})
+
+	body := map[string]any{}
+	raw, _ := json.Marshal(imageMessage())
+	_ = json.Unmarshal(raw, &body)
+	body["TextSource"] = "user"
+	body["text_source"] = "user"
+	body["message_source"] = "user"
+	raw, _ = json.Marshal(body)
+
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(orch.sources) != 1 || orch.sources[0] != entities.TextSourceVision {
+		t.Fatalf("a wire field changed the source: %v", orch.sources)
+	}
+}
+
+type sourceCapturingCompleter struct{ got []entities.TextSource }
+
+func (c *sourceCapturingCompleter) CompleteGuest(ctx context.Context, _ string, _ []GuestMessage, _ []GuestToolDef) (*GuestResult, error) {
+	sender, _ := GuestSenderFromContext(ctx)
+	c.got = append(c.got, sender.Source)
+	return &GuestResult{Text: "Hey, I'm Miriam."}, nil
+}
+
+func TestProcess_UnlinkedSendersPhotoReachesTheGuestBrainMarkedVision(t *testing.T) {
+	repo := newFakeRepo()
+	p, _, _ := newTestProcessor(repo, &fakeOrchestrator{})
+	ob, _, _, _, _, _ := newTestOnboarder()
+	capture := &sourceCapturingCompleter{}
+	ob.SetGuestCompleter(capture)
+	p.SetOnboarder(ob)
+	p.SetReceiptVision(&fakeVision{summary: "Got it, Shoprite. Total comes to NGN4,500.00."})
+
+	msg := imageMessage()
+	msg.UserID = "+15559990"
+	raw, _ := json.Marshal(msg)
+	if err := p.Process(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.got) != 1 || capture.got[0] != entities.TextSourceVision {
+		t.Fatalf("guest brain saw source %v, want [vision]", capture.got)
 	}
 }

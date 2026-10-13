@@ -11,7 +11,7 @@ func TestHandlePlatformMessageFailsClosedWithoutPython(t *testing.T) {
 	// delegation is not wired, the messenger must never fall back to a Go
 	// brain — it answers with a plain apology instead.
 	a := &orchestratorAdapter{}
-	reply, err := a.HandlePlatformMessage(t.Context(), "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "hello", "thread-1", entities.PlatformIMessage)
+	reply, err := a.HandlePlatformMessage(t.Context(), "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "hello", "thread-1", entities.PlatformIMessage, entities.TextSourceUser)
 	if err != nil {
 		t.Fatalf("HandlePlatformMessage should not error when un-wired, got %v", err)
 	}
