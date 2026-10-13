@@ -1382,7 +1382,10 @@ func TestProcess_TypedAndVoiceTextAreMarkedAsTheirOwnSource(t *testing.T) {
 			orch := &fakeOrchestrator{}
 			p, _, _ := newTestProcessor(repo, orch)
 			p.voice = &fakeVoice{transcript: "send 5k to Ada"}
-			raw, _ := json.Marshal(tc.msg())
+			raw, err := json.Marshal(tc.msg())
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := p.Process(context.Background(), raw); err != nil {
 				t.Fatal(err)
 			}
@@ -1401,12 +1404,19 @@ func TestProcess_SenderCannotClaimTheirPhotoWasTyped(t *testing.T) {
 	p.SetReceiptVision(&fakeVision{summary: "Got it."})
 
 	body := map[string]any{}
-	raw, _ := json.Marshal(imageMessage())
-	_ = json.Unmarshal(raw, &body)
+	raw, err := json.Marshal(imageMessage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
 	body["TextSource"] = "user"
 	body["text_source"] = "user"
 	body["message_source"] = "user"
-	raw, _ = json.Marshal(body)
+	if raw, err = json.Marshal(body); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatal(err)
@@ -1435,7 +1445,10 @@ func TestProcess_UnlinkedSendersPhotoReachesTheGuestBrainMarkedVision(t *testing
 
 	msg := imageMessage()
 	msg.UserID = "+15559990"
-	raw, _ := json.Marshal(msg)
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := p.Process(context.Background(), raw); err != nil {
 		t.Fatal(err)
 	}

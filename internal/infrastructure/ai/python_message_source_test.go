@@ -18,13 +18,18 @@ import (
 func sourceTestClient(t *testing.T, bodies *[]map[string]any) *PythonAgentClient {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
 		var body map[string]any
 		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Errorf("body is not json: %v", err)
 		}
 		*bodies = append(*bodies, body)
-		_, _ = w.Write([]byte(`{"response":"ok"}`))
+		if _, err := w.Write([]byte(`{"response":"ok"}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return NewPythonAgentClient(PythonAgentClientConfig{
