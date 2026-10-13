@@ -62,7 +62,12 @@ func inboundServer(t *testing.T, photoTimeout time.Duration, ocrDelay time.Durat
 
 func postInbound(t *testing.T, srv *httptest.Server, body string) (int, error) {
 	t.Helper()
-	resp, err := http.Post(srv.URL+"/inbound", "application/json", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL+"/inbound", strings.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, err
 	}
