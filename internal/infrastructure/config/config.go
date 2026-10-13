@@ -2042,6 +2042,7 @@ func overrideFromEnv() error {
 	viper.BindEnv("chainrails.settlement_token", "CHAINRAILS_SETTLEMENT_TOKEN")
 
 	viper.BindEnv("security.internal_api_key", "SECURITY_INTERNAL_API_KEY")
+	viper.BindEnv("security.internal_request_signing_secret", "SECURITY_INTERNAL_REQUEST_SIGNING_SECRET")
 	viper.BindEnv("workers.miriam_intelligence_local", "WORKERS_MIRIAM_INTELLIGENCE_LOCAL")
 	viper.BindEnv("workers.miriam_intelligence_batch_size", "WORKERS_MIRIAM_INTELLIGENCE_BATCH_SIZE")
 	if err := viper.BindEnv("workers.miriam_event_driven", "WORKERS_MIRIAM_EVENT_DRIVEN"); err != nil {
@@ -2391,12 +2392,37 @@ func validate(config *Config) error {
 		}
 	}
 
+	if err := validateInternalAPIKey(config); err != nil {
+		return err
+	}
+
 	// Internal signing secret must be long enough whenever it is set,
 	// not just in production (review: move outside production-only).
 	if s := config.Security.InternalRequestSigningSecret; s != "" && len(s) < 32 {
 		return fmt.Errorf("internal_request_signing_secret must be at least 32 characters when set (got %d)", len(s))
 	}
 
+	return nil
+}
+
+// validateInternalAPIKey keeps the internal ops credential separate from the
+// token signing key. A key equal to the JWT secret is refused in every
+// environment, and production refuses to boot without a distinct, long key so
+// the internal routes can never silently fall back to a weaker check.
+func validateInternalAPIKey(config *Config) error {
+	key := config.Security.InternalAPIKey
+	if key != "" && key == config.JWT.Secret {
+		return fmt.Errorf("SECURITY_INTERNAL_API_KEY must not equal JWT_SECRET: the internal ops key and the token signing key must be separate credentials")
+	}
+	if !isProductionEnvironment(config.Environment) {
+		return nil
+	}
+	if key == "" {
+		return fmt.Errorf("SECURITY_INTERNAL_API_KEY is required in production")
+	}
+	if len(key) < 32 {
+		return fmt.Errorf("SECURITY_INTERNAL_API_KEY must be at least 32 characters in production (got %d)", len(key))
+	}
 	return nil
 }
 
@@ -2527,6 +2553,19 @@ func validateVaultConfig(config *Config) error {
 		}
 	}
 	return nil
+}
+
+// isProductionEnvironment accepts every spelling the deployments use for
+// production, case-insensitively. The committed production task definition sets
+// ENVIRONMENT=prod, so an exact match on "production" would leave a production
+// guard silently dead there.
+func isProductionEnvironment(env string) bool {
+	switch strings.ToLower(strings.TrimSpace(env)) {
+	case "prod", "production":
+		return true
+	default:
+		return false
+	}
 }
 
 func isDevEnvironment(env string) bool {
