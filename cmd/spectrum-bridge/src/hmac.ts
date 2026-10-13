@@ -121,20 +121,3 @@ export function requireHmac(
     next();
   };
 }
-
-/**
- * Mounts GET /health/failures. The records carry job ids, provider error text
- * and payload shapes, so the route answers only to a caller holding the shared
- * HMAC secret (sign an empty body, as /send signs its raw body). Liveness
- * probes use /health, which exposes only the failure count.
- */
-export function mountFailureAuditRoute(
-  app: Pick<import("express").Express, "get">,
-  auth: HmacAuth,
-  failures: { recent(limit?: number): unknown[] },
-  onReject?: (req: Request) => void,
-): void {
-  app.get("/health/failures", requireHmac(auth, () => "", onReject), (_req, res) => {
-    res.json({ failures: failures.recent(20) });
-  });
-}

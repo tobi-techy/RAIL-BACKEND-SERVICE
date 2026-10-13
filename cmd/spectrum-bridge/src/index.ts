@@ -27,7 +27,8 @@ import {
 import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
 import { PollWatcher, resolveIMessageClients } from "./poll-watcher";
-import { createHmacAuth, mountFailureAuditRoute, requireHmac } from "./hmac";
+import { mountHealthRoutes } from "./health";
+import { createHmacAuth, requireHmac } from "./hmac";
 import { isProviderDailyCap, PROVIDER_CAP_HOLD_MS } from "./send-hold";
 
 const config = loadConfig();
@@ -585,51 +586,24 @@ app.post(
   },
 );
 
-app.get(["/", "/health"], (_req, res) => {
-  const stats = outboundQueue.getStats();
-  const inboundBuffered = debouncer.snapshot();
-  res.json({
-    status: shuttingDown ? "draining" : "ok",
-    transport_mode: config.SPECTRUM_TRANSPORT_MODE,
-    webhook_enabled: WEBHOOK_ENABLED,
-    spaces: spaceResolver.size,
-    known_threads: spaceStore.count(),
-    confirmation_cards: cardStore.count(),
-    queued_outbound: stats.totalQueued,
-    queued_by_thread: stats.byThread,
-    queued_oldest_ms: stats.oldestMessage ? Date.now() - stats.oldestMessage : undefined,
-    pacer: { available: pacer.available(), pending: pacer.pending },
-    deliverability: deliverability.stats(),
-    inbound_spool: {
-      buffers: inboundBuffered.length,
-      entries: inboundBuffered.reduce((n, b) => n + b.entries.length, 0),
-      carried: inboundBuffered.reduce((n, b) => n + (b.carried?.length ?? 0), 0),
-    },
-    turn_supersession: {
-      enabled: turns.isEnabled,
-      tracked_threads: turns.trackedThreads,
-    },
-    poll_watcher: {
-      enabled: config.MIRIAM_POLL_WATCHER,
-      ...(pollWatcher?.stats ?? {
-        clients: 0,
-        connected: 0,
-        tracked: 0,
-        votes_forwarded: 0,
-        votes_dropped: 0,
-        reconciles: 0,
-      }),
-    },
-    recent_failures: failures.count(),
-    uptime_sec: Math.floor(process.uptime()),
-  });
+mountHealthRoutes(app, {
+  hmacAuth,
+  failures,
+  onReject: (req) => log.warn({ ip: req.ip }, "invalid HMAC signature on /health/failures"),
+  isShuttingDown: () => shuttingDown,
+  transportMode: config.SPECTRUM_TRANSPORT_MODE,
+  webhookEnabled: WEBHOOK_ENABLED,
+  pollWatcherEnabled: config.MIRIAM_POLL_WATCHER,
+  spaces: () => spaceResolver.size,
+  knownThreads: () => spaceStore.count(),
+  confirmationCards: () => cardStore.count(),
+  queueStats: () => outboundQueue.getStats(),
+  pacer,
+  deliverability,
+  inboundBuffers: () => debouncer.snapshot(),
+  turns,
+  pollStats: () => pollWatcher?.stats as Record<string, unknown> | undefined,
 });
-
-// Recent failure audit (bounded, payload summaries only — no message bodies),
-// HMAC-gated: see mountFailureAuditRoute.
-mountFailureAuditRoute(app, hmacAuth, failures, (req) =>
-  log.warn({ ip: req.ip }, "invalid HMAC signature on /health/failures"),
-);
 
 async function handleInbound(space: Space, message: Message): Promise<void> {
   // Deduplicate by message.id — the webhook handler and the streaming iterator
