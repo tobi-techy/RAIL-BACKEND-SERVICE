@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -104,59 +103,6 @@ func doLookupUser(c *gin.Context, db *sql.DB) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"user": result})
-}
-
-// allowedDeleteTables is the fixed whitelist of tables for cascade deletion.
-var allowedDeleteTables = map[string]bool{
-	"sessions": true, "notifications": true, "deposits": true,
-	"ledger_entries": true, "ledger_transactions": true, "ledger_accounts": true,
-	"allocation_events": true, "smart_allocation_modes": true,
-	"virtual_accounts": true, "wallets": true, "cards": true, "user_settings": true,
-	"auto_invest_events": true, "auto_invest_settings": true, "stash_lock_cycles": true,
-	"yield_snapshots": true, "yield_distributions": true,
-}
-
-// deleteStatements maps each whitelisted table to a pre-built parameterized query.
-var deleteStatements = func() map[string]string {
-	m := make(map[string]string, len(allowedDeleteTables))
-	for t := range allowedDeleteTables {
-		m[t] = "DELETE FROM " + t + " WHERE user_id = $1"
-	}
-	return m
-}()
-
-// DeleteUser handles DELETE /internal/users/:id with safe parameterized queries.
-func (h *InternalHandlers) DeleteUser(c *gin.Context) {
-	if !h.authenticate(c) {
-		return
-	}
-	uid := c.Param("id")
-
-	// Audit log before destructive operation
-	h.logger.Warn("internal_delete_user",
-		zap.String("user_id", uid),
-		zap.String("caller_ip", c.ClientIP()),
-		zap.Time("timestamp", time.Now().UTC()),
-	)
-
-	deleted := map[string]int64{}
-	for table, stmt := range deleteStatements {
-		res, err := h.db.ExecContext(c.Request.Context(), stmt, uid)
-		if err != nil {
-			continue
-		}
-		n, _ := res.RowsAffected()
-		if n > 0 {
-			deleted[table] = n
-		}
-	}
-	res, err := h.db.ExecContext(c.Request.Context(), "DELETE FROM users WHERE id = $1", uid)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete user", "request_id": c.GetString("request_id"), "deleted_related": deleted})
-		return
-	}
-	n, _ := res.RowsAffected()
-	c.JSON(http.StatusOK, gin.H{"deleted": n > 0, "user_id": uid, "related_rows_deleted": deleted})
 }
 
 // CompleteStuckPajOrders marks stuck PAJ offramp orders as completed/failed.
