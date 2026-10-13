@@ -82,6 +82,7 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 | `PLATFORM_BRIDGE_MESSAGING_ADDRESS` | The bridge's iMessage handle (e.g. `+15555550100`). Users text the link token here. Required for account linking deep links. |
 | `PLATFORM_ONBOARDING_ENABLED` | `true` |
 | `PLATFORM_TURN_SUPERSESSION` | `true` — drop a reply whose inbound turn a newer message has already superseded. Set the spectrum-bridge `MIRIAM_TURN_SUPERSESSION` too; with only this flag set nothing is suppressed. |
+| `PLATFORM_PHOTO_TURN_TIMEOUT_SECONDS` | `100` — how long a photo's inbound request may run before the server can no longer write its response (the server's 30s `write_timeout` is lifted for photos only). Keep it above the bridge's `RAIL_BACKEND_PHOTO_TIMEOUT_MS`. |
 
 ### Blockers for live Face ID cards (Miriam app extension)
 
@@ -191,6 +192,7 @@ Create as AtlasFlow project `spectrum-bridge`, root `cmd/spectrum-bridge/`, port
 | `OUTBOUND_MAX_BUBBLES` | `3` | max message bubbles per backend turn (each counts toward the daily cap) |
 | `DELIVERY_DAILY_CAP` | `5000` | hard outbound/server/day cap (ban risk past it) |
 | `DELIVERY_NEW_CONVOS_PER_LINE` | `50` | new conversations/line/day |
+| `RAIL_BACKEND_PHOTO_TIMEOUT_MS` | `90000` | bridge → backend POST timeout for a photo (text keeps `RAIL_BACKEND_TEXT_TIMEOUT_MS`, 15s). Must stay under the backend's `PLATFORM_PHOTO_TURN_TIMEOUT_SECONDS`. A photo is retried once, not twice. |
 | `MIRIAM_TURN_SUPERSESSION` | `true` | inbound turn supersession gate 2 — drop a `/send` reply whose turn is no longer the thread's latest. Pairs with the backend's `PLATFORM_TURN_SUPERSESSION`; both gates fail open, and `false`/unset means no turn ids are minted. |
 | `TELEGRAM_BOT_TOKEN` | optional, enables Telegram | **SECRET** |
 | `WHATSAPP_ACCESS_TOKEN` | optional | **SECRET** |

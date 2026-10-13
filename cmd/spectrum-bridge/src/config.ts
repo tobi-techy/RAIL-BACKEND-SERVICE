@@ -7,10 +7,16 @@ const envSchema = z.object({
   RAIL_BACKEND_URL: z.string().url().default("http://localhost:8080"),
   RAIL_HMAC_SECRET: z.string().min(1),
 
-  // Inbound POST timeout for plain messages (voice/image/statement have their
-  // own budgets). Must exceed the backend's whole-turn budget, or the bridge
+  // Inbound POST timeout for plain messages (photo and statement have
+  // their own budgets). Must exceed the backend's whole-turn budget, or the bridge
   // hangs up on a turn the backend is about to answer.
   RAIL_BACKEND_TEXT_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15_000),
+
+  // Inbound POST timeout for a photo. The backend reads it (OCR, extraction)
+  // before it answers, so this is longer than the text budget. It must stay
+  // under the backend's PLATFORM_PHOTO_TURN_TIMEOUT_SECONDS, or the backend
+  // stops being able to write its answer before the bridge stops waiting for it.
+  RAIL_BACKEND_PHOTO_TIMEOUT_MS: z.coerce.number().int().min(1000).default(90_000),
 
   BRIDGE_PORT: z.coerce.number().default(3000),
 

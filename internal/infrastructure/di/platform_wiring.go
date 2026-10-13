@@ -50,6 +50,7 @@ func (c *Container) initializePlatformMessaging() {
 			c.Config.Platform.HandshakeTokenTTL,
 		)
 		c.PlatformHandler = platformhandlers.NewPlatformHandlerWithLogger(linkingSvc, c.Config.Platform.BridgeMessagingAddress, c.ZapLog)
+		c.PlatformHandler.SetPhotoTurnTimeout(time.Duration(c.Config.Platform.PhotoTurnTimeoutSeconds) * time.Second)
 
 		if c.Config.Platform.BridgeBaseURL != "" {
 			userResolver := platform.NewUserResolver(platformIdentityRepo)
