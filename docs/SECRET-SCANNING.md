@@ -22,7 +22,7 @@ Per GitHub's docs ([about secret scanning](https://docs.github.com/en/code-secur
 
 `.gitleaks-baseline.json` lists every finding that existed in history when the scanner was added, so CI starts green. Most are test fixtures, placeholders and public chain contract addresses, but it also includes credential-shaped values, and entries are only safe to leave in the baseline once the credential is rotated. Rotating is the fix; the history stays public regardless.
 
-To baseline a new finding, rotate the credential, then merge the new entries into the baseline in a pull request a reviewer reads:
+To baseline a new finding, rotate the credential, add a row for its rule and path to `docs/SECRET-SCANNING-BASELINE.md` (CI fails on an entry with no row), and merge the new entries into the baseline in a pull request a reviewer reads. The PR/range scan never uses the baseline:
 
 ```sh
 gitleaks detect --config .gitleaks.toml --redact=100 --log-opts="--full-history HEAD" \

@@ -84,3 +84,15 @@ jobs:
             jq -r '.[] | "  \(.RuleID)  \(.File):\(.StartLine)  \(.Commit[0:8])  \(.Date[0:10])"' history.json
           fi
           exit "$rc"
+
+      - name: Every baseline entry has a documented reason
+        run: |
+          set -uo pipefail
+          missing=0
+          while IFS=$'\t' read -r rule file; do
+            if ! grep -qsF "| ${rule} | ${file} |" docs/SECRET-SCANNING-BASELINE.md; then
+              echo "::error::Baseline entry without a note in docs/SECRET-SCANNING-BASELINE.md: ${rule}  ${file}"
+              missing=1
+            fi
+          done < <(jq -r '.[] | [.RuleID, .File] | @tsv' .gitleaks-baseline.json | sort -u)
+          exit "$missing"
