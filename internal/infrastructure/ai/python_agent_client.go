@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/pkg/auth"
 	"github.com/rail-service/rail_service/pkg/metrics"
 	"go.uber.org/zap"
@@ -374,10 +375,18 @@ var ErrInflowNotRecorded = errors.New("python ledger did not record the inflow")
 //
 // payment_id is the credit's idempotency key, so a webhook delivered twice is
 // split once. amount is a string because money never goes through a float.
+//
+// channel, sender and reference are the credit's structured payment identity;
+// Python dedupes on (channel, sender, amount, reference). They are omitted when
+// the provider did not supply them, so a request without them is identical to
+// the one sent before they existed.
 type PythonInflow struct {
 	PaymentID string `json:"payment_id"`
 	Amount    string `json:"amount"`
 	SourceRaw string `json:"source_raw,omitempty"`
+	Channel   string `json:"channel,omitempty"`
+	Sender    string `json:"sender,omitempty"`
+	Reference string `json:"reference,omitempty"`
 }
 
 // inflowRetries bounds the attempts made inside one call. A 503 means Python's
@@ -396,7 +405,7 @@ const inflowRetries = 3
 // Call this AFTER the credit commits. Go is the money authority, and a
 // notification that arrives before the credit would tell Miriam about money that
 // does not exist yet; the notification is a projection, never the source.
-func (c *PythonAgentClient) NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string) error {
+func (c *PythonAgentClient) NotifyInflow(ctx context.Context, userID uuid.UUID, paymentID, amount, currency, sourceRaw string, identity entities.InflowIdentity) error {
 	if strings.TrimSpace(paymentID) == "" || strings.TrimSpace(amount) == "" {
 		return fmt.Errorf("notify inflow: payment_id and amount are required")
 	}
@@ -416,6 +425,9 @@ func (c *PythonAgentClient) NotifyInflow(ctx context.Context, userID uuid.UUID, 
 		PaymentID: paymentID,
 		Amount:    amount,
 		SourceRaw: sourceRaw,
+		Channel:   identity.Channel,
+		Sender:    identity.Sender,
+		Reference: identity.Reference,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal python inflow: %w", err)
