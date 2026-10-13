@@ -27,6 +27,7 @@ import {
 import { TurnSupersession } from "./turn-supersession";
 import { aliasProviderPlatformKeys } from "./platform-alias";
 import { PollWatcher, resolveIMessageClients } from "./poll-watcher";
+import { createHmacAuth, mountFailureAuditRoute, requireHmac } from "./hmac";
 import { isProviderDailyCap, PROVIDER_CAP_HOLD_MS } from "./send-hold";
 
 const config = loadConfig();
@@ -171,9 +172,8 @@ const spaceResolver = new SpaceResolver({
   lookup: (threadId: string) => spaceStore.get(threadId),
 });
 
-const HMAC_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
-const MAX_SEEN_NONCES = 10_000;
-const seenNonces = new Map<string, number>(); // nonce -> expiration timestamp
+const hmacAuth = createHmacAuth(config.RAIL_HMAC_SECRET);
+hmacAuth.onEviction = (dropped, remaining) => log.warn({ dropped, remaining }, "emergency nonce eviction");
 
 // Inbound message deduplication. The bridge registers both a webhook handler
 // (app.webhook) and the streaming async iterator (app.messages). Per the
@@ -191,9 +191,7 @@ const processedMessageIds = new Map<string, number>(); // msgId -> expiration
 // Periodically evict expired nonces and dedup ids.
 const sweeper = setInterval(() => {
   const now = Date.now();
-  for (const [nonce, expiresAt] of seenNonces) {
-    if (expiresAt < now) seenNonces.delete(nonce);
-  }
+  hmacAuth.sweep();
   for (const [msgId, expiresAt] of processedMessageIds) {
     if (expiresAt < now) processedMessageIds.delete(msgId);
   }
@@ -201,90 +199,6 @@ const sweeper = setInterval(() => {
   // stops suppressing stale replies until the next message re-establishes a turn.
   if (turns.trackedThreads > MAX_TRACKED_TURNS) turns.clear();
 }, 60_000);
-
-/**
- * Quickselect (Hoare's algorithm): partially reorders `arr` so that the element
- * at index `k` is in its final sorted position, with all smaller elements before
- * it and all larger elements after it. O(n) average time, O(1) extra space.
- * Avoids the O(n log n) full sort that was previously used for nonce eviction.
- */
-function quickselect(arr: [string, number][], k: number): void {
-  let lo = 0;
-  let hi = arr.length - 1;
-  while (lo < hi) {
-    const pivot = arr[(lo + hi) >> 1][1];
-    let i = lo;
-    let j = hi;
-    while (i <= j) {
-      while (arr[i][1] < pivot) i++;
-      while (arr[j][1] > pivot) j--;
-      if (i <= j) {
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-        i++;
-        j--;
-      }
-    }
-    if (k <= j) hi = j;
-    else if (k >= i) lo = i;
-    else break;
-  }
-}
-
-function evictOldestNoncesIfNeeded(): void {
-  if (seenNonces.size < MAX_SEEN_NONCES) return;
-
-  // Emergency cleanup: remove oldest nonces by expiration time, keeping ~80%
-  // of the limit to avoid thrashing. Uses quickselect (O(n) average) instead
-  // of a full sort (O(n log n)) to find the eviction cutoff.
-  const entries = Array.from(seenNonces.entries());
-  const keepCount = Math.floor(MAX_SEEN_NONCES * 0.8);
-  const dropCount = Math.max(0, entries.length - keepCount);
-  if (dropCount === 0) return;
-
-  quickselect(entries, dropCount);
-  for (let i = 0; i < dropCount; i++) {
-    seenNonces.delete(entries[i][0]);
-  }
-  log.warn({ dropped: dropCount, remaining: seenNonces.size }, "emergency nonce eviction");
-}
-
-function isFreshTimestamp(timestampSec: number): boolean {
-  const nowMs = Date.now();
-  const tsMs = timestampSec * 1000;
-  return tsMs >= nowMs - HMAC_FRESHNESS_WINDOW_MS && tsMs <= nowMs + HMAC_FRESHNESS_WINDOW_MS;
-}
-
-function isNonceUnique(nonce: string, timestampSec: number): boolean {
-  if (seenNonces.has(nonce)) return false;
-  evictOldestNoncesIfNeeded();
-  seenNonces.set(nonce, timestampSec * 1000 + HMAC_FRESHNESS_WINDOW_MS);
-  return true;
-}
-
-function signPayload(payload: string, timestamp: string, nonce: string): string {
-  return crypto
-    .createHmac("sha256", config.RAIL_HMAC_SECRET)
-    .update(`${timestamp}.${nonce}.${payload}`)
-    .digest("hex");
-}
-
-function verifyHMAC(payload: string, signature: string, timestamp: string, nonce: string): boolean {
-  try {
-    const ts = parseInt(timestamp, 10);
-    if (!Number.isFinite(ts) || !isFreshTimestamp(ts)) {
-      return false;
-    }
-    const expected = signPayload(payload, timestamp, nonce);
-    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
-      return false;
-    }
-    // Replay rejection runs only after the HMAC signature is verified so
-    // that unauthenticated requests cannot exhaust the nonce store.
-    return isNonceUnique(nonce, ts);
-  } catch {
-    return false;
-  }
-}
 
 function normalizePlatform(platform: string): string {
   switch (platform.toLowerCase()) {
@@ -298,16 +212,6 @@ function normalizePlatform(platform: string): string {
     default:
       return platform;
   }
-}
-
-function makeHMACHeaders(payload: string): Record<string, string> {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = crypto.randomUUID();
-  return {
-    "X-HMAC-Timestamp": timestamp,
-    "X-HMAC-Nonce": nonce,
-    "X-HMAC-SHA256": signPayload(payload, timestamp, nonce),
-  };
 }
 
 // Backend POST retry policy: a transient backend failure (5xx, network blip,
@@ -340,7 +244,7 @@ async function postToBackendOnce(path: string, body: unknown, attempt: number, t
   );
   // Fresh timestamp+nonce per attempt: each attempt is an independent signed
   // request; reusing a nonce would trip the bridge/backend replay guards.
-  const hmacHeaders = makeHMACHeaders(payload);
+  const hmacHeaders = hmacAuth.headers(payload);
 
   let resp: Response;
   try {
@@ -654,35 +558,32 @@ async function flushQueuedMessages(threadID: string): Promise<void> {
 }
 
 // HTTP endpoint for the backend to send outbound messages to the bridge.
-app.post("/send", (req, res) => {
-  const raw =
-    (req as express.Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body);
-  const sig = req.headers["x-hmac-sha256"] as string | undefined;
-  const timestamp = req.headers["x-hmac-timestamp"] as string | undefined;
-  const nonce = req.headers["x-hmac-nonce"] as string | undefined;
-  if (!sig || !timestamp || !nonce || !verifyHMAC(raw, sig, timestamp, nonce)) {
-    log.warn({ ip: req.ip }, "invalid HMAC signature on /send");
-    res.status(401).json({ error: "invalid or missing HMAC signature" });
-    return;
-  }
-  const msg = req.body as OutboundMessage;
+const rawBodyOf = (req: express.Request): string =>
+  (req as express.Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body);
 
-  // sendToSpace owns scheduling: future send_after is (re)queued with
-  // notBefore, cold/capped outcomes defer without spending retry budget.
-  // The resolver rehydrates handles from disk, so proactive sends no longer
-  // wait for the user to text again.
-  sendToSpace(msg).then((outcome) => {
-    if (outcome === "ok") return;
-    const holdUntil =
-      outcome === "limited" ? Date.now() + PROVIDER_CAP_HOLD_MS : msg.send_after;
-    outboundQueue.enqueue(
-      msg,
-      msg.category ?? "normal",
-      holdUntil && holdUntil > Date.now() ? { notBefore: holdUntil } : undefined,
-    );
-  });
-  res.json({ status: "queued" });
-});
+app.post(
+  "/send",
+  requireHmac(hmacAuth, rawBodyOf, (req) => log.warn({ ip: req.ip }, "invalid HMAC signature on /send")),
+  (req, res) => {
+    const msg = req.body as OutboundMessage;
+
+    // sendToSpace owns scheduling: future send_after is (re)queued with
+    // notBefore, cold/capped outcomes defer without spending retry budget.
+    // The resolver rehydrates handles from disk, so proactive sends no longer
+    // wait for the user to text again.
+    sendToSpace(msg).then((outcome) => {
+      if (outcome === "ok") return;
+      const holdUntil =
+        outcome === "limited" ? Date.now() + PROVIDER_CAP_HOLD_MS : msg.send_after;
+      outboundQueue.enqueue(
+        msg,
+        msg.category ?? "normal",
+        holdUntil && holdUntil > Date.now() ? { notBefore: holdUntil } : undefined,
+      );
+    });
+    res.json({ status: "queued" });
+  },
+);
 
 app.get(["/", "/health"], (_req, res) => {
   const stats = outboundQueue.getStats();
@@ -724,10 +625,11 @@ app.get(["/", "/health"], (_req, res) => {
   });
 });
 
-// Recent failure audit (bounded, payload summaries only — no message bodies).
-app.get("/health/failures", (_req, res) => {
-  res.json({ failures: failures.recent(20) });
-});
+// Recent failure audit (bounded, payload summaries only — no message bodies),
+// HMAC-gated: see mountFailureAuditRoute.
+mountFailureAuditRoute(app, hmacAuth, failures, (req) =>
+  log.warn({ ip: req.ip }, "invalid HMAC signature on /health/failures"),
+);
 
 async function handleInbound(space: Space, message: Message): Promise<void> {
   // Deduplicate by message.id — the webhook handler and the streaming iterator
