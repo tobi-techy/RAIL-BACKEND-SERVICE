@@ -46,14 +46,35 @@ func PDFText(data []byte) string {
 
 	var out strings.Builder
 	streams := 0
-	for i := 0; i < len(data); {
+	for i := 0; ; {
+		content, next, ok := pdfNextTextStream(data, i)
+		if !ok {
+			break
+		}
+		out.WriteString(pdfStreamText(content))
+		out.WriteByte('\n')
+		streams++
+		if streams >= maxPDFStreams {
+			break
+		}
+		i = next
+	}
+	return strings.Join(strings.Fields(out.String()), " ")
+}
+
+// pdfNextTextStream finds the next stream that draws text, starting at from, and
+// returns its decoded bytes plus where to look next. A stream it cannot inflate,
+// or one that carries no text operators, is skipped the way it always was: ok is
+// false only when there is nothing left to read.
+func pdfNextTextStream(data []byte, from int) (content []byte, next int, ok bool) {
+	for i := from; i < len(data); {
 		rel := bytes.Index(data[i:], []byte("stream"))
 		if rel < 0 {
 			break
 		}
 		start := i + rel
-		// "endstream" contains "stream"; the check below would otherwise treat
-		// the tail of one stream as the head of another.
+		// "endstream" contains "stream"; without this the tail of one stream
+		// would be read as the head of another.
 		if start > 0 && data[start-1] == 'd' {
 			i = start + len("stream")
 			continue
@@ -73,28 +94,21 @@ func PDFText(data []byte) string {
 		raw := data[body : body+end]
 		i = body + end + len("endstream")
 
-		compressed := bytes.Contains(lastN(data, start, 256), []byte("/FlateDecode"))
-		content := raw
-		if compressed {
-			if inflated, ok := inflate(raw); ok {
-				content = inflated
-			} else {
-				// A stream we cannot inflate is not text we can read.
-				continue
+		decoded := raw
+		if bytes.Contains(lastN(data, start, 256), []byte("/FlateDecode")) {
+			inflated, ok := inflate(raw)
+			if !ok {
+				continue // a stream we cannot inflate is not text we can read
 			}
+			decoded = inflated
 		}
 		// Skip binary streams (images, fonts) — only content streams draw text.
-		if !bytes.Contains(content, []byte("BT")) && !bytes.Contains(content, []byte("Tj")) {
+		if !bytes.Contains(decoded, []byte("BT")) && !bytes.Contains(decoded, []byte("Tj")) {
 			continue
 		}
-		out.WriteString(pdfStreamText(content))
-		out.WriteByte('\n')
-		streams++
-		if streams >= maxPDFStreams {
-			break
-		}
+		return decoded, i, true
 	}
-	return strings.Join(strings.Fields(out.String()), " ")
+	return nil, len(data), false
 }
 
 // ClassifyPDF classifies a PDF from its own text layer. It answers DocUnknown
@@ -126,13 +140,16 @@ func lastN(data []byte, off, n int) []byte {
 func inflate(raw []byte) ([]byte, bool) {
 	raw = bytes.TrimSuffix(raw, []byte("\r\n"))
 	if zr, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
-		defer zr.Close()
+		// The read below is where a corrupt stream shows up; a close error on a
+		// bounded read cannot change the answer.
+		defer zr.Close() //nolint:errcheck
 		if out, err := io.ReadAll(io.LimitReader(zr, maxPDFStreamBytes)); err == nil && len(out) > 0 {
 			return out, true
 		}
 	}
 	fr := flate.NewReader(bytes.NewReader(raw))
-	defer fr.Close()
+	// flate's Close returns nil for a reader over an in-memory slice.
+	defer fr.Close() //nolint:errcheck
 	if out, err := io.ReadAll(io.LimitReader(fr, maxPDFStreamBytes)); err == nil && len(out) > 0 {
 		return out, true
 	}
@@ -193,30 +210,9 @@ func pdfLiteralString(s []byte, i int) (string, int) {
 				return out.String(), len(s)
 			}
 			i++
-			switch esc := s[i]; esc {
-			case 'n':
-				out.WriteByte('\n')
-			case 'r':
-				out.WriteByte('\r')
-			case 't':
-				out.WriteByte('\t')
-			case 'b', 'f':
-				out.WriteByte(' ')
-			case '(', ')', '\\':
-				out.WriteByte(esc)
-			default:
-				// Octal escape (\ddd) or a literal the writer over-escaped.
-				if esc >= '0' && esc <= '7' {
-					j, val := i, 0
-					for ; j < len(s) && j < i+3 && s[j] >= '0' && s[j] <= '7'; j++ {
-						val = val*8 + int(s[j]-'0')
-					}
-					out.WriteByte(byte(val))
-					i = j - 1
-				} else {
-					out.WriteByte(esc)
-				}
-			}
+			escaped, last := pdfEscape(s, i)
+			out.Write(escaped)
+			i = last
 		case '(':
 			depth++
 			out.WriteByte(ch)
@@ -231,6 +227,34 @@ func pdfLiteralString(s []byte, i int) (string, int) {
 		}
 	}
 	return out.String(), len(s)
+}
+
+// pdfEscape resolves the escape at s[i], the character that follows a
+// backslash, and returns the text it stands for plus the last byte it consumed
+// so the caller's loop can carry on from there.
+func pdfEscape(s []byte, i int) (text []byte, last int) {
+	switch esc := s[i]; esc {
+	case 'n':
+		return []byte{'\n'}, i
+	case 'r':
+		return []byte{'\r'}, i
+	case 't':
+		return []byte{'\t'}, i
+	case 'b', 'f':
+		return []byte{' '}, i
+	case '(', ')', '\\':
+		return []byte{esc}, i
+	default:
+		// Octal escape (\ddd) or a literal the writer over-escaped.
+		if esc < '0' || esc > '7' {
+			return []byte{esc}, i
+		}
+		j, val := i, 0
+		for ; j < len(s) && j < i+3 && s[j] >= '0' && s[j] <= '7'; j++ {
+			val = val*8 + int(s[j]-'0')
+		}
+		return []byte{byte(val)}, j - 1
+	}
 }
 
 // pdfHexString reads a "<...>" string starting at s[i] == '<'.

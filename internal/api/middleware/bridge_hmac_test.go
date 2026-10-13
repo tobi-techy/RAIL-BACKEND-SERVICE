@@ -33,7 +33,11 @@ func bridgeRouter(secret string) (*gin.Engine, *int) {
 	router := gin.New()
 	router.Use(BridgeHMAC(secret, nil))
 	router.POST("/api/v1/platform/inbound", func(c *gin.Context) {
-		body, _ := io.ReadAll(c.Request.Body)
+		body, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
 		seen = len(body)
 		c.Status(http.StatusOK)
 	})

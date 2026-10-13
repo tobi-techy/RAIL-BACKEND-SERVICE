@@ -182,8 +182,10 @@ func shopTestPDF(content string, compress bool) []byte {
 	if compress {
 		var buf bytes.Buffer
 		zw := zlib.NewWriter(&buf)
-		_, _ = zw.Write(stream)
-		_ = zw.Close()
+		// A zlib writer over a bytes.Buffer cannot fail; the helper has no
+		// testing.T to report to.
+		_, _ = zw.Write(stream) //nolint:errcheck
+		_ = zw.Close()          //nolint:errcheck
 		stream = buf.Bytes()
 		filter = " /Filter /FlateDecode"
 	}

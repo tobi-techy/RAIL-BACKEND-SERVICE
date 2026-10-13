@@ -103,7 +103,10 @@ func (c *PythonAgentClient) ReadShopDocument(ctx context.Context, userID uuid.UU
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxShopReadErrorBody))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxShopReadErrorBody))
+		if readErr != nil {
+			c.logger.Warn("could not read the shop read error body", zap.Error(readErr))
+		}
 		c.logger.Warn("shop read returned non-200",
 			zap.Int("status", resp.StatusCode),
 			zap.String("body", string(body)),

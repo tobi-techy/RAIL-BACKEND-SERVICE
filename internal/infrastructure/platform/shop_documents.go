@@ -278,7 +278,12 @@ func (p *Processor) claimShopMessage(ctx context.Context, msg InboundMessage, pa
 			zap.String("platform", string(msg.Platform)),
 			zap.String("user_id", msg.UserID),
 		)
-		_ = p.sendErrorMessage(ctx, msg, shopUnreadableText)
+		if sendErr := p.sendErrorMessage(ctx, msg, shopUnreadableText); sendErr != nil {
+			p.logger.Warn("could not tell the owner the read was refused",
+				zap.Error(sendErr),
+				zap.String("msg_id", msg.MsgID),
+			)
+		}
 		return false
 	}
 	if !claimed {
