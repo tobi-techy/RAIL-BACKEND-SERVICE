@@ -150,7 +150,7 @@ These are **not** in the list you pasted. Add them before treating the agent as 
 |---|---|
 | `JWT_SECRET` | **SECRET** |
 | `ENCRYPTION_KEY` | **SECRET** |
-| `SECURITY_INTERNAL_API_KEY` | **SECRET** — ops `/internal/*` |
+| `SECURITY_INTERNAL_API_KEY` | **SECRET** — the one internal ops credential: `/internal/*`, `/metrics` (as `Authorization: Bearer`) and `POST /admin/paj/complete/:order_id` (as `X-Internal-Key`). Must be at least 32 characters, must **not** equal `JWT_SECRET`, and is **required in production** (the app refuses to boot without it). |
 | `AUTH_BLACKLIST_FAIL_OPEN` | Production sets `true`. When Redis is unreachable the token-revocation check is skipped rather than returning 503 for every authenticated route — money movement stays gated by the passcode step-up, which does not depend on Redis. The code default is `false` (strict) so an environment that does not set this stays safe. See `internal/infrastructure/config/config.go` (`security.auth_blacklist_fail_open`). |
 | `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY` | Sign in with Apple |
 

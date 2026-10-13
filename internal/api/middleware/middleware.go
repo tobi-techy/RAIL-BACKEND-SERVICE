@@ -733,6 +733,27 @@ func PrivateNoCache() gin.HandlerFunc {
 	}
 }
 
+// InternalKeyHeaderAuth gates a route on the X-Internal-Key header, compared in
+// constant time against the dedicated internal ops key. It fails closed: an
+// unconfigured key answers 503 instead of disabling the check, and the JWT
+// signing secret is never an acceptable value (config.validate refuses to boot
+// when the two are equal).
+func InternalKeyHeaderAuth(apiKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if apiKey == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "internal API key not configured"})
+			c.Abort()
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Internal-Key")), []byte(apiKey)) != 1 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // InternalAPIKeyAuth validates the internal API key at the group level.
 // This prevents new endpoints from accidentally being exposed without auth.
 func InternalAPIKeyAuth(apiKey string) gin.HandlerFunc {

@@ -2,7 +2,6 @@ package routes
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -1425,23 +1424,20 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// v1.POST("/admin/users", adminHandlers.CreateAdmin)
 		// v1.POST("/admin/promote", adminHandlers.PromoteUser)
 
-		// Admin routes (admin auth required)
-		admin := v1.Group("/admin")
-		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
-		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
-		admin.Use(middleware.CSRFProtection(csrfStore))
+		// Complete a stuck PAJ order. Gated first on the dedicated internal ops
+		// key (X-Internal-Key vs Security.InternalAPIKey, never the JWT signing
+		// secret), then on a live admin session. Moves NO ledger funds — flip
+		// state only after verifying provider truth out-of-band. Requires a
+		// reason; refuses orders already claimed for credit/reversal
+		// (deposit_id set) so a flip can't contradict an in-flight ledger
+		// operation.
+		adminPaj := v1.Group("/admin/paj")
+		adminPaj.Use(middleware.InternalKeyHeaderAuth(container.Config.Security.InternalAPIKey))
+		adminPaj.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
+		adminPaj.Use(middleware.AdminAuth(container.DB, container.Logger))
+		adminPaj.Use(middleware.CSRFProtection(csrfStore))
 		{
-			// Complete a stuck PAJ order (internal key auth). Moves NO ledger
-			// funds — flip state only after verifying provider truth out-of-band.
-			// Requires a reason; refuses orders already claimed for
-			// credit/reversal (deposit_id set) so a flip can't contradict an
-			// in-flight ledger operation.
-			admin.POST("/paj/complete/:order_id", func(c *gin.Context) {
-				key := c.GetHeader("X-Internal-Key")
-				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
-					c.JSON(401, gin.H{"error": "unauthorized"})
-					return
-				}
+			adminPaj.POST("/complete/:order_id", func(c *gin.Context) {
 				orderID := c.Param("order_id")
 				if orderID == "" {
 					c.JSON(400, gin.H{"error": "order_id required"})
@@ -1471,7 +1467,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 					zap.Int64("rows_affected", rows))
 				c.JSON(200, gin.H{"updated": rows, "order_id": orderID})
 			})
+		}
 
+		// Admin routes (admin auth required)
+		admin := v1.Group("/admin")
+		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
+		admin.Use(middleware.AdminAuth(container.DB, container.Logger))
+		admin.Use(middleware.CSRFProtection(csrfStore))
+		{
 			// User lookup
 			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
 
