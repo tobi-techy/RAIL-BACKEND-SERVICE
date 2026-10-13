@@ -18,6 +18,7 @@ import (
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/domain/services/investing"
 	"github.com/rail-service/rail_service/internal/infrastructure/repositories"
+	"github.com/rail-service/rail_service/pkg/logger"
 )
 
 // These tests pin the owner predicate on rebalancing_configs at the HTTP
@@ -62,6 +63,25 @@ func rebalancingTestDB(t *testing.T) *sqlx.DB {
 	return db
 }
 
+// cleanupRebalancingTestRows removes whatever a case inserted, so a run against
+// a shared DATABASE_URL leaves no test data behind.
+func cleanupRebalancingTestRows(t *testing.T, db *sqlx.DB, configIDs, userIDs []uuid.UUID) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, id := range configIDs {
+			if _, err := db.ExecContext(ctx, `DELETE FROM rebalancing_configs WHERE id = $1`, id); err != nil {
+				t.Logf("cleanup rebalancing_configs %s: %v", id, err)
+			}
+		}
+		for _, id := range userIDs {
+			if _, err := db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, id); err != nil {
+				t.Logf("cleanup users %s: %v", id, err)
+			}
+		}
+	})
+}
+
 type stubPositionProvider struct {
 	positions []*entities.InvestmentPosition
 }
@@ -103,7 +123,7 @@ func newRebalancingTestRouter(t *testing.T, db *sqlx.DB, owner uuid.UUID) http.H
 		stubOrderPlacer{},
 		zap.NewNop(),
 	)
-	h := NewRebalancingHandlers(svc, nil)
+	h := NewRebalancingHandlers(svc, logger.NewLogger(zap.NewNop()))
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -155,6 +175,7 @@ func TestRebalancingConfigOwnerPredicate(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO rebalancing_configs (id, user_id, name, target_allocations, threshold_pct) VALUES ($1,$2,'Owner only','{"AAPL": 100}',5)`, configID, owner); err != nil {
 		t.Fatal(err)
 	}
+	cleanupRebalancingTestRows(t, db, []uuid.UUID{configID}, []uuid.UUID{owner, stranger})
 
 	r := newRebalancingTestRouter(t, db, owner)
 	base := "/v1/rebalancing/configs/" + configID.String()

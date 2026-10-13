@@ -69,6 +69,18 @@ func TestDismissScamAlertOwnerPredicate(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO user_scam_alerts (id, user_id, merchant_name) VALUES ($1,$2,'Uche Ventures')`, alertID, owner); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		for _, stmt := range []string{
+			`DELETE FROM user_scam_alerts WHERE id = $1`,
+			`DELETE FROM users WHERE id = $1`,
+		} {
+			for _, id := range []uuid.UUID{alertID, owner, stranger} {
+				if _, err := db.ExecContext(ctx, stmt, id); err != nil {
+					t.Logf("cleanup %s %s: %v", stmt, id, err)
+				}
+			}
+		}
+	})
 
 	scamIntel := premiumservice.NewScamIntelligenceService(repositories.NewScamRepository(db), zap.NewNop())
 	h := NewHandlers(nil, nil, nil, scamIntel, nil, nil, nil, nil, nil, zap.NewNop())
