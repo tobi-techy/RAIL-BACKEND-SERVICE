@@ -1,10 +1,15 @@
 package routes
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testInternalKey = "test-only-internal-ops-key-fedcba9876543210"
@@ -75,5 +80,51 @@ func TestInternalKeyRoutesRefuseSigningSecret(t *testing.T) {
 				t.Fatalf("%s %s with the signing secret %v: status %d, want 401", tc.method, tc.path, headers, w.Code)
 			}
 		}
+	}
+}
+
+// With a signing secret configured, a request carrying the right internal key
+// but no valid HMAC is refused before it reaches the handler; a correctly
+// signed one reaches it. /internal/users/lookup answers 400 for a missing
+// query before touching the database, which makes "reached the handler"
+// observable.
+func TestInternalRequestSigningIsEnforcedOnInternalRoutes(t *testing.T) {
+	const signingSecret = "test-only-request-signing-secret-0123456789ab"
+	c := newRouterContainer()
+	c.Config.Security.InternalAPIKey = testInternalKey
+	c.Config.Security.InternalRequestSigningSecret = signingSecret
+	router := SetupRoutes(c)
+
+	do := func(headers map[string]string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/internal/users/lookup", nil)
+		req.Header.Set("Authorization", "Bearer "+testInternalKey)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+	sign := func(secret, ts string) string {
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(fmt.Sprintf("%s.GET./internal/users/lookup.-.", ts)))
+		return hex.EncodeToString(mac.Sum(nil))
+	}
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+
+	for name, headers := range map[string]map[string]string{
+		"no signature":    nil,
+		"wrong secret":    {"X-Internal-Timestamp": ts, "X-Internal-Signature": sign("some-other-secret-0123456789abcdef-xyz", ts)},
+		"stale timestamp": {"X-Internal-Timestamp": "1", "X-Internal-Signature": sign(signingSecret, "1")},
+	} {
+		w := do(headers)
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "internal_signature_invalid") {
+			t.Fatalf("%s: status %d body %q, want 401 internal_signature_invalid", name, w.Code, w.Body.String())
+		}
+	}
+
+	w := do(map[string]string{"X-Internal-Timestamp": ts, "X-Internal-Signature": sign(signingSecret, ts)})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("correctly signed request: status %d body %q, want 400 from the handler", w.Code, w.Body.String())
 	}
 }
