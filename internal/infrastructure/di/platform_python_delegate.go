@@ -2,6 +2,7 @@ package di
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -153,6 +154,19 @@ func shareHostAllowed(raw string) bool {
 	return shareAllowlist[strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")]
 }
 
+// requireConvRepo reports whether the platform conversation repository was
+// wired. It exists because that repository was once declared, handed to this
+// adapter and the bridge dispatcher, and built nowhere: every texted turn from
+// a linked user then dereferenced a nil db and answered 500 to the bridge,
+// which retried three times before dropping the message. A wiring gap has to
+// read as a wiring gap, never as a crash.
+func (a *orchestratorAdapter) requireConvRepo() error {
+	if a.convRepo == nil {
+		return errors.New("platform conversation repository is not configured")
+	}
+	return nil
+}
+
 // HandlePlatformPollVote implements platform.PollVoteOrchestrator: a poll vote
 // with no pending action is forwarded to the Python agent when delegated so
 // conversational onboarding can consume answer selections. handled=false keeps
@@ -161,6 +175,9 @@ func shareHostAllowed(raw string) bool {
 func (a *orchestratorAdapter) HandlePlatformPollVote(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform, optionText, pollTitle string) (*platform.PlatformReply, bool, error) {
 	if !a.pythonDelegated() {
 		return nil, false, nil
+	}
+	if err := a.requireConvRepo(); err != nil {
+		return nil, false, err
 	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
@@ -236,6 +253,9 @@ func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID
 	if !a.pythonDelegated() {
 		return nil, false, nil
 	}
+	if err := a.requireConvRepo(); err != nil {
+		return nil, false, err
+	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		return nil, false, fmt.Errorf("parse user id: %w", err)
@@ -280,6 +300,9 @@ func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID
 //
 // Go never holds the money path: it relays the id, and the ledger decides.
 func (a *orchestratorAdapter) handlePlatformMessagePython(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+	if err := a.requireConvRepo(); err != nil {
+		return nil, err
+	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		return nil, fmt.Errorf("parse user id: %w", err)
@@ -464,6 +487,9 @@ func (a *orchestratorAdapter) pendingPythonConfirm(ctx context.Context, cid uuid
 // processor can tell a Python money confirm from a Go-native approve and
 // suppress typed YES/NO on poll-less channels.
 func (a *orchestratorAdapter) HasPendingPythonConfirm(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform) bool {
+	if err := a.requireConvRepo(); err != nil {
+		return false
+	}
 	uid, err := uuid.Parse(userID)
 	if err != nil {
 		return false

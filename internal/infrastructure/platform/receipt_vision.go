@@ -13,13 +13,25 @@ import (
 // receipt and would only slow the OCR sidecar down.
 const maxReceiptImageBytes = 15 * 1024 * 1024
 
+// AttachmentRead is what the vision pipeline saw in one attached photo: the
+// page's kind, plus either the receipt summary or — for a page the shop reader
+// owns — a plain description of what the photo is.
+type AttachmentRead struct {
+	// Kind is the classified page type.
+	Kind document.DocType
+	// Summary is what to tell the user. For a shop document it is a description
+	// rather than a read: the figures come from the reader, never from here.
+	Summary string
+}
+
 // ReceiptVision extracts a quick, human-readable summary from a receipt photo
-// so Miriam can react to an image moments after it's texted to her. It is the
-// synchronous "fast path" — full document persistence/enrichment stays on the
-// async document pipeline.
+// so Miriam can react to an image moments after it's texted to her, and reports
+// what the page actually is so the processor can route a shop document to the
+// reader. One OCR pass answers both. It is the synchronous "fast path" — full
+// document persistence/enrichment stays on the async document pipeline.
 type ReceiptVision interface {
 	Available() bool
-	SummarizeReceipt(ctx context.Context, image []byte, mimeType string) (string, error)
+	ReadImage(ctx context.Context, image []byte, mimeType string) (*AttachmentRead, error)
 }
 
 // documentReceiptVision adapts the shared document pipeline (OCR -> classify ->
@@ -41,12 +53,12 @@ func NewDocumentReceiptVision(pipeline *document.Pipeline) ReceiptVision {
 
 func (v *documentReceiptVision) Available() bool { return v != nil && v.pipeline != nil }
 
-func (v *documentReceiptVision) SummarizeReceipt(ctx context.Context, image []byte, mimeType string) (string, error) {
+func (v *documentReceiptVision) ReadImage(ctx context.Context, image []byte, mimeType string) (*AttachmentRead, error) {
 	if len(image) == 0 {
-		return "", fmt.Errorf("empty image")
+		return nil, fmt.Errorf("empty image")
 	}
 	if len(image) > maxReceiptImageBytes {
-		return "", fmt.Errorf("image too large (%d bytes)", len(image))
+		return nil, fmt.Errorf("image too large (%d bytes)", len(image))
 	}
 	if mimeType == "" {
 		mimeType = "image/jpeg"
@@ -54,20 +66,29 @@ func (v *documentReceiptVision) SummarizeReceipt(ctx context.Context, image []by
 
 	res, err := v.pipeline.Process(ctx, image, mimeType)
 	if err != nil {
-		return "", fmt.Errorf("process receipt: %w", err)
+		return nil, fmt.Errorf("process receipt: %w", err)
 	}
 	if res == nil {
-		return "", fmt.Errorf("no result")
+		return nil, fmt.Errorf("no result")
 	}
 
+	read := &AttachmentRead{Kind: res.Type}
 	switch res.Type {
 	case document.DocReceipt, document.DocInvoice:
-		return formatReceiptSummary(res), nil
+		read.Summary = formatReceiptSummary(res)
 	case document.DocBankStatement:
-		return "That looks like a bank statement. For a full breakdown, upload it in the app (Documents) and I'll categorize every transaction.", nil
+		read.Summary = "That looks like a bank statement. For a full breakdown, upload it in the app (Documents) and I'll categorize every transaction."
+	case document.DocStockBook:
+		// Handed to the shop reader once the sender is known to be linked. The
+		// description stands in as the turn's text until then, so an unlinked
+		// sender is onboarded rather than left with an empty message.
+		read.Summary = "a handwritten shop record — a stock book with what came in, what sold and what's left"
+	case document.DocDeliveryNote:
+		read.Summary = "a distributor's delivery note, signed off when the goods arrived"
 	default:
-		return "I couldn't make out a receipt in that photo. Try a clearer, top-down shot with the totals visible.", nil
+		read.Summary = "I couldn't make out a receipt in that photo. Try a clearer, top-down shot with the totals visible."
 	}
+	return read, nil
 }
 
 // formatReceiptSummary renders extracted receipt fields the way Miriam talks:

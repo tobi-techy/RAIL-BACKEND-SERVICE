@@ -984,6 +984,11 @@ type PythonAgentConfig struct {
 	JWTTTLSeconds      int    `mapstructure:"jwt_ttl_seconds"`      // Per-user token TTL (default 120)
 	ConfirmTTLSeconds  int    `mapstructure:"confirm_ttl_seconds"`  // How long a staged confirm_id stays tappable (default 600 = 10 min)
 	HTTPTimeoutSeconds int    `mapstructure:"http_timeout_seconds"` // Agent call timeout (default 60)
+	// ShopReadTimeoutSeconds bounds one shop-document read: a stock book, a
+	// distributor invoice or a delivery note texted to Miriam. A vision read
+	// over a whole page takes tens of seconds — well past the chat timeout
+	// above — and runs on its own HTTP client. Default 150.
+	ShopReadTimeoutSeconds int `mapstructure:"shop_read_timeout_seconds"`
 
 	// RequireMiriamConfirmHeader gates the X-Miriam-Confirm-Id check on
 	// POST /api/v1/p2p/send from agent JWTs. Default false until the Python
@@ -1541,6 +1546,7 @@ func setDefaults() {
 	viper.SetDefault("python_agent.jwt_ttl_seconds", 120)
 	viper.SetDefault("python_agent.confirm_ttl_seconds", 600)
 	viper.SetDefault("python_agent.http_timeout_seconds", 60)
+	viper.SetDefault("python_agent.shop_read_timeout_seconds", 150)
 }
 
 func overrideFromEnv() error {
@@ -1652,6 +1658,13 @@ func overrideFromEnv() error {
 	if v := os.Getenv("PYTHON_AGENT_HTTP_TIMEOUT_SECONDS"); v != "" {
 		if timeout, err := strconv.Atoi(v); err == nil {
 			viper.Set("python_agent.http_timeout_seconds", timeout)
+		}
+	}
+	// Shop reads are vision calls over a whole page; they outlive the chat
+	// timeout, so they are bounded separately.
+	if v := os.Getenv("SHOP_READ_TIMEOUT_S"); v != "" {
+		if timeout, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.shop_read_timeout_seconds", timeout)
 		}
 	}
 
