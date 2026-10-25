@@ -12,10 +12,10 @@ import (
 	"go.uber.org/zap"
 )
 
-func decodeSample(t *testing.T, raw string) *TurnResponse {
+func decodeSample(t *testing.T) *TurnResponse {
 	t.Helper()
 	var r TurnResponse
-	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+	if err := json.Unmarshal([]byte(sampleTurnResponse), &r); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	return &r
@@ -24,7 +24,7 @@ func decodeSample(t *testing.T, raw string) *TurnResponse {
 func TestRecordTurnProposalsHoldsMoneyAndDedupesReplays(t *testing.T) {
 	store := NewMemoryProposalStore()
 	req := sampleTurnRequest()
-	resp := decodeSample(t, sampleTurnResponse)
+	resp := decodeSample(t)
 	now := time.Date(2026, 10, 25, 8, 0, 0, 0, time.UTC)
 
 	first := RecordTurnProposals(context.Background(), store, zap.NewNop(), req, resp, now)
@@ -39,8 +39,13 @@ func TestRecordTurnProposalsHoldsMoneyAndDedupesReplays(t *testing.T) {
 		t.Fatalf("replay must store nothing new: %+v", second)
 	}
 
+	assertSampleProposals(t, store.All())
+}
+
+func assertSampleProposals(t *testing.T, all []TurnProposal) {
+	t.Helper()
 	got := map[string]TurnProposal{}
-	for _, p := range store.All() {
+	for _, p := range all {
 		got[p.ProposalID] = p
 	}
 	pay := got["int_f079100483cf299be4f36633"]
@@ -62,7 +67,7 @@ func TestRecordTurnProposalsHoldsMoneyAndDedupesReplays(t *testing.T) {
 
 func TestRecordTurnProposalsDedupesWithinOneResponse(t *testing.T) {
 	store := NewMemoryProposalStore()
-	resp := decodeSample(t, sampleTurnResponse)
+	resp := decodeSample(t)
 	resp.Intents = append(resp.Intents, resp.Intents[0])
 	out := RecordTurnProposals(context.Background(), store, nil, sampleTurnRequest(), resp, time.Now())
 	if out.Stored != 3 || out.Duplicates != 1 {
@@ -72,7 +77,7 @@ func TestRecordTurnProposalsDedupesWithinOneResponse(t *testing.T) {
 
 func TestRecordTurnProposalsRejectsWhatIsNotAProposal(t *testing.T) {
 	store := NewMemoryProposalStore()
-	resp := decodeSample(t, sampleTurnResponse)
+	resp := decodeSample(t)
 	resp.Drafts = nil
 	resp.Intents[0].Status = "committed"
 	resp.Intents[1].Kind = "transfer_money"
@@ -88,11 +93,11 @@ func TestRecordTurnProposalsRejectsWhatIsNotAProposal(t *testing.T) {
 }
 
 func TestRecordTurnProposalsSurvivesAStoreFailure(t *testing.T) {
-	out := RecordTurnProposals(context.Background(), failingStore{}, nil, sampleTurnRequest(), decodeSample(t, sampleTurnResponse), time.Now())
+	out := RecordTurnProposals(context.Background(), failingStore{}, nil, sampleTurnRequest(), decodeSample(t), time.Now())
 	if out.Failed != 3 || out.Stored != 0 {
 		t.Fatalf("store failures are counted, not returned: %+v", out)
 	}
-	out = RecordTurnProposals(context.Background(), nil, nil, sampleTurnRequest(), decodeSample(t, sampleTurnResponse), time.Now())
+	out = RecordTurnProposals(context.Background(), nil, nil, sampleTurnRequest(), decodeSample(t), time.Now())
 	if out.Failed != 3 {
 		t.Fatalf("no store: %+v", out)
 	}
@@ -118,7 +123,11 @@ func (r *redisAdapter) SetNX(ctx context.Context, key string, value interface{},
 func TestRedisProposalStoreDedupesOnTheID(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Logf("close redis: %v", err)
+		}
+	})
 	store := NewRedisProposalStore(&redisAdapter{fakeRedis: newFakeRedis(), c: client}, time.Hour)
 
 	p := TurnProposal{ProposalID: "int_1", Kind: TurnIntentRecordStockCount, Status: ProposalStatusPendingValidation}

@@ -58,22 +58,31 @@ func serveBrain(t *testing.T, turnsBody string) (*httptest.Server, *fakeBrain) {
 	t.Helper()
 	b := &fakeBrain{turns: turnsBody}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
 		b.mu.Lock()
 		b.calls = append(b.calls, brainCall{path: r.URL.Path, headers: r.Header.Clone(), body: body})
 		b.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/turns":
-			_, _ = io.WriteString(w, b.turns)
+			writeBrainBody(w, b.turns)
 		case "/api/v1/chat":
-			_, _ = io.WriteString(w, `{"response":"legacy brain here","conversation_id":"c1"}`)
+			writeBrainBody(w, `{"response":"legacy brain here","conversation_id":"c1"}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, b
+}
+
+func writeBrainBody(w io.Writer, body string) {
+	if _, err := io.WriteString(w, body); err != nil {
+		return
+	}
 }
 
 func turnsBodyFor(messageID string) string {
@@ -127,7 +136,11 @@ func fakeConvRepo(t *testing.T) *repositories.ConversationRepository {
 	if err != nil {
 		t.Fatalf("open fake db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close fake db: %v", err)
+		}
+	})
 	return repositories.NewConversationRepository(db, zap.NewNop())
 }
 
@@ -197,7 +210,27 @@ func TestFlagOnRoutesToTurnsAndStoresProposals(t *testing.T) {
 	if got := brain.paths(); len(got) != 1 || got[0] != "/v1/turns" {
 		t.Fatalf("flag on must call only /v1/turns, got %v", got)
 	}
-	call := brain.last()
+	assertTurnCall(t, brain.last(), uid)
+	if reply == nil || !strings.Contains(reply.Text, "reported") || reply.Confirm != nil || reply.Poll != nil {
+		t.Fatalf("reply must be the brain's text only, got %+v", reply)
+	}
+	all := store.All()
+	if len(all) != 1 || all[0].ProposalID != "int_pay_1" || all[0].Status != ai.ProposalStatusHeldMoney {
+		t.Fatalf("the payment claim must be stored as a held proposal, got %+v", all)
+	}
+
+	// The same message again (bridge retry): one more call with the same
+	// message id, and no new proposal.
+	if _, err := a.HandlePlatformMessage(inboundCtx("wamid.HBgN001", "I don pay 25k"), uid.String(), uuid.NewString(), "I don pay 25k", "thread-1", entities.PlatformWhatsApp); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if len(store.All()) != 1 {
+		t.Fatalf("a replayed intent_id must not be stored twice, got %d", len(store.All()))
+	}
+}
+
+func assertTurnCall(t *testing.T, call brainCall, uid uuid.UUID) {
+	t.Helper()
 	if call.headers.Get("X-Rail-Service-Key") != "svc-key" || call.headers.Get("Authorization") != "" {
 		t.Fatalf("turns is service-auth only: %v", call.headers)
 	}
@@ -216,22 +249,6 @@ func TestFlagOnRoutesToTurnsAndStoresProposals(t *testing.T) {
 	}
 	if sent.Sender.Handle != "+2348030000000" || sent.DistributorName != "Ade Distributors" || sent.SentAt == "" {
 		t.Fatalf("sender/handle/distributor/sent_at not filled: %+v", sent)
-	}
-	if reply == nil || !strings.Contains(reply.Text, "reported") || reply.Confirm != nil || reply.Poll != nil {
-		t.Fatalf("reply must be the brain's text only, got %+v", reply)
-	}
-	all := store.All()
-	if len(all) != 1 || all[0].ProposalID != "int_pay_1" || all[0].Status != ai.ProposalStatusHeldMoney {
-		t.Fatalf("the payment claim must be stored as a held proposal, got %+v", all)
-	}
-
-	// The same message again (bridge retry): one more call with the same
-	// message id, and no new proposal.
-	if _, err := a.HandlePlatformMessage(inboundCtx("wamid.HBgN001", "I don pay 25k"), uid.String(), uuid.NewString(), "I don pay 25k", "thread-1", entities.PlatformWhatsApp); err != nil {
-		t.Fatalf("retry: %v", err)
-	}
-	if len(store.All()) != 1 {
-		t.Fatalf("a replayed intent_id must not be stored twice, got %d", len(store.All()))
 	}
 }
 

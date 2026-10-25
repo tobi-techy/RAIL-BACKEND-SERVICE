@@ -30,7 +30,9 @@ func pythonDown(t *testing.T, status int) (*httptest.Server, *atomic.Int32) {
 			return
 		}
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(`{"detail":"Not Found"}`))
+		if _, err := w.Write([]byte(`{"detail":"Not Found"}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &calls

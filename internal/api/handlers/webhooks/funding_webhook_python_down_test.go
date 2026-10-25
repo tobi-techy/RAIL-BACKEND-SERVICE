@@ -199,7 +199,7 @@ func newUnifiedForTest(t *testing.T, pythonURL string, override error) (*Unified
 
 func postBridgeDeposit(t *testing.T, h *UnifiedFundingWebhookHandler, ref string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, _ := json.Marshal(map[string]interface{}{
+	body, err := json.Marshal(map[string]interface{}{
 		"event_id":       "evt_" + ref,
 		"event_category": "virtual_account",
 		"event_type":     "deposit.completed",
@@ -211,6 +211,9 @@ func postBridgeDeposit(t *testing.T, h *UnifiedFundingWebhookHandler, ref string
 			"status":             "completed",
 		},
 	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
 	mac := hmac.New(sha256.New, []byte(pdSecret))
 	mac.Write(body)
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/funding", bytes.NewReader(body))

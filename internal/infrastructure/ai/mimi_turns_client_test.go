@@ -95,7 +95,10 @@ func turnsServer(t *testing.T, steps ...func(w http.ResponseWriter, r *http.Requ
 	var calls []capturedTurn
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
 		mu.Lock()
 		calls = append(calls, capturedTurn{path: r.URL.Path, headers: r.Header.Clone(), body: body})
 		mu.Unlock()
@@ -109,15 +112,23 @@ func turnsServer(t *testing.T, steps ...func(w http.ResponseWriter, r *http.Requ
 	return srv, &calls
 }
 
+// writeTestBody writes a canned body; a failed write only shows up as a
+// failed decode on the client side, which the test then reports.
+func writeTestBody(w io.Writer, body string) {
+	if _, err := io.WriteString(w, body); err != nil {
+		return
+	}
+}
+
 func okTurn(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = io.WriteString(w, sampleTurnResponse)
+	writeTestBody(w, sampleTurnResponse)
 }
 
 func statusTurn(code int) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(code)
-		_, _ = io.WriteString(w, `{"detail":"nope","trace_id":"tr_err"}`)
+		writeTestBody(w, `{"detail":"nope","trace_id":"tr_err"}`)
 	}
 }
 
@@ -143,7 +154,13 @@ func TestTurnPostsTheContractRequest(t *testing.T) {
 	if len(*calls) != 1 {
 		t.Fatalf("want one call, got %d", len(*calls))
 	}
-	got := (*calls)[0]
+	assertTurnHeaders(t, (*calls)[0])
+	assertTurnBodyFields(t, (*calls)[0].body)
+	assertDecodedSample(t, resp)
+}
+
+func assertTurnHeaders(t *testing.T, got capturedTurn) {
+	t.Helper()
 	if got.path != "/v1/turns" {
 		t.Fatalf("path = %q, want /v1/turns", got.path)
 	}
@@ -159,9 +176,12 @@ func TestTurnPostsTheContractRequest(t *testing.T) {
 	if ct := got.headers.Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content type = %q", ct)
 	}
+}
 
+func assertTurnBodyFields(t *testing.T, raw []byte) {
+	t.Helper()
 	var body map[string]interface{}
-	if err := json.Unmarshal(got.body, &body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("body: %v", err)
 	}
 	if body["schema_version"] != "turns.v1" || body["channel"] != "whatsapp" {
@@ -179,7 +199,10 @@ func TestTurnPostsTheContractRequest(t *testing.T) {
 	if _, ok := body["media"]; ok {
 		t.Fatalf("empty media must be omitted")
 	}
+}
 
+func assertDecodedSample(t *testing.T, resp *TurnResponse) {
+	t.Helper()
 	if resp.TurnID != "turn_ed014cc40e394cfe2114d730" || resp.Label != "payment_claim" || resp.Replayed {
 		t.Fatalf("decoded response wrong: %+v", resp)
 	}
@@ -189,6 +212,11 @@ func TestTurnPostsTheContractRequest(t *testing.T) {
 	if len(resp.Intents) != 2 || len(resp.Drafts) != 1 {
 		t.Fatalf("want 2 intents and 1 draft, got %d and %d", len(resp.Intents), len(resp.Drafts))
 	}
+	assertSampleIntents(t, resp)
+}
+
+func assertSampleIntents(t *testing.T, resp *TurnResponse) {
+	t.Helper()
 	pay := resp.Intents[0]
 	if pay.Kind != TurnIntentRecordPaymentClaim || pay.AmountKobo != 2500000 || pay.Currency != "NGN" || !pay.TouchesMoney() {
 		t.Fatalf("payment intent wrong: %+v", pay)
@@ -290,7 +318,7 @@ func TestTurn4xxIsNotRetried(t *testing.T) {
 
 func TestTurnRejectsAResponseForAnotherMessage(t *testing.T) {
 	other := func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, strings.Replace(sampleTurnResponse, "wamid.HBgN001", "wamid.OTHER", 1))
+		writeTestBody(w, strings.Replace(sampleTurnResponse, "wamid.HBgN001", "wamid.OTHER", 1))
 	}
 	srv, _ := turnsServer(t, other)
 	c := newTestTurnsClient(srv.URL)
@@ -363,17 +391,18 @@ func TestTurnMediaUsesTheLongerBudgetAndOneAttempt(t *testing.T) {
 	if len(*calls) != 1 {
 		t.Fatalf("media turns get one attempt per request, got %d", len(*calls))
 	}
-	var sent map[string]interface{}
-	_ = json.Unmarshal((*calls)[0].body, &sent)
-	media, _ := sent["media"].([]interface{})
-	if len(media) != 1 || media[0].(map[string]interface{})["data_b64"] != "aGk=" {
-		t.Fatalf("media must be sent inline as data_b64, got %v", sent["media"])
+	var sent TurnRequest
+	if err := json.Unmarshal((*calls)[0].body, &sent); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if len(sent.Media) != 1 || sent.Media[0].DataB64 != "aGk=" {
+		t.Fatalf("media must be sent inline as data_b64, got %+v", sent.Media)
 	}
 }
 
 func TestTurnReplayIsDecoded(t *testing.T) {
 	replay := func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, strings.Replace(sampleTurnResponse, `"replayed": false`, `"replayed": true`, 1))
+		writeTestBody(w, strings.Replace(sampleTurnResponse, `"replayed": false`, `"replayed": true`, 1))
 	}
 	srv, _ := turnsServer(t, replay)
 	c := newTestTurnsClient(srv.URL)

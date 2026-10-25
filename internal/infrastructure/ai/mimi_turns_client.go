@@ -330,6 +330,15 @@ func ValidateTurnRequest(req *TurnRequest) error {
 	if req == nil {
 		return fmt.Errorf("turns: nil request")
 	}
+	if err := validateTurnEnvelope(req); err != nil {
+		return err
+	}
+	return validateTurnContent(req)
+}
+
+// validateTurnEnvelope checks version, channel and the identity fields, which
+// must come from Go's records and are never guessed.
+func validateTurnEnvelope(req *TurnRequest) error {
 	if req.SchemaVersion != "" && req.SchemaVersion != TurnsSchemaVersion {
 		return fmt.Errorf("turns: unsupported schema_version %q", req.SchemaVersion)
 	}
@@ -345,6 +354,11 @@ func ValidateTurnRequest(req *TurnRequest) error {
 	if strings.TrimSpace(req.MessageID) == "" {
 		return fmt.Errorf("turns: message_id is required (it is the idempotency key)")
 	}
+	return nil
+}
+
+// validateTurnContent checks the text and media bounds.
+func validateTurnContent(req *TurnRequest) error {
 	if strings.TrimSpace(req.Text) == "" && len(req.Media) == 0 {
 		return fmt.Errorf("turns: a turn needs text or at least one media item")
 	}
@@ -372,26 +386,13 @@ func (c *MimiTurnsClient) Turn(ctx context.Context, req *TurnRequest, traceID st
 	if !c.Configured() {
 		return nil, fmt.Errorf("turns: client not configured (need PYTHON_AGENT_URL and RAIL_SERVICE_KEY)")
 	}
-	if req == nil {
-		return nil, fmt.Errorf("turns: nil request")
-	}
-	out := *req
-	if out.SchemaVersion == "" {
-		out.SchemaVersion = TurnsSchemaVersion
-	}
-	if out.Channel == "" {
-		out.Channel = TurnsChannelWhatsApp
-	}
-	if err := ValidateTurnRequest(&out); err != nil {
+	out, payload, err := prepareTurn(req)
+	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(&out)
-	if err != nil {
-		return nil, fmt.Errorf("turns: marshal request: %w", err)
-	}
 
-	attempts := c.attemptsFor(&out)
-	timeout := c.TimeoutFor(&out)
+	attempts := c.attemptsFor(out)
+	timeout := c.TimeoutFor(out)
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
@@ -403,14 +404,7 @@ func (c *MimiTurnsClient) Turn(ctx context.Context, req *TurnRequest, traceID st
 		}
 		resp, retry, err := c.post(ctx, payload, timeout, traceID)
 		if err == nil {
-			if resp.MessageID != "" && resp.MessageID != out.MessageID {
-				return nil, fmt.Errorf("%w: response message_id %q does not match request %q",
-					ErrTurnRejected, resp.MessageID, out.MessageID)
-			}
-			if resp.SchemaVersion != "" && resp.SchemaVersion != TurnsSchemaVersion {
-				return nil, fmt.Errorf("%w: response schema_version %q", ErrTurnRejected, resp.SchemaVersion)
-			}
-			return resp, nil
+			return checkTurnResponse(out, resp)
 		}
 		lastErr = err
 		if errors.Is(err, ErrTurnConflict) {
@@ -420,17 +414,50 @@ func (c *MimiTurnsClient) Turn(ctx context.Context, req *TurnRequest, traceID st
 				zap.Error(err))
 			return nil, err
 		}
-		if !retry {
-			return nil, err
-		}
-		if ctx.Err() != nil {
+		if !retry || ctx.Err() != nil {
 			break
 		}
 	}
-	if errors.Is(lastErr, ErrTurnUnavailable) {
+	if errors.Is(lastErr, ErrTurnUnavailable) || errors.Is(lastErr, ErrTurnRejected) {
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("%w: %v", ErrTurnUnavailable, lastErr)
+}
+
+// prepareTurn applies the contract defaults, validates, and marshals the body
+// once so every retry sends identical bytes.
+func prepareTurn(req *TurnRequest) (*TurnRequest, []byte, error) {
+	if req == nil {
+		return nil, nil, fmt.Errorf("turns: nil request")
+	}
+	out := *req
+	if out.SchemaVersion == "" {
+		out.SchemaVersion = TurnsSchemaVersion
+	}
+	if out.Channel == "" {
+		out.Channel = TurnsChannelWhatsApp
+	}
+	if err := ValidateTurnRequest(&out); err != nil {
+		return nil, nil, err
+	}
+	payload, err := json.Marshal(&out)
+	if err != nil {
+		return nil, nil, fmt.Errorf("turns: marshal request: %w", err)
+	}
+	return &out, payload, nil
+}
+
+// checkTurnResponse refuses an answer that is not for this message or speaks
+// another schema.
+func checkTurnResponse(req *TurnRequest, resp *TurnResponse) (*TurnResponse, error) {
+	if resp.MessageID != "" && resp.MessageID != req.MessageID {
+		return nil, fmt.Errorf("%w: response message_id %q does not match request %q",
+			ErrTurnRejected, resp.MessageID, req.MessageID)
+	}
+	if resp.SchemaVersion != "" && resp.SchemaVersion != TurnsSchemaVersion {
+		return nil, fmt.Errorf("%w: response schema_version %q", ErrTurnRejected, resp.SchemaVersion)
+	}
+	return resp, nil
 }
 
 // post sends one attempt. retry reports whether the failure is worth another
@@ -457,8 +484,12 @@ func (c *MimiTurnsClient) post(ctx context.Context, payload []byte, timeout time
 		return nil, ctx.Err() == nil, fmt.Errorf("%w: %v", ErrTurnUnavailable, err)
 	}
 	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+		if _, drainErr := io.Copy(io.Discard, resp.Body); drainErr != nil {
+			c.logger.Debug("turns: drain response body", zap.Error(drainErr))
+		}
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			c.logger.Debug("turns: close response body", zap.Error(closeErr))
+		}
 	}()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))

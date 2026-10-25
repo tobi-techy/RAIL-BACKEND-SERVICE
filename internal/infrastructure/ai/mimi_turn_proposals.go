@@ -170,105 +170,134 @@ func classifyIntent(in TurnIntent) (status, reason string) {
 // its reply, and because ids are deterministic the next replay of the same
 // message stores them.
 func RecordTurnProposals(ctx context.Context, store ProposalStore, logger *zap.Logger, req *TurnRequest, resp *TurnResponse, now time.Time) ProposalOutcome {
-	var out ProposalOutcome
 	if resp == nil || req == nil {
-		return out
+		return ProposalOutcome{}
 	}
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	save := func(p TurnProposal) {
-		fields := []zap.Field{
-			zap.String("proposal_id", p.ProposalID),
-			zap.String("type", p.Type),
-			zap.String("kind", p.Kind),
-			zap.String("status", p.Status),
-			zap.Bool("touches_money", p.TouchMoney),
-			zap.String("tenant_id", p.TenantID),
-			zap.String("shop_id", p.ShopID),
-			zap.String("message_id", p.MessageID),
-			zap.String("turn_id", p.TurnID),
-			zap.String("trace_id", p.TraceID),
-			zap.Bool("replayed", p.Replayed),
-		}
-		if p.Reason != "" {
-			fields = append(fields, zap.String("reason", p.Reason))
-		}
-		if p.Status == ProposalStatusRejectedInvalid {
-			out.Invalid++
-		}
-		if store == nil {
-			out.Failed++
-			logger.Warn("mimi turn proposal not stored: no proposal store wired", fields...)
-			return
-		}
-		created, err := store.Save(ctx, p)
-		switch {
-		case err != nil:
-			out.Failed++
-			logger.Error("mimi turn proposal store failed", append(fields, zap.Error(err))...)
-		case !created:
-			out.Duplicates++
-			logger.Debug("mimi turn proposal already stored", fields...)
-		default:
-			out.Stored++
-			if p.Status == ProposalStatusHeldMoney {
-				out.HeldMoney++
-			}
-			logger.Info("mimi turn proposal stored", fields...)
-		}
+	r := &proposalRecorder{
+		ctx:    ctx,
+		store:  store,
+		logger: logger,
+		seen:   map[string]bool{},
+		base: TurnProposal{
+			TenantID:   req.TenantID,
+			ShopID:     req.ShopID,
+			SenderID:   req.Sender.ID,
+			MessageID:  req.MessageID,
+			TurnID:     resp.TurnID,
+			TraceID:    resp.TraceID,
+			Replayed:   resp.Replayed,
+			ReceivedAt: now.UTC(),
+		},
 	}
-
-	base := TurnProposal{
-		TenantID:   req.TenantID,
-		ShopID:     req.ShopID,
-		SenderID:   req.Sender.ID,
-		MessageID:  req.MessageID,
-		TurnID:     resp.TurnID,
-		TraceID:    resp.TraceID,
-		Replayed:   resp.Replayed,
-		ReceivedAt: now.UTC(),
-	}
-
-	seen := map[string]bool{}
 	for idx, in := range resp.Intents {
-		if in.IntentID != "" && seen["i:"+in.IntentID] {
-			out.Duplicates++
-			continue
-		}
-		seen["i:"+in.IntentID] = true
-		status, reason := classifyIntent(in)
-		p := base
-		p.ProposalID = in.IntentID
-		if p.ProposalID == "" {
-			p.ProposalID = fmt.Sprintf("invalid:%s:intent:%d", req.MessageID, idx)
-		}
-		p.Type = "intent"
-		p.Kind = in.Kind
-		p.Status = status
-		p.Reason = reason
-		p.TouchMoney = in.TouchesMoney()
-		p.Payload = in.Raw
-		save(p)
+		r.intent(idx, in)
 	}
 	for idx, d := range resp.Drafts {
-		if d.DraftID != "" && seen["d:"+d.DraftID] {
-			out.Duplicates++
-			continue
-		}
-		seen["d:"+d.DraftID] = true
-		p := base
-		p.ProposalID = d.DraftID
-		p.Type = "draft"
-		p.Kind = d.Kind
-		p.Status = ProposalStatusNeedsOwnerApproval
-		if strings.TrimSpace(d.DraftID) == "" {
-			p.ProposalID = fmt.Sprintf("invalid:%s:draft:%d", req.MessageID, idx)
-			p.Status = ProposalStatusRejectedInvalid
-			p.Reason = "missing draft_id"
-		}
-		p.Payload = d.Raw
-		save(p)
+		r.draft(idx, d)
 	}
-	return out
+	return r.out
+}
+
+type proposalRecorder struct {
+	ctx    context.Context
+	store  ProposalStore
+	logger *zap.Logger
+	base   TurnProposal
+	seen   map[string]bool
+	out    ProposalOutcome
+}
+
+// firstTime reports whether key was not seen earlier in this response.
+func (r *proposalRecorder) firstTime(key, id string) bool {
+	if id == "" {
+		return true
+	}
+	if r.seen[key+id] {
+		r.out.Duplicates++
+		return false
+	}
+	r.seen[key+id] = true
+	return true
+}
+
+func (r *proposalRecorder) intent(idx int, in TurnIntent) {
+	if !r.firstTime("i:", in.IntentID) {
+		return
+	}
+	status, reason := classifyIntent(in)
+	p := r.base
+	p.ProposalID = in.IntentID
+	if p.ProposalID == "" {
+		p.ProposalID = fmt.Sprintf("invalid:%s:intent:%d", r.base.MessageID, idx)
+	}
+	p.Type = "intent"
+	p.Kind = in.Kind
+	p.Status = status
+	p.Reason = reason
+	p.TouchMoney = in.TouchesMoney()
+	p.Payload = in.Raw
+	r.save(p)
+}
+
+func (r *proposalRecorder) draft(idx int, d TurnDraft) {
+	if !r.firstTime("d:", d.DraftID) {
+		return
+	}
+	p := r.base
+	p.ProposalID = d.DraftID
+	p.Type = "draft"
+	p.Kind = d.Kind
+	p.Status = ProposalStatusNeedsOwnerApproval
+	if strings.TrimSpace(d.DraftID) == "" {
+		p.ProposalID = fmt.Sprintf("invalid:%s:draft:%d", r.base.MessageID, idx)
+		p.Status = ProposalStatusRejectedInvalid
+		p.Reason = "missing draft_id"
+	}
+	p.Payload = d.Raw
+	r.save(p)
+}
+
+func (r *proposalRecorder) save(p TurnProposal) {
+	fields := []zap.Field{
+		zap.String("proposal_id", p.ProposalID),
+		zap.String("type", p.Type),
+		zap.String("kind", p.Kind),
+		zap.String("status", p.Status),
+		zap.Bool("touches_money", p.TouchMoney),
+		zap.String("tenant_id", p.TenantID),
+		zap.String("shop_id", p.ShopID),
+		zap.String("message_id", p.MessageID),
+		zap.String("turn_id", p.TurnID),
+		zap.String("trace_id", p.TraceID),
+		zap.Bool("replayed", p.Replayed),
+	}
+	if p.Reason != "" {
+		fields = append(fields, zap.String("reason", p.Reason))
+	}
+	if p.Status == ProposalStatusRejectedInvalid {
+		r.out.Invalid++
+	}
+	if r.store == nil {
+		r.out.Failed++
+		r.logger.Warn("mimi turn proposal not stored: no proposal store wired", fields...)
+		return
+	}
+	created, err := r.store.Save(r.ctx, p)
+	switch {
+	case err != nil:
+		r.out.Failed++
+		r.logger.Error("mimi turn proposal store failed", append(fields, zap.Error(err))...)
+	case !created:
+		r.out.Duplicates++
+		r.logger.Debug("mimi turn proposal already stored", fields...)
+	default:
+		r.out.Stored++
+		if p.Status == ProposalStatusHeldMoney {
+			r.out.HeldMoney++
+		}
+		r.logger.Info("mimi turn proposal stored", fields...)
+	}
 }
