@@ -1,3 +1,5 @@
+> **Read first:** `SOUL.md` (how you think) and `docs/AGENTS-MIMI.md` (Mimi-wide rules for all three repos). Where they conflict with anything below, they win. Everything below is still valid repo detail.
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization
