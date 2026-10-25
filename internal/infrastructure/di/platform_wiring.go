@@ -71,7 +71,7 @@ func (c *Container) initializePlatformMessaging() {
 					JWTSecret:          c.Config.JWT.Secret,
 					JWTTTL:             time.Duration(cfg.JWTTTLSeconds) * time.Second,
 					Timeout:            time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
-					NotifyDebitEnabled: cfg.NotifyDebitEnabled,
+					NotifyDebitEnabled: cfg.DebitNotifyActive(),
 					RailServiceKey:     c.Config.Confirmation.RailServiceKey,
 				}, c.ZapLog)
 				platformOrchestrator.python = c.PythonAgentClient
@@ -85,6 +85,30 @@ func (c *Container) initializePlatformMessaging() {
 					zap.String("base_url", cfg.BaseURL),
 				)
 
+				// Turns path (MIMI_TURNS_ENABLED, default off): inbound chat goes to
+				// POST /v1/turns instead of /api/v1/chat. Proposals are stored in a
+				// minimal Redis store, deduplicated on intent_id; nothing commits.
+				platformOrchestrator.turns = &turnsRouting{
+					enabled:         cfg.TurnsEnabled,
+					tenantID:        cfg.TurnsTenantID,
+					distributorName: cfg.TurnsDistributorName,
+					proposals:       ai.NewRedisProposalStore(c.RedisClient, ai.DefaultProposalTTL),
+					client: ai.NewMimiTurnsClient(ai.MimiTurnsClientConfig{
+						BaseURL:        cfg.BaseURL,
+						RailServiceKey: c.Config.Confirmation.RailServiceKey,
+						TextTimeout:    time.Duration(cfg.TurnsTextTimeoutSeconds) * time.Second,
+						MediaTimeout:   time.Duration(cfg.TurnsMediaTimeoutSeconds) * time.Second,
+					}, c.ZapLog),
+				}
+				if cfg.TurnsEnabled {
+					c.ZapLog.Info("Mimi turns path enabled: inbound chat goes to POST /v1/turns; legacy Python endpoints are off",
+						zap.Bool("tenant_set", strings.TrimSpace(cfg.TurnsTenantID) != ""),
+						zap.Bool("service_key_set", strings.TrimSpace(c.Config.Confirmation.RailServiceKey) != ""))
+					if strings.TrimSpace(cfg.TurnsTenantID) == "" || strings.TrimSpace(c.Config.Confirmation.RailServiceKey) == "" {
+						c.ZapLog.Error("MIMI_TURNS_ENABLED is on but MIMI_TURNS_TENANT_ID or RAIL_SERVICE_KEY is unset: linked chat will get a not-set-up reply and the brain is not called")
+					}
+				}
+
 				// Miriam keeps her own ledger, and it is the only thing her Hands
 				// layer checks before a movement — so every genuine credit has to be
 				// reported to it, or she will deny a spend the user can plainly
@@ -94,19 +118,34 @@ func (c *Container) initializePlatformMessaging() {
 				// The client itself skips non-NGN amounts, because her ledger is
 				// single-currency: the rule lives in one place rather than at each
 				// call site, where it could be forgotten.
-				if c.FundingService != nil {
-					c.FundingService.SetInflowNotifier(c.PythonAgentClient)
-					c.FundingService.SetDebitNotifier(c.PythonAgentClient)
+				//
+				// Gated (PYTHON_AGENT_NOTIFY_INFLOW_ENABLED / _DEBIT_ENABLED, both
+				// default off, and forced off with MIMI_TURNS_ENABLED): MIRIAM PR #51
+				// removes /api/v1/money/inflow and /money/debit. Even when wired, a
+				// failed report is logged and never fails or 5xxs the webhook.
+				if cfg.InflowNotifyActive() {
+					if c.FundingService != nil {
+						c.FundingService.SetInflowNotifier(c.PythonAgentClient)
+					}
+					if c.GraphVirtualAccountService != nil {
+						c.GraphVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
+					}
+					if c.P2PService != nil {
+						c.P2PService.SetInflowNotifier(c.PythonAgentClient)
+					}
+					if c.BridgeVirtualAccountService != nil {
+						c.BridgeVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
+					}
+				} else {
+					c.ZapLog.Info("python inflow notifications off (PYTHON_AGENT_NOTIFY_INFLOW_ENABLED=false or MIMI_TURNS_ENABLED=true)")
 				}
-				if c.GraphVirtualAccountService != nil {
-					c.GraphVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
-				}
-				if c.P2PService != nil {
-					c.P2PService.SetInflowNotifier(c.PythonAgentClient)
-					c.P2PService.SetDebitNotifier(c.PythonAgentClient)
-				}
-				if c.BridgeVirtualAccountService != nil {
-					c.BridgeVirtualAccountService.SetInflowNotifier(c.PythonAgentClient)
+				if cfg.DebitNotifyActive() {
+					if c.FundingService != nil {
+						c.FundingService.SetDebitNotifier(c.PythonAgentClient)
+					}
+					if c.P2PService != nil {
+						c.P2PService.SetDebitNotifier(c.PythonAgentClient)
+					}
 				}
 			}
 

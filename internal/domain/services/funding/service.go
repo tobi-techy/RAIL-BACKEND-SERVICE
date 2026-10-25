@@ -320,10 +320,7 @@ func (s *Service) SetDebitNotifier(n DebitNotifier) { s.debitNotifier = n }
 // paymentID, so re-reporting on a webhook retry is safe and is exactly how a
 // missed report recovers.
 func (s *Service) notifyInflow(ctx context.Context, userID uuid.UUID, paymentID string, amount decimal.Decimal, currency, sourceRaw string, identity entities.InflowIdentity) error {
-	if s.inflowNotifier == nil {
-		return nil
-	}
-	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw, identity)
+	return reportInflowBestEffort(ctx, s.inflowNotifier, userID, paymentID, amount.String(), currency, sourceRaw, identity)
 }
 
 func (s *Service) SetBridgeVAService(bva *BridgeVirtualAccountService) {
@@ -1073,15 +1070,13 @@ func (s *Service) ProcessChainDeposit(ctx context.Context, webhook *entities.Cha
 		Channel:   entities.InflowChannelChain,
 		Reference: webhook.TxHash,
 	}); err != nil {
-		// The money is already credited, so the deposit did not fail. Return the
-		// error anyway: the provider retries an idempotent webhook, and that retry
-		// is how a report that did not land gets another chance. Swallowing it
-		// would leave Miriam's ledger quietly short.
-		s.logger.Error("Failed to report the deposit to the Python ledger",
+		// Best-effort: the money is credited and the deposit succeeded. A failed
+		// projection is logged and never fails the webhook (see
+		// inflowNotifyBudget for why).
+		s.logger.Warn("Python inflow report failed (best-effort, deposit unaffected)",
 			"user_id", userID,
 			"deposit_id", deposit.ID,
 			"error", err)
-		return fmt.Errorf("report deposit to the python ledger: %w", err)
 	}
 
 	// Create audit log entry for compliance

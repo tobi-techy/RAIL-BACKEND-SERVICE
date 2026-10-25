@@ -224,11 +224,13 @@ func (h *UnifiedFundingWebhookHandler) processBridgeVirtualAccountEvent(c *gin.C
 		}
 		if err := h.bridgeHandler.service.ProcessFiatDeposit(c, &depositEvent); err != nil {
 			h.logger.Error("Failed to process deposit", zap.Error(err))
-			// A failed Python-ledger report after a committed credit must
-			// trigger a retry: 503 tells Bridge to redeliver, and the
-			// idempotent report re-reports safely rather than double-crediting.
+			// A failed Python report is never a webhook failure: the credit
+			// has committed in Go, and a 5xx here made Bridge redeliver the
+			// deposit forever once Python dropped /api/v1/money/inflow. The
+			// services already treat the report as best-effort; this keeps
+			// the webhook at 2xx even if one leaks through.
 			if errors.Is(err, ai.ErrInflowNotRecorded) {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger notify pending"})
+				c.JSON(http.StatusOK, gin.H{"status": "processed"})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})

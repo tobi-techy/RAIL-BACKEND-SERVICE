@@ -323,11 +323,11 @@ func (h *GraphWebhookHandler) handleAccountCredit(c *gin.Context, event *graph.W
 			zap.Error(err),
 			zap.String("account_id", accountID),
 			zap.String("tx_ref", txRef))
-		// A failed Python-ledger report must trigger a retry: the NGN credit
-		// already committed in Go, and Miriam needs to know about it so Hands
-		// can spend it. 503 (not 200) tells Graph to redeliver.
+		// A failed Python report is never a webhook failure: the NGN credit
+		// has committed in Go and the report is best-effort. Ack so Graph
+		// does not redeliver forever.
 		if errors.Is(err, ai.ErrInflowNotRecorded) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "message": "ledger notify pending"})
+			c.JSON(http.StatusOK, gin.H{"status": "processed"})
 			return
 		}
 		// Non-retryable failures that do not come from the Python ledger: ack

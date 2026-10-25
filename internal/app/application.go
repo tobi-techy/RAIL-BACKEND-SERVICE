@@ -546,7 +546,15 @@ func (app *Application) initializeWorkers() error {
 	// and nudges via the iMessage bridge. Go owns quiet hours + daily cap (the
 	// bridge dispatcher's guard) and peeks the guard before the analysis tick so
 	// quiet hours never burn model tokens. Disabled by default.
-	if getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) &&
+	//
+	// /api/v1/proactive/analyze is removed by MIRIAM PR #51, so the worker never
+	// starts with the turns path on (MIMI_TURNS_ENABLED), whatever
+	// PROACTIVE_REACHER_ENABLED says.
+	proactiveBlockedByTurns := app.container.Config.PythonAgent.TurnsEnabled
+	if proactiveBlockedByTurns && getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) {
+		app.log.Warn("Proactive reacher NOT started: MIMI_TURNS_ENABLED is on and /api/v1/proactive/analyze no longer exists")
+	}
+	if !proactiveBlockedByTurns && getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) &&
 		app.container.PythonAgentClient != nil && app.container.MiriamBridgeDispatcher != nil &&
 		app.container.PlatformIdentityRepo != nil {
 		interval := time.Duration(getIntEnvOrDefault("PROACTIVE_REACHER_INTERVAL_MINUTES", 30)) * time.Minute
@@ -569,7 +577,7 @@ func (app *Application) initializeWorkers() error {
 		app.log.Info("Proactive reacher worker started",
 			zap.Duration("interval", interval),
 			zap.String("python_agent", app.container.Config.PythonAgent.BaseURL))
-	} else if getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) {
+	} else if !proactiveBlockedByTurns && getBoolEnvOrDefault("PROACTIVE_REACHER_ENABLED", false) {
 		app.log.Warn("Proactive reacher worker NOT started — requires Python agent delegation, bridge dispatcher, and platform identity repo")
 	}
 

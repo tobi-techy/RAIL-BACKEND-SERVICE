@@ -409,8 +409,10 @@ func (h *BridgeWebhookHandler) handleVirtualAccountActivity(c *gin.Context, payl
 		h.logger.Error("Failed to process virtual account activity",
 			zap.String("virtual_account_id", event.VirtualAccountID),
 			zap.Error(err))
+		// A failed Python report is never a webhook failure (best-effort
+		// projection after a committed credit); ack so Bridge does not redeliver.
 		if errors.Is(err, ai.ErrInflowNotRecorded) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger notify pending"})
+			c.JSON(http.StatusOK, gin.H{"status": "success"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})
@@ -787,8 +789,10 @@ func (h *BridgeWebhookHandler) handleDepositReceived(c *gin.Context, payload Bri
 		h.logger.Error("Failed to process fiat deposit",
 			zap.String("virtual_account_id", event.VirtualAccountID),
 			zap.Error(err))
+		// A failed Python report is never a webhook failure (best-effort
+		// projection after a committed credit); ack so Bridge does not redeliver.
 		if errors.Is(err, ai.ErrInflowNotRecorded) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger notify pending"})
+			c.JSON(http.StatusOK, gin.H{"status": "success"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "bridge_deposit_processing_failed"})

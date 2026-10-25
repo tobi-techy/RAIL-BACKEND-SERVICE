@@ -70,9 +70,20 @@ type orchestratorAdapter struct {
 	python       *ai.PythonAgentClient
 	confirmStore *ai.ConfirmStore
 	userRepo     *repositories.UserRepository // for email + KYC-derived role
+
+	// turns routes inbound chat to POST /v1/turns when MIMI_TURNS_ENABLED is
+	// on (see platform_turns_delegate.go). Nil or disabled keeps the legacy
+	// /api/v1/chat path.
+	turns *turnsRouting
 }
 
 func (a *orchestratorAdapter) HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, plat entities.Platform) (*platform.PlatformReply, error) {
+	// Turns path (MIMI_TURNS_ENABLED): the brain proposes, Go stores the
+	// proposals and sends the reply. Takes precedence over the legacy path,
+	// whose /api/v1/chat endpoint MIRIAM PR #51 removes.
+	if a.pythonDelegated() && a.turnsEnabled() {
+		return a.handlePlatformMessageTurns(ctx, userID, message, threadID, plat)
+	}
 	// Python-agent delegation path: MIRIAM's LLM brain owns the conversation.
 	if a.pythonDelegated() {
 		return a.handlePlatformMessagePython(ctx, userID, platformIdentityID, message, threadID, plat)
