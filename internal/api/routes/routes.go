@@ -1434,13 +1434,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// v1.POST("/admin/promote", adminHandlers.PromoteUser)
 
 		// Internal money-moving recovery — same INTERNAL_API_KEY + optional
-		// HMAC request signature as the /internal groups, but deliberately not
-		// on the /internal group itself: that group carries a 10s
-		// TimeoutMiddleware, which is shorter than a provider transfer call and
-		// would turn a slow success into an ambiguous failure. The caller must
-		// name itself in X-Internal-Actor because the internal key carries no
-		// per-person identity.
-		internalRecovery := v1.Group("/internal")
+		// HMAC request signature as the other /internal routes, on the same
+		// root prefix (/internal/..., not /api/v1/internal/...). It is a
+		// sibling group rather than a member of the shared /internal group
+		// because that group carries a 10s TimeoutMiddleware, which is shorter
+		// than a provider transfer call and would turn a slow success into an
+		// ambiguous failure. The caller must name itself in X-Internal-Actor
+		// because the internal key carries no per-person identity.
+		internalRecovery := router.Group("/internal")
 		internalRecovery.Use(middleware.RateLimit(10))
 		internalRecovery.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
 		internalRecovery.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
