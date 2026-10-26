@@ -63,6 +63,11 @@ type InboundMessage struct {
 	// (docs/miriam-inbound-supersession.md).
 	TurnID string `json:"turn_id,omitempty"`
 
+	// TextSource is where Text came from. The processor sets it as it turns a
+	// voice note or a photo into text; it is never read from the wire, so a
+	// sender cannot claim their words were typed or that a photo was.
+	TextSource entities.TextSource `json:"-"`
+
 	// voice note (transcribed into Text before the AI sees it)
 	IsVoice   bool   `json:"is_voice,omitempty"`
 	AudioB64  string `json:"audio_b64,omitempty"`
@@ -139,6 +144,15 @@ type InboundMessage struct {
 	// "no redelivery is coming".
 	Attempt     int `json:"attempt,omitempty"`
 	MaxAttempts int `json:"max_attempts,omitempty"`
+}
+
+// textSource is the source of Text. A message the processor did not convert
+// from media was typed.
+func (m InboundMessage) textSource() entities.TextSource {
+	if m.TextSource == "" {
+		return entities.TextSourceUser
+	}
+	return m.TextSource
 }
 
 // IsFinalAttempt reports whether the bridge is out of redeliveries for this
@@ -240,7 +254,7 @@ type OpenAppRequest struct {
 type Orchestrator interface {
 	// HandlePlatformMessage processes a user message within the thread's
 	// conversation and returns a structured reply.
-	HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, platform entities.Platform) (*PlatformReply, error)
+	HandlePlatformMessage(ctx context.Context, userID, platformIdentityID, message, threadID string, platform entities.Platform, source entities.TextSource) (*PlatformReply, error)
 	// ConfirmPlatformAction executes the pending action staged in the thread.
 	ConfirmPlatformAction(ctx context.Context, userID, platformIdentityID, threadID string, platform entities.Platform) (*PlatformReply, error)
 	// CancelPlatformAction discards the pending action staged in the thread.
@@ -474,6 +488,7 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			return p.sendErrorMessage(ctx, msg, "I didn't catch anything in that note. Try again?")
 		}
 		msg.Text = transcript
+		msg.TextSource = entities.TextSourceVoice
 	}
 
 	// OCR a receipt/photo attachment into a quick summary before anything else
@@ -492,6 +507,7 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 			return p.sendErrorMessage(ctx, msg, "I couldn't make out a receipt in that photo. Try a clearer shot?")
 		}
 		msg.Text = summary
+		msg.TextSource = entities.TextSourceVision
 	}
 
 	var statementAttachment *StatementAttachment
@@ -693,6 +709,7 @@ func (p *Processor) handleOnboarding(ctx context.Context, msg InboundMessage) er
 		Platform: msg.Platform,
 		SenderID: msg.UserID,
 		ThreadID: msg.ThreadID,
+		Source:   msg.textSource(),
 	})
 	reply, err := p.onboarder.Handle(ctx, OnboardInput{
 		Platform:      msg.Platform,
@@ -917,7 +934,7 @@ func (p *Processor) handleNormalMessage(ctx context.Context, msg InboundMessage,
 		text = fmt.Sprintf("[replying to your earlier message: %q]\n%s", quoted, msg.Text)
 	}
 
-	reply, err := p.orchestrator.HandlePlatformMessage(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), text, msg.ThreadID, msg.Platform)
+	reply, err := p.orchestrator.HandlePlatformMessage(ctx, resolved.UserID.String(), resolved.Identity.ID.String(), text, msg.ThreadID, msg.Platform, msg.textSource())
 	if err != nil {
 		// Don't requeue: re-running the orchestrator would double-bill AI usage.
 		log.Printf("orchestrator error for %s: %v", resolved.UserID, err)

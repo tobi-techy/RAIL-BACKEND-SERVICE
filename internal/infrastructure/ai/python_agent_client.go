@@ -82,7 +82,10 @@ type PythonChatDocument struct {
 // closes the challenge without moving anything. Nothing else in the body can
 // settle an action, and a bare "yes" sent as a message does not.
 type pythonChatRequest struct {
-	Message        string              `json:"message"`
+	Message string `json:"message"`
+	// MessageSource says whether Message was typed or generated. Python refuses
+	// to route generated text into the money path.
+	MessageSource  entities.TextSource `json:"message_source,omitempty"`
 	ConversationID string              `json:"conversation_id"`
 	ConfirmID      string              `json:"confirm_id,omitempty"`
 	Yes            *bool               `json:"yes,omitempty"`
@@ -196,9 +199,10 @@ func (c *PythonAgentClient) MergeUsers(ctx context.Context, targetID uuid.UUID, 
 // should be "verified" for KYC-approved users (money tools) or "user" otherwise.
 // `conversationID` must be namespaced per platform+thread so agent memory never
 // collides across channels (e.g. "platform:imessage:thread-abc").
-func (c *PythonAgentClient) Chat(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string) (*PythonChatResponse, error) {
+func (c *PythonAgentClient) Chat(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string, source entities.TextSource) (*PythonChatResponse, error) {
 	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:        message,
+		MessageSource:  source,
 		ConversationID: conversationID,
 	})
 }
@@ -208,9 +212,10 @@ func (c *PythonAgentClient) Chat(ctx context.Context, userID uuid.UUID, email, r
 // email (Python's users table enforces uniqueness on both), so the agent can
 // persist their conversation and interview state without ever colliding with a
 // real user row.
-func (c *PythonAgentClient) ChatAsGuest(ctx context.Context, userID uuid.UUID, username, email, role, conversationID, message string) (*PythonChatResponse, error) {
+func (c *PythonAgentClient) ChatAsGuest(ctx context.Context, userID uuid.UUID, username, email, role, conversationID, message string, source entities.TextSource) (*PythonChatResponse, error) {
 	return c.doChat(ctx, userID, email, username, role, pythonChatRequest{
 		Message:        message,
+		MessageSource:  source,
 		ConversationID: conversationID,
 	})
 }
@@ -222,6 +227,7 @@ func (c *PythonAgentClient) ChatAsGuest(ctx context.Context, userID uuid.UUID, u
 func (c *PythonAgentClient) ChatAsGuestPollVote(ctx context.Context, userID uuid.UUID, username, email, role, conversationID, message, pollTitle string) (*PythonChatResponse, error) {
 	return c.doChat(ctx, userID, email, username, role, pythonChatRequest{
 		Message:        message,
+		MessageSource:  entities.TextSourceUser,
 		ConversationID: conversationID,
 		IsPollVote:     true,
 		PollTitle:      pollTitle,
@@ -247,6 +253,7 @@ func (c *PythonAgentClient) ChatConfirm(ctx context.Context, userID uuid.UUID, e
 func (c *PythonAgentClient) ChatPollVote(ctx context.Context, userID uuid.UUID, email, role, conversationID, message, pollTitle string) (*PythonChatResponse, error) {
 	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:        message,
+		MessageSource:  entities.TextSourceUser,
 		ConversationID: conversationID,
 		IsPollVote:     true,
 		PollTitle:      pollTitle,
@@ -258,6 +265,7 @@ func (c *PythonAgentClient) ChatPollVote(ctx context.Context, userID uuid.UUID, 
 func (c *PythonAgentClient) ChatWithDocument(ctx context.Context, userID uuid.UUID, email, role, conversationID, message string, doc PythonChatDocument) (*PythonChatResponse, error) {
 	return c.doChat(ctx, userID, email, "", role, pythonChatRequest{
 		Message:        message,
+		MessageSource:  entities.TextSourceSystem,
 		ConversationID: conversationID,
 		Document:       &doc,
 	})
@@ -265,6 +273,9 @@ func (c *PythonAgentClient) ChatWithDocument(ctx context.Context, userID uuid.UU
 
 // doChat mints the per-user JWT and posts one /api/v1/chat payload.
 func (c *PythonAgentClient) doChat(ctx context.Context, userID uuid.UUID, email, username, role string, body pythonChatRequest) (*PythonChatResponse, error) {
+	if body.Message != "" && body.MessageSource == "" {
+		return nil, fmt.Errorf("python chat message has no source")
+	}
 	// Mint a short-lived per-user "agent" token (not a normal access token):
 	// Python decodes it to recover user_id/email/role for its own RBAC, then
 	// reuses this SAME token to call Go's own REST API on the user's behalf
