@@ -200,6 +200,23 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
 		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 		internal.POST("/paj-orders/complete-stuck", internalHandlers.CompleteStuckPajOrders)
+
+		// Crypto that arrived on-chain but never reached the ledger (a Circle
+		// inbound webhook that was never delivered or failed before the deposit
+		// row was written). The diagnosis is read-only; the backfill replays the
+		// normal idempotent credit path and is dry-run unless explicitly told
+		// {"dry_run": false}.
+		if container.CircleAdapter != nil && container.FundingService != nil {
+			depositRecovery := handlers.NewDepositBackfillHandlers(
+				handlers.NewSQLInternalOpsStore(container.DB),
+				container.CircleAdapter,
+				container.FundingService,
+				container.ChainRailsClient != nil,
+				container.ZapLog,
+			)
+			internal.GET("/users/:id/crypto-status", depositRecovery.CryptoStatus)
+			internal.POST("/deposits/backfill", depositRecovery.BackfillDeposits)
+		}
 	}
 
 	// Internal statement management.
