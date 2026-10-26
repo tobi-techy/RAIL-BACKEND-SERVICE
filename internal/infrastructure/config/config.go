@@ -994,6 +994,60 @@ type PythonAgentConfig struct {
 	// Default false until Python ships the debit endpoint; shipping the call
 	// unconditionally would 404.
 	NotifyDebitEnabled bool `mapstructure:"notify_debit_enabled"`
+
+	// NotifyInflowEnabled gates POST /api/v1/money/inflow (credit projections
+	// to the old Python ledger). Default false: MIRIAM PR #51 removes the
+	// endpoint, and Mimi never moves money, so Python no longer keeps a
+	// spendable ledger. Even when on, the call is best-effort and can never
+	// fail or 5xx a provider webhook. Env PYTHON_AGENT_NOTIFY_INFLOW_ENABLED.
+	NotifyInflowEnabled bool `mapstructure:"notify_inflow_enabled"`
+	// LegacySettleEnabled gates POST /api/v1/chat/settle and
+	// /api/v1/chat/card-terminal (Miriam-originated confirmation cards).
+	// Default false: both are removed by MIRIAM PR #51. With it off a
+	// Miriam-originated card fails closed and nothing moves; app-originated
+	// cards are unaffected. Env PYTHON_AGENT_LEGACY_SETTLE_ENABLED.
+	LegacySettleEnabled bool `mapstructure:"legacy_settle_enabled"`
+
+	// TurnsEnabled routes inbound linked chat to POST /v1/turns (MIRIAM PR
+	// #52, schema turns.v1) instead of the legacy POST /api/v1/chat. Default
+	// false until the Python side ships. Turning it on also forces every
+	// legacy Python call off (inflow, debit, proactive, settle), since none of
+	// those endpoints exist on the turns brain. Env MIMI_TURNS_ENABLED.
+	TurnsEnabled bool `mapstructure:"turns_enabled"`
+	// TurnsTenantID is the pilot tenant (distributor) every linked shop
+	// belongs to until Go has a tenancy model. Required when TurnsEnabled;
+	// without it the turns path refuses to call the brain rather than guess.
+	// Env MIMI_TURNS_TENANT_ID.
+	TurnsTenantID string `mapstructure:"turns_tenant_id"`
+	// TurnsDistributorName is how replies name the business. Optional.
+	// Env MIMI_TURNS_DISTRIBUTOR_NAME.
+	TurnsDistributorName string `mapstructure:"turns_distributor_name"`
+	// TurnsTextTimeoutSeconds / TurnsMediaTimeoutSeconds bound one /v1/turns
+	// attempt (defaults 25 and 150). Media must stay above the brain's
+	// SHOP_READ_WALL_CLOCK_S (140). Env MIMI_TURNS_TEXT_TIMEOUT_SECONDS and
+	// MIMI_TURNS_MEDIA_TIMEOUT_SECONDS.
+	TurnsTextTimeoutSeconds  int `mapstructure:"turns_text_timeout_seconds"`
+	TurnsMediaTimeoutSeconds int `mapstructure:"turns_media_timeout_seconds"`
+}
+
+// LegacyEndpointsAllowed reports whether calls to endpoints MIRIAM PR #51
+// removed may be made at all. They never may once the turns path is on.
+func (c PythonAgentConfig) LegacyEndpointsAllowed() bool { return !c.TurnsEnabled }
+
+// InflowNotifyActive reports whether credit projections to Python are sent.
+func (c PythonAgentConfig) InflowNotifyActive() bool {
+	return c.NotifyInflowEnabled && c.LegacyEndpointsAllowed()
+}
+
+// DebitNotifyActive reports whether debit projections to Python are sent.
+func (c PythonAgentConfig) DebitNotifyActive() bool {
+	return c.NotifyDebitEnabled && c.LegacyEndpointsAllowed()
+}
+
+// LegacySettleActive reports whether the Miriam settle and card-terminal
+// calls are wired.
+func (c PythonAgentConfig) LegacySettleActive() bool {
+	return c.LegacySettleEnabled && c.LegacyEndpointsAllowed()
 }
 
 // ZeroGConfig contains configuration for 0G Network integration
@@ -1541,6 +1595,14 @@ func setDefaults() {
 	viper.SetDefault("python_agent.jwt_ttl_seconds", 120)
 	viper.SetDefault("python_agent.confirm_ttl_seconds", 600)
 	viper.SetDefault("python_agent.http_timeout_seconds", 60)
+	viper.SetDefault("python_agent.notify_debit_enabled", false)
+	viper.SetDefault("python_agent.notify_inflow_enabled", false)
+	viper.SetDefault("python_agent.legacy_settle_enabled", false)
+	viper.SetDefault("python_agent.turns_enabled", false)
+	viper.SetDefault("python_agent.turns_tenant_id", "")
+	viper.SetDefault("python_agent.turns_distributor_name", "")
+	viper.SetDefault("python_agent.turns_text_timeout_seconds", 25)
+	viper.SetDefault("python_agent.turns_media_timeout_seconds", 150)
 }
 
 func overrideFromEnv() error {
@@ -1652,6 +1714,37 @@ func overrideFromEnv() error {
 	if v := os.Getenv("PYTHON_AGENT_HTTP_TIMEOUT_SECONDS"); v != "" {
 		if timeout, err := strconv.Atoi(v); err == nil {
 			viper.Set("python_agent.http_timeout_seconds", timeout)
+		}
+	}
+	// Flags for the Python refactor (MIRIAM #51 removes the legacy endpoints,
+	// #52 adds /v1/turns). All default off.
+	for env, key := range map[string]string{
+		"PYTHON_AGENT_NOTIFY_INFLOW_ENABLED": "python_agent.notify_inflow_enabled",
+		"PYTHON_AGENT_NOTIFY_DEBIT_ENABLED":  "python_agent.notify_debit_enabled",
+		"PYTHON_AGENT_LEGACY_SETTLE_ENABLED": "python_agent.legacy_settle_enabled",
+		"MIMI_TURNS_ENABLED":                 "python_agent.turns_enabled",
+	} {
+		switch os.Getenv(env) {
+		case "true", "1":
+			viper.Set(key, true)
+		case "false", "0":
+			viper.Set(key, false)
+		}
+	}
+	if v := os.Getenv("MIMI_TURNS_TENANT_ID"); v != "" {
+		viper.Set("python_agent.turns_tenant_id", strings.TrimSpace(v))
+	}
+	if v := os.Getenv("MIMI_TURNS_DISTRIBUTOR_NAME"); v != "" {
+		viper.Set("python_agent.turns_distributor_name", strings.TrimSpace(v))
+	}
+	if v := os.Getenv("MIMI_TURNS_TEXT_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.turns_text_timeout_seconds", n)
+		}
+	}
+	if v := os.Getenv("MIMI_TURNS_MEDIA_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			viper.Set("python_agent.turns_media_timeout_seconds", n)
 		}
 	}
 

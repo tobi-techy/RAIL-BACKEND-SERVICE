@@ -790,9 +790,16 @@ func (s *Service) completeClaim(ctx context.Context, transfer *entities.P2PTrans
 	// This belongs HERE and not inside CreditUserFromSystem, which is also the
 	// rollback, cancel and expiry path: reporting from there would book refunds as
 	// income and inflate the user's 70/30 split with their own money coming back.
+	//
+	// Best-effort (bounded by inflowNotifyBudget): the claim has already moved
+	// the money, so a failed projection is logged and never fails the claim.
+	// MIRIAM PR #51 removes the inflow endpoint, and returning this error made
+	// every claim report failure to the claimer after the money had moved.
 	if s.inflowNotifier != nil {
+		nctx, cancel := context.WithTimeout(ctx, inflowNotifyBudget)
+		defer cancel()
 		if err := s.inflowNotifier.NotifyInflow(
-			ctx, claimerID, "p2p-claim-"+transfer.ID.String(),
+			nctx, claimerID, "p2p-claim-"+transfer.ID.String(),
 			transfer.Amount.String(), transfer.Currency, desc,
 			// A P2P claim moves between two Rail accounts, so there is no provider
 			// reference to report; the sender is the Rail account that sent it.
@@ -801,19 +808,18 @@ func (s *Service) completeClaim(ctx context.Context, transfer *entities.P2PTrans
 				Sender:  transfer.SenderID.String(),
 			},
 		); err != nil {
-			// The money has already moved to the claimer, so the claim is not
-			// failed. Return the error so the caller can retry: a retry re-reports
-			// (idempotent) rather than crediting twice.
-			s.logger.Error("Failed to report the P2P claim to the Python ledger",
+			s.logger.Warn("Python inflow report for a P2P claim failed (best-effort, claim unaffected)",
 				zap.String("transfer_id", transfer.ID.String()),
 				zap.String("claimer_id", claimerID.String()),
 				zap.Error(err))
-			return nil, fmt.Errorf("report p2p claim to the python ledger: %w", err)
 		}
 	}
 
 	return transfer, nil
 }
+
+// inflowNotifyBudget bounds the best-effort credit projection to Python.
+const inflowNotifyBudget = 5 * time.Second
 
 // Cancel cancels a pending transfer
 func (s *Service) Cancel(ctx context.Context, transferID, senderID uuid.UUID) error {

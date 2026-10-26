@@ -50,6 +50,11 @@ type pythonGuestCompleterAdapter struct {
 	// outlives the smaller one is retried from scratch (or, on the last
 	// redelivery, answered with a scripted apology).
 	turnTimeout time.Duration
+	// turnsEnabled (MIMI_TURNS_ENABLED) stops guest turns from calling the
+	// legacy /api/v1/chat. An unlinked sender is not tied to any shop, and the
+	// turns contract forbids calling the brain with a guessed shop, so the
+	// guest gets a fixed reply pointing at the distributor's invite link.
+	turnsEnabled bool
 }
 
 // guestTurnTimeout is the whole-turn budget a Python-backed guest completion may
@@ -66,6 +71,9 @@ func (a *pythonGuestCompleterAdapter) CompletionTimeout() time.Duration {
 }
 
 func (a *pythonGuestCompleterAdapter) CompleteGuest(ctx context.Context, systemPrompt string, messages []platform.GuestMessage, tools []platform.GuestToolDef) (*platform.GuestResult, error) {
+	if a.turnsEnabled {
+		return &platform.GuestResult{Text: turnsUnlinkedGuestReply}, nil
+	}
 	if a.python == nil {
 		return nil, fmt.Errorf("python guest completer has no python backend wired")
 	}

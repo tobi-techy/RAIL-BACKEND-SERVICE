@@ -101,6 +101,17 @@ func (c *Container) initializeConfirmationServices(sqlxDB *sqlx.DB) {
 	if miriamBase == "" {
 		miriamBase = strings.TrimSpace(c.Config.PythonAgent.BaseURL)
 	}
+	// /api/v1/chat/settle and /api/v1/chat/card-terminal are removed by MIRIAM
+	// PR #51. Unless PYTHON_AGENT_LEGACY_SETTLE_ENABLED is on (and the turns
+	// path is off) neither is called: the settle executor sees no base URL and
+	// fails closed, so a Miriam-originated card moves nothing, and the
+	// terminal callback is not wired. App-originated cards are unaffected.
+	if !c.Config.PythonAgent.LegacySettleActive() {
+		if miriamBase != "" {
+			c.ZapLog.Info("miriam settle and card-terminal calls off (PYTHON_AGENT_LEGACY_SETTLE_ENABLED=false or MIMI_TURNS_ENABLED=true); miriam-originated cards fail closed")
+		}
+		miriamBase = ""
+	}
 	jwtTTL := c.Config.PythonAgent.JWTTTLSeconds
 	if jwtTTL <= 0 {
 		jwtTTL = 120

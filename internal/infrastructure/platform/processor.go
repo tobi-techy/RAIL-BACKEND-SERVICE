@@ -9,6 +9,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
@@ -475,6 +476,22 @@ func (p *Processor) Process(ctx context.Context, raw []byte) error {
 		}
 		msg.Text = transcript
 	}
+
+	// Keep the message as the user sent it (after voice transcription, before
+	// the OCR rewrite below) so the /v1/turns path can send the shop's own
+	// words, the photo bytes and the channel message id as the idempotency key.
+	ctx = ContextWithInboundTurn(ctx, InboundTurn{
+		Platform:   msg.Platform,
+		MsgID:      msg.MsgID,
+		TurnID:     msg.TurnID,
+		ThreadID:   msg.ThreadID,
+		SenderID:   msg.UserID,
+		Text:       msg.Text,
+		IsVoice:    msg.IsVoice,
+		ImageB64:   msg.ImageB64,
+		ImageMime:  msg.ImageMime,
+		ReceivedAt: time.Now().UTC(),
+	})
 
 	// OCR a receipt/photo attachment into a quick summary before anything else
 	// sees it. The summary becomes the message text so the resolver, onboarder,

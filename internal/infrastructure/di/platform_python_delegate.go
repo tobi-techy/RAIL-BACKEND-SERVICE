@@ -159,7 +159,9 @@ func shareHostAllowed(raw string) bool {
 // the legacy stray-vote drop behavior (for non-delegated setups and any
 // response that did not originate from the onboarding brain).
 func (a *orchestratorAdapter) HandlePlatformPollVote(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform, optionText, pollTitle string) (*platform.PlatformReply, bool, error) {
-	if !a.pythonDelegated() {
+	// The turns brain renders no polls, so a stray vote has nothing to answer;
+	// the legacy drop behaviour applies. /api/v1/chat is not called.
+	if !a.pythonDelegated() || a.turnsEnabled() {
 		return nil, false, nil
 	}
 	uid, err := uuid.Parse(userID)
@@ -229,11 +231,13 @@ func isDeliverableReaction(emoji string) bool {
 // will actually consume it (python-delegated). All other setups keep the cheap
 // durable-pipeline-only path.
 func (a *orchestratorAdapter) WantsStatementScan(_ context.Context, _ uuid.UUID) bool {
-	return a.pythonDelegated()
+	return a.pythonDelegated() && !a.turnsEnabled()
 }
 
 func (a *orchestratorAdapter) HandlePlatformDocument(ctx context.Context, userID, platformIdentityID, threadID string, plat entities.Platform, scan platform.StatementScan) (*platform.PlatformReply, bool, error) {
-	if !a.pythonDelegated() {
+	// Bank statement scans are a consumer-onboarding feature with no turns.v1
+	// equivalent; with turns on the document goes to the durable pipeline.
+	if !a.pythonDelegated() || a.turnsEnabled() {
 		return nil, false, nil
 	}
 	uid, err := uuid.Parse(userID)
@@ -425,6 +429,15 @@ func buildConfirmSummary(resp *ai.PythonChatResponse, prose string) string {
 // second tap cannot be sent at a challenge that is already settled.
 func (a *orchestratorAdapter) settlePythonConfirm(ctx context.Context, uid uuid.UUID, cid uuid.UUID, threadID string, plat entities.Platform, confirmID string, yes bool) (*platform.PlatformReply, error) {
 	a.confirmStore.Delete(ctx, cid)
+	// After the flip there is no legacy confirm endpoint and the brain never
+	// moves money: a confirm staged before the flip is closed, not sent.
+	if a.turnsEnabled() {
+		a.logger.Info("turns: dropping a legacy confirm staged before the flip",
+			zap.String("user_id", uid.String()),
+			zap.String("confirm_id", confirmID),
+			zap.Bool("yes", yes))
+		return &platform.PlatformReply{Text: turnsExpiredConfirmReply}, nil
+	}
 	email, role := a.pythonTokenClaims(ctx, uid)
 	pyConv := fmt.Sprintf("platform:%s:%s", plat.String(), threadID)
 

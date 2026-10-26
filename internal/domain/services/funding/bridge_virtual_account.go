@@ -52,7 +52,7 @@ func notifyFiatInflow(ctx context.Context, notifier InflowNotifier, userID uuid.
 	if !strings.EqualFold(strings.TrimSpace(currency), "NGN") {
 		return nil
 	}
-	return notifier.NotifyInflow(ctx, userID, paymentID, amount.String(), currency, sourceRaw, entities.InflowIdentity{
+	return reportInflowBestEffort(ctx, notifier, userID, paymentID, amount.String(), currency, sourceRaw, entities.InflowIdentity{
 		Channel:   entities.InflowChannelBridge,
 		Reference: transactionRef,
 	})
@@ -526,8 +526,12 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 				// deposit itself short-circuits on the idempotency check, so
 				// this is the only path where a missed notify can recover.
 				if existing, _ := s.depositRepo.GetByIdempotencyKey(ctx, idempotencyKey); existing != nil {
-					if repErr := notifyFiatInflow(ctx, s.inflowNotifier, existing.UserID, existing.IdempotencyKey, *existing.SourceAmount, *existing.SourceCurrency, "fiat deposit "+existing.TxHash, existing.TxHash); repErr != nil {
-						return fmt.Errorf("replay fiat inflow: %w", repErr)
+					if existing.SourceAmount != nil && existing.SourceCurrency != nil {
+						if repErr := notifyFiatInflow(ctx, s.inflowNotifier, existing.UserID, existing.IdempotencyKey, *existing.SourceAmount, *existing.SourceCurrency, "fiat deposit "+existing.TxHash, existing.TxHash); repErr != nil {
+							// Best-effort: a replayed webhook never fails on the projection.
+							s.logger.Warn("Python inflow re-report failed (best-effort, deposit unaffected)",
+								"idempotency_key", idempotencyKey, "error", repErr)
+						}
 					}
 				}
 				return nil
@@ -583,13 +587,14 @@ func (s *BridgeVirtualAccountService) ProcessFiatDeposit(ctx context.Context, ev
 	// money the user just received. Only called AFTER the ledger split committed;
 	// idempotent on the idempotency key, so a webhook retry re-reports safely.
 	if notifyErr := notifyFiatInflow(ctx, s.inflowNotifier, virtualAccount.UserID, idempotencyKey, sourceAmount, sourceCurrency, "fiat deposit "+transactionRef, transactionRef); notifyErr != nil {
-		s.logger.Error("Failed to report the fiat deposit to the Python ledger",
+		// Best-effort: the money is credited and split. A failed projection is
+		// logged and never fails the webhook; returning it used to make the
+		// unified funding webhook answer Bridge 503, so Bridge redelivered the
+		// deposit forever once Python's inflow endpoint was gone.
+		s.logger.Warn("Python inflow report failed (best-effort, deposit unaffected)",
 			"user_id", virtualAccount.UserID,
 			"deposit_id", depositID,
 			"error", notifyErr)
-		// The money is credited and split; return the error so the caller can
-		// retry. A retry re-reports (idempotent) rather than crediting twice.
-		return fmt.Errorf("report fiat inflow to python ledger: %w", notifyErr)
 	}
 
 	if metrics.Business != nil {

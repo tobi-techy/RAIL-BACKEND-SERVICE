@@ -1361,9 +1361,10 @@ func (c *Container) wireChatOnboarding() {
 	if c.PythonAgentClient != nil {
 		guestTurn := time.Duration(c.Config.Platform.GuestTurnTimeoutSeconds) * time.Second
 		onboarder.SetGuestCompleter(&pythonGuestCompleterAdapter{
-			python:      c.PythonAgentClient,
-			logger:      c.ZapLog,
-			turnTimeout: guestTurn,
+			python:       c.PythonAgentClient,
+			logger:       c.ZapLog,
+			turnTimeout:  guestTurn,
+			turnsEnabled: c.Config.PythonAgent.TurnsEnabled,
 		})
 		onboarder.SetGuestInterviewMerger(&guestInterviewMerger{
 			python: c.PythonAgentClient,

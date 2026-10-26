@@ -162,10 +162,7 @@ func (s *GraphVirtualAccountService) SetInflowNotifier(n InflowNotifier) {
 // sender, so Sender stays empty; the event's description is a free-text narration,
 // not a reference, and is never sent as one.
 func (s *GraphVirtualAccountService) notifyNairaInflow(ctx context.Context, userID uuid.UUID, paymentID string, ngnAmount decimal.Decimal, sourceRaw, transactionRef string) error {
-	if s.inflowNotifier == nil {
-		return nil
-	}
-	return s.inflowNotifier.NotifyInflow(ctx, userID, paymentID, ngnAmount.String(), "NGN", sourceRaw, entities.InflowIdentity{
+	return reportInflowBestEffort(ctx, s.inflowNotifier, userID, paymentID, ngnAmount.String(), "NGN", sourceRaw, entities.InflowIdentity{
 		Channel:   entities.InflowChannelGraph,
 		Reference: transactionRef,
 	})
@@ -185,9 +182,9 @@ func (s *GraphVirtualAccountService) replayNairaInflow(ctx context.Context, depo
 		return nil
 	}
 	if err := s.notifyNairaInflow(ctx, deposit.UserID, deposit.IdempotencyKey, *deposit.SourceAmount, "NGN virtual account credit "+deposit.TxHash, deposit.TxHash); err != nil {
-		s.logger.Error("Failed to re-report the NGN deposit to the Python ledger",
+		// Best-effort: never turns a replayed webhook into a failure.
+		s.logger.Warn("Python inflow re-report failed (best-effort, deposit unaffected)",
 			"deposit_id", deposit.ID, "error", err)
-		return fmt.Errorf("re-report ngn deposit to the python ledger: %w", err)
 	}
 	return nil
 }
@@ -800,13 +797,11 @@ func (s *GraphVirtualAccountService) ProcessNGNDeposit(ctx context.Context, even
 	// will be asked to spend from. Only after the split has committed, and
 	// idempotent on the deposit's idempotency key.
 	if err := s.notifyNairaInflow(ctx, userID, idempotencyKey, ngnAmount, "NGN virtual account credit "+txRef, txRef); err != nil {
-		// The money is credited and split; this is not a failed deposit. Return the
-		// error so the webhook is retried, because a retry re-reports (idempotent)
-		// while swallowing it would leave Miriam's ledger quietly short of money
-		// the user can plainly see.
-		s.logger.Error("Failed to report the NGN deposit to the Python ledger",
+		// Best-effort: the money is credited and split, so this is not a failed
+		// deposit, and the webhook must not be redelivered because of it (see
+		// inflowNotifyBudget).
+		s.logger.Warn("Python inflow report failed (best-effort, deposit unaffected)",
 			"user_id", userID, "deposit_id", depositID, "error", err)
-		return fmt.Errorf("report ngn deposit to the python ledger: %w", err)
 	}
 
 	if s.notificationService != nil {
