@@ -56,7 +56,7 @@ type fakeInboundSource struct {
 	symbols  map[string]string
 }
 
-func (f *fakeInboundSource) ListTransactions(_ context.Context, walletID, _, _ string) ([]circlepkg.Transaction, error) {
+func (f *fakeInboundSource) ListInboundTransactions(_ context.Context, walletID, _ string) ([]circlepkg.Transaction, error) {
 	return f.txs[walletID], nil
 }
 
@@ -89,15 +89,23 @@ type creditCall struct {
 }
 
 type fakeCreditor struct {
-	mu    sync.Mutex
-	calls []creditCall
-	err   error
+	mu       sync.Mutex
+	calls    []creditCall
+	splitOff []creditCall
+	err      error
 }
 
 func (f *fakeCreditor) ProcessCircleDeposit(_ context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, creditCall{userID, amount, token, chain, txHash, circleWalletID})
+	return f.err
+}
+
+func (f *fakeCreditor) ProcessCircleDepositAllToSpending(_ context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.splitOff = append(f.splitOff, creditCall{userID, amount, token, chain, txHash, circleWalletID})
 	return f.err
 }
 
@@ -476,5 +484,68 @@ func TestBackfillDeposits_ReportsNonConfirmedDepositStatus(t *testing.T) {
 	}
 	if len(resp.Candidates) != 1 || resp.Candidates[0].DepositStatus != "failed" {
 		t.Fatalf("candidates = %+v, want deposit_status=failed", resp.Candidates)
+	}
+}
+
+// all_to_spending must take the no-split credit path, so the user receives the
+// whole amount instead of leaving half in stash.
+func TestBackfillDeposits_AllToSpendingSkipsTheSplit(t *testing.T) {
+	userID := uuid.New()
+	tx := baseInboundTx("0xdeadbeef", "5.00")
+	store := &fakeOpsStore{
+		wallets: []opsWallet{{ID: "wallet-row", Chain: "BASE", Address: "0x52ec", CircleWalletID: "circle-wallet-base"}},
+	}
+	creditor := &fakeCreditor{}
+	source := &fakeInboundSource{
+		txs:     map[string][]circlepkg.Transaction{"circle-wallet-base": {tx}},
+		symbols: map[string]string{"token-usdc": "USDC"},
+	}
+	h := NewDepositBackfillHandlers(store, source, creditor, true, zap.NewNop())
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"user_id":         userID.String(),
+		"dry_run":         false,
+		"all_to_spending": true,
+	})
+	c, rec := newOpsTestContext(t, http.MethodPost, "/internal/deposits/backfill", body, nil)
+	h.BackfillDeposits(c)
+
+	if len(creditor.calls) != 0 {
+		t.Fatalf("split credit called %d times, want 0 when all_to_spending is set", len(creditor.calls))
+	}
+	if len(creditor.splitOff) != 1 {
+		t.Fatalf("no-split credit called %d times, want 1", len(creditor.splitOff))
+	}
+	if !creditor.splitOff[0].amount.Equal(decimal.RequireFromString("5.00")) {
+		t.Errorf("amount = %s, want the full 5.00", creditor.splitOff[0].amount)
+	}
+	var resp struct {
+		AllToSpending bool `json:"all_to_spending"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.AllToSpending {
+		t.Error("response should echo all_to_spending")
+	}
+}
+
+// An empty result must serialize as [] so a caller can tell "nothing found"
+// from "the request never reached the scan".
+func TestBackfillDeposits_EmptyCandidatesSerializesAsArray(t *testing.T) {
+	userID := uuid.New()
+	store := &fakeOpsStore{}
+	h := NewDepositBackfillHandlers(store, &fakeInboundSource{}, &fakeCreditor{}, true, zap.NewNop())
+
+	body, _ := json.Marshal(map[string]interface{}{"user_id": userID.String()})
+	c, rec := newOpsTestContext(t, http.MethodPost, "/internal/deposits/backfill", body, nil)
+	h.BackfillDeposits(c)
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(raw["candidates"]) != "[]" {
+		t.Errorf("candidates = %s, want []", raw["candidates"])
 	}
 }

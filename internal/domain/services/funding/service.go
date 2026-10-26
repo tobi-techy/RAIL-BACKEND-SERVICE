@@ -644,6 +644,21 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*entities.B
 // ProcessCircleDeposit handles an inbound supported stablecoin deposit detected by Circle webhook.
 // It records the deposit, credits the ledger, and triggers the 70/30 allocation split.
 func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error {
+	return s.processCircleDeposit(ctx, userID, amount, token, chain, txHash, circleWalletID, false)
+}
+
+// ProcessCircleDepositAllToSpending is ProcessCircleDeposit without the 70/30
+// split: the whole amount lands in spending_balance in a single ledger
+// transaction, and the async allocation is skipped.
+//
+// It exists for support recovery, where the user must receive the full amount —
+// a stash half would strand half the money behind a second transfer, and on a
+// small balance the transfer fees would eat it.
+func (s *Service) ProcessCircleDepositAllToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error {
+	return s.processCircleDeposit(ctx, userID, amount, token, chain, txHash, circleWalletID, true)
+}
+
+func (s *Service) processCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string, allToSpending bool) error {
 	if !token.IsValid() {
 		return fmt.Errorf("unsupported Circle deposit token: %s", token)
 	}
@@ -704,13 +719,21 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 
 	// Credit ledger
 	if s.ledgerIntegration != nil {
-		if err := s.ledgerIntegration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash); err != nil {
+		var creditErr error
+		if allToSpending {
+			// One atomic transaction: deposit in, full amount to spending, no
+			// stash leg. Sums must match exactly or the ledger rejects it.
+			creditErr = s.ledgerIntegration.RecordDepositWithAllocation(ctx, userID, amount, depositID, chain, txHash, amount, decimal.Zero)
+		} else {
+			creditErr = s.ledgerIntegration.RecordDeposit(ctx, userID, amount, depositID, chain, txHash)
+		}
+		if creditErr != nil {
 			if delErr := s.depositRepo.DeletePendingDeposit(ctx, depositID); delErr != nil {
 				s.logger.Error("CRITICAL: failed to delete pending Circle deposit after ledger failure",
 					"deposit_id", depositID.String(),
 					"error", delErr)
 			}
-			return fmt.Errorf("ledger credit: %w", err)
+			return fmt.Errorf("ledger credit: %w", creditErr)
 		}
 	}
 
@@ -738,8 +761,9 @@ func (s *Service) ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, am
 		}
 	}
 
-	// Trigger 70/30 allocation split ASYNC — don't block balance visibility
-	if s.allocationService != nil {
+	// Trigger 70/30 allocation split ASYNC — don't block balance visibility.
+	// Skipped when the credit already went straight to spending.
+	if s.allocationService != nil && !allToSpending {
 		go func() {
 			bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()

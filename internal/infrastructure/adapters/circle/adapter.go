@@ -381,6 +381,11 @@ func (a *Adapter) ListTransactions(ctx context.Context, walletID string, operati
 	return a.client.ListTransactions(ctx, walletID, operation, state)
 }
 
+// ListInboundTransactions returns a wallet's most recent INBOUND transfers.
+func (a *Adapter) ListInboundTransactions(ctx context.Context, walletID string, state string) ([]Transaction, error) {
+	return a.client.ListInboundTransactions(ctx, walletID, state)
+}
+
 // FindWalletWithUSDC searches all wallets for a user (by refId) and returns a
 // wallet+tokenId that holds USDC, preferring a wallet with a non-zero balance.
 // Without the balance check an empty Solana ATA (token present, amount 0) wins

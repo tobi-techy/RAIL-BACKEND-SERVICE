@@ -27,6 +27,10 @@ type Client interface {
 	CreateTransfer(ctx context.Context, req *CreateTransferRequest) (*Transaction, error)
 	GetTransaction(ctx context.Context, txID string) (*Transaction, error)
 	ListTransactions(ctx context.Context, walletID string, operation string, state string) ([]Transaction, error)
+	// ListInboundTransactions filters by txType=INBOUND, which is a different
+	// parameter from operation. Use this — not ListTransactions("INBOUND") —
+	// to find money that arrived in a wallet.
+	ListInboundTransactions(ctx context.Context, walletID string, state string) ([]Transaction, error)
 	SignTransaction(ctx context.Context, req *SignTransactionRequest) (*SignedTransaction, error)
 	// SignMessage signs a plain-text (or 0x-hex) message with a developer-
 	// controlled wallet; Solana wallets return base58 Ed25519 signatures.

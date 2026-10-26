@@ -500,6 +500,26 @@ func (c *HTTPClient) ListTransactions(ctx context.Context, walletID string, oper
 	return resp.Data.Transactions, nil
 }
 
+// ListInboundTransactions returns a wallet's most recent INBOUND transfers.
+//
+// Inbound is the API's txType filter. `operation` is a different enum
+// (TRANSFER, CONTRACT_EXECUTION, ...) and rejects "INBOUND" outright, so a
+// caller that passes it that way gets an API error rather than an empty list.
+// The page is larger than the generic listing because the case this serves is a
+// deposit that has been sitting unnoticed for months.
+func (c *HTTPClient) ListInboundTransactions(ctx context.Context, walletID string, state string) ([]Transaction, error) {
+	var resp apiResponse[ListTransactionsData]
+	path := "/v1/w3s/transactions?walletIds=" + walletID + "&txType=INBOUND"
+	if state != "" {
+		path += "&state=" + state
+	}
+	path += "&pageSize=10&order=DESC"
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Data.Transactions, nil
+}
+
 func (c *HTTPClient) SignTransaction(ctx context.Context, req *SignTransactionRequest) (*SignedTransaction, error) {
 	ciphertext, err := c.encryptEntitySecret()
 	if err != nil {

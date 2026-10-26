@@ -38,7 +38,10 @@ import (
 // CircleInboundSource is the read side of the Circle wallet provider needed to
 // find an inbound transfer that never reached the ledger.
 type CircleInboundSource interface {
-	ListTransactions(ctx context.Context, walletID, operation, state string) ([]circlepkg.Transaction, error)
+	// ListInboundTransactions filters by txType=INBOUND. Not ListTransactions
+	// with operation="INBOUND": operation is a different enum and the API
+	// rejects that value, which reads as "no deposits found".
+	ListInboundTransactions(ctx context.Context, walletID, state string) ([]circlepkg.Transaction, error)
 	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
 	GetTokenSymbol(ctx context.Context, walletID, tokenID string) (string, error)
 	GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]circlepkg.TokenBalance, error)
@@ -48,6 +51,8 @@ type CircleInboundSource interface {
 // webhook uses.
 type DepositCreditor interface {
 	ProcessCircleDeposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error
+	// ProcessCircleDepositAllToSpending credits without the 70/30 split.
+	ProcessCircleDepositAllToSpending(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, token entities.Stablecoin, chain, txHash, circleWalletID string) error
 }
 
 // opsWallet is one Rail-managed wallet row for the user being inspected.
@@ -273,6 +278,10 @@ type BackfillRequest struct {
 	// deposit can fall outside the page even though the lookback would include
 	// it. Each id is ownership-checked against the user's wallets before credit.
 	CircleTxIDs []string `json:"circle_tx_ids,omitempty"`
+	// AllToSpending credits the whole amount to spending_balance and skips the
+	// automatic 70/30 split, so the user receives the full amount instead of
+	// leaving half stranded in stash.
+	AllToSpending bool `json:"all_to_spending,omitempty"`
 }
 
 // inboundCandidate is one Circle inbound transfer considered for replay.
@@ -367,7 +376,11 @@ func (h *DepositBackfillHandlers) BackfillDeposits(c *gin.Context) {
 				cand.Reason = "unsupported token " + cand.Token
 				continue
 			}
-			if err := h.creditor.ProcessCircleDeposit(c.Request.Context(), userID, amount, token, cand.Chain, cand.TxHash, cand.CircleWalletID); err != nil {
+			credit := h.creditor.ProcessCircleDeposit
+			if req.AllToSpending {
+				credit = h.creditor.ProcessCircleDepositAllToSpending
+			}
+			if err := credit(c.Request.Context(), userID, amount, token, cand.Chain, cand.TxHash, cand.CircleWalletID); err != nil {
 				cand.Action = "failed"
 				cand.Reason = err.Error()
 				h.logger.Error("deposit-backfill: credit failed",
@@ -398,10 +411,17 @@ func (h *DepositBackfillHandlers) BackfillDeposits(c *gin.Context) {
 		}
 	}
 
+	if candidates == nil {
+		// Always an array: "null" in the response would be indistinguishable
+		// from a call that never reached the scan.
+		candidates = []inboundCandidate{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"dry_run":               dryRun,
 		"user_id":               userID.String(),
 		"chainrails_configured": h.chainrailsConfigured,
+		"all_to_spending":       req.AllToSpending,
 		"candidates":            candidates,
 		"credited_count":        credited,
 		"note":                  "dry_run defaults to true; send {\"dry_run\": false} to replay these transfers into the ledger",
@@ -437,7 +457,7 @@ func (h *DepositBackfillHandlers) inspectWallets(ctx context.Context, wallets []
 			if !withInbound || decimalStringIsZero(out[idx].USDCOnchain) {
 				return
 			}
-			txs, err := h.circle.ListTransactions(ctx, wallet.CircleWalletID, "INBOUND", "")
+			txs, err := h.circle.ListInboundTransactions(ctx, wallet.CircleWalletID, "")
 			if err != nil {
 				out[idx].Errors = append(out[idx].Errors, "transactions: "+err.Error())
 				return
@@ -489,7 +509,7 @@ func (h *DepositBackfillHandlers) collectCandidates(ctx context.Context, wallets
 		wg.Add(1)
 		go func(wallet opsWallet) {
 			defer wg.Done()
-			txs, err := h.circle.ListTransactions(ctx, wallet.CircleWalletID, "INBOUND", "")
+			txs, err := h.circle.ListInboundTransactions(ctx, wallet.CircleWalletID, "")
 			if err != nil {
 				h.logger.Warn("deposit-backfill: list transactions failed",
 					zap.Error(err), zap.String("chain", wallet.Chain), zap.String("circle_wallet_id", wallet.CircleWalletID))
