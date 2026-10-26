@@ -1464,6 +1464,24 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		internalRecovery.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 		{
 			internalRecovery.POST("/withdrawals/recover", adminWithdrawalHandlers.InternalRecoverCryptoWithdrawal)
+
+			// Off-ledger crypto bridge: move a settled inbound transfer out of
+			// the Circle wallet to the user's own Solana wallet via ChainRails,
+			// with no ledger entry. Built for users who cannot authenticate, so
+			// a normal withdrawal is impossible. The source transaction is
+			// suppressed from ledger credit before anything moves. dry_run
+			// defaults to true; X-Internal-Actor and a reason are required.
+			if container.CircleAdapter != nil && container.ChainRailsClient != nil {
+				cryptoBridge := handlers.NewCryptoBridgeHandlers(
+					handlers.NewSQLInternalOpsStore(container.DB),
+					repositories.NewOpsCryptoPayoutRepository(container.DB),
+					container.CircleAdapter,
+					container.ChainRailsClient,
+					container.ZapLog,
+				)
+				internalRecovery.POST("/crypto/bridge", cryptoBridge.Bridge)
+				internalRecovery.GET("/crypto/bridge/:id", cryptoBridge.GetPayout)
+			}
 		}
 
 		// Admin routes (admin auth required)
