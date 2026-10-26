@@ -198,7 +198,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 	internal.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
 	{
 		internal.GET("/users/lookup", internalHandlers.LookupUser)
-		internal.DELETE("/users/:id", internalHandlers.DeleteUser)
 		internal.POST("/paj-orders/complete-stuck", internalHandlers.CompleteStuckPajOrders)
 
 		// Crypto that arrived on-chain but never reached the ledger (a Circle
