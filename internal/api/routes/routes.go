@@ -1603,47 +1603,6 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 			}
 		}
 
-		// Internal-only endpoints (X-Internal-Key auth, no session required)
-		if container.CircleAdapter != nil {
-			v1.POST("/ops/reverse-sol", func(c *gin.Context) {
-				key := c.GetHeader("X-Internal-Key")
-				if key == "" || subtle.ConstantTimeCompare([]byte(key), []byte(container.Config.JWT.Secret)) != 1 {
-					c.JSON(401, gin.H{"error": "unauthorized"})
-					return
-				}
-				var req struct {
-					WalletID    string `json:"wallet_id" binding:"required"`
-					Destination string `json:"destination" binding:"required"`
-					Lamports    uint64 `json:"lamports" binding:"required"`
-				}
-				if err := c.ShouldBindJSON(&req); err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "wallet_id, destination, and lamports required"})
-					return
-				}
-				if req.Lamports == 0 {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "lamports must be > 0"})
-					return
-				}
-				if req.Lamports > 1_000_000_000 { // >1 SOL safety cap
-					c.JSON(http.StatusBadRequest, gin.H{"error": "safety cap: max 1 SOL (1e9 lamports) per reversal"})
-					return
-				}
-				container.ZapLog.Info("SOL reversal requested",
-					zap.String("wallet_id", req.WalletID),
-					zap.String("destination", req.Destination),
-					zap.Uint64("lamports", req.Lamports))
-
-				sig, err := container.CircleAdapter.ReverseNativeSOL(
-					c.Request.Context(), req.WalletID, req.Destination, req.Lamports)
-				if err != nil {
-					container.ZapLog.Error("SOL reversal failed", zap.Error(err))
-					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-					return
-				}
-				c.JSON(http.StatusOK, gin.H{"signature": sig})
-			})
-		}
-
 		// Webhooks (external systems) - OpenAPI spec compliant
 		// Apply webhook security middleware (rate limiting, IP whitelisting, replay protection)
 		webhookConfig := middleware.DefaultWebhookSecurityConfig()
