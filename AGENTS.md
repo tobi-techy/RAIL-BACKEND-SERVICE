@@ -2,6 +2,14 @@
 
 # Repository Guidelines
 
+> **Hackathon window, 26 Oct to 4 Nov 2026.** Read `docs/hackathon/rules.md`
+> before your first commit. It overrides older notes in this file for the
+> duration of the window. New code goes under `hackathon/`, the baseline tag
+> `hackathon-baseline` is on `origin/main` and never moves, everything is
+> synthetic, the distributor is **Ileri Distribution** (never Wigmore Trading),
+> and Mimi never moves money or gives credit advice. Update `HACKATHON.md` the
+> day the work lands.
+
 ## Project Structure & Module Organization
 
 This repository is a Go backend service. Entry points live in `cmd/`, with `cmd/main.go` as the main server. Core code is under `internal/`: `internal/api` for handlers, middleware, and routes; `internal/domain` for entities and services; `internal/infrastructure` for database, config, and external adapters; and `internal/workers` for background jobs. Shared packages belong in `pkg/`. Migrations live in `migrations/`, config in `configs/`, scripts in `scripts/`, and deployment assets in `deployments/` and `infra/`. Tests live in package-local `*_test.go` files and in `test/` (`test/unit`, `test/integration`, `test/performance`).
