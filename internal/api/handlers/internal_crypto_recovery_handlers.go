@@ -261,7 +261,8 @@ type BackfillRequest struct {
 	UserID string `json:"user_id" binding:"required"`
 	// DryRun defaults to TRUE. Balance only changes when this is explicitly false.
 	DryRun *bool `json:"dry_run,omitempty"`
-	// LookbackDays bounds how far back to look. Defaults to 120, capped at 730.
+	// LookbackDays bounds how far back to look. Defaults to a year, capped at
+	// 730. Stuck deposits are often months old by the time anyone notices.
 	LookbackDays int `json:"lookback_days,omitempty"`
 	// Chain optionally restricts the replay to a single chain (e.g. "BASE").
 	Chain string `json:"chain,omitempty"`
@@ -314,7 +315,7 @@ func (h *DepositBackfillHandlers) BackfillDeposits(c *gin.Context) {
 	}
 	lookback := req.LookbackDays
 	if lookback <= 0 {
-		lookback = 120
+		lookback = 365
 	}
 	if lookback > 730 {
 		lookback = 730
