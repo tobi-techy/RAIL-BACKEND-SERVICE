@@ -147,8 +147,9 @@ func (m *mockCircleTransfer) TransferUSDC(_ context.Context, _, _, _ string, _ s
 func (m *mockCircleTransfer) GetWalletBalance(_ context.Context, _ string) (string, error) {
 	return "0", nil
 }
-func (m *mockCircleTransfer) FindWalletWithUSDC(_ context.Context, _ string) (string, string, string, string, error) {
-	return "", "", "", "", nil
+func (m *mockCircleTransfer) FindWalletWithUSDC(_ context.Context, userRefID string) (string, string, string, string, error) {
+	args := m.Called(userRefID)
+	return args.String(0), args.String(1), args.String(2), args.String(3), args.Error(4)
 }
 func (m *mockCircleTransfer) GetTransaction(_ context.Context, txID string) (*circlepkg.Transaction, error) {
 	args := m.Called(txID)
@@ -422,7 +423,7 @@ func TestFailWithdrawal_TerminalWithdrawal_NoOp(t *testing.T) {
 func TestFailWithdrawal_WithPendingLedger_FailsPendingAndMarksFailed(t *testing.T) {
 	ledger := new(mockLedger)
 	repo := new(mockWithdrawalRepo)
-notif := new(mockNotification)
+	notif := new(mockNotification)
 	svc := NewWithdrawalService(repo, nil, ledger, nil, nil, nil, notif, nil, nil, nil, testLogger())
 	svc.logger = testLogger()
 
@@ -542,9 +543,9 @@ func TestAlertAdmin_WithAlerter(t *testing.T) {
 	svc.SetAdminAlerter(alerter)
 
 	payload := AdminErrorPayload{
-		UserID:    "user-456",
-		Operation: "crypto_withdrawal",
-		Error:     fmt.Errorf("panic: nil pointer"),
+		UserID:     "user-456",
+		Operation:  "crypto_withdrawal",
+		Error:      fmt.Errorf("panic: nil pointer"),
 		PanicStack: []byte("goroutine 1 [running]:\nmain.main()"),
 		ExtraFields: map[string]string{
 			"withdrawal_id": "abc-123",
@@ -745,6 +746,43 @@ func TestIsSameChainFamily(t *testing.T) {
 	assert.True(t, isSameChainFamily("BASE", "base-sepolia"))
 	assert.False(t, isSameChainFamily("SOL", "ETH"))
 	assert.False(t, isSameChainFamily("MATIC", "AVAX"))
+}
+
+// =====================================================================
+// Tests: executeCryptoTransfer Circle routing
+// =====================================================================
+
+// A Base-funded Circle wallet sending to Solana must go through ChainRails —
+// a same-chain Circle transfer of Base USDC to a Solana address cannot work.
+func TestExecuteCryptoTransfer_CircleBaseToSolRequiresChainRails(t *testing.T) {
+	circleTransfer := new(mockCircleTransfer)
+	circleTransfer.On("FindWalletWithUSDC", mock.Anything).
+		Return("base-wallet", "base-token", "BASE", "0xbase", nil)
+
+	svc := &WithdrawalService{circleTransfer: circleTransfer, logger: testLogger()}
+	withdrawal := testWithdrawal(entities.WithdrawalStatusInitiated)
+
+	_, err := svc.executeCryptoTransfer(context.Background(), withdrawal,
+		"3bXuBXLT9BKq7Ps41j8Mh4zNRfhnCqZoXRXDMLQpeN4H", "SOL", "BASE", "0xbase", "circle-wallet-1")
+
+	require.ErrorContains(t, err, "cannot route cross-chain withdrawal")
+	circleTransfer.AssertNotCalled(t, "TransferUSDC", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// A Solana-funded Circle wallet sending to Solana stays on the direct path.
+func TestExecuteCryptoTransfer_CircleSolToSolUsesDirectTransfer(t *testing.T) {
+	circleTransfer := new(mockCircleTransfer)
+	circleTransfer.On("FindWalletWithUSDC", mock.Anything).
+		Return("sol-wallet", "sol-token", "SOL", "sol-address", nil)
+
+	svc := &WithdrawalService{circleTransfer: circleTransfer, logger: testLogger()}
+	withdrawal := testWithdrawal(entities.WithdrawalStatusInitiated)
+
+	_, err := svc.executeCryptoTransfer(context.Background(), withdrawal,
+		"3bXuBXLT9BKq7Ps41j8Mh4zNRfhnCqZoXRXDMLQpeN4H", "SOL", "SOL", "sol-address", "circle-wallet-1")
+
+	// The stub TransferUSDC deliberately fails; reaching it proves the direct route.
+	require.ErrorContains(t, err, "circle transfer failed")
 }
 
 // =====================================================================

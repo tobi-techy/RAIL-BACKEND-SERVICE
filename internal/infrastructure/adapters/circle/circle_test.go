@@ -707,3 +707,95 @@ func TestAdapterGetNFTTokenID_APIFailure(t *testing.T) {
 	_, err = adapter.GetNFTTokenID(context.Background(), "w-1", "token-a")
 	assert.ErrorContains(t, err, "circle get nft balances")
 }
+
+// --- FindWalletWithUSDC selection ---
+
+// fakeWalletClient embeds the full Client interface so only the methods the
+// selection logic uses need implementations.
+type fakeWalletClient struct {
+	Client
+	wallets  []Wallet
+	balances map[string][]TokenBalance
+}
+
+func (f *fakeWalletClient) ListWalletsByRefID(context.Context, string) ([]Wallet, error) {
+	return f.wallets, nil
+}
+
+func (f *fakeWalletClient) GetTokenBalance(_ context.Context, walletID string) ([]TokenBalance, error) {
+	return f.balances[walletID], nil
+}
+
+func (f *fakeWalletClient) GetTokenBalanceOnchain(_ context.Context, walletID string) ([]TokenBalance, error) {
+	return f.balances[walletID], nil
+}
+
+func usdcBalance(amount string) []TokenBalance {
+	return []TokenBalance{{Token: TokenInfo{ID: "token-" + amount, Symbol: "USDC"}, Amount: amount}}
+}
+
+func TestFindWalletWithUSDC_PrefersFundedWalletOverEmptySolana(t *testing.T) {
+	client := &fakeWalletClient{
+		wallets: []Wallet{
+			{ID: "sol-wallet", Blockchain: BlockchainSOL, Address: "sol-address"},
+			{ID: "base-wallet", Blockchain: BlockchainBASE, Address: "base-address"},
+		},
+		balances: map[string][]TokenBalance{
+			"sol-wallet":  usdcBalance("0"),
+			"base-wallet": usdcBalance("5.000000"),
+		},
+	}
+
+	id, _, chain, address, err := NewAdapter(client, zap.NewNop()).
+		FindWalletWithUSDC(context.Background(), "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "base-wallet", id)
+	assert.Equal(t, "BASE", chain)
+	assert.Equal(t, "base-address", address)
+}
+
+func TestFindWalletWithUSDC_PrefersFundedSolana(t *testing.T) {
+	client := &fakeWalletClient{
+		wallets: []Wallet{
+			{ID: "base-wallet", Blockchain: BlockchainBASE, Address: "base-address"},
+			{ID: "sol-wallet", Blockchain: BlockchainSOL, Address: "sol-address"},
+		},
+		balances: map[string][]TokenBalance{
+			"sol-wallet":  usdcBalance("5.000000"),
+			"base-wallet": usdcBalance("10.000000"),
+		},
+	}
+
+	id, _, chain, _, err := NewAdapter(client, zap.NewNop()).
+		FindWalletWithUSDC(context.Background(), "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "sol-wallet", id)
+	assert.Equal(t, "SOL", chain)
+}
+
+func TestFindWalletWithUSDC_FallsBackToSolanaWhenNothingFunded(t *testing.T) {
+	client := &fakeWalletClient{
+		wallets: []Wallet{
+			{ID: "base-wallet", Blockchain: BlockchainBASE, Address: "base-address"},
+			{ID: "sol-wallet", Blockchain: BlockchainSOL, Address: "sol-address"},
+		},
+		balances: map[string][]TokenBalance{
+			"sol-wallet":  usdcBalance("0"),
+			"base-wallet": usdcBalance("0"),
+		},
+	}
+
+	id, _, chain, _, err := NewAdapter(client, zap.NewNop()).
+		FindWalletWithUSDC(context.Background(), "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "sol-wallet", id)
+	assert.Equal(t, "SOL", chain)
+}
+
+func TestFindWalletWithUSDC_NoWallets(t *testing.T) {
+	client := &fakeWalletClient{}
+
+	_, _, _, _, err := NewAdapter(client, zap.NewNop()).
+		FindWalletWithUSDC(context.Background(), "user-1")
+	assert.ErrorContains(t, err, "no wallet with USDC found")
+}

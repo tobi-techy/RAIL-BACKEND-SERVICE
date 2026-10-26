@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rail-service/rail_service/internal/domain/entities"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -380,37 +381,71 @@ func (a *Adapter) ListTransactions(ctx context.Context, walletID string, operati
 	return a.client.ListTransactions(ctx, walletID, operation, state)
 }
 
-// FindWalletWithUSDC searches all wallets for a user (by refId) and returns the first
-// wallet+tokenId that holds USDC. Prefers Solana (primary custody chain), then EVM fallback.
+// FindWalletWithUSDC searches all wallets for a user (by refId) and returns a
+// wallet+tokenId that holds USDC, preferring a wallet with a non-zero balance.
+// Without the balance check an empty Solana ATA (token present, amount 0) wins
+// over a funded Base wallet and the transfer fails even though the money is
+// there. Among funded wallets Solana still wins (primary custody chain), then
+// EVM; when no wallet is funded we fall back to the old first-match order so
+// indexer lag cannot make the wallet disappear.
 func (a *Adapter) FindWalletWithUSDC(ctx context.Context, userRefID string) (string, string, string, string, error) {
 	wallets, err := a.client.ListWalletsByRefID(ctx, userRefID)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("list wallets: %w", err)
 	}
 
-	// First pass: prefer Solana (primary custody chain)
+	type candidate struct {
+		wallet  Wallet
+		tokenID string
+		funded  bool
+	}
+	candidates := make([]candidate, 0, len(wallets))
 	for _, w := range wallets {
-		if !isSolanaBlockchain(w.Blockchain) {
+		tokenID, funded, err := a.usdcTokenStatus(ctx, w.ID)
+		if err != nil || tokenID == "" {
 			continue
 		}
-		tokenID, err := a.client.GetUSDCTokenID(ctx, w.ID)
-		if err == nil && tokenID != "" {
-			return w.ID, tokenID, string(w.Blockchain), w.Address, nil
-		}
+		candidates = append(candidates, candidate{wallet: w, tokenID: tokenID, funded: funded})
 	}
 
-	// Second pass: fall back to EVM wallets
-	for _, w := range wallets {
-		if isSolanaBlockchain(w.Blockchain) {
-			continue
-		}
-		tokenID, err := a.client.GetUSDCTokenID(ctx, w.ID)
-		if err == nil && tokenID != "" {
-			return w.ID, tokenID, string(w.Blockchain), w.Address, nil
+	// funded-then-unfunded × Solana-then-EVM. The second tier keeps the
+	// historical Solana-first behaviour for indexer lag.
+	for _, fundedOnly := range []bool{true, false} {
+		for _, solanaOnly := range []bool{true, false} {
+			for i := range candidates {
+				c := &candidates[i]
+				if fundedOnly && !c.funded {
+					continue
+				}
+				if isSolanaBlockchain(c.wallet.Blockchain) != solanaOnly {
+					continue
+				}
+				return c.wallet.ID, c.tokenID, string(c.wallet.Blockchain), c.wallet.Address, nil
+			}
 		}
 	}
 
 	return "", "", "", "", fmt.Errorf("no wallet with USDC found for user %s", userRefID)
+}
+
+// usdcTokenStatus reports the wallet's USDC token UUID and whether the balance
+// is positive. It reads the on-chain (includeAll) balance, not the indexed one:
+// the indexed balance can omit bridged/delivered USDC entirely, which is exactly
+// the stuck-funds case this selection exists for. A zero-balance wallet is still
+// reported so callers can fall back to it when no wallet is funded.
+func (a *Adapter) usdcTokenStatus(ctx context.Context, walletID string) (string, bool, error) {
+	balances, err := a.client.GetTokenBalanceOnchain(ctx, walletID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, b := range balances {
+		if !strings.EqualFold(b.Token.Symbol, "USDC") {
+			continue
+		}
+		amount, parseErr := decimal.NewFromString(strings.TrimSpace(b.Amount))
+		return b.Token.ID, parseErr == nil && amount.IsPositive(), nil
+	}
+	return "", false, fmt.Errorf("no USDC token found in wallet balances")
 }
 
 func isSolanaBlockchain(bc Blockchain) bool {

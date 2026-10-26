@@ -777,17 +777,290 @@ func normalizeIBAN(raw string) string {
 	return strings.ToUpper(withoutSpaces)
 }
 
+// adminRecoveryMaxAmount caps a single admin recovery so a compromised admin
+// token cannot drain an account in one call. Mirrors the internal deposit cap.
+var adminRecoveryMaxAmount = decimal.NewFromInt(10000)
+
 // AdminWithdrawalHandlers handles admin withdrawal operations
 type AdminWithdrawalHandlers struct {
 	withdrawalService WithdrawalServiceInterface
+	walletProvider    WalletProvider
 	logger            *zap.Logger
 }
 
 // NewAdminWithdrawalHandlers creates a new AdminWithdrawalHandlers instance
-func NewAdminWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, logger *zap.Logger) *AdminWithdrawalHandlers {
+func NewAdminWithdrawalHandlers(withdrawalService WithdrawalServiceInterface, walletProvider WalletProvider, logger *zap.Logger) *AdminWithdrawalHandlers {
 	return &AdminWithdrawalHandlers{
 		withdrawalService: withdrawalService,
+		walletProvider:    walletProvider,
 		logger:            logger,
+	}
+}
+
+// AdminRecoverCryptoWithdrawalRequest is the payload for an ops-led crypto recovery.
+// It exists for pivot/support cases where a user cannot authenticate: the admin
+// session is the authority, and the reason + admin identity are logged.
+type AdminRecoverCryptoWithdrawalRequest struct {
+	UserID             string `json:"user_id" binding:"required"`
+	Amount             string `json:"amount" binding:"required"`
+	Currency           string `json:"currency,omitempty"`
+	DestinationAddress string `json:"destination_address" binding:"required"`
+	DestinationChain   string `json:"destination_chain,omitempty"`
+	// SourceChain selects WHICH of the user's wallets the funds leave from.
+	// Required when the money sits on a different chain than the destination
+	// (e.g. funds on BASE, destination SOL). Defaults to the destination chain.
+	SourceChain    string `json:"source_chain,omitempty"`
+	SourceAccount  string `json:"source_account,omitempty"`
+	Reason         string `json:"reason" binding:"required"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// adminRecoveryParams holds the validated inputs for an admin recovery.
+type adminRecoveryParams struct {
+	targetUserID uuid.UUID
+	amount       decimal.Decimal
+	currency     entities.WithdrawalCurrency
+	sourceChain  string
+	destChain    string
+	destAddress  string
+	source       entities.WithdrawalSourceAccount
+	reason       string
+}
+
+// bindAdminRecoveryParams parses and validates the admin recovery payload,
+// writing the error response itself and returning ok=false on failure.
+func bindAdminRecoveryParams(c *gin.Context) (*adminRecoveryParams, bool) {
+	var req AdminRecoverCryptoWithdrawalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, "Invalid request format: "+err.Error())
+		return nil, false
+	}
+
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" || len(reason) > maxWithdrawalNarrationLength {
+		common.SendBadRequest(c, common.ErrCodeMissingField, "a reason (1-280 chars) is required for admin recovery")
+		return nil, false
+	}
+
+	targetUserID, err := uuid.Parse(strings.TrimSpace(req.UserID))
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidUserID, "Invalid user ID format")
+		return nil, false
+	}
+
+	amount, err := parsePositiveDecimal(req.Amount)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, err.Error())
+		return nil, false
+	}
+	if amount.LessThan(decimal.NewFromInt(1)) {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount, "Minimum recovery amount is $1.00")
+		return nil, false
+	}
+	if amount.GreaterThan(adminRecoveryMaxAmount) {
+		common.SendBadRequest(c, common.ErrCodeInvalidAmount,
+			"amount exceeds the admin recovery cap of $"+adminRecoveryMaxAmount.String())
+		return nil, false
+	}
+
+	currency := entities.WithdrawalCurrencyUSDC
+	if strings.TrimSpace(req.Currency) != "" {
+		currency = entities.WithdrawalCurrency(strings.ToUpper(strings.TrimSpace(req.Currency)))
+		if !currency.IsStablecoinCurrency() {
+			common.SendBadRequest(c, common.ErrCodeInvalidRequest,
+				"Unsupported recovery currency. Supported: USDC, USDT, EURC, PYUSD, USDG")
+			return nil, false
+		}
+	}
+
+	destChain := strings.TrimSpace(req.DestinationChain)
+	if destChain == "" {
+		destChain = string(entities.WalletChainSolana)
+	}
+	if err := validateCryptoAddress(req.DestinationAddress, destChain); err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return nil, false
+	}
+
+	return &adminRecoveryParams{
+		targetUserID: targetUserID,
+		amount:       amount,
+		currency:     currency,
+		sourceChain:  strings.ToUpper(strings.TrimSpace(req.SourceChain)),
+		destChain:    destChain,
+		destAddress:  req.DestinationAddress,
+		source:       resolveSourceAccount(req.SourceAccount),
+		reason:       reason,
+	}, true
+}
+
+// maxAdminRecoveryActorLength bounds the acting-identity label recorded for an
+// internal-key recovery so the audit log cannot be flooded.
+const maxAdminRecoveryActorLength = 120
+
+// AdminRecoverCryptoWithdrawal handles POST /api/v1/admin/withdrawals/recover.
+// It runs the same ledger + provider path as a user withdrawal, but the admin
+// JWT (enforced by the admin route group) replaces the passcode session. Every
+// call requires a reason and is logged with the acting admin and caller IP.
+func (h *AdminWithdrawalHandlers) AdminRecoverCryptoWithdrawal(c *gin.Context) {
+	h.recoverCryptoWithdrawal(c, c.GetString("user_id"), "admin_jwt")
+}
+
+// InternalRecoverCryptoWithdrawal handles POST /internal/withdrawals/recover.
+// Same recovery path, but authorised by the service internal key (plus the
+// optional HMAC request signature) instead of an admin session, so ops tooling
+// and automation can return funds when no admin login is available.
+//
+// The internal key is a shared secret with no per-person identity, so the
+// caller must name itself in X-Internal-Actor. That label — never the key —
+// is what lands in the audit log alongside the reason and target user.
+func (h *AdminWithdrawalHandlers) InternalRecoverCryptoWithdrawal(c *gin.Context) {
+	actor := strings.TrimSpace(c.GetHeader("X-Internal-Actor"))
+	if actor == "" || len(actor) > maxAdminRecoveryActorLength {
+		common.SendBadRequest(c, common.ErrCodeMissingField,
+			"X-Internal-Actor header is required (1-120 chars) so the recovery is attributable")
+		return
+	}
+	h.recoverCryptoWithdrawal(c, actor, "internal_key")
+}
+
+// recoverCryptoWithdrawal is the shared core for both auth modes. actor is the
+// human or service that authorised the call; actorSource records which auth
+// path accepted it.
+func (h *AdminWithdrawalHandlers) recoverCryptoWithdrawal(c *gin.Context, actor, actorSource string) {
+	params, ok := bindAdminRecoveryParams(c)
+	if !ok {
+		return
+	}
+
+	if h.walletProvider == nil {
+		common.SendInternalError(c, common.ErrCodeServiceUnavailable, "Wallet provider is not configured")
+		return
+	}
+
+	// Pick the wallet the funds actually leave from. source_chain lets ops
+	// recover money sitting on a different chain than the destination (e.g.
+	// BASE -> SOL); without it we keep the original behaviour and look up the
+	// destination chain's wallet, falling back to Solana.
+	lookupChain := params.sourceChain
+	if lookupChain == "" {
+		lookupChain = params.destChain
+	}
+	wallet, err := h.walletProvider.GetUserWalletByChain(c.Request.Context(), params.targetUserID, lookupChain)
+	if (err != nil || wallet == nil) && params.sourceChain == "" {
+		wallet, err = h.walletProvider.GetUserWalletByChain(c.Request.Context(), params.targetUserID, string(entities.WalletChainSolana))
+	}
+	if err != nil || wallet == nil {
+		common.SendBadRequest(c, "NO_WALLET", "No wallet found for user on chain "+lookupChain)
+		return
+	}
+	if wallet.CircleWalletID == "" && strings.TrimSpace(wallet.BridgeWalletID) == "" {
+		common.SendInternalError(c, "PROVIDER_NOT_CONFIGURED", "Withdrawal provider is not available for this account")
+		return
+	}
+
+	idempotencyKey, err := getIdempotencyKey(c)
+	if err != nil {
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, err.Error())
+		return
+	}
+	if idempotencyKey == "" {
+		idempotencyKey = uuid.New().String()
+	}
+
+	serviceReq := &entities.InitiateCryptoWithdrawalRequest{
+		UserID:              params.targetUserID,
+		Amount:              params.amount,
+		Currency:            params.currency,
+		DestinationAddress:  params.destAddress,
+		DestinationChain:    params.destChain,
+		SourceChain:         string(wallet.Chain),
+		SourceAccount:       params.source,
+		BridgeWalletID:      wallet.BridgeWalletID,
+		CircleWalletID:      wallet.CircleWalletID,
+		SourceWalletAddress: wallet.Address,
+		Category:            "admin_recovery",
+		Narration:           params.reason,
+		IdempotencyKey:      idempotencyKey,
+	}
+
+	response, err := h.withdrawalService.InitiateCryptoWithdrawal(c.Request.Context(), serviceReq)
+	if err != nil {
+		h.logger.Error("Crypto recovery failed",
+			zap.Error(err),
+			zap.String("actor", actor),
+			zap.String("actor_source", actorSource),
+			zap.String("target_user_id", params.targetUserID.String()),
+			zap.String("amount", params.amount.String()),
+			zap.String("source_chain", string(wallet.Chain)),
+			zap.String("destination_chain", params.destChain),
+			zap.String("destination", params.destAddress),
+			zap.String("reason", params.reason))
+		h.respondRecoveryError(c, err)
+		return
+	}
+
+	h.logger.Warn("CRYPTO RECOVERY initiated",
+		zap.String("actor", actor),
+		zap.String("actor_source", actorSource),
+		zap.String("target_user_id", params.targetUserID.String()),
+		zap.String("amount", params.amount.String()),
+		zap.String("currency", string(params.currency)),
+		zap.String("source_chain", string(wallet.Chain)),
+		zap.String("destination_chain", params.destChain),
+		zap.String("destination", params.destAddress),
+		zap.String("source_account", string(serviceReq.SourceAccount)),
+		zap.String("reason", params.reason),
+		zap.String("withdrawal_id", response.WithdrawalID.String()),
+		zap.String("caller_ip", c.ClientIP()))
+
+	payload := gin.H{
+		"withdrawal_id": response.WithdrawalID,
+		"status":        response.Status,
+		"message":       response.Message,
+		"reason":        params.reason,
+		"actor":         actor,
+		"actor_source":  actorSource,
+	}
+	// Keep the admin-specific field for the admin route so existing clients
+	// reading admin_id keep working.
+	if actorSource == "admin_jwt" {
+		payload["admin_id"] = actor
+	}
+
+	c.JSON(http.StatusAccepted, payload)
+}
+
+// respondRecoveryError maps service errors onto HTTP responses, mirroring the
+// user-facing withdrawal error mapping.
+func (h *AdminWithdrawalHandlers) respondRecoveryError(c *gin.Context, err error) {
+	var domainErr *domainerrors.DomainError
+	if stderrors.As(err, &domainErr) {
+		code := domainerrors.GetErrorCode(domainErr)
+		details := domainerrors.GetErrorDetails(domainErr)
+		switch {
+		case stderrors.Is(domainErr, domainerrors.ErrInvalidInput):
+			common.NewError(http.StatusBadRequest, code).Message(domainErr.Error()).Details(details).Send(c)
+			return
+		case stderrors.Is(domainErr, domainerrors.ErrConflict):
+			common.NewError(http.StatusConflict, code).Message(domainErr.Error()).Details(details).Send(c)
+			return
+		case stderrors.Is(domainErr, domainerrors.ErrServiceUnavailable):
+			common.NewError(http.StatusServiceUnavailable, code).Message(domainErr.Error()).Details(details).Send(c)
+			return
+		}
+	}
+
+	errMsg := err.Error()
+	switch {
+	case strings.Contains(errMsg, "insufficient"):
+		common.SendBadRequest(c, common.ErrCodeInsufficientFunds, "Insufficient balance for recovery")
+	case strings.Contains(errMsg, "invalid request"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, errMsg)
+	case strings.Contains(errMsg, "unsupported"):
+		common.SendBadRequest(c, common.ErrCodeInvalidRequest, errMsg)
+	default:
+		common.SendInternalError(c, common.ErrCodeWithdrawalFailed, "Failed to initiate admin recovery")
 	}
 }
 

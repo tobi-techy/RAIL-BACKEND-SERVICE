@@ -95,11 +95,12 @@ var (
 
 // Wallet constructors
 var (
-	NewWalletHandlers        = wallet.NewWalletHandlers
-	NewWalletFundingHandlers = wallet.NewWalletFundingHandlers
-	NewWithdrawalHandlers    = wallet.NewWithdrawalHandlers
-	NewStashTransferHandlers = wallet.NewStashTransferHandlers
-	NewRecipientHandlers     = wallet.NewRecipientHandlers
+	NewWalletHandlers          = wallet.NewWalletHandlers
+	NewWalletFundingHandlers   = wallet.NewWalletFundingHandlers
+	NewWithdrawalHandlers      = wallet.NewWithdrawalHandlers
+	NewAdminWithdrawalHandlers = wallet.NewAdminWithdrawalHandlers
+	NewStashTransferHandlers   = wallet.NewStashTransferHandlers
+	NewRecipientHandlers       = wallet.NewRecipientHandlers
 )
 
 // Funding constructors

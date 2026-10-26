@@ -447,6 +447,14 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		container.Logger,
 	)
 
+	adminWithdrawalHandlers := handlers.NewAdminWithdrawalHandlers(
+		container.GetWithdrawalService(),
+		&WithdrawalWalletProviderAdapter{
+			getWalletByUserAndChain: walletLookup,
+		},
+		container.ZapLog,
+	)
+
 	authHandlers := handlers.NewAuthHandlers(
 		container.DB,
 		container.Config,
@@ -1425,6 +1433,21 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 		// v1.POST("/admin/users", adminHandlers.CreateAdmin)
 		// v1.POST("/admin/promote", adminHandlers.PromoteUser)
 
+		// Internal money-moving recovery — same INTERNAL_API_KEY + optional
+		// HMAC request signature as the /internal groups, but deliberately not
+		// on the /internal group itself: that group carries a 10s
+		// TimeoutMiddleware, which is shorter than a provider transfer call and
+		// would turn a slow success into an ambiguous failure. The caller must
+		// name itself in X-Internal-Actor because the internal key carries no
+		// per-person identity.
+		internalRecovery := v1.Group("/internal")
+		internalRecovery.Use(middleware.RateLimit(10))
+		internalRecovery.Use(middleware.InternalAPIKeyAuth(container.Config.Security.InternalAPIKey))
+		internalRecovery.Use(middleware.InternalRequestSignature(container.Config.Security.InternalRequestSigningSecret, container.ZapLog))
+		{
+			internalRecovery.POST("/withdrawals/recover", adminWithdrawalHandlers.InternalRecoverCryptoWithdrawal)
+		}
+
 		// Admin routes (admin auth required)
 		admin := v1.Group("/admin")
 		admin.Use(middleware.Authentication(container.Config, container.Logger, sessionValidator, container.TokenBlacklist))
@@ -1474,6 +1497,12 @@ func SetupRoutes(container *di.Container) *gin.Engine {
 
 			// User lookup
 			admin.GET("/users/lookup", handlers.AdminLookupUser(container.DB))
+
+			// Admin crypto recovery — ops-led fund return for users who cannot
+			// authenticate. The admin JWT replaces the passcode session; every
+			// call needs a reason and is logged with the acting admin + IP.
+			admin.GET("/withdrawals", middleware.RateLimit(30), adminWithdrawalHandlers.AdminGetWithdrawals)
+			admin.POST("/withdrawals/recover", middleware.RateLimit(10), adminWithdrawalHandlers.AdminRecoverCryptoWithdrawal)
 
 			// Wallet admin routes
 			admin.POST("/wallet/create", walletFundingHandlers.CreateWalletsForUser)

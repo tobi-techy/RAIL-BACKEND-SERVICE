@@ -2452,19 +2452,44 @@ func validateChainPair(sourceChain, destChain string) error {
 	return nil
 }
 
+// circleFundedWallet is the Circle wallet that actually holds USDC and will
+// fund the transfer. Discovered once per withdrawal so the route decision and
+// the transfer agree on the source chain.
+type circleFundedWallet struct {
+	walletID string
+	tokenID  string
+	chain    string
+	address  string
+}
+
+func (s *WithdrawalService) findCircleFundedWallet(ctx context.Context, userID string) (*circleFundedWallet, error) {
+	walletID, tokenID, chain, address, err := s.circleTransfer.FindWalletWithUSDC(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &circleFundedWallet{walletID: walletID, tokenID: tokenID, chain: chain, address: address}, nil
+}
+
 // executeCryptoTransfer executes a crypto transfer via Bridge custodial wallets
 // or ChainRails for chains not natively supported by Bridge.
 func (s *WithdrawalService) executeCryptoTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain, sourceChain, sourceWalletAddress, circleWalletID string) (*CryptoTransferResult, error) {
-	// Unified Solana Settlement: all Circle withdrawals source from Solana.
+	// Unified Solana Settlement: Circle withdrawals normally source from
+	// Solana. That is a default, not a guarantee — a user can hold USDC in any
+	// Circle chain wallet (e.g. Base), and routing a Base balance to a Solana
+	// address as a same-chain Circle transfer cannot work. Decide the route on
+	// the chain that actually funds the transfer.
 	if s.circleTransfer != nil && circleWalletID != "" {
-		sourceChain = "SOL"
-		if isSameChainFamily(sourceChain, destinationChain) {
-			return s.executeCircleTransfer(ctx, withdrawal, destinationAddress, destinationChain)
+		funded, err := s.findCircleFundedWallet(ctx, withdrawal.UserID.String())
+		if err != nil {
+			return nil, fmt.Errorf("no USDC wallet found: %w", err)
+		}
+		if isSameChainFamily(funded.chain, destinationChain) {
+			return s.executeCircleTransfer(ctx, withdrawal, funded, destinationAddress, destinationChain)
 		}
 		if s.chainRailsAdapter == nil {
 			return nil, fmt.Errorf("circle wallet configured without chainrails — cannot route cross-chain withdrawal")
 		}
-		return s.executeCircleViaChainRails(ctx, withdrawal, destinationAddress, destinationChain)
+		return s.executeCircleViaChainRails(ctx, withdrawal, funded, destinationAddress, destinationChain)
 	}
 
 	// Bridge users: route exotic chains through ChainRails
@@ -2546,16 +2571,11 @@ var destChainToChainRails = map[string]string{
 }
 
 // executeCircleViaChainRails routes Circle wallet withdrawals through ChainRails.
-// 1. Find user's Circle wallet with USDC
-// 2. Create ChainRails intent (source = wallet's chain, dest = user's chosen chain)
-// 3. Circle transfers USDC to ChainRails intent address (same-chain)
-// 4. ChainRails delivers to destination on any chain
-func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
-	// Step 1: Find wallet with USDC, its blockchain, and on-chain address
-	walletID, tokenID, blockchain, onChainAddress, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
-	if err != nil {
-		return nil, fmt.Errorf("no USDC wallet found: %w", err)
-	}
+// 1. Create ChainRails intent from the funded wallet's chain
+// 2. Circle transfers USDC to the intent address (same-chain)
+// 3. ChainRails delivers to the destination chain
+func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, withdrawal *entities.Withdrawal, funded *circleFundedWallet, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
+	walletID, tokenID, blockchain, onChainAddress := funded.walletID, funded.tokenID, funded.chain, funded.address
 
 	// Step 2: Map source blockchain to ChainRails
 	sourceChainRails, ok := circleChainToChainRails[blockchain]
@@ -2675,20 +2695,16 @@ func (s *WithdrawalService) executeCircleViaChainRails(ctx context.Context, with
 }
 
 // executeCircleTransfer sends USDC via Circle Programmable Wallets (same-chain only).
-func (s *WithdrawalService) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
-	walletID, tokenID, _, _, err := s.circleTransfer.FindWalletWithUSDC(ctx, withdrawal.UserID.String())
-	if err != nil {
-		return nil, fmt.Errorf("no USDC wallet found: %w", err)
-	}
-
-	tx, err := s.circleTransfer.TransferUSDC(ctx, walletID, tokenID, destinationAddress, withdrawal.Amount.StringFixed(2))
+func (s *WithdrawalService) executeCircleTransfer(ctx context.Context, withdrawal *entities.Withdrawal, funded *circleFundedWallet, destinationAddress, destinationChain string) (*CryptoTransferResult, error) {
+	tx, err := s.circleTransfer.TransferUSDC(ctx, funded.walletID, funded.tokenID, destinationAddress, withdrawal.Amount.StringFixed(2))
 	if err != nil {
 		return nil, fmt.Errorf("circle transfer failed: %w", err)
 	}
 
 	s.logger.Info("Circle crypto transfer initiated",
 		"withdrawal_id", withdrawal.ID.String(),
-		"source_wallet", walletID,
+		"source_wallet", funded.walletID,
+		"source_chain", funded.chain,
 		"destination", destinationAddress,
 		"dest_chain", destinationChain,
 		"circle_tx_id", tx.ID,
