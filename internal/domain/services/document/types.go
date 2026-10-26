@@ -35,7 +35,23 @@ const (
 	DocReceipt       DocType = "receipt"
 	DocBankStatement DocType = "bank_statement"
 	DocInvoice       DocType = "invoice"
+	// DocStockBook is a trader's own running record of goods (a shop's stock
+	// book / sales book): what was on hand, what came in, what sold, what is
+	// left. Its figures are handwritten, so it is read by the vision reader,
+	// never by this pipeline's OCR extractors.
+	DocStockBook DocType = "stock_book"
+	// DocDeliveryNote is a distributor's slip accompanying goods (delivery
+	// note / waybill / GRN), signed off by whoever received the goods.
+	DocDeliveryNote DocType = "delivery_note"
 )
+
+// IsShopDocument reports whether the type is a page the shop reader owns: a
+// trader's stock book or a distributor's delivery note. These are routed to the
+// Python reader instead of the receipt/statement pipeline, because their
+// numbers have to come back exactly as written.
+func (t DocType) IsShopDocument() bool {
+	return t == DocStockBook || t == DocDeliveryNote
+}
 
 // LineItem is a single item on a receipt/invoice.
 type LineItem struct {

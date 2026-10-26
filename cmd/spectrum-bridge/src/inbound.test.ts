@@ -4,6 +4,7 @@ import {
   expectsReply,
   InboundDebouncer,
   isOutboundEcho,
+  MAX_ATTACHMENT_BYTES,
   routeInboundContent,
   type InboundContext,
   type InboundPayload,
@@ -370,6 +371,28 @@ describe("routeInboundContent", () => {
     debouncer.dispose();
   });
 
+  it("carries a phone-sized photo of a page, over the old 4MB cap", async () => {
+    const posts: InboundPayload[] = [];
+    const debouncer = makeDebouncer(posts);
+    const deps = makeRouter(posts, debouncer);
+    const photo = {
+      type: "attachment",
+      name: "stock-book.jpg",
+      mimeType: "image/jpeg",
+      read: async () => new Uint8Array(5 * 1024 * 1024),
+    } as unknown as Content;
+
+    await route(deps, fakeMessage("img-big", photo));
+
+    // A trader's photo of a page is the reader's own case: it has to reach the
+    // backend whole, or the answer is a size notice instead of a read.
+    expect(posts.length).toBe(1);
+    expect(posts[0].is_image).toBe(true);
+    expect(posts[0].is_oversized).toBeUndefined();
+    expect(posts[0].image_b64?.length).toBeGreaterThan(6 * 1024 * 1024);
+    debouncer.dispose();
+  });
+
   it("posts an oversized notice (not bytes) for huge PDFs", async () => {
     const posts: InboundPayload[] = [];
     const debouncer = makeDebouncer(posts);
@@ -378,7 +401,7 @@ describe("routeInboundContent", () => {
       type: "attachment",
       name: "large.pdf",
       mimeType: "application/pdf",
-      read: async () => new Uint8Array(4 * 1024 * 1024 + 1),
+      read: async () => new Uint8Array(MAX_ATTACHMENT_BYTES + 1),
     } as unknown as Content;
 
     await route(deps, fakeMessage("pdf-2", oversized));

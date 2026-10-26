@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	apiMiddleware "github.com/rail-service/rail_service/internal/api/middleware"
 	"github.com/rail-service/rail_service/internal/domain/entities"
 	"github.com/rail-service/rail_service/internal/infrastructure/platform"
 	"go.uber.org/zap"
@@ -178,7 +179,10 @@ func (h *PlatformHandler) HandleInbound(processor *platform.Processor) gin.Handl
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(c.Request.Body, 8*1024*1024))
+		// The same cap the HMAC middleware verified the signature under. A
+		// smaller one here would not refuse an oversized page, it would
+		// silently truncate it into invalid JSON and answer 400.
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, apiMiddleware.MaxInboundBodyBytes))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
 			return

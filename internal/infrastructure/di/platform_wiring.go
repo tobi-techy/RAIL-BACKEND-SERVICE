@@ -26,6 +26,11 @@ import (
 func (c *Container) initializePlatformMessaging() {
 	// Initialize platform messaging (iMessage, WhatsApp, Telegram)
 	c.PlatformIdentityRepo = repositories.NewPlatformIdentityRepository(c.DB, c.ZapLog)
+	// The platform conversation repository was declared, passed to the Python
+	// delegate and the bridge dispatcher, and built nowhere: every texted turn
+	// from a linked user panicked on a nil db and answered 500. It is built
+	// here, where its only callers live.
+	c.ConversationRepo = repositories.NewConversationRepository(c.DB, c.ZapLog)
 
 	pythonReady := c.Config.PythonAgent.Enabled && c.Config.PythonAgent.BaseURL != "" &&
 		c.RedisClient != nil && c.Config.JWT.Secret != ""
@@ -71,6 +76,7 @@ func (c *Container) initializePlatformMessaging() {
 					JWTSecret:          c.Config.JWT.Secret,
 					JWTTTL:             time.Duration(cfg.JWTTTLSeconds) * time.Second,
 					Timeout:            time.Duration(cfg.HTTPTimeoutSeconds) * time.Second,
+					ShopReadTimeout:    time.Duration(cfg.ShopReadTimeoutSeconds) * time.Second,
 					NotifyDebitEnabled: cfg.NotifyDebitEnabled,
 					RailServiceKey:     c.Config.Confirmation.RailServiceKey,
 				}, c.ZapLog)
@@ -256,6 +262,32 @@ func (c *Container) initializePlatformMessaging() {
 					proc.SetReceiptVision(platform.NewDocumentReceiptVision(visionPipeline))
 					c.ZapLog.Info("Platform receipt vision enabled (PaddleOCR pipeline)")
 				}
+			}
+
+			// Shop documents texted to Miriam — a trader's own stock book, or a
+			// distributor's invoice/delivery note — are read by the Python
+			// reader under the owner's own token, and its reply is sent back
+			// verbatim: every figure in it was checked against the page by
+			// code, so nothing downstream may restate one. Requires the same
+			// Python client the chat path uses.
+			if c.PythonAgentClient != nil {
+				proc.SetShopReader(&shopReaderAdapter{
+					python:   c.PythonAgentClient,
+					userRepo: c.UserRepo,
+					logger:   c.ZapLog,
+				})
+				proc.SetShopReadTimeout(time.Duration(c.Config.PythonAgent.ShopReadTimeoutSeconds) * time.Second)
+				// One read per inbound message, however many times the bridge
+				// delivers it. Redis is the shared claim store this path
+				// already requires everywhere else; the in-memory store only
+				// covers a single replica.
+				if c.RedisClient != nil {
+					proc.SetShopClaimStore(c.RedisClient)
+				} else {
+					proc.SetShopClaimStore(platform.NewMemoryMessageClaimStore())
+					c.ZapLog.Warn("shop reads: no Redis — a redelivery handled by another replica could read the same page twice")
+				}
+				c.ZapLog.Info("Platform shop document reader enabled (stock books, invoices, delivery notes)")
 			}
 
 			// First-login goal seeder: after a successful handshake or chat
