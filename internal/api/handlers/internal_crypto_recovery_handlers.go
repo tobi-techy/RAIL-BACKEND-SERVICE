@@ -39,6 +39,7 @@ import (
 // find an inbound transfer that never reached the ledger.
 type CircleInboundSource interface {
 	ListTransactions(ctx context.Context, walletID, operation, state string) ([]circlepkg.Transaction, error)
+	GetTransaction(ctx context.Context, txID string) (*circlepkg.Transaction, error)
 	GetTokenSymbol(ctx context.Context, walletID, tokenID string) (string, error)
 	GetTokenBalanceOnchain(ctx context.Context, walletID string) ([]circlepkg.TokenBalance, error)
 }
@@ -266,6 +267,12 @@ type BackfillRequest struct {
 	LookbackDays int `json:"lookback_days,omitempty"`
 	// Chain optionally restricts the replay to a single chain (e.g. "BASE").
 	Chain string `json:"chain,omitempty"`
+	// CircleTxIDs targets specific Circle transaction ids instead of scanning
+	// each wallet's recent history. Use it when ops already has the transaction
+	// in hand: the per-wallet scan is capped at five recent transfers, so an old
+	// deposit can fall outside the page even though the lookback would include
+	// it. Each id is ownership-checked against the user's wallets before credit.
+	CircleTxIDs []string `json:"circle_tx_ids,omitempty"`
 }
 
 // inboundCandidate is one Circle inbound transfer considered for replay.
@@ -329,7 +336,14 @@ func (h *DepositBackfillHandlers) BackfillDeposits(c *gin.Context) {
 		return
 	}
 
-	candidates := h.collectCandidates(c.Request.Context(), wallets, chainFilter, time.Duration(lookback)*24*time.Hour, !dryRun)
+	var candidates []inboundCandidate
+	if len(req.CircleTxIDs) > 0 {
+		// Explicit ids win: they are exact, ownership-checked, and immune to the
+		// five-per-wallet page limit that can hide an older transfer.
+		candidates = h.candidatesFromTxIDs(c.Request.Context(), userID, wallets, req.CircleTxIDs)
+	} else {
+		candidates = h.collectCandidates(c.Request.Context(), wallets, chainFilter, time.Duration(lookback)*24*time.Hour, !dryRun)
+	}
 
 	credited := 0
 
@@ -483,53 +497,13 @@ func (h *DepositBackfillHandlers) collectCandidates(ctx context.Context, wallets
 			}
 			var local []inboundCandidate
 			for _, tx := range txs {
-				if !inboundStateCounts(tx.State) {
-					continue
-				}
 				if !tx.CreateDate.IsZero() && tx.CreateDate.Before(cutoff) {
 					continue
 				}
-				amount := firstAmount(tx.Amounts)
-				if decimalStringIsZero(amount) || tx.TxHash == "" {
+				cand, ok := h.candidateForTx(ctx, wallet, tx, resolveToken)
+				if !ok {
 					continue
 				}
-				cand := inboundCandidate{
-					CircleTxID:     tx.ID,
-					TxHash:         tx.TxHash,
-					Chain:          wallet.Chain,
-					CircleWalletID: wallet.CircleWalletID,
-					Amount:         amount,
-					State:          string(tx.State),
-					CreatedAt:      tx.CreateDate.UTC().Format(time.RFC3339),
-					Destination:    tx.DestinationAddress,
-					Token:          "USDC",
-				}
-				if resolveToken {
-					if symbol := h.resolveTokenSymbol(ctx, wallet.CircleWalletID, tx.TokenID); symbol != "" {
-						cand.Token = symbol
-					}
-				}
-				dep, depErr := h.store.DepositByTxHash(ctx, tx.TxHash)
-				if depErr != nil {
-					cand.Action = "skipped"
-					cand.Reason = "deposit lookup failed: " + depErr.Error()
-					local = append(local, cand)
-					continue
-				}
-				if dep != nil {
-					cand.AlreadyCredited = dep.Status == "confirmed"
-					cand.DepositID = dep.ID
-					cand.DepositStatus = dep.Status
-					if sweep, _ := h.store.SweepByDepositID(ctx, dep.ID); sweep != nil {
-						cand.SweepStatus = sweep.Status
-					}
-					cand.Action = "skipped"
-					cand.Reason = "already credited as deposit " + dep.ID
-					local = append(local, cand)
-					continue
-				}
-				cand.Action = "would_credit"
-				cand.Reason = "no deposit row for this transaction hash"
 				local = append(local, cand)
 			}
 			mu.Lock()
@@ -553,6 +527,130 @@ func (h *DepositBackfillHandlers) collectCandidates(ctx context.Context, wallets
 		return out[i].CreatedAt < out[j].CreatedAt
 	})
 	return out
+}
+
+// candidateForTx classifies one Circle inbound transfer against the deposit
+// table. It is a pure read: it decides whether a credit is missing, it never
+// writes. Returns false when the transfer is not settled money (a failed state,
+// no hash, or a zero amount), which the caller should not report on.
+func (h *DepositBackfillHandlers) candidateForTx(ctx context.Context, wallet opsWallet, tx circlepkg.Transaction, resolveToken bool) (inboundCandidate, bool) {
+	if !inboundStateCounts(tx.State) {
+		return inboundCandidate{}, false
+	}
+	amount := firstAmount(tx.Amounts)
+	if decimalStringIsZero(amount) || tx.TxHash == "" {
+		return inboundCandidate{}, false
+	}
+
+	cand := inboundCandidate{
+		CircleTxID:     tx.ID,
+		TxHash:         tx.TxHash,
+		Chain:          wallet.Chain,
+		CircleWalletID: wallet.CircleWalletID,
+		Amount:         amount,
+		State:          string(tx.State),
+		CreatedAt:      tx.CreateDate.UTC().Format(time.RFC3339),
+		Destination:    tx.DestinationAddress,
+		Token:          "USDC",
+	}
+	if resolveToken {
+		if symbol := h.resolveTokenSymbol(ctx, wallet.CircleWalletID, tx.TokenID); symbol != "" {
+			cand.Token = symbol
+		}
+	}
+
+	dep, depErr := h.store.DepositByTxHash(ctx, tx.TxHash)
+	if depErr != nil {
+		cand.Action = "skipped"
+		cand.Reason = "deposit lookup failed: " + depErr.Error()
+		return cand, true
+	}
+	if dep != nil {
+		cand.AlreadyCredited = dep.Status == "confirmed"
+		cand.DepositID = dep.ID
+		cand.DepositStatus = dep.Status
+		if sweep, _ := h.store.SweepByDepositID(ctx, dep.ID); sweep != nil {
+			cand.SweepStatus = sweep.Status
+		}
+		cand.Action = "skipped"
+		// A confirmed row means the credit landed. Any other status (pending,
+		// failed) is reported as-is because ProcessCircleDeposit will only
+		// reconcile a pending row — a failed one needs a human decision.
+		cand.Reason = "deposit row already exists with status " + dep.Status
+		return cand, true
+	}
+
+	cand.Action = "would_credit"
+	cand.Reason = "no deposit row for this transaction hash"
+	return cand, true
+}
+
+// candidatesFromTxIDs resolves specific Circle transaction ids. Used when ops
+// already has the transaction in hand and the per-wallet scan might not page
+// far enough back to reach it.
+//
+// Every id is ownership-checked against the target user's wallets before it is
+// considered, so a mistyped or borrowed transaction id can never credit the
+// wrong account.
+func (h *DepositBackfillHandlers) candidatesFromTxIDs(ctx context.Context, userID uuid.UUID, wallets []opsWallet, ids []string) []inboundCandidate {
+	out := make([]inboundCandidate, 0, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		tx, err := h.circle.GetTransaction(ctx, id)
+		if err != nil {
+			out = append(out, inboundCandidate{
+				CircleTxID: id,
+				Action:     "skipped",
+				Reason:     "circle lookup failed: " + err.Error(),
+			})
+			continue
+		}
+		if tx == nil {
+			out = append(out, inboundCandidate{CircleTxID: id, Action: "skipped", Reason: "circle returned no transaction"})
+			continue
+		}
+		wallet, owned := walletForTx(wallets, tx)
+		if !owned {
+			out = append(out, inboundCandidate{
+				CircleTxID: id,
+				TxHash:     tx.TxHash,
+				Action:     "skipped",
+				Reason:     "transaction does not belong to any wallet of user " + userID.String(),
+			})
+			continue
+		}
+		cand, ok := h.candidateForTx(ctx, wallet, *tx, true)
+		if !ok {
+			out = append(out, inboundCandidate{
+				CircleTxID: id,
+				TxHash:     tx.TxHash,
+				Chain:      wallet.Chain,
+				Action:     "skipped",
+				Reason:     "not a settled inbound transfer (state " + string(tx.State) + ", needs a hash and a positive amount)",
+			})
+			continue
+		}
+		out = append(out, cand)
+	}
+	return out
+}
+
+// walletForTx finds which of the user's wallets a Circle transaction belongs to.
+func walletForTx(wallets []opsWallet, tx *circlepkg.Transaction) (opsWallet, bool) {
+	for _, w := range wallets {
+		if w.CircleWalletID != "" && strings.EqualFold(w.CircleWalletID, tx.WalletID) {
+			return w, true
+		}
+	}
+	for _, w := range wallets {
+		if strings.TrimSpace(w.Address) != "" && strings.EqualFold(w.Address, tx.DestinationAddress) {
+			return w, true
+		}
+	}
+	return opsWallet{}, false
 }
 
 // annotateDepositState refreshes deposit/sweep fields after a live replay, and
