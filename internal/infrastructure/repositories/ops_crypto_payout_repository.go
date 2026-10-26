@@ -234,7 +234,13 @@ func (r *OpsCryptoPayoutRepository) ResetFailedForRetry(ctx context.Context, id 
 
 // MarkIntentCreated persists the intent address and exact funding amount before
 // any money moves, so a crash can never fund an intent we did not record.
+//
+// It also rewrites amount to the figure the quote actually delivers
+// (fundingAmount - feeAmount). In "all" mode the row is first anchored to the
+// source transfer amount, but fees mean the recipient receives less; storing
+// the anchor would make the audit row claim money was delivered that was not.
 func (r *OpsCryptoPayoutRepository) MarkIntentCreated(ctx context.Context, id uuid.UUID, intentID int, intentAddress string, fundingAmount, feeAmount decimal.Decimal) error {
+	recipientAmount := fundingAmount.Sub(feeAmount).Truncate(6)
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE ops_crypto_payouts
 		   SET status = $2,
@@ -242,9 +248,10 @@ func (r *OpsCryptoPayoutRepository) MarkIntentCreated(ctx context.Context, id uu
 		       intent_address = $4,
 		       funding_amount = $5,
 		       fee_amount = $6,
+		       amount = $7,
 		       updated_at = NOW()
 		 WHERE id = $1`,
-		id, entities.OpsPayoutStatusIntentCreated, intentID, intentAddress, fundingAmount, feeAmount,
+		id, entities.OpsPayoutStatusIntentCreated, intentID, intentAddress, fundingAmount, feeAmount, recipientAmount,
 	)
 	if err != nil {
 		return fmt.Errorf("mark intent created: %w", err)

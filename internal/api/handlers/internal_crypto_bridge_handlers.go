@@ -78,9 +78,16 @@ const (
 	// opsBridgeMaxAmount caps one bridge so a leaked internal key cannot drain
 	// a wallet in a single call. Mirrors the admin recovery cap.
 	opsBridgeMaxAmount = 10000
-	// circleTransferPolls is ~45s at 3s intervals. A gateway timeout is worse
-	// than an honest 202: a retry resumes with the same idempotency key.
-	circleTransferPolls = 15
+	// circleTransferConfirmBudget bounds how long we wait for the Circle transfer
+	// to settle before answering 202. It must stay well inside the server's
+	// write timeout (server.write_timeout, 30s in configs/config.yaml): if the
+	// handler outlives it, the connection is cut and the caller never sees the
+	// payout id — the one thing it needs to resume an ambiguous transfer safely.
+	// Preparation (wallet read, balance, token, intent, transfer) is ~10s worst
+	// case, so confirmation gets 12s. Anything slower is honestly reported as
+	// pending and resumed by re-running the same request.
+	circleTransferConfirmBudget = 12 * time.Second
+	circleTransferPollInterval  = 2 * time.Second
 )
 
 var opsBridgeMaxAmountDec = decimal.NewFromInt(opsBridgeMaxAmount)
@@ -836,6 +843,13 @@ func (h *CryptoBridgeHandlers) createIntent(ctx context.Context, base chainrails
 		if err != nil {
 			return nil, decimal.Zero, decimal.Zero, err
 		}
+		// A provider quote below the requested recipient amount would mean the
+		// recipient gets less than authorised; refuse it like the sweep path does.
+		if funding.LessThan(requested.Truncate(6)) {
+			return nil, decimal.Zero, decimal.Zero, fmt.Errorf(
+				"chainrails intent %d quoted a funding amount %s below the requested %s",
+				intent.ID, funding.StringFixed(6), requested.Truncate(6).StringFixed(6))
+		}
 		return intent, requested, funding, nil
 	}
 
@@ -907,9 +921,10 @@ func (h *CryptoBridgeHandlers) waitCircleTransfer(ctx context.Context, initial *
 		return initial, fmt.Errorf("%w: state %s", errCircleTransferTerminal, initial.State)
 	}
 	last := initial
-	ticker := time.NewTicker(3 * time.Second)
+	deadline := time.Now().Add(circleTransferConfirmBudget)
+	ticker := time.NewTicker(circleTransferPollInterval)
 	defer ticker.Stop()
-	for i := 0; i < circleTransferPolls; i++ {
+	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return last, fmt.Errorf("request cancelled before the transfer confirmed: %w", ctx.Err())
@@ -928,7 +943,7 @@ func (h *CryptoBridgeHandlers) waitCircleTransfer(ctx context.Context, initial *
 			}
 		}
 	}
-	return last, fmt.Errorf("transfer %s still %s after %d polls", initial.ID, last.State, circleTransferPolls)
+	return last, fmt.Errorf("transfer %s still %s after %s", initial.ID, last.State, circleTransferConfirmBudget)
 }
 
 func (h *CryptoBridgeHandlers) failForShortfall(c *gin.Context, payout *entities.OpsCryptoPayout, available, funding decimal.Decimal) {

@@ -163,6 +163,9 @@ func (f *fakePayoutStore) MarkIntentCreated(_ context.Context, id uuid.UUID, int
 	fee := feeAmount
 	p.FundingAmount = &fund
 	p.FeeAmount = &fee
+	// Mirrors the SQL: the row records what the recipient actually receives,
+	// not the pre-quote anchor ("all" mode anchors to the source amount).
+	p.Amount = fundingAmount.Sub(feeAmount).Truncate(6)
 	return nil
 }
 
@@ -604,7 +607,7 @@ func TestCryptoBridge_ShortfallReleasesSuppression(t *testing.T) {
 
 // "all" must size the transfer so the quoted total fits the balance.
 func TestCryptoBridge_AllModeSizesToBalance(t *testing.T) {
-	h, _, circle, cr, tx := bridgeFixture(t, "5.00")
+	h, payouts, circle, cr, tx := bridgeFixture(t, "5.00")
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"user_id":             uuid.New().String(),
@@ -636,6 +639,21 @@ func TestCryptoBridge_AllModeSizesToBalance(t *testing.T) {
 	calls := circle.transferCalls()
 	if len(calls) != 1 || calls[0].amount != "5.000000" {
 		t.Fatalf("transfers = %+v, want one for 5.000000", calls)
+	}
+
+	// The persisted row must record what the recipient actually gets, not the
+	// pre-quote anchor (the source transfer amount). Otherwise the audit trail
+	// claims 5.00 was delivered when 4.90 was.
+	if payouts.count() != 1 {
+		t.Fatalf("payouts = %d, want 1", payouts.count())
+	}
+	for _, stored := range payouts.byID {
+		if got := stored.Amount.StringFixed(6); got != "4.900000" {
+			t.Errorf("stored payout amount = %s, want 4.900000", got)
+		}
+		if stored.FundingAmount == nil || stored.FundingAmount.StringFixed(6) != "5.000000" {
+			t.Errorf("stored funding_amount = %v, want 5.000000", stored.FundingAmount)
+		}
 	}
 }
 
