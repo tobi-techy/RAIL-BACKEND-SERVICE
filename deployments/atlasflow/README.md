@@ -220,15 +220,22 @@ The `create` command waits by default, streams build logs, and prints the URL:
 https://rail-enrichment-tobi-omotade-2cd167ac.atlasflow.dev
 ```
 
-### Step 5: Run Database Migrations
+### Step 5: Database Migrations
 
-After the first successful deployment of `rail-api`, run migrations:
+**Migrations run automatically on every boot** (`Application.Initialize` calls
+`database.RunMigrations`), and the Docker image ships `migrations/` at `/migrations`.
+A deploy therefore applies any new migration by itself — there is no separate step.
+
+Two consequences worth knowing:
+
+- If a migration fails, the service does **not** start (`Initialize` returns the
+  error), so an unhealthy deploy right after a schema change is a migration
+  failure, not a bad image.
+- `atlasflow deployments` has no `exec` subcommand, so you cannot trigger a
+  migration through the CLI. If you ever need to run one by hand, use the
+  binary against the production database:
 
 ```bash
-# Option A: AtlasFlow exec (if supported) — run the migrate subcommand
-atlasflow deployments exec <deployment-id> -- /main migrate
-
-# Option B: Run locally with the production DATABASE_URL
 DATABASE_URL=postgresql://user:pass@your-rds-host:5432/rail_service \
   go run cmd/main.go migrate
 ```
